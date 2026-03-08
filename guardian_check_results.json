@@ -1,0 +1,62 @@
+{
+  "allRoles": [
+    {
+      "id": 6,
+      "name": "super_admin",
+      "permissions": null,
+      "display_name": "Super Administrator",
+      "is_system_role": true,
+      "is_active": true,
+      "hierarchy_level": 100,
+      "created_at": "2025-12-21T17:19:07.464Z",
+      "updated_at": "2025-12-21T17:19:07.464Z"
+    },
+    {
+      "id": 7,
+      "name": "admin",
+      "permissions": null,
+      "display_name": "Administrator",
+      "is_system_role": true,
+      "is_active": true,
+      "hierarchy_level": 80,
+      "created_at": "2025-12-21T17:19:07.464Z",
+      "updated_at": "2025-12-21T17:19:07.464Z"
+    },
+    {
+      "id": 8,
+      "name": "clinic_manager",
+      "permissions": null,
+      "display_name": "Clinic Manager",
+      "is_system_role": false,
+      "is_active": true,
+      "hierarchy_level": 60,
+      "created_at": "2025-12-21T17:19:07.464Z",
+      "updated_at": "2025-12-21T17:19:07.464Z"
+    }
+  ],
+  "guardians": [
+    {
+      "id": 1,
+      "name": "",
+      "phone": "invalid-phone",
+      "email": "invalid-email",
+      "address": "",
+      "relationship": "",
+      "created_at": "2025-12-28T15:30:16.186Z",
+      "updated_at": "2025-12-28T15:30:16.186Z"
+    },
+    {
+      "id": 2,
+      "name": "Test Guardian",
+      "phone": "09123456789",
+      "email": "test@example.com",
+      "address": "Test Address",
+      "relationship": "Parent",
+      "created_at": "2025-12-28T15:30:16.206Z",
+      "updated_at": "2025-12-28T15:30:16.206Z"
+    }
+  ],
+  "infants": [],
+  "guardianRoleExists": false,
+  "guardianUsers": []
+}

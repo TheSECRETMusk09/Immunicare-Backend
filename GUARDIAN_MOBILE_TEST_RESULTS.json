@@ -1,0 +1,21 @@
+{
+  "timestamp": "2026-03-01T18:55:27.411Z",
+  "summary": {
+    "total": 25,
+    "passed": 23,
+    "failed": 0,
+    "warnings": 2,
+    "passRate": "92.0%"
+  },
+  "issues": [],
+  "recommendations": [
+    {
+      "test": "Keyboard navigation",
+      "recommendation": "Consider adding keyboard event handlers"
+    },
+    {
+      "test": "Dark mode support",
+      "recommendation": "Consider adding dark: variants for mobile"
+    }
+  ]
+}

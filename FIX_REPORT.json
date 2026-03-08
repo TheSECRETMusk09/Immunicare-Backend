@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-02-11T04:12:17.762Z",
+  "database": {
+    "success": true,
+    "missingTables": [
+      "immunization_records"
+    ]
+  },
+  "routing": true,
+  "apiClient": true,
+  "guardianLayout": true,
+  "appRouting": true,
+  "testGuardian": false
+}

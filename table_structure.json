@@ -1,0 +1,121 @@
+{
+  "usersColumns": [
+    {
+      "column_name": "id",
+      "data_type": "integer",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "username",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "password_hash",
+      "data_type": "character varying",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "role_id",
+      "data_type": "integer",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "clinic_id",
+      "data_type": "integer",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "contact",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "email",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "last_login",
+      "data_type": "timestamp without time zone",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "guardian_id",
+      "data_type": "integer",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "is_active",
+      "data_type": "boolean",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "created_at",
+      "data_type": "timestamp without time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "updated_at",
+      "data_type": "timestamp without time zone",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "force_password_change",
+      "data_type": "boolean",
+      "is_nullable": "NO"
+    },
+    {
+      "column_name": "password_changed_at",
+      "data_type": "timestamp with time zone",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "role",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "password",
+      "data_type": "character varying",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "encrypted_contact",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "encrypted_email",
+      "data_type": "text",
+      "is_nullable": "YES"
+    },
+    {
+      "column_name": "notification_settings",
+      "data_type": "jsonb",
+      "is_nullable": "YES"
+    }
+  ],
+  "hasIsActiveColumn": true,
+  "allColumns": [
+    "id",
+    "username",
+    "password_hash",
+    "role_id",
+    "clinic_id",
+    "contact",
+    "email",
+    "last_login",
+    "guardian_id",
+    "is_active",
+    "created_at",
+    "updated_at",
+    "force_password_change",
+    "password_changed_at",
+    "role",
+    "password",
+    "encrypted_contact",
+    "encrypted_email",
+    "notification_settings"
+  ]
+}

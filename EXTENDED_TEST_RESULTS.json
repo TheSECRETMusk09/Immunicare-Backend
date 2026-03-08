@@ -1,0 +1,271 @@
+{
+  "guardianDashboard": {
+    "tests": [
+      {
+        "name": "Guardian Stats",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Guardian Appointments",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Guardian Children/My Children",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Guardian Vaccinations",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Guardian Health Charts",
+        "passed": false,
+        "details": "Status: 500"
+      },
+      {
+        "name": "Guardian Notifications",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Guardian Notifications Route",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Infants by Guardian",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Guardians List (Admin)",
+        "passed": false,
+        "details": "Status: 403"
+      }
+    ],
+    "passed": 7,
+    "failed": 2
+  },
+  "guardianMobile": {
+    "tests": [
+      {
+        "name": "Mobile CSS - guardian-mobile.css",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile CSS - guardian-dashboard-mobile.css",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile CSS - guardian-mobile-fixes.css",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile Component - MobileBottomNav.jsx",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile Component - GuardianLayout.jsx",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile Page - GuardianDashboard.jsx",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile Page - MyChildren.jsx",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile Page - GuardianAppointmentsPage.jsx",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile Page - GuardianNotificationsPage.jsx",
+        "passed": false,
+        "details": "File not found"
+      },
+      {
+        "name": "Mobile Page - Settings.jsx",
+        "passed": false,
+        "details": "File not found"
+      }
+    ],
+    "passed": 0,
+    "failed": 10
+  },
+  "smsEmailServices": {
+    "tests": [
+      {
+        "name": "SMS - GET /api/sms",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "SMS - GET /api/sms/incoming",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "SMS - GET /api/sms/templates",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "SMS - GET /api/sms/logs",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "SMS - GET /api/sms/scheduled",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "SMS Service File",
+        "passed": true,
+        "details": "Exists"
+      },
+      {
+        "name": "Email Service File",
+        "passed": true,
+        "details": "Exists"
+      },
+      {
+        "name": "SMS Templates File",
+        "passed": true,
+        "details": "Exists"
+      },
+      {
+        "name": "SMS Database Schema",
+        "passed": true,
+        "details": "Exists"
+      },
+      {
+        "name": "Appointment Confirmation Service",
+        "passed": true,
+        "details": "Exists"
+      },
+      {
+        "name": "Password Reset Service (Email)",
+        "passed": true,
+        "details": "Exists"
+      }
+    ],
+    "passed": 11,
+    "failed": 0
+  },
+  "databaseSchema": {
+    "tests": [
+      {
+        "name": "Schema - users",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - guardians",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - infants",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - vaccinations",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - appointments",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - announcements",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - notifications",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - settings",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - growth",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - inventory",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - reports",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - analytics",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - documents",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema - messages",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "Schema - paper_templates",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Schema File - schema.sql",
+        "passed": true,
+        "details": "Exists"
+      },
+      {
+        "name": "Schema File - sms_schema.sql",
+        "passed": true,
+        "details": "Exists"
+      },
+      {
+        "name": "Schema File - settings_schema.sql",
+        "passed": true,
+        "details": "Exists"
+      },
+      {
+        "name": "Schema File - cache_schema.sql",
+        "passed": true,
+        "details": "Exists"
+      }
+    ],
+    "passed": 19,
+    "failed": 0
+  }
+}

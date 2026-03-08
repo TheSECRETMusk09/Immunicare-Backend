@@ -1,0 +1,144 @@
+[
+  {
+    "id": 1,
+    "name": "Vaccine Schedule Booklet",
+    "description": "WHO-standard vaccination schedule for infants",
+    "template_type": "VACCINE_SCHEDULE",
+    "fields": [
+      {
+        "field": "infant_name",
+        "label": "Child Name",
+        "source": "infants.full_name",
+        "required": true
+      },
+      {
+        "field": "dob",
+        "label": "Date of Birth",
+        "source": "infants.dob",
+        "required": true
+      },
+      {
+        "field": "vaccines",
+        "label": "Vaccination Schedule",
+        "source": "vaccination_schedules",
+        "required": true
+      }
+    ],
+    "validation_rules": {
+      "required_fields": [
+        "infant_name",
+        "dob",
+        "vaccines"
+      ]
+    },
+    "is_active": true,
+    "created_at": "2026-01-16T20:48:17.292Z",
+    "updated_at": "2026-01-16T20:48:17.299Z"
+  },
+  {
+    "id": 2,
+    "name": "Immunization Record Booklet",
+    "description": "Complete immunization record for tracking vaccinations",
+    "template_type": "IMMUNIZATION_RECORD",
+    "fields": [
+      {
+        "field": "infant_info",
+        "label": "Infant Information",
+        "source": "infants",
+        "required": true
+      },
+      {
+        "field": "vaccination_history",
+        "label": "Vaccination History",
+        "source": "vaccination_records",
+        "required": true
+      },
+      {
+        "field": "guardian_info",
+        "label": "Guardian Information",
+        "source": "guardians",
+        "required": true
+      }
+    ],
+    "validation_rules": {
+      "required_fields": [
+        "infant_info",
+        "vaccination_history",
+        "guardian_info"
+      ]
+    },
+    "is_active": true,
+    "created_at": "2026-01-16T20:48:17.299Z",
+    "updated_at": "2026-01-16T20:48:17.299Z"
+  },
+  {
+    "id": 3,
+    "name": "Vaccine Inventory Logbook",
+    "description": "Stock monitoring logbook for vaccines",
+    "template_type": "INVENTORY_LOGBOOK",
+    "fields": [
+      {
+        "field": "inventory_data",
+        "label": "Inventory Data",
+        "source": "inventory_items",
+        "required": true
+      },
+      {
+        "field": "transactions",
+        "label": "Stock Transactions",
+        "source": "inventory_transactions",
+        "required": true
+      },
+      {
+        "field": "alerts",
+        "label": "Stock Alerts",
+        "source": "stock_alerts",
+        "required": false
+      }
+    ],
+    "validation_rules": {
+      "required_fields": [
+        "inventory_data",
+        "transactions"
+      ]
+    },
+    "is_active": true,
+    "created_at": "2026-01-16T20:48:17.299Z",
+    "updated_at": "2026-01-16T20:48:17.299Z"
+  },
+  {
+    "id": 4,
+    "name": "Growth Chart",
+    "description": "Infant growth monitoring chart",
+    "template_type": "GROWTH_CHART",
+    "fields": [
+      {
+        "field": "growth_records",
+        "label": "Growth Records",
+        "source": "growth_records",
+        "required": true
+      },
+      {
+        "field": "percentiles",
+        "label": "Growth Percentiles",
+        "source": "calculated_percentiles",
+        "required": true
+      },
+      {
+        "field": "alerts",
+        "label": "Growth Alerts",
+        "source": "growth_alerts",
+        "required": false
+      }
+    ],
+    "validation_rules": {
+      "required_fields": [
+        "growth_records",
+        "percentiles"
+      ]
+    },
+    "is_active": true,
+    "created_at": "2026-01-16T20:48:17.299Z",
+    "updated_at": "2026-01-16T20:48:17.299Z"
+  }
+]

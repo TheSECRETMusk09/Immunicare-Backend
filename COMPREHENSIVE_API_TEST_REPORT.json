@@ -1,0 +1,1393 @@
+{
+  "timestamp": "2026-03-08T02:58:04.869Z",
+  "baseUrl": "http://localhost:5000",
+  "summary": {
+    "total": 113,
+    "passed": 106,
+    "failed": 7,
+    "warnings": 5
+  },
+  "errors": [
+    {
+      "name": "Dashboard: Dashboard Activity",
+      "details": "invalid input value for enum appointment_status: \"completed\"",
+      "statusCode": 500
+    },
+    {
+      "name": "Appointments: Get Appointments",
+      "details": "Failed to fetch appointments",
+      "statusCode": 500
+    },
+    {
+      "name": "Analytics: Get Analytics Dashboard",
+      "details": "bind message supplies 3 parameters, but prepared statement \"\" requires 2",
+      "statusCode": 500
+    },
+    {
+      "name": "Messages: Get Conversations",
+      "details": "Failed to fetch conversations",
+      "statusCode": 500
+    },
+    {
+      "name": "Messages: Get Unread Messages",
+      "details": "Failed to fetch unread count",
+      "statusCode": 500
+    },
+    {
+      "name": "Admin Auth: Dashboard Activity",
+      "details": "invalid input value for enum appointment_status: \"completed\"",
+      "statusCode": 500
+    },
+    {
+      "name": "Admin Auth: Analytics Dashboard",
+      "details": "bind message supplies 3 parameters, but prepared statement \"\" requires 2",
+      "statusCode": 500
+    }
+  ],
+  "warnings": [
+    {
+      "name": "Dashboard Activity",
+      "details": "Internal server error"
+    },
+    {
+      "name": "Get Appointments",
+      "details": "Internal server error"
+    },
+    {
+      "name": "Get Analytics Dashboard",
+      "details": "Internal server error"
+    },
+    {
+      "name": "Get Conversations",
+      "details": "Internal server error"
+    },
+    {
+      "name": "Get Unread Messages",
+      "details": "Internal server error"
+    }
+  ],
+  "missing": [],
+  "performance": {
+    "/api/health": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/metrics": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/auth/test": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/api/auth/login": {
+      "status": 200,
+      "duration": 405,
+      "success": true
+    },
+    "/api/auth/forgot-password": {
+      "status": 200,
+      "duration": 3,
+      "success": true
+    },
+    "/api/dashboard/health": {
+      "status": 200,
+      "duration": 3,
+      "success": true
+    },
+    "/api/dashboard/stats": {
+      "status": 200,
+      "duration": 11,
+      "success": true
+    },
+    "/api/dashboard/appointments": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/dashboard/guardians": {
+      "status": 200,
+      "duration": 6,
+      "success": true
+    },
+    "/api/dashboard/infants": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/dashboard/activity": {
+      "status": 500,
+      "duration": 10,
+      "success": false
+    },
+    "/api/users": {
+      "status": 200,
+      "duration": 6,
+      "success": true
+    },
+    "/api/users/guardians": {
+      "status": 200,
+      "duration": 10,
+      "success": true
+    },
+    "/api/users/system-users": {
+      "status": 200,
+      "duration": 7,
+      "success": true
+    },
+    "/api/users/stats": {
+      "status": 200,
+      "duration": 34,
+      "success": true
+    },
+    "/api/users/roles": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/users/clinics": {
+      "status": 200,
+      "duration": 2,
+      "success": true
+    },
+    "/api/infants": {
+      "status": 200,
+      "duration": 7,
+      "success": true
+    },
+    "/api/infants/stats/overview": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/infants/upcoming-vaccinations": {
+      "status": 200,
+      "duration": 7,
+      "success": true
+    },
+    "/api/vaccinations": {
+      "status": 200,
+      "duration": 2,
+      "success": true
+    },
+    "/api/vaccinations/vaccines": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/vaccinations/schedules": {
+      "status": 200,
+      "duration": 3,
+      "success": true
+    },
+    "/api/vaccinations/batches": {
+      "status": 200,
+      "duration": 156,
+      "success": true
+    },
+    "/api/vaccinations/records": {
+      "status": 200,
+      "duration": 3,
+      "success": true
+    },
+    "/api/appointments": {
+      "status": 500,
+      "duration": 4,
+      "success": false
+    },
+    "/api/appointments/types": {
+      "status": 200,
+      "duration": 10,
+      "success": true
+    },
+    "/api/appointments/upcoming": {
+      "status": 200,
+      "duration": 6,
+      "success": true
+    },
+    "/api/appointments/stats/overview": {
+      "status": 200,
+      "duration": 39,
+      "success": true
+    },
+    "/api/inventory/items": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/inventory/vaccine-batches": {
+      "status": 200,
+      "duration": 117,
+      "success": true
+    },
+    "/api/inventory/low-stock": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/inventory/expiring": {
+      "status": 200,
+      "duration": 20,
+      "success": true
+    },
+    "/api/inventory/suppliers": {
+      "status": 200,
+      "duration": 6,
+      "success": true
+    },
+    "/api/inventory/stats": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/inventory/vaccine-inventory": {
+      "status": 200,
+      "duration": 72,
+      "success": true
+    },
+    "/api/inventory/vaccine-stock-alerts": {
+      "status": 200,
+      "duration": 8,
+      "success": true
+    },
+    "/api/notifications": {
+      "status": 200,
+      "duration": 39,
+      "success": true
+    },
+    "/api/notifications/alerts": {
+      "status": 200,
+      "duration": 10,
+      "success": true
+    },
+    "/api/notifications/stats": {
+      "status": 200,
+      "duration": 16,
+      "success": true
+    },
+    "/api/notifications/unread-count": {
+      "status": 200,
+      "duration": 3,
+      "success": true
+    },
+    "/api/notifications-enhanced": {
+      "status": 200,
+      "duration": 32,
+      "success": true
+    },
+    "/api/notifications-enhanced/stats": {
+      "status": 200,
+      "duration": 147,
+      "success": true
+    },
+    "/api/announcements": {
+      "status": 200,
+      "duration": 7,
+      "success": true
+    },
+    "/api/announcements/active/all": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/announcements/stats/overview": {
+      "status": 200,
+      "duration": 6,
+      "success": true
+    },
+    "/api/growth": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/documents": {
+      "status": 200,
+      "duration": 10,
+      "success": true
+    },
+    "/api/documents/stats": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/documents/analytics": {
+      "status": 200,
+      "duration": 3,
+      "success": true
+    },
+    "/api/reports": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/reports/templates": {
+      "status": 200,
+      "duration": 2,
+      "success": true
+    },
+    "/api/reports/stats": {
+      "status": 200,
+      "duration": 7,
+      "success": true
+    },
+    "/api/reports-enhanced": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/api/reports-enhanced/vaccination-coverage": {
+      "status": 200,
+      "duration": 12,
+      "success": true
+    },
+    "/api/reports-enhanced/inventory-status": {
+      "status": 200,
+      "duration": 245,
+      "success": true
+    },
+    "/api/analytics": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/api/analytics/dashboard": {
+      "status": 500,
+      "duration": 86,
+      "success": false
+    },
+    "/api/monitoring": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/api/settings": {
+      "status": 200,
+      "duration": 6,
+      "success": true
+    },
+    "/api/settings/summary": {
+      "status": 200,
+      "duration": 3,
+      "success": true
+    },
+    "/api/settings/facility": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/vaccination-management": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/api/vaccination-management/dashboard": {
+      "status": 200,
+      "duration": 7,
+      "success": true
+    },
+    "/api/vaccination-management/patients": {
+      "status": 200,
+      "duration": 7,
+      "success": true
+    },
+    "/api/vaccination-management/inventory": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/vaccination-management/appointments": {
+      "status": 200,
+      "duration": 14,
+      "success": true
+    },
+    "/api/vaccination-management/vaccinations": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/vaccine-supply": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/api/vaccine-supply/vaccines": {
+      "status": 200,
+      "duration": 3,
+      "success": true
+    },
+    "/api/vaccine-supply/facilities/barangays": {
+      "status": 200,
+      "duration": 6,
+      "success": true
+    },
+    "/api/admin/admins": {
+      "status": 200,
+      "duration": 6,
+      "success": true
+    },
+    "/api/admin/me": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/admin/stats": {
+      "status": 200,
+      "duration": 8,
+      "success": true
+    },
+    "/api/messages/conversations": {
+      "status": 500,
+      "duration": 5,
+      "success": false
+    },
+    "/api/messages/unread-count": {
+      "status": 500,
+      "duration": 4,
+      "success": false
+    },
+    "/api/sms": {
+      "status": 200,
+      "duration": 1,
+      "success": true
+    },
+    "/api/sms/config-status": {
+      "status": 200,
+      "duration": 2,
+      "success": true
+    },
+    "/api/infant-allergies": {
+      "status": 200,
+      "duration": 5,
+      "success": true
+    },
+    "/api/vaccine-waitlist": {
+      "status": 200,
+      "duration": 10,
+      "success": true
+    },
+    "/api/vaccination-reminders/upcoming": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    },
+    "/api/paper-templates": {
+      "status": 200,
+      "duration": 4,
+      "success": true
+    }
+  },
+  "tests": [
+    {
+      "name": "Health & System: Health Check",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:01.175Z"
+    },
+    {
+      "name": "Health & System: Root API",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:01.176Z"
+    },
+    {
+      "name": "Health & System: Prometheus Metrics",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:01.182Z"
+    },
+    {
+      "name": "Authentication: Auth Test",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:01.183Z"
+    },
+    {
+      "name": "Authentication: Login",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 405,
+      "timestamp": "2026-03-08T02:58:01.588Z"
+    },
+    {
+      "name": "Authentication: Forgot Password",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 3,
+      "timestamp": "2026-03-08T02:58:01.591Z"
+    },
+    {
+      "name": "Dashboard: Dashboard Health",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 3,
+      "timestamp": "2026-03-08T02:58:01.594Z"
+    },
+    {
+      "name": "Dashboard: Dashboard Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 11,
+      "timestamp": "2026-03-08T02:58:01.605Z"
+    },
+    {
+      "name": "Dashboard: Dashboard Appointments",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:01.610Z"
+    },
+    {
+      "name": "Dashboard: Dashboard Guardians",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:01.616Z"
+    },
+    {
+      "name": "Dashboard: Dashboard Infants",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:01.620Z"
+    },
+    {
+      "name": "Dashboard: Dashboard Activity",
+      "passed": false,
+      "details": "invalid input value for enum appointment_status: \"completed\"",
+      "statusCode": 500,
+      "duration": 10,
+      "timestamp": "2026-03-08T02:58:01.630Z"
+    },
+    {
+      "name": "Users: Get All Users",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:01.638Z"
+    },
+    {
+      "name": "Users: Get Guardians",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 10,
+      "timestamp": "2026-03-08T02:58:01.650Z"
+    },
+    {
+      "name": "Users: Get System Users",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 7,
+      "timestamp": "2026-03-08T02:58:01.659Z"
+    },
+    {
+      "name": "Users: Get User Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 34,
+      "timestamp": "2026-03-08T02:58:01.694Z"
+    },
+    {
+      "name": "Users: Get Roles",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:01.700Z"
+    },
+    {
+      "name": "Users: Get Clinics",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 2,
+      "timestamp": "2026-03-08T02:58:01.703Z"
+    },
+    {
+      "name": "Infants/Patients: Get All Infants",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 7,
+      "timestamp": "2026-03-08T02:58:01.711Z"
+    },
+    {
+      "name": "Infants/Patients: Get Infant Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:01.716Z"
+    },
+    {
+      "name": "Infants/Patients: Upcoming Vaccinations",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 7,
+      "timestamp": "2026-03-08T02:58:01.724Z"
+    },
+    {
+      "name": "Vaccinations: Get Vaccinations",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 2,
+      "timestamp": "2026-03-08T02:58:01.727Z"
+    },
+    {
+      "name": "Vaccinations: Get Vaccines",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:01.732Z"
+    },
+    {
+      "name": "Vaccinations: Get Schedules",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 3,
+      "timestamp": "2026-03-08T02:58:01.736Z"
+    },
+    {
+      "name": "Vaccinations: Get Batches",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 156,
+      "timestamp": "2026-03-08T02:58:01.901Z"
+    },
+    {
+      "name": "Vaccinations: Get Vaccination Records",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 3,
+      "timestamp": "2026-03-08T02:58:01.905Z"
+    },
+    {
+      "name": "Appointments: Get Appointments",
+      "passed": false,
+      "details": "Failed to fetch appointments",
+      "statusCode": 500,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:01.911Z"
+    },
+    {
+      "name": "Appointments: Get Appointment Types",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 10,
+      "timestamp": "2026-03-08T02:58:01.923Z"
+    },
+    {
+      "name": "Appointments: Get Upcoming Appointments",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:01.930Z"
+    },
+    {
+      "name": "Appointments: Get Appointment Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 39,
+      "timestamp": "2026-03-08T02:58:01.970Z"
+    },
+    {
+      "name": "Inventory: Get Inventory Items",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:01.976Z"
+    },
+    {
+      "name": "Inventory: Get Vaccine Batches",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 117,
+      "timestamp": "2026-03-08T02:58:02.098Z"
+    },
+    {
+      "name": "Inventory: Get Low Stock",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:02.103Z"
+    },
+    {
+      "name": "Inventory: Get Expiring Items",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 20,
+      "timestamp": "2026-03-08T02:58:02.125Z"
+    },
+    {
+      "name": "Inventory: Get Suppliers",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:02.132Z"
+    },
+    {
+      "name": "Inventory: Get Inventory Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:02.138Z"
+    },
+    {
+      "name": "Inventory: Get Vaccine Inventory",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 72,
+      "timestamp": "2026-03-08T02:58:02.211Z"
+    },
+    {
+      "name": "Inventory: Get Stock Alerts",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 8,
+      "timestamp": "2026-03-08T02:58:02.220Z"
+    },
+    {
+      "name": "Notifications: Get Notifications",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 39,
+      "timestamp": "2026-03-08T02:58:02.259Z"
+    },
+    {
+      "name": "Notifications: Get Alerts",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 10,
+      "timestamp": "2026-03-08T02:58:02.269Z"
+    },
+    {
+      "name": "Notifications: Get Notification Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 16,
+      "timestamp": "2026-03-08T02:58:02.285Z"
+    },
+    {
+      "name": "Notifications: Get Unread Count",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 3,
+      "timestamp": "2026-03-08T02:58:02.288Z"
+    },
+    {
+      "name": "Notifications: Get Enhanced Notifications",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 32,
+      "timestamp": "2026-03-08T02:58:02.321Z"
+    },
+    {
+      "name": "Notifications: Get Enhanced Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 147,
+      "timestamp": "2026-03-08T02:58:02.468Z"
+    },
+    {
+      "name": "Announcements: Get Announcements",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 7,
+      "timestamp": "2026-03-08T02:58:02.476Z"
+    },
+    {
+      "name": "Announcements: Get Active Announcements",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:02.481Z"
+    },
+    {
+      "name": "Announcements: Get Announcement Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:02.489Z"
+    },
+    {
+      "name": "Growth: Get Growth Records",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:02.494Z"
+    },
+    {
+      "name": "Documents: Get Documents",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 10,
+      "timestamp": "2026-03-08T02:58:02.506Z"
+    },
+    {
+      "name": "Documents: Get Document Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:02.512Z"
+    },
+    {
+      "name": "Documents: Get Document Analytics",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 3,
+      "timestamp": "2026-03-08T02:58:02.517Z"
+    },
+    {
+      "name": "Reports: Get Reports",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:02.522Z"
+    },
+    {
+      "name": "Reports: Get Report Templates",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 2,
+      "timestamp": "2026-03-08T02:58:02.526Z"
+    },
+    {
+      "name": "Reports: Get Report Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 7,
+      "timestamp": "2026-03-08T02:58:02.535Z"
+    },
+    {
+      "name": "Reports: Get Enhanced Reports",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:02.536Z"
+    },
+    {
+      "name": "Reports: Get Vaccination Coverage Report",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 12,
+      "timestamp": "2026-03-08T02:58:02.549Z"
+    },
+    {
+      "name": "Reports: Get Inventory Status Report",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 245,
+      "timestamp": "2026-03-08T02:58:02.807Z"
+    },
+    {
+      "name": "Analytics: Get Analytics",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:02.808Z"
+    },
+    {
+      "name": "Analytics: Get Analytics Dashboard",
+      "passed": false,
+      "details": "bind message supplies 3 parameters, but prepared statement \"\" requires 2",
+      "statusCode": 500,
+      "duration": 86,
+      "timestamp": "2026-03-08T02:58:02.894Z"
+    },
+    {
+      "name": "Monitoring: Get Monitoring",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:02.895Z"
+    },
+    {
+      "name": "Settings: Get Settings",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:02.901Z"
+    },
+    {
+      "name": "Settings: Get Settings Summary",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 3,
+      "timestamp": "2026-03-08T02:58:02.904Z"
+    },
+    {
+      "name": "Settings: Get Facility Settings",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:02.908Z"
+    },
+    {
+      "name": "Vaccine Management: Get Vaccination Management",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:02.909Z"
+    },
+    {
+      "name": "Vaccine Management: Get Vaccination Dashboard",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 7,
+      "timestamp": "2026-03-08T02:58:02.916Z"
+    },
+    {
+      "name": "Vaccine Management: Get Patients",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 7,
+      "timestamp": "2026-03-08T02:58:02.923Z"
+    },
+    {
+      "name": "Vaccine Management: Get Vaccination Inventory",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:02.928Z"
+    },
+    {
+      "name": "Vaccine Management: Get Vaccination Appointments",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 14,
+      "timestamp": "2026-03-08T02:58:02.942Z"
+    },
+    {
+      "name": "Vaccine Management: Get Vaccination Records",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:02.947Z"
+    },
+    {
+      "name": "Vaccine Supply: Get Vaccine Supply",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:02.948Z"
+    },
+    {
+      "name": "Vaccine Supply: Get Supply Vaccines",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 3,
+      "timestamp": "2026-03-08T02:58:02.951Z"
+    },
+    {
+      "name": "Vaccine Supply: Get Facilities",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:02.957Z"
+    },
+    {
+      "name": "Admin: Get Admins",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:02.963Z"
+    },
+    {
+      "name": "Admin: Get Current Admin",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:02.967Z"
+    },
+    {
+      "name": "Admin: Get Admin Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 8,
+      "timestamp": "2026-03-08T02:58:02.975Z"
+    },
+    {
+      "name": "Messages: Get Conversations",
+      "passed": false,
+      "details": "Failed to fetch conversations",
+      "statusCode": 500,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:02.981Z"
+    },
+    {
+      "name": "Messages: Get Unread Messages",
+      "passed": false,
+      "details": "Failed to fetch unread count",
+      "statusCode": 500,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:02.986Z"
+    },
+    {
+      "name": "SMS: Get SMS Info",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 1,
+      "timestamp": "2026-03-08T02:58:02.987Z"
+    },
+    {
+      "name": "SMS: Get SMS Config",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 2,
+      "timestamp": "2026-03-08T02:58:02.989Z"
+    },
+    {
+      "name": "Infant Allergies: Get Infant Allergies",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:02.995Z"
+    },
+    {
+      "name": "Vaccine Waitlist: Get Vaccine Waitlist",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 10,
+      "timestamp": "2026-03-08T02:58:03.006Z"
+    },
+    {
+      "name": "Vaccination Reminders: Get Upcoming Reminders",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:03.011Z"
+    },
+    {
+      "name": "Paper Templates: Get Paper Templates",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 4,
+      "timestamp": "2026-03-08T02:58:03.015Z"
+    },
+    {
+      "name": "Admin Login",
+      "passed": true,
+      "details": "Token received",
+      "statusCode": 200,
+      "duration": 1147,
+      "timestamp": "2026-03-08T02:58:04.162Z"
+    },
+    {
+      "name": "Token Verification",
+      "passed": true,
+      "details": "Token valid",
+      "statusCode": 200,
+      "duration": 0,
+      "timestamp": "2026-03-08T02:58:04.172Z"
+    },
+    {
+      "name": "Guardian Login",
+      "passed": true,
+      "details": "Token received",
+      "statusCode": 200,
+      "duration": 173,
+      "timestamp": "2026-03-08T02:58:04.346Z"
+    },
+    {
+      "name": "Admin Auth: Dashboard Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 7,
+      "timestamp": "2026-03-08T02:58:04.353Z"
+    },
+    {
+      "name": "Admin Auth: Dashboard Appointments",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:04.359Z"
+    },
+    {
+      "name": "Admin Auth: Dashboard Guardians",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:04.364Z"
+    },
+    {
+      "name": "Admin Auth: Dashboard Infants",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 5,
+      "timestamp": "2026-03-08T02:58:04.369Z"
+    },
+    {
+      "name": "Admin Auth: Dashboard Activity",
+      "passed": false,
+      "details": "invalid input value for enum appointment_status: \"completed\"",
+      "statusCode": 500,
+      "duration": 9,
+      "timestamp": "2026-03-08T02:58:04.380Z"
+    },
+    {
+      "name": "Admin Auth: Admin Profile",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 11,
+      "timestamp": "2026-03-08T02:58:04.391Z"
+    },
+    {
+      "name": "Admin Auth: Admin Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 9,
+      "timestamp": "2026-03-08T02:58:04.400Z"
+    },
+    {
+      "name": "Admin Auth: Analytics Dashboard",
+      "passed": false,
+      "details": "bind message supplies 3 parameters, but prepared statement \"\" requires 2",
+      "statusCode": 500,
+      "duration": 72,
+      "timestamp": "2026-03-08T02:58:04.473Z"
+    },
+    {
+      "name": "Admin Auth: Notifications",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 46,
+      "timestamp": "2026-03-08T02:58:04.520Z"
+    },
+    {
+      "name": "Admin Auth: Notification Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 22,
+      "timestamp": "2026-03-08T02:58:04.542Z"
+    },
+    {
+      "name": "Admin Auth: Settings",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 13,
+      "timestamp": "2026-03-08T02:58:04.555Z"
+    },
+    {
+      "name": "Admin Auth: Vaccination Management Dashboard",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 19,
+      "timestamp": "2026-03-08T02:58:04.575Z"
+    },
+    {
+      "name": "Guardian Dashboard: Guardian Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 25,
+      "timestamp": "2026-03-08T02:58:04.601Z"
+    },
+    {
+      "name": "Guardian Dashboard: Guardian Appointments",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 13,
+      "timestamp": "2026-03-08T02:58:04.614Z"
+    },
+    {
+      "name": "Guardian Dashboard: Guardian Children",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 9,
+      "timestamp": "2026-03-08T02:58:04.623Z"
+    },
+    {
+      "name": "Guardian Dashboard: Guardian Vaccinations",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 9,
+      "timestamp": "2026-03-08T02:58:04.633Z"
+    },
+    {
+      "name": "Guardian Dashboard: Guardian Notifications",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 9,
+      "timestamp": "2026-03-08T02:58:04.643Z"
+    },
+    {
+      "name": "Guardian Notifications: Get Guardian Notifications",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 14,
+      "timestamp": "2026-03-08T02:58:04.657Z"
+    },
+    {
+      "name": "Guardian Notifications: Get Guardian Unread Count",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 9,
+      "timestamp": "2026-03-08T02:58:04.666Z"
+    },
+    {
+      "name": "Guardian Notifications: Get Guardian Stats",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 10,
+      "timestamp": "2026-03-08T02:58:04.676Z"
+    },
+    {
+      "name": "Get All Infants",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 10,
+      "timestamp": "2026-03-08T02:58:04.687Z"
+    },
+    {
+      "name": "Get Infants by Guardian",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:04.693Z"
+    },
+    {
+      "name": "Get All Vaccinations",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 6,
+      "timestamp": "2026-03-08T02:58:04.699Z"
+    },
+    {
+      "name": "Get Vaccines List",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 8,
+      "timestamp": "2026-03-08T02:58:04.707Z"
+    },
+    {
+      "name": "Get Vaccination Schedules",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 8,
+      "timestamp": "2026-03-08T02:58:04.716Z"
+    },
+    {
+      "name": "Get Vaccination Records",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 8,
+      "timestamp": "2026-03-08T02:58:04.725Z"
+    },
+    {
+      "name": "Get Vaccination Batches",
+      "passed": true,
+      "details": "OK",
+      "statusCode": 200,
+      "duration": 130,
+      "timestamp": "2026-03-08T02:58:04.868Z"
+    }
+  ]
+}

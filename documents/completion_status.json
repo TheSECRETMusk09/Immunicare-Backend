@@ -1,0 +1,13 @@
+[
+  {
+    "id": 1,
+    "infant_id": 1,
+    "template_id": 1,
+    "completion_status": "COMPLETED",
+    "last_updated": "2026-01-16T20:48:17.300Z",
+    "completed_by": 1,
+    "required_fields_count": 3,
+    "completed_fields_count": 3,
+    "completion_percentage": 100
+  }
+]

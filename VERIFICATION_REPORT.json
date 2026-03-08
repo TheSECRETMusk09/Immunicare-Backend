@@ -1,0 +1,112 @@
+{
+  "database": {
+    "status": "PASS",
+    "checks": [
+      {
+        "name": "Connection",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: users",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: guardians",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: patients",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: immunization_records",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: patient_growth",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: vaccine_batches",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: vaccines",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: appointments",
+        "status": "PASS"
+      },
+      {
+        "name": "Table: notifications",
+        "status": "PASS"
+      },
+      {
+        "name": "Guardian Users",
+        "status": "PASS",
+        "count": 10
+      },
+      {
+        "name": "Patients",
+        "status": "PASS",
+        "count": 0
+      }
+    ]
+  },
+  "routing": {
+    "status": "PASS",
+    "checks": [
+      {
+        "file": "infants.js",
+        "status": "PASS"
+      },
+      {
+        "file": "dashboard.js",
+        "status": "PASS"
+      }
+    ]
+  },
+  "api": {
+    "status": "PASS",
+    "checks": [
+      {
+        "name": "Root",
+        "status": "PASS"
+      },
+      {
+        "name": "Health",
+        "status": "PASS"
+      },
+      {
+        "name": "Dashboard Health",
+        "status": "PASS"
+      }
+    ]
+  },
+  "users": {
+    "status": "PASS",
+    "checks": [
+      {
+        "username": "guardian_639171234567",
+        "status": "PASS"
+      },
+      {
+        "username": "guardian_639182345678",
+        "status": "PASS"
+      },
+      {
+        "username": "guardian_639193456789",
+        "status": "PASS"
+      },
+      {
+        "username": "guardian_639204567890",
+        "status": "PASS"
+      },
+      {
+        "username": "guardian_639226789012",
+        "status": "PASS"
+      }
+    ]
+  }
+}

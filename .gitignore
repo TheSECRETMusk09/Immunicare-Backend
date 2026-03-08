@@ -1,0 +1,71 @@
+# dependencies
+/node_modules
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# runtime / process
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# coverage / test artifacts
+/coverage
+.nyc_output
+/test-results
+/junit.xml
+
+# build artifacts
+/dist
+/build
+.cache/
+.eslintcache
+
+# database / local data dumps
+*.sql.gz
+*.dump
+*.bak
+
+# local runtime artifacts
+*.local
+uploads/
+
+# local auth/session artifacts
+token.txt
+cookies.txt
+
+# local server/test outputs
+server_output*.txt
+setup_output*.txt
+test_output*.txt
+api_test_output*.txt
+
+# certificates and private keys
+*.pem
+*.key
+*.crt
+
+# local database dumps/backups
+Immunicare_Dev.sql
+
+# environment & local secrets
+.env
+.env.*
+!.env.example
+!.env.sms.example
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# temp
+tmp/
+temp/
+*.tmp

@@ -1,0 +1,160 @@
+{
+  "passed": 12,
+  "failed": 10,
+  "tests": [
+    {
+      "name": "Generate Refresh Token",
+      "passed": true,
+      "message": "Refresh token generated successfully",
+      "details": "Token length: 276",
+      "timestamp": "2026-02-25T18:25:18.208Z"
+    },
+    {
+      "name": "Verify Refresh Token",
+      "passed": true,
+      "message": "Refresh token verified successfully",
+      "details": "Decoded ID: 999999",
+      "timestamp": "2026-02-25T18:25:18.210Z"
+    },
+    {
+      "name": "Store Refresh Token",
+      "passed": true,
+      "message": "Refresh token stored successfully",
+      "details": "Token ID: 841",
+      "timestamp": "2026-02-25T18:25:18.236Z"
+    },
+    {
+      "name": "Get Refresh Token",
+      "passed": false,
+      "message": "Failed to get refresh token",
+      "details": "Cannot read properties of null (reading 'user_id')",
+      "timestamp": "2026-02-25T18:25:18.242Z"
+    },
+    {
+      "name": "Revoke Refresh Token",
+      "passed": true,
+      "message": "Refresh token revoked successfully",
+      "details": null,
+      "timestamp": "2026-02-25T18:25:18.245Z"
+    },
+    {
+      "name": "Refresh Access Token",
+      "passed": false,
+      "message": "Failed to refresh access token",
+      "details": "User not found or inactive",
+      "timestamp": "2026-02-25T18:25:18.251Z"
+    },
+    {
+      "name": "pgcrypto Installation",
+      "passed": false,
+      "message": "pgcrypto extension check failed",
+      "details": "function check_pgcrypto_installation() does not exist",
+      "timestamp": "2026-02-25T18:25:18.252Z"
+    },
+    {
+      "name": "Generate Encryption Key",
+      "passed": true,
+      "message": "Encryption key generated successfully",
+      "details": "Key length: 64",
+      "timestamp": "2026-02-25T18:25:18.313Z"
+    },
+    {
+      "name": "Encrypt Data",
+      "passed": false,
+      "message": "Failed to encrypt data",
+      "details": "column reference \"key_name\" is ambiguous",
+      "timestamp": "2026-02-25T18:25:18.347Z"
+    },
+    {
+      "name": "Decrypt Data",
+      "passed": false,
+      "message": "Failed to decrypt data",
+      "details": "column reference \"key_name\" is ambiguous",
+      "timestamp": "2026-02-25T18:25:18.379Z"
+    },
+    {
+      "name": "Get Encryption Statistics",
+      "passed": false,
+      "message": "Failed to get encryption statistics",
+      "details": "function get_encryption_statistics() does not exist",
+      "timestamp": "2026-02-25T18:25:18.418Z"
+    },
+    {
+      "name": "Verify Encryption Integrity",
+      "passed": false,
+      "message": "Failed to verify encryption integrity",
+      "details": "function verify_encryption_integrity() does not exist",
+      "timestamp": "2026-02-25T18:25:18.474Z"
+    },
+    {
+      "name": "Backup Encryption Keys",
+      "passed": false,
+      "message": "Failed to backup encryption keys",
+      "details": "function backup_encryption_keys() does not exist",
+      "timestamp": "2026-02-25T18:25:18.522Z"
+    },
+    {
+      "name": "SSL Certificate Files",
+      "passed": false,
+      "message": "SSL certificate files exist",
+      "details": "Key: ✗, Cert: ✗",
+      "timestamp": "2026-02-25T18:25:18.523Z"
+    },
+    {
+      "name": "SSL Environment Variables",
+      "passed": true,
+      "message": "SSL environment variables are configured",
+      "details": "ENABLE_HTTPS: false, HTTPS_PORT: 5443",
+      "timestamp": "2026-02-25T18:25:18.523Z"
+    },
+    {
+      "name": "Server HTTPS Support",
+      "passed": true,
+      "message": "Server.js has HTTPS support",
+      "details": "HTTPS module: true, HTTPS server: true, SSL options: true",
+      "timestamp": "2026-02-25T18:25:18.523Z"
+    },
+    {
+      "name": "Logout Endpoint Revokes Refresh Tokens",
+      "passed": true,
+      "message": "Logout endpoint revokes refresh tokens",
+      "details": "Revoke function: true, Clear cookie: true",
+      "timestamp": "2026-02-25T18:25:18.524Z"
+    },
+    {
+      "name": "Refresh Endpoint Uses Refresh Token Service",
+      "passed": true,
+      "message": "Refresh endpoint uses refresh token service",
+      "details": "Refresh function: true, Service call: true",
+      "timestamp": "2026-02-25T18:25:18.524Z"
+    },
+    {
+      "name": "Token Rotation",
+      "passed": true,
+      "message": "Token rotation is implemented",
+      "details": "Both refresh and access tokens are rotated",
+      "timestamp": "2026-02-25T18:25:18.524Z"
+    },
+    {
+      "name": "Secure Cookie Settings",
+      "passed": false,
+      "message": "Secure cookie settings are configured",
+      "details": "Secure: false, HttpOnly: false, SameSite: false",
+      "timestamp": "2026-02-25T18:25:18.524Z"
+    },
+    {
+      "name": "TLS Version Enforcement",
+      "passed": true,
+      "message": "TLS 1.2+ is enforced",
+      "details": "Minimum TLS version: 1.2",
+      "timestamp": "2026-02-25T18:25:18.524Z"
+    },
+    {
+      "name": "Strong Cipher Suites",
+      "passed": true,
+      "message": "Strong cipher suites are configured",
+      "details": "ECDHE cipher suites are used",
+      "timestamp": "2026-02-25T18:25:18.524Z"
+    }
+  ]
+}

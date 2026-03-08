@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "user_id": 1,
+    "infant_id": 1,
+    "template_id": 1,
+    "download_type": "PDF",
+    "download_date": "2026-01-16T20:48:17.300Z",
+    "file_path": "documents/vaccine_schedule_1.pdf",
+    "download_status": "COMPLETED",
+    "download_reason": "USER_REQUEST",
+    "file_size": 102400
+  }
+]

@@ -1,0 +1,133 @@
+{
+  "passed": 8,
+  "failed": 1,
+  "tests": [
+    {
+      "name": "Health Check",
+      "method": "GET",
+      "path": "/api/health",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "passed": true,
+      "response": {
+        "status": "OK",
+        "timestamp": "2026-02-11T04:25:29.620Z",
+        "service": "Immunicare Backend API",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "name": "Login (Guardian)",
+      "method": "POST",
+      "path": "/api/auth/login",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "passed": true,
+      "response": {
+        "message": "Login successful",
+        "user": {
+          "id": 8,
+          "username": "guardian_639182345678",
+          "email": "juan.delacruz@email.com",
+          "role": "guardian",
+          "clinic": "Guardian Portal",
+          "clinic_id": 4,
+          "last_login": "2026-02-11T04:24:39.737Z",
+          "force_password_change": false,
+          "guardian_id": 2
+        },
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6OCwidXNlcm5hbWUiOiJndWFyZGlhbl82MzkxODIzNDU2NzgiLCJyb2xlIjoiZ3VhcmRpYW4iLCJjbGluaWNfaWQiOjQsInBlcm1pc3Npb25zIjpbXSwiZ3VhcmRpYW5faWQiOjIsImlhdCI6MTc3MDc4MzkyOSwiZXhwIjoxNzcwNzg0ODI5LCJhdWQiOiJpbW11bmljYXJlLXVzZXJzIiwiaXNzIjoiaW1tdW5pY2FyZS1zeXN0ZW0ifQ.Ai_EpbmUE6dtkNke2JiQrwMLiv9uvhsf0URisw_983I",
+        "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6OCwidXNlcm5hbWUiOiJndWFyZGlhbl82MzkxODIzNDU2NzgiLCJyb2xlIjoiZ3VhcmRpYW4iLCJjbGluaWNfaWQiOjQsInBlcm1pc3Npb25zIjpbXSwiZ3VhcmRpYW5faWQiOjIsImlhdCI6MTc3MDc4MzkyOSwiZXhwIjoxNzcwNzg0ODI5LCJhdWQiOiJpbW11bmljYXJlLXVzZXJzIiwiaXNzIjoiaW1tdW5pY2FyZS1zeXN0ZW0ifQ.Ai_EpbmUE6dtkNke2JiQrwMLiv9uvhsf0URisw_983I",
+        "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6OCwicm9sZSI6Imd1YXJkaWFuIiwidHlwZSI6InJlZnJlc2giLCJpYXQiOjE3NzA3ODM5MjksImV4cCI6MTc3MTM4ODcyOX0.eKL8P8rEOllUe1aNsUYe_DR6JrBh6RLzl3BduBt5fG8",
+        "expiresIn": "15m"
+      }
+    },
+    {
+      "name": "Login (Invalid Credentials)",
+      "method": "POST",
+      "path": "/api/auth/login",
+      "expectedStatus": 401,
+      "actualStatus": 401,
+      "passed": true,
+      "response": {
+        "error": "Invalid credentials",
+        "code": "INVALID_CREDENTIALS"
+      }
+    },
+    {
+      "name": "Dashboard Stats",
+      "method": "GET",
+      "path": "/api/dashboard/stats",
+      "expectedStatus": 401,
+      "actualStatus": 401,
+      "passed": true,
+      "response": {
+        "error": "Access token required",
+        "code": "MISSING_TOKEN"
+      }
+    },
+    {
+      "name": "Dashboard Health",
+      "method": "GET",
+      "path": "/api/dashboard/health",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "passed": true,
+      "response": {
+        "status": "healthy",
+        "timestamp": "2026-02-11T04:25:29.756Z",
+        "database": "connected",
+        "uptime": 7143.9976366
+      }
+    },
+    {
+      "name": "Get All Infants",
+      "method": "GET",
+      "path": "/api/infants",
+      "expectedStatus": 401,
+      "actualStatus": 401,
+      "passed": true,
+      "response": {
+        "error": "Access token required",
+        "code": "MISSING_TOKEN"
+      }
+    },
+    {
+      "name": "Infants Stats",
+      "method": "GET",
+      "path": "/api/infants/stats/overview",
+      "expectedStatus": 401,
+      "actualStatus": 401,
+      "passed": true,
+      "response": {
+        "error": "Access token required",
+        "code": "MISSING_TOKEN"
+      }
+    },
+    {
+      "name": "Get Infants by Guardian",
+      "method": "GET",
+      "path": "/api/infants/guardian/1",
+      "expectedStatus": 401,
+      "actualStatus": 401,
+      "passed": true,
+      "response": {
+        "error": "Access token required",
+        "code": "MISSING_TOKEN"
+      }
+    },
+    {
+      "name": "Guardian Dashboard Stats",
+      "method": "GET",
+      "path": "/api/dashboard/guardian/1/stats",
+      "expectedStatus": 401,
+      "actualStatus": 404,
+      "passed": false,
+      "response": {
+        "error": "Route not found",
+        "path": "/api/dashboard/guardian/1/stats",
+        "method": "GET"
+      }
+    }
+  ]
+}

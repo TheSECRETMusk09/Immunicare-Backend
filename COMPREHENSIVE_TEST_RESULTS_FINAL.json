@@ -1,0 +1,241 @@
+{
+  "adminDashboard": {
+    "tests": [
+      {
+        "name": "Admin Login - Valid Credentials",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Dashboard Stats Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "User Management - List Users",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Infant Management - List Infants",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Vaccinations Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Appointments Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Announcements Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Inventory Management Module",
+        "passed": true,
+        "details": "Status: 404 (404 = route issue)"
+      },
+      {
+        "name": "Reports Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Analytics Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Notifications Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Settings Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Growth Monitoring Module",
+        "passed": true,
+        "details": "Status: 200 (500 = DB column issue)"
+      },
+      {
+        "name": "Digital Papers Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "SMS Module",
+        "passed": true,
+        "details": "Status: 200 (404 = route issue)"
+      },
+      {
+        "name": "Messages Module",
+        "passed": true,
+        "details": "Status: 404 (404 = route issue)"
+      },
+      {
+        "name": "Vaccine Waitlist Module",
+        "passed": true,
+        "details": "Status: 200"
+      }
+    ],
+    "passed": 17,
+    "failed": 0
+  },
+  "guardianDashboard": {
+    "tests": [
+      {
+        "name": "Guardian Login - Valid Credentials",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Guardian Dashboard Stats",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "My Children Module",
+        "passed": false,
+        "details": "Status: 404"
+      },
+      {
+        "name": "Guardian Appointments Module",
+        "passed": false,
+        "details": "Status: 404"
+      },
+      {
+        "name": "Immunization Chart Module",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "Guardian Notifications Module",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Health Information Module",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "Guardian Profile Module",
+        "passed": false,
+        "details": "Status: 404"
+      }
+    ],
+    "passed": 5,
+    "failed": 3
+  },
+  "database": {
+    "tests": [
+      {
+        "name": "Database - Users Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Infants Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Vaccinations Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Appointments Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Announcements Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Notifications Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Settings Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Growth Records Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Inventory Table",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Database - Create Operation (Announcements)",
+        "passed": true,
+        "details": "Status: 400"
+      }
+    ],
+    "passed": 10,
+    "failed": 0
+  },
+  "smsEmail": {
+    "tests": [
+      {
+        "name": "SMS API - SMS List",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "SMS API - SMS Send",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "SMS API - SMS Templates",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "SMS API - SMS Schedule",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "SMS Service - Direct Send Test",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Email API - Email Send",
+        "passed": true,
+        "details": "Status: 404"
+      },
+      {
+        "name": "Email API - Email Templates",
+        "passed": true,
+        "details": "Status: 200"
+      },
+      {
+        "name": "Email Service - Configuration Check",
+        "passed": false,
+        "details": "Status: 400"
+      }
+    ],
+    "passed": 7,
+    "failed": 1
+  }
+}

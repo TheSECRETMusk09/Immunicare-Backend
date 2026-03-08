@@ -1,0 +1,68 @@
+{
+  "users": [
+    {
+      "id": 10,
+      "username": "admin",
+      "is_active": true
+    },
+    {
+      "id": 17,
+      "username": "administrator",
+      "is_active": true
+    }
+  ],
+  "roles": [
+    {
+      "id": 6,
+      "name": "super_admin"
+    },
+    {
+      "id": 7,
+      "name": "admin"
+    },
+    {
+      "id": 8,
+      "name": "clinic_manager"
+    }
+  ],
+  "clinics": [
+    {
+      "id": 8,
+      "name": "Main Health Center"
+    },
+    {
+      "id": 9,
+      "name": "Main Health Center"
+    },
+    {
+      "id": 10,
+      "name": "Main Health Center"
+    },
+    {
+      "id": 11,
+      "name": "Main Health Center"
+    },
+    {
+      "id": 12,
+      "name": "Main Health Center"
+    },
+    {
+      "id": 13,
+      "name": "Main Health Center"
+    },
+    {
+      "id": 14,
+      "name": "Main Health Center"
+    },
+    {
+      "id": 15,
+      "name": "Main Health Center"
+    }
+  ],
+  "guardiansCount": {
+    "count": "2"
+  },
+  "sessionsCount": {
+    "count": "0"
+  }
+}

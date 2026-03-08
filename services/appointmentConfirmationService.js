@@ -1,0 +1,447 @@
+/**
+ * Appointment Confirmation Service
+ * Sends appointment confirmation SMS and handles responses
+ */
+
+const pool = require('../db');
+const smsService = require('./smsService');
+const logger = require('../config/logger');
+
+class AppointmentConfirmationService {
+  /**
+   * Send appointment confirmation SMS when appointment is created
+   */
+  async sendConfirmationSMS(appointmentId) {
+    try {
+      logger.info(`Sending confirmation SMS for appointment ${appointmentId}`);
+
+      // Get appointment details with infant and guardian info
+      const query = `
+                SELECT
+                    a.id as appointment_id,
+                    a.scheduled_date,
+                    a.type,
+                    a.status,
+                    a.infant_id,
+                    p.first_name as infant_first_name,
+                    p.last_name as infant_last_name,
+                    COALESCE(p.control_number, 'N/A') as control_number,
+                    g.id as guardian_id,
+                    g.name as guardian_name,
+                    g.phone as guardian_phone,
+                    c.name as clinic_name,
+                    c.address as clinic_address
+                FROM appointments a
+                JOIN patients p ON a.infant_id = p.id
+                JOIN guardians g ON p.guardian_id = g.id
+                JOIN clinics c ON a.clinic_id = c.id
+                WHERE a.id = $1
+            `;
+
+      const result = await pool.query(query, [appointmentId]);
+
+      if (result.rows.length === 0) {
+        logger.warn(`Appointment ${appointmentId} not found`);
+        return { success: false, message: 'Appointment not found' };
+      }
+
+      const appointment = result.rows[0];
+
+      // Format the date and time
+      const scheduledDate = new Date(appointment.scheduled_date);
+      const dateStr = scheduledDate.toLocaleDateString('en-PH', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+      const timeStr = scheduledDate.toLocaleTimeString('en-PH', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      // Format phone number
+      const formattedPhone = smsService.formatPhoneNumber(appointment.guardian_phone);
+
+      if (!formattedPhone) {
+        logger.warn('Invalid guardian phone number');
+        return { success: false, message: 'Invalid phone number' };
+      }
+
+      // Create confirmation message
+      const message =
+        `Immunicare: Hi ${appointment.guardian_name}, ` +
+        'Your child\'s vaccination appointment is confirmed.\n\n' +
+        `Child: ${appointment.infant_first_name} ${appointment.infant_last_name} (ID: ${appointment.control_number})\n` +
+        `Date: ${dateStr}\n` +
+        `Time: ${timeStr}\n` +
+        `Clinic: ${appointment.clinic_name}\n\n` +
+        'Reply CONFIRM to confirm or CANCEL to cancel this appointment.';
+
+      // Send SMS
+      const smsResult = await smsService.sendSMS(
+        formattedPhone,
+        message,
+        'appointment_confirmation',
+        { appointmentId: appointmentId },
+      );
+
+      // Log the confirmation
+      await pool.query(
+        `
+                INSERT INTO appointment_confirmations (
+                    appointment_id, guardian_id, message, status, created_at
+                ) VALUES ($1, $2, $3, 'sent', CURRENT_TIMESTAMP)
+            `,
+        [appointmentId, appointment.guardian_id, message],
+      );
+
+      // Update appointment with confirmation sent status
+      await pool.query(
+        `
+                UPDATE appointments
+                SET sms_confirmation_sent = true,
+                    sms_confirmation_sent_at = CURRENT_TIMESTAMP,
+                    confirmation_status = 'pending'
+                WHERE id = $1
+            `,
+        [appointmentId],
+      );
+
+      logger.info(`Confirmation SMS sent to ${formattedPhone} for appointment ${appointmentId}`);
+
+      return { success: true, message: 'Confirmation SMS sent', data: smsResult };
+    } catch (error) {
+      logger.error('Error sending confirmation SMS:', error);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Send appointment reminder SMS
+   */
+  async sendReminderSMS(appointmentId, reminderType = '24h') {
+    try {
+      logger.info(`Sending reminder SMS for appointment ${appointmentId}`);
+
+      const query = `
+                SELECT
+                    a.id as appointment_id,
+                    a.scheduled_date,
+                    a.type,
+                    p.first_name as infant_first_name,
+                    p.last_name as infant_last_name,
+                    g.name as guardian_name,
+                    g.phone as guardian_phone,
+                    c.name as clinic_name
+                FROM appointments a
+                JOIN patients p ON a.infant_id = p.id
+                JOIN guardians g ON p.guardian_id = g.id
+                JOIN clinics c ON a.clinic_id = c.id
+                WHERE a.id = $1
+            `;
+
+      const result = await pool.query(query, [appointmentId]);
+
+      if (result.rows.length === 0) {
+        return { success: false, message: 'Appointment not found' };
+      }
+
+      const appointment = result.rows[0];
+      const formattedPhone = smsService.formatPhoneNumber(appointment.guardian_phone);
+
+      if (!formattedPhone) {
+        return { success: false, message: 'Invalid phone number' };
+      }
+
+      const scheduledDate = new Date(appointment.scheduled_date);
+      const dateStr = scheduledDate.toLocaleDateString('en-PH', {
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric',
+      });
+      const timeStr = scheduledDate.toLocaleTimeString('en-PH', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      let message;
+      if (reminderType === '24h') {
+        message = `Reminder: ${appointment.infant_first_name}'s vaccination appointment is tomorrow (${dateStr}) at ${timeStr} at ${appointment.clinic_name}. Reply CONFIRM to confirm attendance.`;
+      } else if (reminderType === '2h') {
+        message = `Reminder: ${appointment.infant_first_name}'s appointment is in 2 hours at ${timeStr}. Please arrive 15 minutes early.`;
+      } else {
+        message = `Appointment reminder for ${appointment.infant_first_name} on ${dateStr} at ${timeStr} at ${appointment.clinic_name}.`;
+      }
+
+      const smsResult = await smsService.sendSMS(formattedPhone, message, 'appointment_reminder', {
+        appointmentId: appointmentId,
+        reminderType: reminderType,
+      });
+
+      return { success: true, message: 'Reminder SMS sent', data: smsResult };
+    } catch (error) {
+      logger.error('Error sending reminder SMS:', error);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Handle incoming SMS response (CONFIRM/CANCEL)
+   */
+  async handleIncomingSMS(phoneNumber, message) {
+    try {
+      logger.info(`Processing incoming SMS from ${phoneNumber}: ${message}`);
+
+      // Normalize message
+      const normalizedMessage = message.trim().toUpperCase();
+
+      // Log incoming SMS
+      const incomingQuery = `
+                INSERT INTO incoming_sms (phone_number, message, keyword, created_at)
+                VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+                RETURNING id
+            `;
+
+      const keyword = normalizedMessage.split(' ')[0];
+      const incomingResult = await pool.query(incomingQuery, [phoneNumber, message, keyword]);
+      const incomingId = incomingResult.rows[0].id;
+
+      // Find related appointment
+      let appointmentQuery;
+      let appointmentParams;
+
+      if (keyword === 'CONFIRM') {
+        // Find most recent pending appointment for this phone number
+        appointmentQuery = `
+                    SELECT a.id, a.infant_id
+                    FROM appointments a
+                    JOIN guardians g ON a.guardian_id = g.id
+                    WHERE g.phone = $1
+                    AND a.confirmation_status = 'pending'
+                    AND a.scheduled_date > CURRENT_TIMESTAMP
+                    ORDER BY a.scheduled_date ASC
+                    LIMIT 1
+                `;
+        appointmentParams = [phoneNumber];
+      } else if (keyword === 'CANCEL') {
+        appointmentQuery = `
+                    SELECT a.id, a.infant_id
+                    FROM appointments a
+                    JOIN guardians g ON a.guardian_id = g.id
+                    WHERE g.phone = $1
+                    AND a.status = 'scheduled'
+                    AND a.scheduled_date > CURRENT_TIMESTAMP
+                    ORDER BY a.scheduled_date ASC
+                    LIMIT 1
+                `;
+        appointmentParams = [phoneNumber];
+      } else {
+        // Unknown keyword - send help message
+        await this.sendHelpMessage(phoneNumber);
+
+        await pool.query(
+          'UPDATE incoming_sms SET processed = true, processed_at = CURRENT_TIMESTAMP WHERE id = $1',
+          [incomingId],
+        );
+        return { success: false, message: 'Unknown keyword' };
+      }
+
+      const appointmentResult = await pool.query(appointmentQuery, appointmentParams);
+
+      if (appointmentResult.rows.length === 0) {
+        await this.sendNoAppointmentMessage(phoneNumber);
+
+        await pool.query(
+          'UPDATE incoming_sms SET processed = true, processed_at = CURRENT_TIMESTAMP WHERE id = $1',
+          [incomingId],
+        );
+        return { success: false, message: 'No pending appointment found' };
+      }
+
+      const appointment = appointmentResult.rows[0];
+
+      // Process the response
+      if (keyword === 'CONFIRM') {
+        await this.confirmAppointment(appointment.id);
+      } else if (keyword === 'CANCEL') {
+        await this.cancelAppointment(appointment.id);
+      }
+
+      // Mark incoming SMS as processed
+      await pool.query(
+        `
+                UPDATE incoming_sms
+                SET processed = true,
+                    processed_at = CURRENT_TIMESTAMP,
+                    related_appointment_id = $2
+                WHERE id = $1
+            `,
+        [incomingId, appointment.id],
+      );
+
+      return {
+        success: true,
+        message: `Appointment ${keyword === 'CONFIRM' ? 'confirmed' : 'cancelled'}`,
+        appointmentId: appointment.id,
+      };
+    } catch (error) {
+      logger.error('Error handling incoming SMS:', error);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Confirm an appointment
+   */
+  async confirmAppointment(appointmentId) {
+    await pool.query(
+      `
+            UPDATE appointments
+            SET confirmation_status = 'confirmed',
+                confirmed_at = CURRENT_TIMESTAMP,
+                confirmation_method = 'sms',
+                status = 'attended'
+            WHERE id = $1
+        `,
+      [appointmentId],
+    );
+
+    logger.info(`Appointment ${appointmentId} confirmed via SMS`);
+
+    // Send confirmation reply
+    const query = `
+            SELECT p.first_name, g.phone
+            FROM appointments a
+            JOIN patients p ON a.infant_id = p.id
+            JOIN guardians g ON p.guardian_id = g.id
+            WHERE a.id = $1
+        `;
+
+    const result = await pool.query(query, [appointmentId]);
+
+    if (result.rows.length > 0) {
+      const infant = result.rows[0];
+      const formattedPhone = smsService.formatPhoneNumber(infant.phone);
+
+      if (formattedPhone) {
+        const message = `Immunicare: Thank you! ${infant.first_name}'s appointment has been confirmed. We look forward to seeing you!`;
+        await smsService.sendSMS(formattedPhone, message, 'confirmation_reply');
+      }
+    }
+  }
+
+  /**
+   * Cancel an appointment
+   */
+  async cancelAppointment(appointmentId) {
+    await pool.query(
+      `
+            UPDATE appointments
+            SET confirmation_status = 'cancelled',
+                confirmed_at = CURRENT_TIMESTAMP,
+                confirmation_method = 'sms',
+                status = 'cancelled'
+            WHERE id = $1
+        `,
+      [appointmentId],
+    );
+
+    logger.info(`Appointment ${appointmentId} cancelled via SMS`);
+
+    // Send cancellation reply
+    const query = `
+            SELECT p.first_name, g.phone, a.scheduled_date
+            FROM appointments a
+            JOIN patients p ON a.infant_id = p.id
+            JOIN guardians g ON p.guardian_id = g.id
+            WHERE a.id = $1
+        `;
+
+    const result = await pool.query(query, [appointmentId]);
+
+    if (result.rows.length > 0) {
+      const data = result.rows[0];
+      const formattedPhone = smsService.formatPhoneNumber(data.phone);
+
+      if (formattedPhone) {
+        const dateStr = new Date(data.scheduled_date).toLocaleDateString('en-PH');
+        const message = `Immunicare: Your appointment for ${data.first_name} on ${dateStr} has been cancelled. Please reschedule through the portal or contact us.`;
+        await smsService.sendSMS(formattedPhone, message, 'cancellation_reply');
+      }
+    }
+  }
+
+  /**
+   * Send help message for unknown keywords
+   */
+  async sendHelpMessage(phoneNumber) {
+    const message = 'Immunicare: Unknown command. Reply CONFIRM to confirm appointment or CANCEL to cancel appointment. For assistance, call the health center.';
+
+    const formattedPhone = smsService.formatPhoneNumber(phoneNumber);
+    if (formattedPhone) {
+      await smsService.sendSMS(formattedPhone, message, 'help_reply');
+    }
+  }
+
+  /**
+   * Send message when no pending appointment found
+   */
+  async sendNoAppointmentMessage(phoneNumber) {
+    const message = 'Immunicare: We couldn\'t find any pending appointments associated with your number. If you need assistance, please contact the health center.';
+
+    const formattedPhone = smsService.formatPhoneNumber(phoneNumber);
+    if (formattedPhone) {
+      await smsService.sendSMS(formattedPhone, message, 'no_appointment_reply');
+    }
+  }
+
+  /**
+   * Process scheduled reminders
+   */
+  async processScheduledReminders() {
+    try {
+      logger.info('Processing scheduled appointment reminders...');
+
+      // Get appointments needing 24h reminder
+      const reminder24hQuery = `
+                SELECT id FROM appointments
+                WHERE status = 'scheduled'
+                AND confirmation_status = 'confirmed'
+                AND scheduled_date BETWEEN CURRENT_TIMESTAMP + INTERVAL '23 hours'
+                AND CURRENT_TIMESTAMP + INTERVAL '25 hours'
+                AND sms_confirmation_sent = true
+            `;
+
+      const reminder24hResult = await pool.query(reminder24hQuery);
+
+      for (const row of reminder24hResult.rows) {
+        await this.sendReminderSMS(row.id, '24h');
+      }
+
+      // Get appointments needing 2h reminder
+      const reminder2hQuery = `
+                SELECT id FROM appointments
+                WHERE status = 'scheduled'
+                AND confirmation_status = 'confirmed'
+                AND scheduled_date BETWEEN CURRENT_TIMESTAMP + INTERVAL '1 hour'
+                AND CURRENT_TIMESTAMP + INTERVAL '3 hours'
+            `;
+
+      const reminder2hResult = await pool.query(reminder2hQuery);
+
+      for (const row of reminder2hResult.rows) {
+        await this.sendReminderSMS(row.id, '2h');
+      }
+
+      logger.info(
+        `Processed ${reminder24hResult.rows.length} 24h reminders and ${reminder2hResult.rows.length} 2h reminders`,
+      );
+    } catch (error) {
+      logger.error('Error processing scheduled reminders:', error);
+    }
+  }
+}
+
+// Export singleton instance
+module.exports = new AppointmentConfirmationService();

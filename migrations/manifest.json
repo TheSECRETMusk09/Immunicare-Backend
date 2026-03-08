@@ -1,0 +1,135 @@
+[
+  {
+    "id": "deprecated_add_appointment_location",
+    "file": "deprecated_add_appointment_location.js",
+    "type": "js",
+    "deprecated": true,
+    "description": "Deprecated: add appointments.location"
+  },
+  {
+    "id": "add_guardian_force_password_change",
+    "file": "add_guardian_force_password_change.js",
+    "type": "js",
+    "deprecated": false,
+    "description": "Add users.force_password_change and password_changed_at"
+  },
+  {
+    "id": "deprecated_alter_appointment_location",
+    "file": "deprecated_alter_appointment_location.sql",
+    "type": "sql",
+    "deprecated": true,
+    "description": "Deprecated SQL for appointments.location"
+  },
+  {
+    "id": "add_guardian_password_columns",
+    "file": "add_guardian_password_columns.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Add guardian password-related columns"
+  },
+  {
+    "id": "deprecated_add_patient_photo_and_appointment_location",
+    "file": "deprecated_add_patient_photo_and_appointment_location.sql",
+    "type": "sql",
+    "deprecated": true,
+    "description": "Deprecated patient photo + appointment location migration"
+  },
+  {
+    "id": "add_notification_target_role_and_guardian_link",
+    "file": "add_notification_target_role_and_guardian_link.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Add notifications.target_role and notifications.guardian_id"
+  },
+  {
+    "id": "add_user_force_password_change_columns",
+    "file": "add_user_force_password_change_columns.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Add users.force_password_change + users.password_changed_at"
+  },
+  {
+    "id": "deprecated_create_audit_logs_table",
+    "file": "deprecated_create_audit_logs_table.sql",
+    "type": "sql",
+    "deprecated": true,
+    "description": "Deprecated audit logs migration"
+  },
+  {
+    "id": "create_infant_allergies_and_vaccine_waitlist",
+    "file": "create_infant_allergies_and_vaccine_waitlist.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Create infant allergies and vaccine waitlist-related tables"
+  },
+  {
+    "id": "deprecated_create_message_conversations",
+    "file": "deprecated_create_message_conversations.sql",
+    "type": "sql",
+    "deprecated": true,
+    "description": "Deprecated message conversations migration"
+  },
+  {
+    "id": "deprecated_create_security_events_tables",
+    "file": "deprecated_create_security_events_tables.sql",
+    "type": "sql",
+    "deprecated": true,
+    "description": "Deprecated security events migration"
+  },
+  {
+    "id": "create_access_logs_table",
+    "file": "create_access_logs_table.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Create access_logs table"
+  },
+  {
+    "id": "create_vaccination_reminder_system",
+    "file": "create_vaccination_reminder_system.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Create vaccination reminder tables and templates"
+  },
+  {
+    "id": "create_vaccine_supply_chain_tables",
+    "file": "create_vaccine_supply_chain_tables.sql",
+    "type": "sql",
+    "deprecated": true,
+    "description": "Deprecated legacy CHO supply-chain migration (schema incompatible with current core table model)"
+  },
+  {
+    "id": "add_guardian_password_visibility_columns",
+    "file": "add_guardian_password_visibility_columns.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Add encrypted guardian password visibility payload and metadata columns"
+  },
+  {
+    "id": "create_notification_logs_and_user_sessions_expires_at",
+    "file": "20260307_create_notification_logs_and_user_sessions_expires_at.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Create notification_logs table and add/backfill user_sessions.expires_at for cleanup jobs"
+  },
+  {
+    "id": "b0_pre_migration_patient_control_number_playbook",
+    "file": "20260305_b0_pre_migration_patient_control_number_playbook.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "B0 pre-migration discovery/merge playbook for duplicate infant identity and canonical control-number staging"
+  },
+  {
+    "id": "b1_patient_control_number_integrity",
+    "file": "20260305_b1_patient_control_number_integrity.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "B1 integrity migration for INF-YYYY-###### generation, uniqueness, active-row non-null, and immutability"
+  },
+  {
+    "id": "reports_schema_alignment_20260308",
+    "file": "20260308_reports_schema_alignment.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Align reports table and report enums/indexes with Admin Dashboard Reports module contract"
+  }
+]

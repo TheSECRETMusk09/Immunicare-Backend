@@ -1,0 +1,353 @@
+{
+  "summary": {
+    "totalTests": 63,
+    "passed": 42,
+    "failed": 21,
+    "successRate": "66.7"
+  },
+  "adminDashboard": {
+    "tests": [
+      {
+        "name": "Admin Login",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Dashboard Stats",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "User Management",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Infant Management",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Vaccinations",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Appointments",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Announcements",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Inventory",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Reports",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Analytics",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Notifications",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Settings",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Growth Monitoring",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Digital Papers",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "SMS",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Messages",
+        "passed": false,
+        "details": "HTTP 404"
+      }
+    ],
+    "passed": 15,
+    "failed": 1
+  },
+  "guardianDashboard": {
+    "tests": [
+      {
+        "name": "Guardian Login",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Guardian Stats",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Guardian Appointments",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Guardian Children",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Guardian Vaccinations",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Guardian Health Charts",
+        "passed": false,
+        "details": "HTTP 500"
+      },
+      {
+        "name": "Guardian Notifications",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Guardian Notifications Route",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Infants by Guardian",
+        "passed": true,
+        "details": "HTTP 200"
+      }
+    ],
+    "passed": 8,
+    "failed": 1
+  },
+  "mobileResponsiveness": {
+    "tests": [
+      {
+        "name": "CSS: guardian-mobile.css",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "CSS: guardian-dashboard-mobile.css",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "CSS: guardian-mobile-fixes.css",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "CSS: guardian-desktop.css",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "CSS: guardian-buttons.css",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Component: MobileBottomNav.jsx",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Component: GuardianLayout.jsx",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Page: GuardianDashboard.jsx",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Page: MyChildren.jsx",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Page: GuardianAppointmentsPage.jsx",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Page: GuardianNotificationsPage.jsx",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Page: Settings.jsx",
+        "passed": false,
+        "details": "Not Found"
+      }
+    ],
+    "passed": 0,
+    "failed": 12
+  },
+  "database": {
+    "tests": [
+      {
+        "name": "Table: users",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: guardians",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: infants",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: vaccinations",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: appointments",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: announcements",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: notifications",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: settings",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: growth",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: inventory",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: reports",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: analytics",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: documents",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Table: messages",
+        "passed": true,
+        "details": "HTTP 404"
+      },
+      {
+        "name": "Table: paper_templates",
+        "passed": true,
+        "details": "HTTP 404"
+      },
+      {
+        "name": "Schema: schema.sql",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Schema: sms_schema.sql",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Schema: settings_schema.sql",
+        "passed": false,
+        "details": "Not Found"
+      }
+    ],
+    "passed": 15,
+    "failed": 3
+  },
+  "smsEmailAPI": {
+    "tests": [
+      {
+        "name": "SMS: /api/sms",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "SMS: /api/sms/incoming",
+        "passed": true,
+        "details": "HTTP 404"
+      },
+      {
+        "name": "SMS: /api/sms/templates",
+        "passed": true,
+        "details": "HTTP 404"
+      },
+      {
+        "name": "SMS: /api/sms/logs",
+        "passed": true,
+        "details": "HTTP 200"
+      },
+      {
+        "name": "Service: smsService.js",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Service: emailService.js",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Service: smsTemplates.js",
+        "passed": false,
+        "details": "Not Found"
+      },
+      {
+        "name": "Service: appointmentConfirmationService.js",
+        "passed": false,
+        "details": "Not Found"
+      }
+    ],
+    "passed": 4,
+    "failed": 4
+  }
+}

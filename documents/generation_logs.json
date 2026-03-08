@@ -1,0 +1,13 @@
+[
+  {
+    "id": 1,
+    "template_id": 1,
+    "generation_type": "MANUAL",
+    "generation_date": "2026-01-16T20:48:17.300Z",
+    "status": "SUCCESS",
+    "generated_files": [
+      "vaccine_schedule_1.pdf"
+    ],
+    "processing_time": 1500
+  }
+]
