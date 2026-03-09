@@ -8,6 +8,7 @@ const {
 } = require('../middleware/rbac');
 const appointmentConfirmationService = require('../services/appointmentConfirmationService');
 const appointmentSchedulingService = require('../services/appointmentSchedulingService');
+const appointmentControlNumberService = require('../services/appointmentControlNumberService');
 const {
   notifyAdminsOfGuardianAppointmentEvent,
 } = require('../services/appointmentEventNotificationService');
@@ -399,6 +400,15 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
     const finalStatus = guardianFlow ? 'pending' : normalized.status || 'scheduled';
     const finalClinicId = clinicIdCheck.value || infant.clinic_id || req.user.clinic_id || null;
 
+    // Generate appointment control number
+    let appointmentControlNumber = null;
+    try {
+      appointmentControlNumber = await appointmentControlNumberService.generateControlNumber();
+    } catch (cnError) {
+      console.error('Failed to generate control number:', cnError.message);
+      // Continue without control number - non-critical
+    }
+
     if (guardianFlow) {
       const availability = await appointmentSchedulingService.checkBookingAvailability({
         scheduledDate: normalizedScheduledDate,
@@ -426,9 +436,10 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
           status,
           created_by,
           clinic_id,
-          location
+          location,
+          control_number
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *
       `,
       [
@@ -441,6 +452,7 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
         req.user.id,
         finalClinicId,
         normalizedLocation,
+        appointmentControlNumber,
       ],
     );
 

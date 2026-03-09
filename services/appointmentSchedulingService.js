@@ -274,7 +274,8 @@ const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clini
       const selected = stock.vaccines.find((row) => parseInt(row.vaccine_id, 10) === parseInt(vaccineId, 10));
       const selectedStock = parseInt(selected?.available_stock || 0, 10);
 
-      if (selectedStock <= 0) {
+      // Block booking when stock drops to critical level (10 or below)
+      if (selectedStock <= 10) {
         return {
           available: false,
           code: 'SELECTED_VACCINE_OUT_OF_STOCK',
@@ -386,7 +387,7 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
       const dateKey = toDateKey(cursor);
       const weekend = isWeekend(cursor);
       const holiday = getHolidayInfo(cursor);
-      const noVaccineAvailability = stock.totalAvailableStock <= 0;
+      const noVaccineAvailability = stock.totalAvailableStock <= 10;
 
       let blockedReason = null;
       if (weekend) {

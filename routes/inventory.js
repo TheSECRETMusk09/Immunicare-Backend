@@ -566,7 +566,7 @@ router.get('/low-stock', async (req, res) => {
       SELECT vb.*, v.name as vaccine_name, v.code as vaccine_code
       FROM vaccine_batches vb
       JOIN vaccines v ON vb.vaccine_id = v.id
-      WHERE vb.qty_current < 10 AND vb.status = 'active'
+      WHERE vb.qty_current <= 10 AND vb.status = 'active'
       ORDER BY vb.qty_current ASC
     `);
     res.json(result.rows);
@@ -795,7 +795,7 @@ router.get('/stats', async (req, res) => {
       pool.query('SELECT COUNT(*) as count FROM vaccine_batches WHERE status = \'active\''),
       // Low stock batches
       pool.query(
-        'SELECT COUNT(*) as count FROM vaccine_batches WHERE qty_current < 10 AND status = \'active\'',
+        'SELECT COUNT(*) as count FROM vaccine_batches WHERE qty_current <= 10 AND status = \'active\'',
       ),
       // Expiring batches (30 days)
       pool.query(`

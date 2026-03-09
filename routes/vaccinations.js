@@ -249,6 +249,50 @@ router.get('/batches', requirePermission('inventory:view'), async (_req, res) =>
   }
 });
 
+// Get valid vaccine inventory for dropdown (not expired, stock > 0, active)
+router.get('/inventory/valid', requirePermission('vaccination:create'), async (req, res) => {
+  try {
+    const { vaccine_id } = req.query;
+
+    let query = `
+      SELECT
+        vb.id as batch_id,
+        vb.lot_no,
+        vb.vaccine_id,
+        vb.qty_current,
+        vb.expiry_date,
+        v.name as vaccine_name,
+        v.code as vaccine_code,
+        c.name as clinic_name
+      FROM vaccine_batches vb
+        JOIN vaccines v ON v.id = vb.vaccine_id
+        LEFT JOIN clinics c ON c.id = vb.clinic_id
+      WHERE vb.is_active = true
+        AND vb.status = 'active'
+        AND vb.qty_current > 0
+        AND vb.expiry_date > CURRENT_DATE
+    `;
+
+    const params = [];
+    let paramCount = 1;
+
+    // Filter by specific vaccine if provided
+    if (vaccine_id) {
+      query += ` AND vb.vaccine_id = ${paramCount}`;
+      params.push(parseInt(vaccine_id, 10));
+    }
+
+    query += ` ORDER BY vb.expiry_date ASC`;
+
+    const result = await pool.query(query, params);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching valid vaccine inventory:', error);
+    res.status(500).json({ error: 'Failed to fetch valid vaccine inventory' });
+  }
+});
+
 // Get vaccination schedules by infant
 router.get('/schedules/infant/:infantId', async (req, res) => {
   try {
