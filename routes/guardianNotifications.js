@@ -76,11 +76,17 @@ router.get('/:id', authenticateGuardian, async (req, res) => {
     const guardianId = req.guardian.id;
     const notificationId = parseInt(req.params.id, 10);
 
-    const notifications = await guardianNotificationService.getGuardianNotifications(guardianId, {
-      limit: 1,
-    });
+    if (Number.isNaN(notificationId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid notification ID',
+      });
+    }
 
-    const notification = notifications.find((n) => n.id === notificationId);
+    const notification = await guardianNotificationService.getNotificationById(
+      notificationId,
+      guardianId,
+    );
 
     if (!notification) {
       return res.status(404).json({
@@ -114,6 +120,13 @@ router.patch('/:id/read', authenticateGuardian, async (req, res) => {
 
     const notification = await guardianNotificationService.markAsRead(notificationId, guardianId);
 
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found or not authorized',
+      });
+    }
+
     res.json({
       success: true,
       data: notification,
@@ -132,6 +145,39 @@ router.patch('/:id/read', authenticateGuardian, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to mark notification as read',
+    });
+  }
+});
+
+/**
+ * @route PATCH /api/guardian/notifications/:id/unread
+ * @description Mark a notification as unread
+ * @access Guardian only (must own the notification)
+ */
+router.patch('/:id/unread', authenticateGuardian, async (req, res) => {
+  try {
+    const guardianId = req.guardian.id;
+    const notificationId = parseInt(req.params.id, 10);
+
+    const notification = await guardianNotificationService.markAsUnread(notificationId, guardianId);
+
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found or not authorized',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: notification,
+      message: 'Notification marked as unread',
+    });
+  } catch (error) {
+    logger.error('Error marking notification as unread:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark notification as unread',
     });
   }
 });
@@ -170,14 +216,16 @@ router.delete('/:id', authenticateGuardian, async (req, res) => {
     const guardianId = req.guardian.id;
     const notificationId = parseInt(req.params.id, 10);
 
-    // First verify the notification belongs to this guardian
-    const pool = require('../db');
-    const result = await pool.query(
-      'DELETE FROM notifications WHERE id = $1 AND guardian_id = $2 RETURNING id',
-      [notificationId, guardianId],
-    );
+    if (Number.isNaN(notificationId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid notification ID',
+      });
+    }
 
-    if (result.rows.length === 0) {
+    const deleted = await guardianNotificationService.deleteNotification(notificationId, guardianId);
+
+    if (!deleted) {
       return res.status(404).json({
         success: false,
         message: 'Notification not found or not authorized',

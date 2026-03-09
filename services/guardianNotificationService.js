@@ -69,6 +69,28 @@ class GuardianNotificationService {
   }
 
   /**
+   * Get a single notification by ID for a guardian
+   */
+  async getNotificationById(notificationId, guardianId) {
+    try {
+      const result = await pool.query(
+        `SELECT *
+         FROM notifications
+         WHERE id = $1
+           AND guardian_id = $2
+           AND target_role != 'admin'
+         LIMIT 1`,
+        [notificationId, guardianId],
+      );
+
+      return result.rows[0] || null;
+    } catch (error) {
+      logger.error('Error fetching guardian notification by ID:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Mark a notification as read
    */
   async markAsRead(notificationId, guardianId) {
@@ -114,7 +136,9 @@ class GuardianNotificationService {
       const result = await pool.query(
         `UPDATE notifications
          SET is_read = TRUE, read_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE guardian_id = $1 AND (is_read = FALSE OR is_read IS NULL)
+         WHERE guardian_id = $1
+           AND target_role != 'admin'
+           AND (is_read = FALSE OR is_read IS NULL)
          RETURNING id`,
         [guardianId],
       );
