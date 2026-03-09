@@ -454,9 +454,38 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
     } = req.body;
 
     if (!first_name || !last_name || !dob || !sex) {
+      const missingFields = [];
+      if (!first_name) {
+        missingFields.push('first_name');
+      }
+      if (!last_name) {
+        missingFields.push('last_name');
+      }
+      if (!dob) {
+        missingFields.push('dob');
+      }
+      if (!sex) {
+        missingFields.push('sex');
+      }
+
+      const fieldErrors = {};
+      if (!first_name) {
+        fieldErrors.first_name = 'First name is required';
+      }
+      if (!last_name) {
+        fieldErrors.last_name = 'Last name is required';
+      }
+      if (!dob) {
+        fieldErrors.dob = 'Date of birth is required';
+      }
+      if (!sex) {
+        fieldErrors.sex = 'Sex is required';
+      }
+
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: first_name, last_name, dob, and sex are required',
+        error: `Missing required fields: ${missingFields.join(', ')} are required`,
+        fields: fieldErrors,
       });
     }
 
