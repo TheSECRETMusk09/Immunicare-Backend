@@ -30,6 +30,175 @@ const guardianOwnsInfant = async (guardianId, infantId) => {
   return result.rows.length > 0;
 };
 
+const normalizeInfantValidationErrors = (errors = {}) => {
+  return Object.entries(errors).reduce((acc, [field, message]) => {
+    if (typeof message === 'string' && message.trim()) {
+      acc[field] = message;
+    } else if (Array.isArray(message) && message.length > 0) {
+      acc[field] = String(message[0]);
+    } else {
+      acc[field] = 'Invalid value';
+    }
+    return acc;
+  }, {});
+};
+
+const respondInfantValidationError = (res, errors = {}, message = 'Please correct the highlighted child registration fields.') => {
+  const fields = normalizeInfantValidationErrors(errors);
+  return res.status(400).json({
+    success: false,
+    error: message,
+    code: 'VALIDATION_ERROR',
+    fields,
+  });
+};
+
+const validateInfantPayload = (payload = {}) => {
+  const errors = {};
+
+  const firstName = String(payload.first_name || '').trim();
+  const lastName = String(payload.last_name || '').trim();
+  const dobRaw = payload.dob;
+  const sexRaw = String(payload.sex || '').trim().toUpperCase();
+
+  if (!firstName) {
+    errors.first_name = 'First name is required';
+  } else if (firstName.length < 2) {
+    errors.first_name = 'First name must be at least 2 characters long';
+  }
+
+  if (!lastName) {
+    errors.last_name = 'Last name is required';
+  } else if (lastName.length < 2) {
+    errors.last_name = 'Last name must be at least 2 characters long';
+  }
+
+  if (!dobRaw) {
+    errors.dob = 'Date of birth is required';
+  }
+
+  let dob = null;
+  if (dobRaw) {
+    const parsedDob = new Date(dobRaw);
+    if (Number.isNaN(parsedDob.getTime())) {
+      errors.dob = 'Date of birth must be a valid date';
+    } else {
+      const today = new Date();
+      const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const dobMidnight = new Date(
+        parsedDob.getFullYear(),
+        parsedDob.getMonth(),
+        parsedDob.getDate(),
+      );
+
+      if (dobMidnight > todayMidnight) {
+        errors.dob = 'Date of birth cannot be in the future';
+      }
+
+      const oldestAllowed = new Date(todayMidnight);
+      oldestAllowed.setFullYear(oldestAllowed.getFullYear() - 20);
+      if (dobMidnight < oldestAllowed) {
+        errors.dob = 'Date of birth seems invalid';
+      }
+
+      dob = dobMidnight.toISOString().split('T')[0];
+    }
+  }
+
+  if (!sexRaw) {
+    errors.sex = 'Sex is required';
+  }
+
+  let normalizedSex = null;
+  if (sexRaw) {
+    if (sexRaw === 'M' || sexRaw === 'MALE') {
+      normalizedSex = 'male';
+    } else if (sexRaw === 'F' || sexRaw === 'FEMALE') {
+      normalizedSex = 'female';
+    } else if (sexRaw === 'OTHER') {
+      normalizedSex = 'other';
+    } else {
+      errors.sex = 'Sex must be Male, Female, or Other';
+    }
+  }
+
+  const toNullableString = (value) => {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const normalized = String(value).trim();
+    return normalized.length > 0 ? normalized : null;
+  };
+
+  const normalizeNullableNumber = (value, fieldName, { min = null, max = null } = {}) => {
+    if (value === undefined || value === null || value === '') {
+      return null;
+    }
+
+    const parsed = Number(value);
+    if (Number.isNaN(parsed)) {
+      errors[fieldName] = `${fieldName.replace(/_/g, ' ')} must be a valid number`;
+      return null;
+    }
+
+    if (min !== null && parsed < min) {
+      errors[fieldName] = `${fieldName.replace(/_/g, ' ')} must be at least ${min}`;
+      return null;
+    }
+
+    if (max !== null && parsed > max) {
+      errors[fieldName] = `${fieldName.replace(/_/g, ' ')} must be at most ${max}`;
+      return null;
+    }
+
+    return parsed;
+  };
+
+  const normalized = {
+    first_name: firstName,
+    last_name: lastName,
+    middle_name: toNullableString(payload.middle_name),
+    dob,
+    sex: normalizedSex,
+    national_id: toNullableString(payload.national_id),
+    address: toNullableString(payload.address),
+    contact: toNullableString(payload.contact),
+    photo_url: toNullableString(payload.photo_url),
+    mother_name: toNullableString(payload.mother_name),
+    father_name: toNullableString(payload.father_name),
+    birth_weight: normalizeNullableNumber(payload.birth_weight, 'birth_weight', { min: 0.3, max: 10 }),
+    birth_height: normalizeNullableNumber(payload.birth_height, 'birth_height', { min: 10, max: 100 }),
+    place_of_birth: toNullableString(payload.place_of_birth),
+    barangay: toNullableString(payload.barangay),
+    health_center: toNullableString(payload.health_center),
+    family_no: toNullableString(payload.family_no),
+    time_of_delivery: toNullableString(payload.time_of_delivery),
+    type_of_delivery: toNullableString(payload.type_of_delivery),
+    doctor_midwife_nurse: toNullableString(payload.doctor_midwife_nurse),
+    nbs_done: payload.nbs_done === undefined ? null : Boolean(payload.nbs_done),
+    nbs_date: toNullableString(payload.nbs_date),
+    cellphone_number: toNullableString(payload.cellphone_number),
+    facility_id: payload.facility_id === undefined || payload.facility_id === null || payload.facility_id === ''
+      ? null
+      : parseInt(payload.facility_id, 10),
+  };
+
+  if (
+    payload.facility_id !== undefined &&
+    payload.facility_id !== null &&
+    payload.facility_id !== '' &&
+    (Number.isNaN(normalized.facility_id) || normalized.facility_id <= 0)
+  ) {
+    errors.facility_id = 'facility_id must be a valid positive integer';
+  }
+
+  return {
+    isValid: Object.keys(errors).length === 0,
+    errors,
+    data: normalized,
+  };
+};
+
 // Get infants by guardian
 router.get('/guardian/:guardianId', async (req, res) => {
   try {
@@ -431,6 +600,326 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
   } catch (error) {
     console.error('Error creating infant:', error);
     res.status(500).json({ success: false, error: 'Failed to create infant' });
+  }
+});
+
+// Create infant (GUARDIAN own)
+router.post('/guardian', requirePermission('patient:create:own'), async (req, res) => {
+  try {
+    if (!isGuardian(req)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. Guardian role required.',
+      });
+    }
+
+    const guardianId = parseInt(req.user.guardian_id, 10);
+    if (Number.isNaN(guardianId) || guardianId <= 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Guardian account mapping is missing. Please sign in again.',
+      });
+    }
+
+    const payload = req.body || {};
+
+    if (
+      Object.prototype.hasOwnProperty.call(payload, 'guardian_id') &&
+      payload.guardian_id !== undefined &&
+      payload.guardian_id !== null &&
+      payload.guardian_id !== '' &&
+      parseInt(payload.guardian_id, 10) !== guardianId
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: 'You can only register children under your own guardian account.',
+      });
+    }
+
+    const validationResult = validateInfantPayload(payload);
+    if (!validationResult.isValid) {
+      return respondInfantValidationError(res, validationResult.errors);
+    }
+
+    const infantData = validationResult.data;
+
+    let resolved;
+
+    try {
+      resolved = await resolveOrCreateInfantPatient(
+        {
+          guardianId,
+          firstName: infantData.first_name,
+          lastName: infantData.last_name,
+          dob: infantData.dob,
+          sex: infantData.sex,
+          initialValues: {
+            middle_name: infantData.middle_name,
+            national_id: infantData.national_id,
+            address: infantData.address,
+            contact: infantData.contact,
+            photo_url: infantData.photo_url,
+            mother_name: infantData.mother_name,
+            father_name: infantData.father_name,
+            birth_weight: infantData.birth_weight,
+            birth_height: infantData.birth_height,
+            place_of_birth: infantData.place_of_birth,
+            barangay: infantData.barangay,
+            health_center: infantData.health_center,
+            family_no: infantData.family_no,
+            time_of_delivery: infantData.time_of_delivery,
+            type_of_delivery: infantData.type_of_delivery,
+            doctor_midwife_nurse: infantData.doctor_midwife_nurse,
+            nbs_done: infantData.nbs_done,
+            nbs_date: infantData.nbs_date,
+            cellphone_number: infantData.cellphone_number,
+            facility_id: infantData.facility_id,
+          },
+        },
+        pool,
+      );
+    } catch (resolveError) {
+      if (resolveError.code === 'AMBIGUOUS_INFANT_MATCH') {
+        return res.status(409).json({
+          success: false,
+          error:
+            'Multiple child records already match this name and date of birth. Please contact support to resolve duplicates.',
+          matches: resolveError.matches || [],
+        });
+      }
+
+      throw resolveError;
+    }
+
+    let result;
+
+    if (resolved.existed) {
+      const existingResult = await pool.query(
+        `
+          SELECT *
+          FROM patients
+          WHERE id = $1
+          LIMIT 1
+        `,
+        [resolved.id],
+      );
+
+      if (existingResult.rows.length === 0) {
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to resolve child record',
+        });
+      }
+
+      const existingInfant = existingResult.rows[0];
+      if (parseInt(existingInfant.guardian_id, 10) !== guardianId) {
+        return res.status(403).json({
+          success: false,
+          error: 'Matched child record is not owned by this guardian account.',
+        });
+      }
+
+      result = existingResult;
+    } else {
+      result = await pool.query(
+        `
+          SELECT *
+          FROM patients
+          WHERE id = $1
+          LIMIT 1
+        `,
+        [resolved.id],
+      );
+    }
+
+    if (result.rows.length === 0) {
+      return res.status(500).json({ success: false, error: 'Failed to resolve child record' });
+    }
+
+    socketService.broadcast('infant_created', result.rows[0]);
+
+    return res.status(resolved.existed ? 200 : 201).json({
+      success: true,
+      data: result.rows[0],
+      control_number: resolved.control_number,
+      message: resolved.existed
+        ? 'An existing child record under your account was reused.'
+        : 'Child registered successfully.',
+    });
+  } catch (error) {
+    console.error('Error creating infant for guardian:', error);
+    return res.status(500).json({ success: false, error: 'Failed to register child' });
+  }
+});
+
+// Update infant (GUARDIAN own)
+router.put('/:id(\d+)/guardian', requirePermission('patient:update:own'), async (req, res) => {
+  try {
+    if (!isGuardian(req)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. Guardian role required.',
+      });
+    }
+
+    const guardianId = parseInt(req.user.guardian_id, 10);
+    if (Number.isNaN(guardianId) || guardianId <= 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Guardian account mapping is missing. Please sign in again.',
+      });
+    }
+
+    const infantId = parseInt(req.params.id, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ success: false, error: 'Invalid child ID' });
+    }
+
+    const isOwner = await guardianOwnsInfant(guardianId, infantId);
+    if (!isOwner) {
+      return res.status(403).json({
+        success: false,
+        error: 'You can only update your own child records.',
+      });
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'control_number')) {
+      return respondInfantValidationError(res, {
+        control_number: 'Child control number cannot be edited',
+      });
+    }
+
+    const validationResult = validateInfantPayload(req.body || {});
+    if (!validationResult.isValid) {
+      return respondInfantValidationError(
+        res,
+        validationResult.errors,
+        'Please correct the highlighted child update fields.',
+      );
+    }
+
+    const infantData = validationResult.data;
+
+    const result = await pool.query(
+      `
+        UPDATE patients
+        SET first_name = $1,
+            last_name = $2,
+            middle_name = $3,
+            dob = $4,
+            sex = $5,
+            national_id = $6,
+            address = $7,
+            contact = $8,
+            guardian_id = $9,
+            mother_name = $10,
+            father_name = $11,
+            birth_weight = $12,
+            birth_height = $13,
+            place_of_birth = $14,
+            barangay = $15,
+            health_center = $16,
+            family_no = $17,
+            time_of_delivery = $18,
+            type_of_delivery = $19,
+            doctor_midwife_nurse = $20,
+            nbs_done = $21,
+            nbs_date = $22,
+            cellphone_number = $23,
+            facility_id = $24,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $25
+          AND guardian_id = $26
+          AND is_active = true
+        RETURNING *
+      `,
+      [
+        infantData.first_name,
+        infantData.last_name,
+        infantData.middle_name,
+        infantData.dob,
+        infantData.sex,
+        infantData.national_id,
+        infantData.address,
+        infantData.contact,
+        guardianId,
+        infantData.mother_name,
+        infantData.father_name,
+        infantData.birth_weight,
+        infantData.birth_height,
+        infantData.place_of_birth,
+        infantData.barangay,
+        infantData.health_center,
+        infantData.family_no,
+        infantData.time_of_delivery,
+        infantData.type_of_delivery,
+        infantData.doctor_midwife_nurse,
+        infantData.nbs_done,
+        infantData.nbs_date,
+        infantData.cellphone_number,
+        infantData.facility_id,
+        infantId,
+        guardianId,
+      ],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Child not found' });
+    }
+
+    socketService.broadcast('infant_updated', result.rows[0]);
+    return res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    console.error('Error updating infant for guardian:', error);
+    return res.status(500).json({ success: false, error: 'Failed to update child record' });
+  }
+});
+
+// Delete infant (GUARDIAN own soft delete)
+router.delete('/:id(\d+)/guardian', requirePermission('patient:delete:own'), async (req, res) => {
+  try {
+    if (!isGuardian(req)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. Guardian role required.',
+      });
+    }
+
+    const guardianId = parseInt(req.user.guardian_id, 10);
+    if (Number.isNaN(guardianId) || guardianId <= 0) {
+      return res.status(403).json({
+        success: false,
+        error: 'Guardian account mapping is missing. Please sign in again.',
+      });
+    }
+
+    const infantId = parseInt(req.params.id, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ success: false, error: 'Invalid child ID' });
+    }
+
+    const result = await pool.query(
+      `
+        UPDATE patients
+        SET is_active = false,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+          AND guardian_id = $2
+          AND is_active = true
+        RETURNING id
+      `,
+      [infantId, guardianId],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Child not found' });
+    }
+
+    socketService.broadcast('infant_deleted', { id: infantId });
+    return res.json({ success: true, message: 'Child removed successfully' });
+  } catch (error) {
+    console.error('Error deleting infant for guardian:', error);
+    return res.status(500).json({ success: false, error: 'Failed to remove child record' });
   }
 });
 

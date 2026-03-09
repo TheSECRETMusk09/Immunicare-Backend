@@ -52,6 +52,104 @@ const canAccessUserScope = (req, userId) => {
   return parseInt(req.user.id, 10) === parseInt(userId, 10);
 };
 
+const GUARDIAN_PHONE_REGEX = /^(\+63|0)\d{10}$/;
+
+const normalizeGuardianProfileValidationErrors = (errors = {}) => {
+  return Object.entries(errors).reduce((acc, [field, message]) => {
+    if (typeof message === 'string' && message.trim()) {
+      acc[field] = message;
+    } else if (Array.isArray(message) && message.length > 0) {
+      acc[field] = String(message[0]);
+    } else {
+      acc[field] = 'Invalid value';
+    }
+    return acc;
+  }, {});
+};
+
+const validateGuardianProfilePayload = (payload = {}) => {
+  const errors = {};
+
+  const sanitizeText = (value) => {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const normalized = String(value).trim();
+    return normalized.length > 0 ? normalized : null;
+  };
+
+  const normalized = {
+    name: sanitizeText(payload.name),
+    phone: sanitizeText(payload.phone),
+    email: sanitizeText(payload.email),
+    address: sanitizeText(payload.address),
+    emergency_contact: sanitizeText(payload.emergency_contact),
+    emergency_phone: sanitizeText(payload.emergency_phone),
+  };
+
+  if (!normalized.name) {
+    errors.name = 'Name is required';
+  } else if (normalized.name.length < 2) {
+    errors.name = 'Name must be at least 2 characters long';
+  } else if (normalized.name.length > 120) {
+    errors.name = 'Name must not exceed 120 characters';
+  }
+
+  if (normalized.email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalized.email)) {
+      errors.email = 'Please enter a valid email address';
+    }
+  }
+
+  if (normalized.phone) {
+    const compactPhone = normalized.phone.replace(/[\s\-()]/g, '');
+    if (!GUARDIAN_PHONE_REGEX.test(compactPhone)) {
+      errors.phone = 'Phone must use 09XXXXXXXXX or +63XXXXXXXXXX format';
+    } else {
+      normalized.phone = compactPhone;
+    }
+  }
+
+  if (normalized.emergency_phone) {
+    const compactEmergencyPhone = normalized.emergency_phone.replace(/[\s\-()]/g, '');
+    if (!GUARDIAN_PHONE_REGEX.test(compactEmergencyPhone)) {
+      errors.emergency_phone =
+        'Emergency phone must use 09XXXXXXXXX or +63XXXXXXXXXX format';
+    } else {
+      normalized.emergency_phone = compactEmergencyPhone;
+    }
+  }
+
+  if (normalized.address && normalized.address.length > 500) {
+    errors.address = 'Address must not exceed 500 characters';
+  }
+
+  if (normalized.emergency_contact && normalized.emergency_contact.length > 120) {
+    errors.emergency_contact = 'Emergency contact name must not exceed 120 characters';
+  }
+
+  return {
+    isValid: Object.keys(errors).length === 0,
+    errors,
+    data: normalized,
+  };
+};
+
+const respondGuardianProfileValidationError = (
+  res,
+  errors = {},
+  message = 'Please correct the highlighted profile fields.',
+) => {
+  const fields = normalizeGuardianProfileValidationErrors(errors);
+  return res.status(400).json({
+    success: false,
+    error: message,
+    code: 'VALIDATION_ERROR',
+    fields,
+  });
+};
+
 const getRequestSourceContext = (req) => {
   const fromQuery = req.query?.source;
   const fromBody = req.body?.sourceContext;
@@ -1505,6 +1603,101 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
   } catch (error) {
     console.error('Error updating guardian profile:', error);
     res.status(500).json({
+      error: 'Profile update failed',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+});
+
+// Update guardian self profile (GUARDIAN own)
+router.put('/guardian/self/profile/:guardianId', async (req, res) => {
+  try {
+    const { guardianId } = req.params;
+    const requestedGuardianId = parseInt(guardianId, 10);
+
+    if (Number.isNaN(requestedGuardianId) || requestedGuardianId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'guardianId must be a valid positive integer',
+        code: 'INVALID_GUARDIAN_ID',
+        field: 'guardianId',
+      });
+    }
+
+    const role = getCanonicalRole(req);
+    if (role !== CANONICAL_ROLES.GUARDIAN) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. Guardian role required for self profile updates.',
+      });
+    }
+
+    if (!canAccessGuardianScope(req, requestedGuardianId)) {
+      return res.status(403).json({
+        success: false,
+        error: 'You can only update your own guardian profile.',
+      });
+    }
+
+    const validationResult = validateGuardianProfilePayload(req.body || {});
+    if (!validationResult.isValid) {
+      return respondGuardianProfileValidationError(res, validationResult.errors);
+    }
+
+    const profile = validationResult.data;
+
+    const duplicateEmailResult = profile.email
+      ? await pool.query(
+        'SELECT id FROM guardians WHERE lower(email) = lower($1) AND id <> $2 LIMIT 1',
+        [profile.email, requestedGuardianId],
+      )
+      : { rows: [] };
+
+    if (duplicateEmailResult.rows.length > 0) {
+      return respondGuardianProfileValidationError(res, {
+        email: 'This email is already in use by another guardian account',
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE guardians
+       SET name = $1,
+           phone = $2,
+           email = $3,
+           address = $4,
+           emergency_contact = $5,
+           emergency_phone = $6,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $7
+       RETURNING id, name, phone, email, address, emergency_contact, emergency_phone, updated_at`,
+      [
+        profile.name,
+        profile.phone,
+        profile.email,
+        profile.address,
+        profile.emergency_contact,
+        profile.emergency_phone,
+        requestedGuardianId,
+      ],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Guardian not found',
+      });
+    }
+
+    socketService.broadcast('guardian_updated', result.rows[0]);
+    return res.json({
+      success: true,
+      data: result.rows[0],
+      message: 'Profile updated successfully',
+    });
+  } catch (error) {
+    console.error('Error updating guardian self profile:', error);
+    return res.status(500).json({
+      success: false,
       error: 'Profile update failed',
       message: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });

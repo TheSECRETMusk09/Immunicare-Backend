@@ -46,8 +46,11 @@ const PERMISSIONS = {
   'patient:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'patient:view:own': [CANONICAL_ROLES.GUARDIAN],
   'patient:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'patient:create:own': [CANONICAL_ROLES.GUARDIAN],
   'patient:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'patient:update:own': [CANONICAL_ROLES.GUARDIAN],
   'patient:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'patient:delete:own': [CANONICAL_ROLES.GUARDIAN],
 
   // Appointments (policy C)
   'appointment:view': [CANONICAL_ROLES.SYSTEM_ADMIN],

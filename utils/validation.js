@@ -43,7 +43,7 @@ const COMMON_PASSWORDS = [
   'hello123',
   'charlie',
   'donald',
-  'password1!'
+  'password1!',
 ];
 
 /**
@@ -57,7 +57,7 @@ const validatePasswordStrength = (password) => {
   if (!password || typeof password !== 'string') {
     return {
       isValid: false,
-      errors: ['Password is required']
+      errors: ['Password is required'],
     };
   }
 
@@ -90,7 +90,7 @@ const validatePasswordStrength = (password) => {
   // Special character check
   if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
     errors.push(
-      'Password must contain at least one special character (!@#$%^&*()_+-=[]{};\':"\\|,.<>/?)'
+      'Password must contain at least one special character (!@#$%^&*()_+-=[]{};\':"\\|,.<>/?)',
     );
   }
 
@@ -117,7 +117,7 @@ const validatePasswordStrength = (password) => {
   return {
     isValid: errors.length === 0,
     errors,
-    strength: calculatePasswordStrength(password)
+    strength: calculatePasswordStrength(password),
   };
 };
 
@@ -193,7 +193,7 @@ const validateEmail = (email) => {
   return {
     isValid: errors.length === 0,
     errors,
-    sanitized: email.toLowerCase().trim()
+    sanitized: email.toLowerCase().trim(),
   };
 };
 
@@ -220,7 +220,7 @@ const validatePhoneNumber = (phone) => {
   return {
     isValid: errors.length === 0,
     errors,
-    sanitized: cleanedPhone
+    sanitized: cleanedPhone,
   };
 };
 
@@ -261,7 +261,7 @@ const validateName = (name, fieldName = 'Name') => {
   return {
     isValid: errors.length === 0,
     errors,
-    sanitized: trimmed.replace(/\s+/g, ' ') // Normalize spaces
+    sanitized: trimmed.replace(/\s+/g, ' '), // Normalize spaces
   };
 };
 
@@ -301,7 +301,7 @@ const validateUsername = (username) => {
   return {
     isValid: errors.length === 0,
     errors,
-    sanitized: trimmed.toLowerCase()
+    sanitized: trimmed.toLowerCase(),
   };
 };
 
@@ -354,7 +354,7 @@ const validateAddress = (address) => {
   return {
     isValid: errors.length === 0,
     errors,
-    sanitized
+    sanitized,
   };
 };
 
@@ -373,13 +373,13 @@ const validateRelationship = (relationship) => {
   if (!validRelationships.includes(relationship.toLowerCase())) {
     return {
       isValid: false,
-      errors: [`Relationship must be one of: ${validRelationships.join(', ')}`]
+      errors: [`Relationship must be one of: ${validRelationships.join(', ')}`],
     };
   }
 
   return {
     isValid: true,
-    sanitized: relationship.toLowerCase()
+    sanitized: relationship.toLowerCase(),
   };
 };
 
@@ -415,7 +415,7 @@ const validateDateOfBirth = (dob) => {
   return {
     isValid: errors.length === 0,
     errors,
-    sanitized: date.toISOString().split('T')[0]
+    sanitized: date.toISOString().split('T')[0],
   };
 };
 
@@ -426,12 +426,26 @@ const validateDateOfBirth = (dob) => {
  */
 const validateGuardianRegistration = (data) => {
   const errors = [];
+  const fieldErrors = {};
   const validatedData = {};
+
+  const pushFieldErrors = (field, nextErrors = []) => {
+    if (!Array.isArray(nextErrors) || nextErrors.length === 0) {
+      return;
+    }
+
+    if (!fieldErrors[field]) {
+      fieldErrors[field] = [];
+    }
+
+    fieldErrors[field].push(...nextErrors);
+    errors.push(...nextErrors);
+  };
 
   // Validate email
   const emailResult = validateEmail(data.email);
   if (!emailResult.isValid) {
-    errors.push(...emailResult.errors);
+    pushFieldErrors('email', emailResult.errors);
   } else {
     validatedData.email = emailResult.sanitized;
   }
@@ -439,18 +453,22 @@ const validateGuardianRegistration = (data) => {
   // Validate password
   const passwordResult = validatePasswordStrength(data.password);
   if (!passwordResult.isValid) {
-    errors.push(...passwordResult.errors);
+    pushFieldErrors('password', passwordResult.errors);
+  } else {
+    validatedData.password = data.password;
   }
 
   // Validate confirm password
   if (data.password !== data.confirmPassword) {
-    errors.push('Passwords do not match');
+    pushFieldErrors('confirmPassword', ['Passwords do not match']);
+  } else if (data.confirmPassword) {
+    validatedData.confirmPassword = data.confirmPassword;
   }
 
   // Validate first name
   const firstNameResult = validateName(data.firstName, 'First name');
   if (!firstNameResult.isValid) {
-    errors.push(...firstNameResult.errors);
+    pushFieldErrors('firstName', firstNameResult.errors);
   } else {
     validatedData.firstName = firstNameResult.sanitized;
   }
@@ -458,7 +476,7 @@ const validateGuardianRegistration = (data) => {
   // Validate last name
   const lastNameResult = validateName(data.lastName, 'Last name');
   if (!lastNameResult.isValid) {
-    errors.push(...lastNameResult.errors);
+    pushFieldErrors('lastName', lastNameResult.errors);
   } else {
     validatedData.lastName = lastNameResult.sanitized;
   }
@@ -466,7 +484,7 @@ const validateGuardianRegistration = (data) => {
   // Validate phone
   const phoneResult = validatePhoneNumber(data.phone);
   if (!phoneResult.isValid) {
-    errors.push(...phoneResult.errors);
+    pushFieldErrors('phone', phoneResult.errors);
   } else {
     validatedData.phone = phoneResult.sanitized;
   }
@@ -475,7 +493,7 @@ const validateGuardianRegistration = (data) => {
   if (data.address) {
     const addressResult = validateAddress(data.address);
     if (!addressResult.isValid) {
-      errors.push(...addressResult.errors);
+      pushFieldErrors('address', addressResult.errors);
     } else {
       validatedData.address = addressResult.sanitized;
     }
@@ -484,7 +502,7 @@ const validateGuardianRegistration = (data) => {
   // Validate relationship
   const relationshipResult = validateRelationship(data.relationship);
   if (!relationshipResult.isValid) {
-    errors.push(...relationshipResult.errors);
+    pushFieldErrors('relationship', relationshipResult.errors);
   } else {
     validatedData.relationship = relationshipResult.sanitized;
   }
@@ -493,7 +511,7 @@ const validateGuardianRegistration = (data) => {
   if (data.infantName) {
     const infantNameResult = validateName(data.infantName, 'Infant name');
     if (!infantNameResult.isValid) {
-      errors.push(...infantNameResult.errors);
+      pushFieldErrors('infantName', infantNameResult.errors);
     } else {
       validatedData.infantName = infantNameResult.sanitized;
     }
@@ -502,16 +520,30 @@ const validateGuardianRegistration = (data) => {
   if (data.infantDob) {
     const dobResult = validateDateOfBirth(data.infantDob);
     if (!dobResult.isValid) {
-      errors.push(...dobResult.errors);
+      pushFieldErrors('infantDob', dobResult.errors);
     } else {
       validatedData.infantDob = dobResult.sanitized;
     }
   }
 
+  // Optional child section: if one child field is provided, require the paired field.
+  if (data.infantName && !data.infantDob) {
+    pushFieldErrors('infantDob', [
+      'Child date of birth is required when child name is provided',
+    ]);
+  }
+
+  if (data.infantDob && !data.infantName) {
+    pushFieldErrors('infantName', [
+      'Child name is required when child date of birth is provided',
+    ]);
+  }
+
   return {
     isValid: errors.length === 0,
     errors,
-    data: validatedData
+    fields: fieldErrors,
+    data: validatedData,
   };
 };
 
@@ -537,7 +569,7 @@ const validateLoginInput = (data) => {
 
   return {
     isValid: errors.length === 0,
-    errors
+    errors,
   };
 };
 
@@ -554,5 +586,5 @@ module.exports = {
   validateGuardianRegistration,
   validateLoginInput,
   isPasswordInHistory,
-  COMMON_PASSWORDS
+  COMMON_PASSWORDS,
 };

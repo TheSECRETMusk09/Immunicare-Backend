@@ -227,21 +227,57 @@ const validateLoginInput = (req, res, next) => {
  */
 router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
   try {
-    const { phone } = req.body;
+    const registrationPayload = req.body || {};
 
     // Validate input
-    const validationResult = validation.validateGuardianRegistration(req.body);
+    const validationResult = validation.validateGuardianRegistration(registrationPayload);
     if (!validationResult.isValid) {
+      const normalizedFieldErrors = Object.entries(validationResult.fields || {}).reduce(
+        (acc, [field, messages]) => {
+          if (Array.isArray(messages) && messages.length > 0) {
+            acc[field] = messages[0];
+          }
+          return acc;
+        },
+        {},
+      );
+
       return res.status(400).json({
+        success: false,
+        message: 'Please correct the highlighted registration fields.',
         error: 'Validation failed',
         code: 'VALIDATION_ERROR',
         errors: validationResult.errors,
+        fields: normalizedFieldErrors,
       });
     }
 
+    const {
+      email,
+      firstName,
+      lastName,
+      phone,
+      relationship,
+      address,
+      infantName,
+      infantDob,
+    } = validationResult.data;
+
+    const normalizedRegistrationData = {
+      ...registrationPayload,
+      email,
+      firstName,
+      lastName,
+      phone,
+      relationship,
+      address: address || null,
+      infantName: infantName || null,
+      infantDob: infantDob || null,
+    };
+
     // Check if email already exists
     const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [
-      validationResult.data.email,
+      email,
     ]);
 
     if (existingUser.rows.length > 0) {
@@ -251,28 +287,54 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       });
     }
 
-    // Generate OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const existingGuardian = await pool.query('SELECT id FROM guardians WHERE email = $1 LIMIT 1', [
+      email,
+    ]);
+
+    if (existingGuardian.rows.length > 0) {
+      return res.status(409).json({
+        error: 'Email already registered',
+        code: 'EMAIL_EXISTS',
+      });
+    }
+
+    // Generate OTP using centralized service to avoid mismatches between
+    // persisted pending registration OTP and delivered SMS OTP.
+    const otp = smsService.generateVerificationCode();
+    const expiresAt = new Date(
+      Date.now() + smsService.SMS_CONFIG.otp.expiryMinutes * 60 * 1000,
+    );
 
     // Store pending registration
     await pool.query(
       `INSERT INTO pending_registrations (registration_data, otp, phone_number, expires_at)
        VALUES ($1, $2, $3, $4)`,
-      [JSON.stringify(req.body), otp, phone, expiresAt],
+      [JSON.stringify(normalizedRegistrationData), otp, phone, expiresAt],
     );
 
-    // Send OTP via SMS
+    // Send OTP via SMS using the same generated code used for verification.
+    // If SMS fails, clean up pending registration so the frontend can retry
+    // without creating unusable stale OTP records.
     try {
-      await smsService.sendOtp(phone);
+      await smsService.sendVerificationSMS(phone, otp);
     } catch (smsError) {
       console.error('Failed to send OTP SMS:', smsError);
-      // Depending on policy, you might want to return an error here
+      await pool.query('DELETE FROM pending_registrations WHERE phone_number = $1', [phone]);
+      return res.status(503).json({
+        success: false,
+        error: 'Unable to send verification code at this time. Please try again.',
+        code: 'OTP_SEND_FAILED',
+      });
     }
 
     res.status(200).json({
+      success: true,
       message: 'OTP sent successfully. Please verify to complete registration.',
       code: 'OTP_SENT',
+      data: {
+        phone,
+        expiresInSeconds: smsService.SMS_CONFIG.otp.expiryMinutes * 60,
+      },
     });
   } catch (error) {
     console.error('Guardian registration error:', error);
