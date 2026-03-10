@@ -41,6 +41,77 @@ const resolveCanonicalRole = (roleName) => {
   return null;
 };
 
+const MAX_GUARDIAN_USERNAME_SUFFIX = 10000;
+
+const normalizeGuardianUsernamePart = (value) => {
+  if (value === undefined || value === null) {
+    return '';
+  }
+
+  return String(value)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^\.+|\.+$/g, '');
+};
+
+const buildGuardianUsernameBase = ({ firstName, lastName }) => {
+  const normalizedFirst = normalizeGuardianUsernamePart(firstName);
+  const normalizedLast = normalizeGuardianUsernamePart(lastName);
+
+  const safeFirst = normalizedFirst || 'guardian';
+  const safeLast = normalizedLast || safeFirst || 'user';
+
+  const baseUsername = `${safeFirst}.${safeLast}`
+    .replace(/\.{2,}/g, '.')
+    .replace(/^\.+|\.+$/g, '');
+
+  return baseUsername || 'guardian.user';
+};
+
+const resolveUniqueGuardianUsername = async (
+  client,
+  { firstName, lastName, excludeUserId = null } = {},
+) => {
+  const baseUsername = buildGuardianUsernameBase({ firstName, lastName });
+
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [baseUsername]);
+
+  let query = `
+    SELECT username
+    FROM users
+    WHERE (lower(username) = lower($1) OR lower(username) LIKE lower($2))
+  `;
+  const params = [baseUsername, `${baseUsername}.%`];
+
+  if (excludeUserId) {
+    query += ' AND id <> $3';
+    params.push(excludeUserId);
+  }
+
+  const existingUsernamesResult = await client.query(query, params);
+  const takenUsernames = new Set(
+    existingUsernamesResult.rows
+      .map((row) => String(row.username || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  if (!takenUsernames.has(baseUsername.toLowerCase())) {
+    return baseUsername;
+  }
+
+  for (let suffix = 2; suffix <= MAX_GUARDIAN_USERNAME_SUFFIX; suffix += 1) {
+    const candidate = `${baseUsername}.${suffix}`;
+    if (!takenUsernames.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+
+  throw new Error('Unable to allocate unique guardian username');
+};
+
 // Handle OPTIONS requests for all auth routes
 router.options('*', (req, res) => {
   res.status(204).send();
@@ -376,6 +447,11 @@ router.post('/register/guardian/verify', registrationRateLimiter, async (req, re
     );
     const guardianId = guardianResult.rows[0].id;
 
+    const generatedUsername = await resolveUniqueGuardianUsername(client, {
+      firstName,
+      lastName,
+    });
+
     // 3. Create User
     const hashedPassword = await bcrypt.hash(password, 10);
     // Get guardian role ID
@@ -395,7 +471,7 @@ router.post('/register/guardian/verify', registrationRateLimiter, async (req, re
     await client.query(
       `INSERT INTO users (username, email, password_hash, role_id, guardian_id, clinic_id, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, true)`,
-      [email, email, hashedPassword, roleId, guardianId, clinicId],
+      [generatedUsername, email, hashedPassword, roleId, guardianId, clinicId],
     );
 
     // 4. Cleanup pending registration

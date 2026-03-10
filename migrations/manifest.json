@@ -131,5 +131,19 @@
     "type": "sql",
     "deprecated": false,
     "description": "Align reports table and report enums/indexes with Admin Dashboard Reports module contract"
+  },
+  {
+    "id": "announcement_recipient_delivery_tracking_20260310",
+    "file": "20260310_announcement_recipient_delivery_tracking.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Create announcement_recipient_deliveries table for per-recipient publish/delivery tracking linked to notifications"
+  },
+  {
+    "id": "guardian_username_canonicalization_audit_20260310",
+    "file": "20260310_guardian_username_canonicalization_audit.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Create and populate guardian username proposal audit artifact without applying username renames"
   }
 ]
