@@ -895,9 +895,11 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
 
     const user = userResult.rows[0];
 
-    // Generate OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    // Generate OTP using centralized service
+    const otp = smsService.generateVerificationCode();
+    const expiresAt = new Date(
+      Date.now() + smsService.SMS_CONFIG.otp.expiryMinutes * 60 * 1000,
+    );
 
     // Store OTP
     await pool.query(
@@ -942,11 +944,7 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
 
       const formattedPhone = smsService.formatPhoneNumber(userPhone);
       if (formattedPhone) {
-        await smsService.sendSMS(
-          formattedPhone,
-          `Your Immunicare password reset OTP is: ${otp}. Valid for 10 minutes.`,
-          'password_reset_otp',
-        );
+        await smsService.sendPasswordResetSMS(formattedPhone, otp);
       }
     }
 

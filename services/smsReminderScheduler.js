@@ -28,31 +28,6 @@ const SCHEDULER_CONFIG = {
 const sentReminders = new Map();
 
 /**
- * Format appointment date for SMS
- */
-function formatAppointmentDate(dateString) {
-  const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-}
-
-/**
- * Format appointment time for SMS
- */
-function formatAppointmentTime(dateString) {
-  const date = new Date(dateString);
-  return date.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
-}
-
-/**
  * Check if reminder was already sent
  */
 function wasReminderSent(appointmentId, hoursBefore) {
@@ -137,12 +112,12 @@ async function sendAppointmentReminder(appointment) {
   const {
     appointment_id,
     scheduled_date,
-    appointment_type: _appointment_type,
+    appointment_type,
     guardian_phone,
     infant_first_name,
     infant_last_name,
     clinic_name,
-    clinic_address,
+    clinic_address: _clinic_address,
   } = appointment;
 
   if (!guardian_phone) {
@@ -152,17 +127,10 @@ async function sendAppointmentReminder(appointment) {
 
   const formattedPhone = smsService.formatPhoneNumber(guardian_phone);
   const childName = `${infant_first_name} ${infant_last_name}`;
-  const appointmentDate = formatAppointmentDate(scheduled_date);
-  const appointmentTime = formatAppointmentTime(scheduled_date);
-  const location = clinic_name || 'your assigned health center';
-  const address = clinic_address || 'Please check your appointment details';
 
   const message = smsService.createAppointmentReminderMessage(
-    childName,
-    appointmentDate,
-    appointmentTime,
-    location,
-    address,
+    appointment_type || 'scheduled vaccine',
+    scheduled_date,
   );
 
   try {

@@ -13,7 +13,7 @@ const TEXTBEE_BASE_URL = 'https://api.textbee.dev/api/v1/gateway/devices';
 
 const SMS_CONFIG = {
   provider: SMS_PROVIDER,
-  senderName: process.env.TEXTBEE_SENDER_NAME || 'IMMUNICARE',
+  senderName: process.env.TEXTBEE_SENDER_NAME || 'Immunicare',
   otp: {
     length: parseInt(process.env.OTP_LENGTH || '6', 10),
     expiryMinutes: parseInt(process.env.OTP_EXPIRY_MINUTES || '10', 10),
@@ -38,6 +38,13 @@ const OTP_MESSAGE_BY_PURPOSE = {
   phone_verification: 'Your Immunicare phone verification code is {code}. It expires in {minutes} minutes.',
   password_reset: 'Your Immunicare password reset code is {code}. It expires in {minutes} minutes.',
   login: 'Your Immunicare login OTP is {code}. It expires in {minutes} minutes.',
+};
+
+const APPOINTMENT_MESSAGE_BY_TYPE = {
+  nextAppointment:
+    'Scheduled for {vaccineType} vaccination on {scheduledDate} at Barangay San Nicolas Health Center, Pasig City.',
+  missedAppointment:
+    'Missed {vaccineType} vaccination scheduled on {scheduledDate} at Barangay San Nicolas Health Center, Pasig City.',
 };
 
 function normalizePurpose(purpose) {
@@ -163,7 +170,7 @@ async function logSms({
     await pool.query(
       `INSERT INTO sms_logs
        (phone_number, message, message_type, status, provider, message_id, metadata, error_message, sent_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $4 = 'sent' THEN NOW() ELSE NULL END)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $9 = 'sent' THEN NOW() ELSE NULL END)`,
       [
         phoneNumber,
         message,
@@ -173,6 +180,7 @@ async function logSms({
         messageId || null,
         metadata ? JSON.stringify(metadata) : null,
         error || null,
+        status,
       ],
     );
   } catch (logError) {
@@ -516,21 +524,35 @@ async function verifyOTP(phoneNumber, code, purpose = 'verification') {
   };
 }
 
-function createAppointmentReminderMessage(
-  childName,
-  appointmentDate,
-  appointmentTime,
-  location,
-  address,
-) {
-  return [
-    `Immunicare Reminder: ${childName}'s vaccination appointment is on ${appointmentDate} at ${appointmentTime}.`,
-    `Location: ${location}.`,
-    address ? `Address: ${address}.` : null,
-    'Reply HELP if you need assistance.',
-  ]
-    .filter(Boolean)
-    .join(' ');
+function formatReminderDateLabel(dateInput) {
+  const parsedDate = dateInput ? new Date(dateInput) : null;
+  if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
+    return String(dateInput || 'your scheduled date');
+  }
+
+  return parsedDate.toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function createAppointmentReminderMessage(vaccineType, scheduledDate) {
+  const normalizedVaccineType = String(vaccineType || 'scheduled vaccine').trim();
+  const dateLabel = formatReminderDateLabel(scheduledDate);
+
+  return APPOINTMENT_MESSAGE_BY_TYPE.nextAppointment
+    .replace('{vaccineType}', normalizedVaccineType)
+    .replace('{scheduledDate}', dateLabel);
+}
+
+function createMissedAppointmentMessage(vaccineType, scheduledDate) {
+  const normalizedVaccineType = String(vaccineType || 'scheduled vaccine').trim();
+  const dateLabel = formatReminderDateLabel(scheduledDate);
+
+  return APPOINTMENT_MESSAGE_BY_TYPE.missedAppointment
+    .replace('{vaccineType}', normalizedVaccineType)
+    .replace('{scheduledDate}', dateLabel);
 }
 
 async function sendAppointmentReminder(appointment) {
@@ -542,32 +564,59 @@ async function sendAppointmentReminder(appointment) {
     appointment?.infant_first_name ||
     'your child';
 
-  const scheduledDateSource = appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
-  const dateObj = scheduledDateSource ? new Date(scheduledDateSource) : new Date();
-  const appointmentDate = dateObj.toLocaleDateString('en-PH', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-  const appointmentTime = appointment?.appointmentTime || appointment?.scheduled_time || dateObj.toLocaleTimeString('en-PH', {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  const vaccineType =
+    appointment?.vaccineName ||
+    appointment?.vaccine_name ||
+    appointment?.type ||
+    appointment?.appointment_type ||
+    appointment?.vaccine ||
+    'scheduled vaccine';
 
-  const location = appointment?.location || appointment?.clinicName || 'San Nicolas Health Center';
-  const address = appointment?.address || appointment?.clinic_address || '';
-
-  const message = createAppointmentReminderMessage(
-    childName,
-    appointmentDate,
-    appointmentTime,
-    location,
-    address,
-  );
+  const scheduledDateSource =
+    appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
+  const message = createAppointmentReminderMessage(vaccineType, scheduledDateSource);
 
   const sendResult = await sendSMS(phoneNumber, message, 'appointment_reminder', {
     appointmentId: appointment?.appointmentId || appointment?.appointment_id,
     infantName: childName,
+    vaccineType,
+    scheduledDate: scheduledDateSource,
+  });
+
+  return {
+    success: true,
+    messageId: sendResult.messageId,
+    provider: sendResult.provider,
+  };
+}
+
+async function sendMissedAppointmentNotification(appointment) {
+  const phoneNumber = appointment?.phoneNumber || appointment?.guardian_phone;
+  const childName =
+    appointment?.childName ||
+    appointment?.babyName ||
+    appointment?.infantName ||
+    appointment?.infant_first_name ||
+    'your child';
+
+  const vaccineType =
+    appointment?.vaccineName ||
+    appointment?.vaccine_name ||
+    appointment?.type ||
+    appointment?.appointment_type ||
+    appointment?.vaccine ||
+    'scheduled vaccine';
+
+  const scheduledDateSource =
+    appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
+
+  const message = createMissedAppointmentMessage(vaccineType, scheduledDateSource);
+
+  const sendResult = await sendSMS(phoneNumber, message, 'missed_appointment', {
+    appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+    infantName: childName,
+    vaccineType,
+    scheduledDate: scheduledDateSource,
   });
 
   return {
@@ -692,9 +741,12 @@ const smsService = {
   generateVerificationCode,
   generateResetToken,
   createAppointmentReminderMessage,
+  createMissedAppointmentMessage,
   sendVerificationSMS,
   sendPasswordResetSMS,
   sendAppointmentReminder,
+  sendMissedAppointmentNotification,
+  sendMissedAppointmentSms: sendMissedAppointmentNotification,
   sendAppointmentReminderSms: sendAppointmentReminder,
   sendAppointmentConfirmation,
   sendVaccinationReminder,
