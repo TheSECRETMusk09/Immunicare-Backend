@@ -7,7 +7,10 @@ const {
   requirePermission,
 } = require('../middleware/rbac');
 const appointmentSchedulingService = require('../services/appointmentSchedulingService');
-const { resolveOrCreateInfantPatient } = require('../services/infantControlNumberService');
+const {
+  resolveOrCreateInfantPatient,
+  INFANT_CONTROL_NUMBER_PATTERN,
+} = require('../services/infantControlNumberService');
 const socketService = require('../services/socketService');
 
 const router = express.Router();
@@ -363,6 +366,87 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (_
   } catch (error) {
     console.error('Error fetching upcoming vaccinations:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch upcoming vaccinations' });
+  }
+});
+
+// Get infant by control number
+router.get('/control-number/:controlNumber', async (req, res) => {
+  try {
+    const canonicalRole = getCanonicalRole(req);
+    if (
+      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
+      canonicalRole !== CANONICAL_ROLES.GUARDIAN
+    ) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+
+    const rawControlNumber = String(req.params.controlNumber || '').trim().toUpperCase();
+    if (!rawControlNumber) {
+      return res.status(400).json({ success: false, error: 'Control number is required' });
+    }
+
+    if (!INFANT_CONTROL_NUMBER_PATTERN.test(rawControlNumber)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid control number format. Expected INF-YYYY-######',
+      });
+    }
+
+    const params = [rawControlNumber];
+    let guardianFilterClause = '';
+
+    if (canonicalRole === CANONICAL_ROLES.GUARDIAN) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      if (Number.isNaN(guardianId) || guardianId <= 0) {
+        return res
+          .status(403)
+          .json({ success: false, error: 'Guardian account mapping is missing' });
+      }
+
+      guardianFilterClause = ' AND p.guardian_id = $2';
+      params.push(guardianId);
+    }
+
+    const result = await pool.query(
+      `
+        SELECT
+          p.*,
+          p.control_number,
+          g.name as guardian_name,
+          g.phone as guardian_phone,
+          g.email as guardian_email,
+          (
+            SELECT json_agg(
+              json_build_object(
+                'id', ia.id,
+                'allergy_type', ia.allergy_type,
+                'allergen', ia.allergen,
+                'severity', ia.severity,
+                'reaction_description', ia.reaction_description,
+                'onset_date', ia.onset_date
+              )
+            )
+            FROM infant_allergies ia
+            WHERE ia.infant_id = p.id AND ia.is_active = true
+          ) as allergies
+        FROM patients p
+        LEFT JOIN guardians g ON g.id = p.guardian_id
+        WHERE p.control_number = $1
+          AND p.is_active = true
+          ${guardianFilterClause}
+        LIMIT 1
+      `,
+      params,
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Infant not found' });
+    }
+
+    return res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    console.error('Error fetching infant by control number:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch infant' });
   }
 });
 
@@ -782,7 +866,7 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
 });
 
 // Update infant (GUARDIAN own)
-router.put('/:id(\d+)/guardian', requirePermission('patient:update:own'), async (req, res) => {
+router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async (req, res) => {
   try {
     if (!isGuardian(req)) {
       return res.status(403).json({
@@ -905,7 +989,7 @@ router.put('/:id(\d+)/guardian', requirePermission('patient:update:own'), async 
 });
 
 // Delete infant (GUARDIAN own soft delete)
-router.delete('/:id(\d+)/guardian', requirePermission('patient:delete:own'), async (req, res) => {
+router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), async (req, res) => {
   try {
     if (!isGuardian(req)) {
       return res.status(403).json({

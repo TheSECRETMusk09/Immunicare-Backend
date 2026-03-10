@@ -16,7 +16,7 @@ async function setupSMSSchema() {
     port: parseInt(process.env.DB_PORT) || 5432,
     database: process.env.DB_NAME || 'immunicare_dev',
     user: process.env.DB_USER || 'immunicare_dev',
-    password: process.env.DB_PASSWORD || 'ImmunicareDev2024!'
+    password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
   });
 
   const tables = [
@@ -26,19 +26,19 @@ async function setupSMSSchema() {
         CREATE TABLE IF NOT EXISTS sms_logs (
           id SERIAL PRIMARY KEY,
           phone_number VARCHAR(20) NOT NULL,
-          message TEXT NOT NULL,
+          message_content TEXT NOT NULL,
           message_type VARCHAR(50) NOT NULL,
           status VARCHAR(20) NOT NULL DEFAULT 'pending',
           provider VARCHAR(20) NOT NULL DEFAULT 'log',
-          message_id VARCHAR(100),
+          external_message_id VARCHAR(100),
           metadata JSONB,
           attempts JSONB,
           sent_at TIMESTAMP,
           failed_at TIMESTAMP,
-          error_message TEXT,
+          error_details TEXT,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-      `
+      `,
     },
     {
       name: 'sms_verification_codes',
@@ -59,7 +59,7 @@ async function setupSMSSchema() {
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE (phone_number, purpose)
         )
-      `
+      `,
     },
     {
       name: 'guardian_phone_numbers',
@@ -77,7 +77,7 @@ async function setupSMSSchema() {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE (guardian_id, phone_number)
         )
-      `
+      `,
     },
     {
       name: 'appointment_reminder_settings',
@@ -94,39 +94,39 @@ async function setupSMSSchema() {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE (guardian_id, infant_id)
         )
-      `
-    }
+      `,
+    },
   ];
 
   const indexes = [
     {
       table: 'sms_logs',
-      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_logs_phone ON sms_logs(phone_number)'
+      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_logs_phone ON sms_logs(phone_number)',
     },
     {
       table: 'sms_logs',
-      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_logs_type ON sms_logs(message_type)'
+      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_logs_type ON sms_logs(message_type)',
     },
     {
       table: 'sms_logs',
-      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_logs_status ON sms_logs(status)'
+      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_logs_status ON sms_logs(status)',
     },
     {
       table: 'sms_verification_codes',
-      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_verification_phone ON sms_verification_codes(phone_number)'
+      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_verification_phone ON sms_verification_codes(phone_number)',
     },
     {
       table: 'sms_verification_codes',
-      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_verification_expires ON sms_verification_codes(expires_at)'
+      sql: 'CREATE INDEX IF NOT EXISTS idx_sms_verification_expires ON sms_verification_codes(expires_at)',
     },
     {
       table: 'guardian_phone_numbers',
-      sql: 'CREATE INDEX IF NOT EXISTS idx_guardian_phone_guardian ON guardian_phone_numbers(guardian_id)'
+      sql: 'CREATE INDEX IF NOT EXISTS idx_guardian_phone_guardian ON guardian_phone_numbers(guardian_id)',
     },
     {
       table: 'appointment_reminder_settings',
-      sql: 'CREATE INDEX IF NOT EXISTS idx_reminder_settings_guardian ON appointment_reminder_settings(guardian_id)'
-    }
+      sql: 'CREATE INDEX IF NOT EXISTS idx_reminder_settings_guardian ON appointment_reminder_settings(guardian_id)',
+    },
   ];
 
   try {

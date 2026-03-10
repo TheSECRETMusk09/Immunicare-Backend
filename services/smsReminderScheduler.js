@@ -194,12 +194,13 @@ async function processRemindersForHours(hoursBefore) {
         // Log to database
         await pool.query(
           `INSERT INTO sms_logs
-           (phone_number, message, message_type, status, provider, message_id, metadata, sent_at)
-           VALUES ($1, $2, $3, 'sent', 'sms', $4, $5, NOW())`,
+           (phone_number, message_content, message_type, status, provider, external_message_id, metadata, sent_at)
+           VALUES ($1, $2, $3, 'sent', $4, $5, $6, NOW())`,
           [
             appointment.guardian_phone,
             'Appointment reminder',
             'appointment_reminder',
+            result.provider || 'sms',
             result.messageId,
             JSON.stringify({ appointmentId: appointment.appointment_id }),
           ],

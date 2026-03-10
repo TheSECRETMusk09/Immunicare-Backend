@@ -14,6 +14,11 @@ const {
   sanitizeText,
   validateNumberRange,
 } = require('../utils/adminValidation');
+const {
+  CANONICAL_ROLES,
+  getCanonicalRole,
+  normalizeRole,
+} = require('../middleware/rbac');
 
 const DEFAULT_NOTIFICATION_SETTINGS = {
   emailEnabled: true,
@@ -24,6 +29,12 @@ const DEFAULT_NOTIFICATION_SETTINGS = {
   inventoryAlerts: true,
   appointmentAlerts: true,
 };
+
+const isSystemAdminRequest = (req) => getCanonicalRole(req) === CANONICAL_ROLES.SYSTEM_ADMIN;
+
+const isSystemAdminUser = (user) =>
+  normalizeRole(user?.runtime_role || user?.role_type || user?.roleName || user?.role) ===
+  CANONICAL_ROLES.SYSTEM_ADMIN;
 
 const normalizeNotificationSettingsPayload = (payload = {}) => {
   const thresholdCheck = validateNumberRange(payload.lowStockThreshold, {
@@ -71,8 +82,8 @@ const normalizeNotificationSettingsPayload = (payload = {}) => {
 router.get('/', auth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRole = req.user.role;
     const { priority, category, isRead } = req.query;
+    const isSystemAdmin = isSystemAdminRequest(req);
 
     // Build query based on user role - use single query instead of multiple
     let query = 'SELECT * FROM notifications';
@@ -80,7 +91,7 @@ router.get('/', auth, async (req, res) => {
     const conditions = [];
 
     // Non-admin users only see their own notifications
-    if (userRole !== 'admin' && userRole !== 'super_admin') {
+    if (!isSystemAdmin) {
       conditions.push(`(user_id = $${params.length + 1} OR user_id IS NULL)`);
       params.push(userId);
     }
@@ -125,7 +136,7 @@ router.get('/alerts', auth, async (req, res) => {
     }
 
     let alerts;
-    if (user.roleName === 'admin') {
+    if (isSystemAdminUser(user)) {
       alerts = await Alert.findActive();
     } else {
       alerts = await Alert.findByHealthCenter(user.clinicId);
@@ -150,8 +161,9 @@ router.patch('/:id/read', auth, async (req, res) => {
     // Check if user has permission to mark this notification as read
     const userId = req.user.id;
     const user = await User.findById(userId);
+    const userIdString = String(userId);
 
-    if (user.roleName !== 'admin' && notification.userId?.toString() !== userId) {
+    if (!isSystemAdminUser(user) && notification.userId?.toString() !== userIdString) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
@@ -233,7 +245,7 @@ router.put('/settings', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
   try {
     // Only admins can create notifications
-    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+    if (!isSystemAdminRequest(req)) {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
@@ -308,7 +320,7 @@ router.post('/', auth, async (req, res) => {
 router.post('/alerts', auth, async (req, res) => {
   try {
     // Only admins can create alerts
-    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+    if (!isSystemAdminRequest(req)) {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
@@ -393,7 +405,7 @@ router.patch('/alerts/:id/resolve', auth, async (req, res) => {
     const user = await User.findById(userId);
 
     if (
-      user.roleName !== 'admin' &&
+      !isSystemAdminUser(user) &&
       alert.healthCenterId?.toString() !== user.clinicId?.toString()
     ) {
       return res.status(403).json({ message: 'Not authorized' });
@@ -473,7 +485,7 @@ router.get('/category/:category', auth, async (req, res) => {
     }
 
     let notifications;
-    if (user.roleName === 'admin') {
+    if (isSystemAdminUser(user)) {
       notifications = await pool.query(
         'SELECT * FROM notifications WHERE category = $1 ORDER BY created_at DESC',
         [category],
@@ -497,7 +509,7 @@ router.get('/category/:category', auth, async (req, res) => {
 // Manual cleanup trigger for testing
 router.post('/cleanup', auth, async (req, res) => {
   try {
-    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+    if (!isSystemAdminRequest(req)) {
       return res.status(403).json({ message: 'Admin access required' });
     }
 

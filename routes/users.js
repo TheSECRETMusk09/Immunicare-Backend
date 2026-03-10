@@ -563,7 +563,7 @@ router.get('/guardians', requireSystemAdmin, async (req, res) => {
         g.is_active, g.created_at, g.updated_at,
         COUNT(i.id) as infant_count
       FROM guardians g
-      LEFT JOIN infants i ON g.id = i.guardian_id
+      LEFT JOIN patients i ON g.id = i.guardian_id AND i.is_active = true
       GROUP BY g.id
       ORDER BY g.created_at DESC
     `);
@@ -1896,8 +1896,10 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
     // Get children/infants
     const infantsResult = await pool.query(
       `SELECT id, first_name, last_name, dob, sex, birth_weight, birth_height,
-              birth_place, mother_name, father_name, created_at
-       FROM infants WHERE guardian_id = $1`,
+              place_of_birth as birth_place, mother_name, father_name, created_at, control_number
+       FROM patients
+       WHERE guardian_id = $1
+         AND is_active = true`,
       [guardianId],
     );
 
@@ -1907,11 +1909,15 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
 
     if (infantsIds.length > 0) {
       appointmentsResult = await pool.query(
-        `SELECT a.id, a.infant_id, a.appointment_date, a.appointment_time,
+        `SELECT a.id,
+                a.infant_id,
+                a.scheduled_date as appointment_date,
+                a.scheduled_date as appointment_time,
                 a.status, a.notes, a.created_at
          FROM appointments a
          WHERE a.infant_id = ANY($1)
-         ORDER BY a.appointment_date DESC`,
+           AND a.is_active = true
+         ORDER BY a.scheduled_date DESC`,
         [infantsIds],
       );
     }
@@ -1921,13 +1927,22 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
 
     if (infantsIds.length > 0) {
       vaccinationsResult = await pool.query(
-        `SELECT v.id, v.infant_id, v.vaccine_id, v.vaccination_date, v.vaccination_site,
-                v.batch_number, v.administered_by, v.notes, v.created_at,
-                vt.name as vaccine_name, vt.manufacturer
-         FROM vaccinations v
-         LEFT JOIN vaccine_types vt ON v.vaccine_id = vt.id
-         WHERE v.infant_id = ANY($1)
-         ORDER BY v.vaccination_date DESC`,
+        `SELECT ir.id,
+                ir.patient_id as infant_id,
+                ir.vaccine_id,
+                ir.admin_date as vaccination_date,
+                ir.site_of_injection as vaccination_site,
+                ir.batch_id,
+                ir.administered_by,
+                ir.notes,
+                ir.created_at,
+                v.name as vaccine_name,
+                v.manufacturer
+         FROM immunization_records ir
+         LEFT JOIN vaccines v ON ir.vaccine_id = v.id
+         WHERE ir.patient_id = ANY($1)
+           AND ir.is_active = true
+         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC`,
         [infantsIds],
       );
     }

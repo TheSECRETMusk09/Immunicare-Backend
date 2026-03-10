@@ -8,6 +8,12 @@
  * - SMS preferences management
  */
 
+/**
+ * @deprecated Legacy SMS router retained only for historical reference.
+ * Active production SMS routes are defined in backend/routes/sms.js and
+ * mounted via /api/sms in backend/routes/api.js.
+ */
+
 const express = require('express');
 const router = express.Router();
 const smsService = require('../services/smsService');
@@ -25,7 +31,7 @@ router.post('/send-otp', async (req, res) => {
     if (!phoneNumber) {
       return res.status(400).json({
         success: false,
-        error: 'Phone number is required'
+        error: 'Phone number is required',
       });
     }
 
@@ -34,13 +40,13 @@ router.post('/send-otp', async (req, res) => {
     if (!validPurposes.includes(purpose)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid purpose'
+        error: 'Invalid purpose',
       });
     }
 
     const result = await smsService.sendOTP(phoneNumber, purpose, {
       ipAddress: req.ip,
-      userAgent: req.get('User-Agent')
+      userAgent: req.get('User-Agent'),
     });
 
     if (result.success) {
@@ -48,20 +54,20 @@ router.post('/send-otp', async (req, res) => {
         success: true,
         message: 'OTP sent successfully',
         expiresIn: result.expiresIn,
-        otpId: result.otpId
+        otpId: result.otpId,
       });
     } else {
       res.status(400).json({
         success: false,
         error: result.error,
-        cooldownRemaining: result.cooldownRemaining
+        cooldownRemaining: result.cooldownRemaining,
       });
     }
   } catch (error) {
     console.error('Send OTP error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to send OTP'
+      error: 'Failed to send OTP',
     });
   }
 });
@@ -78,7 +84,7 @@ router.post('/verify-otp', async (req, res) => {
     if (!phoneNumber || !code) {
       return res.status(400).json({
         success: false,
-        error: 'Phone number and code are required'
+        error: 'Phone number and code are required',
       });
     }
 
@@ -89,20 +95,20 @@ router.post('/verify-otp', async (req, res) => {
         success: true,
         message: 'OTP verified successfully',
         userId: result.userId,
-        guardianId: result.guardianId
+        guardianId: result.guardianId,
       });
     } else {
       res.status(400).json({
         success: false,
         error: result.error,
-        attemptsRemaining: result.attemptsRemaining
+        attemptsRemaining: result.attemptsRemaining,
       });
     }
   } catch (error) {
     console.error('Verify OTP error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to verify OTP'
+      error: 'Failed to verify OTP',
     });
   }
 });
@@ -119,7 +125,7 @@ router.post('/send-appointment-reminder', authenticateToken, async (req, res) =>
     if (!appointment || !appointment.phoneNumber) {
       return res.status(400).json({
         success: false,
-        error: 'Appointment details with phone number are required'
+        error: 'Appointment details with phone number are required',
       });
     }
 
@@ -128,13 +134,13 @@ router.post('/send-appointment-reminder', authenticateToken, async (req, res) =>
     res.json({
       success: result.success,
       messageId: result.messageId,
-      error: result.error
+      error: result.error,
     });
   } catch (error) {
     console.error('Send appointment reminder error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to send appointment reminder'
+      error: 'Failed to send appointment reminder',
     });
   }
 });
@@ -150,13 +156,13 @@ router.get('/config-status', authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      config: status
+      config: status,
     });
   } catch (error) {
     console.error('Get SMS config status error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to get SMS config status'
+      error: 'Failed to get SMS config status',
     });
   }
 });
@@ -175,12 +181,12 @@ router.get('/preferences', authenticateToken, requireGuardian, async (req, res) 
       port: parseInt(process.env.DB_PORT) || 5432,
       database: process.env.DB_NAME || 'immunicare_dev',
       user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!'
+      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
     });
 
     // Get phone numbers and preferences
     const query = `
-      SELECT 
+      SELECT
         gpn.id,
         gpn.phone_number,
         gpn.is_primary,
@@ -194,7 +200,7 @@ router.get('/preferences', authenticateToken, requireGuardian, async (req, res) 
 
     res.json({
       success: true,
-      phoneNumbers: result.rows
+      phoneNumbers: result.rows,
     });
 
     pool.end();
@@ -202,7 +208,7 @@ router.get('/preferences', authenticateToken, requireGuardian, async (req, res) 
     console.error('Get SMS preferences error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to get SMS preferences'
+      error: 'Failed to get SMS preferences',
     });
   }
 });
@@ -220,7 +226,7 @@ router.put('/preferences', authenticateToken, requireGuardian, async (req, res) 
     if (!phoneNumberId) {
       return res.status(400).json({
         success: false,
-        error: 'Phone number ID is required'
+        error: 'Phone number ID is required',
       });
     }
 
@@ -230,7 +236,7 @@ router.put('/preferences', authenticateToken, requireGuardian, async (req, res) 
       port: parseInt(process.env.DB_PORT) || 5432,
       database: process.env.DB_NAME || 'immunicare_dev',
       user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!'
+      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
     });
 
     const query = `
@@ -243,20 +249,20 @@ router.put('/preferences', authenticateToken, requireGuardian, async (req, res) 
     const result = await pool.query(query, [
       JSON.stringify(smsPreferences),
       phoneNumberId,
-      guardianId
+      guardianId,
     ]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Phone number not found'
+        error: 'Phone number not found',
       });
     }
 
     res.json({
       success: true,
       message: 'SMS preferences updated',
-      preferences: result.rows[0]
+      preferences: result.rows[0],
     });
 
     pool.end();
@@ -264,7 +270,7 @@ router.put('/preferences', authenticateToken, requireGuardian, async (req, res) 
     console.error('Update SMS preferences error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to update SMS preferences'
+      error: 'Failed to update SMS preferences',
     });
   }
 });
@@ -282,7 +288,7 @@ router.post('/verify-phone', authenticateToken, requireGuardian, async (req, res
     if (!phoneNumber) {
       return res.status(400).json({
         success: false,
-        error: 'Phone number is required'
+        error: 'Phone number is required',
       });
     }
 
@@ -290,27 +296,27 @@ router.post('/verify-phone', authenticateToken, requireGuardian, async (req, res
     const result = await smsService.sendOTP(phoneNumber, 'phone_verification', {
       guardianId,
       ipAddress: req.ip,
-      userAgent: req.get('User-Agent')
+      userAgent: req.get('User-Agent'),
     });
 
     if (result.success) {
       res.json({
         success: true,
         message: 'Verification code sent',
-        expiresIn: result.expiresIn
+        expiresIn: result.expiresIn,
       });
     } else {
       res.status(400).json({
         success: false,
         error: result.error,
-        cooldownRemaining: result.cooldownRemaining
+        cooldownRemaining: result.cooldownRemaining,
       });
     }
   } catch (error) {
     console.error('Verify phone error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to initiate phone verification'
+      error: 'Failed to initiate phone verification',
     });
   }
 });
@@ -328,7 +334,7 @@ router.post('/confirm-phone', authenticateToken, requireGuardian, async (req, re
     if (!phoneNumber || !code) {
       return res.status(400).json({
         success: false,
-        error: 'Phone number and verification code are required'
+        error: 'Phone number and verification code are required',
       });
     }
 
@@ -339,7 +345,7 @@ router.post('/confirm-phone', authenticateToken, requireGuardian, async (req, re
       return res.status(400).json({
         success: false,
         error: verifyResult.error,
-        attemptsRemaining: verifyResult.attemptsRemaining
+        attemptsRemaining: verifyResult.attemptsRemaining,
       });
     }
 
@@ -349,14 +355,14 @@ router.post('/confirm-phone', authenticateToken, requireGuardian, async (req, re
       port: parseInt(process.env.DB_PORT) || 5432,
       database: process.env.DB_NAME || 'immunicare_dev',
       user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!'
+      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
     });
 
     // If setting as primary, unset other primary numbers
     if (setPrimary) {
       await pool.query(
         'UPDATE guardian_phone_numbers SET is_primary = false WHERE guardian_id = $1',
-        [guardianId]
+        [guardianId],
       );
     }
 
@@ -372,13 +378,13 @@ router.post('/confirm-phone', authenticateToken, requireGuardian, async (req, re
     const result = await pool.query(upsertQuery, [
       guardianId,
       smsService.formatPhoneNumber(phoneNumber),
-      setPrimary
+      setPrimary,
     ]);
 
     res.json({
       success: true,
       message: 'Phone number verified successfully',
-      phoneNumber: result.rows[0]
+      phoneNumber: result.rows[0],
     });
 
     pool.end();
@@ -386,7 +392,7 @@ router.post('/confirm-phone', authenticateToken, requireGuardian, async (req, re
     console.error('Confirm phone error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to confirm phone verification'
+      error: 'Failed to confirm phone verification',
     });
   }
 });
@@ -403,7 +409,7 @@ router.post('/password-reset', async (req, res) => {
     if (!phoneNumber) {
       return res.status(400).json({
         success: false,
-        error: 'Phone number is required'
+        error: 'Phone number is required',
       });
     }
 
@@ -413,7 +419,7 @@ router.post('/password-reset', async (req, res) => {
       port: parseInt(process.env.DB_PORT) || 5432,
       database: process.env.DB_NAME || 'immunicare_dev',
       user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!'
+      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
     });
 
     // Check if phone number exists in guardian records
@@ -431,7 +437,7 @@ router.post('/password-reset', async (req, res) => {
       // Don't reveal if phone number exists or not
       return res.json({
         success: true,
-        message: 'If the phone number is registered, you will receive a verification code'
+        message: 'If the phone number is registered, you will receive a verification code',
       });
     }
 
@@ -441,14 +447,14 @@ router.post('/password-reset', async (req, res) => {
     const result = await smsService.sendOTP(phoneNumber, 'password_reset', {
       guardianId: guardian.id,
       ipAddress: req.ip,
-      userAgent: req.get('User-Agent')
+      userAgent: req.get('User-Agent'),
     });
 
     // Always return success to prevent phone number enumeration
     res.json({
       success: true,
       message: 'If the phone number is registered, you will receive a verification code',
-      expiresIn: result.success ? result.expiresIn : undefined
+      expiresIn: result.success ? result.expiresIn : undefined,
     });
 
     pool.end();
@@ -456,7 +462,7 @@ router.post('/password-reset', async (req, res) => {
     console.error('Password reset error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to process password reset request'
+      error: 'Failed to process password reset request',
     });
   }
 });
@@ -477,7 +483,7 @@ router.get('/logs', authenticateToken, requireGuardian, async (req, res) => {
       port: parseInt(process.env.DB_PORT) || 5432,
       database: process.env.DB_NAME || 'immunicare_dev',
       user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!'
+      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
     });
 
     // Get guardian's phone numbers
@@ -488,7 +494,7 @@ router.get('/logs', authenticateToken, requireGuardian, async (req, res) => {
       return res.json({
         success: true,
         logs: [],
-        total: 0
+        total: 0,
       });
     }
 
@@ -496,7 +502,7 @@ router.get('/logs', authenticateToken, requireGuardian, async (req, res) => {
 
     // Get SMS logs for those phone numbers
     const logsQuery = `
-      SELECT 
+      SELECT
         id, phone_number, message_type, status, provider,
         created_at, sent_at
       FROM sms_logs
@@ -513,7 +519,7 @@ router.get('/logs', authenticateToken, requireGuardian, async (req, res) => {
 
     const [logsResult, countResult] = await Promise.all([
       pool.query(logsQuery, [phoneNumbers, parseInt(limit), parseInt(offset)]),
-      pool.query(countQuery, [phoneNumbers])
+      pool.query(countQuery, [phoneNumbers]),
     ]);
 
     res.json({
@@ -521,7 +527,7 @@ router.get('/logs', authenticateToken, requireGuardian, async (req, res) => {
       logs: logsResult.rows,
       total: parseInt(countResult.rows[0].total),
       limit: parseInt(limit),
-      offset: parseInt(offset)
+      offset: parseInt(offset),
     });
 
     pool.end();
@@ -529,7 +535,7 @@ router.get('/logs', authenticateToken, requireGuardian, async (req, res) => {
     console.error('Get SMS logs error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to get SMS logs'
+      error: 'Failed to get SMS logs',
     });
   }
 });

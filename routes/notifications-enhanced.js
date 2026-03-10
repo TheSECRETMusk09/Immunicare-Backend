@@ -8,6 +8,62 @@ const notificationAnalytics = require('../services/notificationAnalytics');
 const notificationPreferences = require('../services/notificationPreferences');
 const { sendEmailNotification, sendSMSNotification } = require('../services/notificationService');
 const logger = require('../config/logger');
+const {
+  CANONICAL_ROLES,
+  getCanonicalRole,
+  normalizeRole,
+} = require('../middleware/rbac');
+
+const PRIORITY_WEIGHT = Object.freeze({
+  urgent: 5,
+  high: 4,
+  normal: 3,
+  medium: 3,
+  low: 2,
+  info: 1,
+});
+
+const toPriorityWeight = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(1, Math.min(5, value));
+  }
+
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+
+  return PRIORITY_WEIGHT[normalized] || 1;
+};
+
+const toPriorityLabel = (value) => {
+  if (typeof value === 'string' && value.trim()) {
+    const normalized = value.trim().toLowerCase();
+    if (['urgent', 'high', 'normal', 'low'].includes(normalized)) {
+      return normalized;
+    }
+    if (normalized === 'medium') {
+      return 'normal';
+    }
+  }
+
+  const weight = toPriorityWeight(value);
+  if (weight >= 5) {
+    return 'urgent';
+  }
+  if (weight >= 4) {
+    return 'high';
+  }
+  if (weight <= 2) {
+    return 'low';
+  }
+  return 'normal';
+};
+
+const isSystemAdminRequest = (req) => getCanonicalRole(req) === CANONICAL_ROLES.SYSTEM_ADMIN;
+
+const isSystemAdminUser = (user) =>
+  normalizeRole(user?.runtime_role || user?.role_type || user?.roleName || user?.role) ===
+  CANONICAL_ROLES.SYSTEM_ADMIN;
 
 // Initialize analytics and preferences tables
 notificationAnalytics.initializeAnalyticsTable();
@@ -28,7 +84,7 @@ router.get('/', auth, async (req, res) => {
     const filters = {};
 
     if (priority) {
-      filters.priority = parseInt(priority);
+      filters.priority = toPriorityLabel(priority);
     }
     if (category) {
       filters.category = category;
@@ -40,11 +96,13 @@ router.get('/', auth, async (req, res) => {
       filters.type = type;
     }
 
-    if (user.roleName === 'admin') {
+    if (isSystemAdminUser(user)) {
       notifications = await Notification.findAll(parseInt(limit));
       // Apply filters manually for admin
       if (filters.priority) {
-        notifications = notifications.filter((n) => n.priority === filters.priority);
+        notifications = notifications.filter(
+          (n) => toPriorityLabel(n.priority) === filters.priority,
+        );
       }
       if (filters.category) {
         notifications = notifications.filter((n) => n.category === filters.category);
@@ -83,48 +141,54 @@ router.get('/filtered', auth, async (req, res) => {
     const userId = req.user.id;
     const { minPriority, maxPriority, categories, types, unreadOnly } = req.query;
 
+    const minPriorityWeight = minPriority ? toPriorityWeight(minPriority) : null;
+    const maxPriorityWeight = maxPriority ? toPriorityWeight(maxPriority) : null;
+    const categoriesFilter = categories ? categories.split(',') : null;
+    const typesFilter = types ? types.split(',') : null;
+
     let query = `
-      SELECT * FROM notifications 
+      SELECT * FROM notifications
       WHERE (user_id = $1 OR user_id IS NULL)
     `;
     const params = [userId];
     let paramIndex = 2;
 
-    if (minPriority) {
-      query += ` AND priority >= $${paramIndex++}`;
-      params.push(parseInt(minPriority));
-    }
-
-    if (maxPriority) {
-      query += ` AND priority <= $${paramIndex++}`;
-      params.push(parseInt(maxPriority));
-    }
-
-    if (categories) {
-      const categoryArray = categories.split(',');
+    if (categoriesFilter && categoriesFilter.length > 0) {
       query += ` AND category = ANY($${paramIndex++})`;
-      params.push(categoryArray);
+      params.push(categoriesFilter);
     }
 
-    if (types) {
-      const typeArray = types.split(',');
+    if (typesFilter && typesFilter.length > 0) {
       query += ` AND type = ANY($${paramIndex++})`;
-      params.push(typeArray);
+      params.push(typesFilter);
     }
 
     if (unreadOnly === 'true') {
       query += ' AND is_read = FALSE';
     }
 
-    query += ` ORDER BY 
-      CASE 
-        WHEN priority >= 4 THEN 1 
-        WHEN priority >= 2 THEN 2 
-        ELSE 3 
+    query += ` ORDER BY
+      CASE priority
+        WHEN 'urgent' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'normal' THEN 3
+        WHEN 'low' THEN 4
+        ELSE 5
       END, created_at DESC`;
 
     const result = await require('../db').query(query, params);
-    const notifications = result.rows.map((row) => new Notification(row));
+    const notifications = result.rows
+      .map((row) => new Notification(row))
+      .filter((notification) => {
+        const weight = toPriorityWeight(notification.priority);
+        if (minPriorityWeight !== null && weight < minPriorityWeight) {
+          return false;
+        }
+        if (maxPriorityWeight !== null && weight > maxPriorityWeight) {
+          return false;
+        }
+        return true;
+      });
 
     res.json(notifications);
   } catch (error) {
@@ -166,7 +230,7 @@ router.get('/analytics', auth, async (req, res) => {
     const userId = req.user.id;
     const user = await User.findById(userId);
 
-    if (user.roleName !== 'admin') {
+    if (!isSystemAdminUser(user)) {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
@@ -271,7 +335,7 @@ router.get('/summary', auth, async (req, res) => {
 // Create a new notification with real-time delivery
 router.post('/', auth, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
+    if (!isSystemAdminRequest(req)) {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
@@ -281,7 +345,7 @@ router.post('/', auth, async (req, res) => {
       type,
       category,
       userId: targetUserId,
-      priority = 1,
+      priority = 'normal',
       relatedEntityType,
       relatedEntityId,
       actionRequired = false,
@@ -295,7 +359,7 @@ router.post('/', auth, async (req, res) => {
       const prefCheck = await notificationPreferences.shouldSendNotification(targetUserId, {
         type,
         category,
-        priority
+        priority: toPriorityWeight(priority),
       });
 
       if (!prefCheck.allowed) {
@@ -313,7 +377,7 @@ router.post('/', auth, async (req, res) => {
       message,
       type,
       category,
-      priority,
+      priority: toPriorityLabel(priority),
       relatedEntityType,
       relatedEntityId,
       actionRequired,
@@ -378,7 +442,7 @@ router.patch('/:id/read', auth, async (req, res) => {
     const userId = req.user.id;
     const user = await User.findById(userId);
 
-    if (user.roleName !== 'admin' && notification.userId?.toString() !== userId) {
+    if (!isSystemAdminUser(user) && notification.userId?.toString() !== String(userId)) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
@@ -426,7 +490,7 @@ router.patch('/:id/dismiss', auth, async (req, res) => {
     const userId = req.user.id;
     const user = await User.findById(userId);
 
-    if (user.roleName !== 'admin' && notification.userId?.toString() !== userId) {
+    if (!isSystemAdminUser(user) && notification.userId?.toString() !== String(userId)) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
@@ -475,7 +539,7 @@ router.get('/:id/engagement', auth, async (req, res) => {
     const notificationId = req.params.id;
     const user = await User.findById(req.user.id);
 
-    if (user.roleName !== 'admin') {
+    if (!isSystemAdminUser(user)) {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
@@ -498,7 +562,7 @@ router.get('/alerts', auth, async (req, res) => {
     }
 
     let alerts;
-    if (user.roleName === 'admin') {
+    if (isSystemAdminUser(user)) {
       alerts = await Alert.findActive();
     } else {
       alerts = await Alert.findByHealthCenter(user.clinicId);
@@ -514,7 +578,7 @@ router.get('/alerts', auth, async (req, res) => {
 // Create a new alert with real-time delivery
 router.post('/alerts', auth, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
+    if (!isSystemAdminRequest(req)) {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
@@ -574,7 +638,7 @@ router.patch('/alerts/:id/resolve', auth, async (req, res) => {
     const user = await User.findById(userId);
 
     if (
-      user.roleName !== 'admin' &&
+      !isSystemAdminUser(user) &&
       alert.healthCenterId?.toString() !== user.clinicId?.toString()
     ) {
       return res.status(403).json({ message: 'Not authorized' });
@@ -618,14 +682,14 @@ router.get('/category/:category', auth, async (req, res) => {
     }
 
     let notifications;
-    if (user.roleName === 'admin') {
+    if (isSystemAdminUser(user)) {
       notifications = await require('../db').query(
         'SELECT * FROM notifications WHERE category = $1 ORDER BY created_at DESC',
         [category]
       );
     } else {
       notifications = await require('../db').query(
-        `SELECT * FROM notifications 
+        `SELECT * FROM notifications
          WHERE category = $1 AND (user_id = $2 OR user_id IS NULL)
          ORDER BY created_at DESC`,
         [category, userId]

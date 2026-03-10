@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const path = require('path');
 const {
   normalizeRole,
   CANONICAL_ROLES,
@@ -23,22 +24,32 @@ const getCanonicalUser = (user) => {
   };
 };
 
+const resolveJwtSecret = () => {
+  let jwtSecret = process.env.JWT_SECRET;
+
+  if (jwtSecret) {
+    return jwtSecret;
+  }
+
+  try {
+    require('dotenv').config({ path: path.join(__dirname, '../.env') });
+    jwtSecret = process.env.JWT_SECRET;
+  } catch (_error) {
+    // Ignore dotenv load errors here; explicit guard below will handle missing secrets.
+  }
+
+  return jwtSecret || null;
+};
+
 const authenticateToken = (req, res, next) => {
   try {
-    // Check for JWT secret configuration - use fallback for development
-    let jwtSecret = process.env.JWT_SECRET;
+    const jwtSecret = resolveJwtSecret();
     if (!jwtSecret) {
-      // Try to load from .env file in backend directory
-      try {
-        require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
-        jwtSecret = process.env.JWT_SECRET;
-      } catch (e) {
-        // Ignore dotenv errors
-      }
-    }
-
-    if (!jwtSecret) {
-      console.warn('JWT_SECRET not configured - auth requests may fail');
+      logger.error('JWT_SECRET is not configured. Refusing to authenticate requests.');
+      return res.status(500).json({
+        error: 'Server authentication is not configured',
+        code: 'SERVER_CONFIG_ERROR',
+      });
     }
 
     // Check for token in cookies first, then fallback to Authorization header
@@ -56,7 +67,7 @@ const authenticateToken = (req, res, next) => {
     }
 
     // Verify token with proper error handling
-    jwt.verify(token, jwtSecret || 'fallback-secret-do-not-use-in-production', (err, user) => {
+    jwt.verify(token, jwtSecret, (err, user) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           // Return specific error code for token expiration
@@ -126,6 +137,11 @@ const authenticateToken = (req, res, next) => {
  */
 const optionalAuth = (req, res, next) => {
   try {
+    const jwtSecret = resolveJwtSecret();
+    if (!jwtSecret) {
+      return next();
+    }
+
     let token = req.cookies?.token;
     if (!token) {
       const authHeader = req.headers['authorization'];
@@ -137,7 +153,7 @@ const optionalAuth = (req, res, next) => {
       return next();
     }
 
-    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    jwt.verify(token, jwtSecret, (err, user) => {
       if (err) {
         // Token invalid, continue without user
         return next();

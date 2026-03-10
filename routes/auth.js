@@ -1,52 +1,24 @@
-console.log('Starting auth.js imports...');
 const express = require('express');
-console.log('express loaded');
 const bcrypt = require('bcryptjs');
-console.log('bcryptjs loaded');
 const jwt = require('jsonwebtoken');
-console.log('jsonwebtoken loaded');
 const pool = require('../db');
-console.log('db loaded');
 const refreshTokenService = require('../services/refreshTokenService');
-console.log('refreshTokenService loaded');
 
 // New services
-console.log('Loading validation...');
 const validation = require('../utils/validation');
-console.log('validation loaded');
-console.log('Loading passwordHistoryService...');
 const passwordHistoryService = require('../services/passwordHistoryService');
-console.log('passwordHistoryService loaded');
-console.log('Loading passwordResetService...');
 const passwordResetService = require('../services/passwordResetService');
-console.log('passwordResetService loaded');
-console.log('Loading emailService...');
 const emailService = require('../services/emailService');
-console.log('emailService loaded');
-console.log('Loading securityEventService...');
 const securityEventService = require('../services/securityEventService');
-console.log('securityEventService loaded');
-console.log('Loading sessionService...');
 const sessionService = require('../services/sessionService');
-console.log('sessionService loaded');
-console.log('Loading adminActivityService...');
 const adminActivityService = require('../services/adminActivityService');
-console.log('adminActivityService loaded');
-console.log('Loading resendEmailService...');
 const resendEmailService = require('../services/resendEmailService');
-console.log('resendEmailService loaded');
-console.log('Loading smsService...');
 const smsService = require('../services/smsService');
-console.log('smsService loaded');
-console.log('Loading rateLimiter...');
 const rateLimiter = require('../middleware/rateLimiter');
-console.log('rateLimiter loaded');
-console.log('Loading bruteForceProtection...');
 const bruteForceProtectionModule = require('../middleware/bruteForceProtection');
 const bruteForceProtection = bruteForceProtectionModule.bruteForceProtection;
 const { checkBruteForce } = bruteForceProtectionModule;
 const { normalizeRole, CANONICAL_ROLES, getRolePermissions } = require('../middleware/rbac');
-console.log('bruteForceProtection loaded');
 
 const router = express.Router();
 
@@ -148,8 +120,7 @@ const validateLoginInput = (req, res, next) => {
     }
   }
 
-  req.body.password = password.replace(/[<>"'%\\]/g, '');
-  if (req.body.password.length > 1000) {
+  if (password.length > 1000) {
     return res.status(400).json({
       error: 'Input too long',
       code: 'INPUT_TOO_LONG',
@@ -164,8 +135,7 @@ const validateLoginInput = (req, res, next) => {
 
   if (
     (username && suspiciousPatterns.some((pattern) => pattern.test(username))) ||
-    (email && suspiciousPatterns.some((pattern) => pattern.test(email))) ||
-    suspiciousPatterns.some((pattern) => pattern.test(password))
+    (email && suspiciousPatterns.some((pattern) => pattern.test(email)))
   ) {
     return res.status(400).json({
       error: 'Invalid input format',
@@ -539,7 +509,7 @@ router.post(
   bruteForceProtection(),
   async (req, res) => {
     try {
-      const { username, password, email } = req.body;
+      const { username, password, email, expectedRole } = req.body;
 
       // Query user by username or email
       const result = await pool.query(
@@ -575,11 +545,26 @@ router.post(
 
       const user = result.rows[0];
       const canonicalRole = resolveCanonicalRole(user.role_name);
+      const expectedCanonicalRole = expectedRole ? resolveCanonicalRole(expectedRole) : null;
+
+      if (expectedRole && !expectedCanonicalRole) {
+        return res.status(400).json({
+          error: 'Invalid expected role',
+          code: 'INVALID_EXPECTED_ROLE',
+        });
+      }
 
       if (!canonicalRole) {
         return res.status(403).json({
           error: 'Unsupported account role. Please contact SYSTEM_ADMIN.',
           code: 'UNSUPPORTED_ROLE',
+        });
+      }
+
+      if (expectedCanonicalRole && canonicalRole !== expectedCanonicalRole) {
+        return res.status(403).json({
+          error: 'Access denied for requested role',
+          code: 'ROLE_MISMATCH',
         });
       }
 

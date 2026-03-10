@@ -277,12 +277,18 @@ router.get('/inventory/valid', requirePermission('vaccination:create'), async (r
     let paramCount = 1;
 
     // Filter by specific vaccine if provided
-    if (vaccine_id) {
-      query += ` AND vb.vaccine_id = ${paramCount}`;
-      params.push(parseInt(vaccine_id, 10));
+    if (vaccine_id !== undefined) {
+      const parsedVaccineId = parseInt(vaccine_id, 10);
+      if (Number.isNaN(parsedVaccineId)) {
+        return res.status(400).json({ error: 'vaccine_id must be a valid integer' });
+      }
+
+      query += ` AND vb.vaccine_id = $${paramCount}`;
+      params.push(parsedVaccineId);
+      paramCount += 1;
     }
 
-    query += ` ORDER BY vb.expiry_date ASC`;
+    query += ' ORDER BY vb.expiry_date ASC';
 
     const result = await pool.query(query, params);
 

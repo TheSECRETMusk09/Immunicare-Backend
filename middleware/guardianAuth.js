@@ -17,6 +17,23 @@ const JWT_CLOCK_TOLERANCE_SECONDS = Number.isFinite(configuredClockToleranceSeco
   ? configuredClockToleranceSeconds
   : DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS;
 
+const resolveJwtSecret = () => {
+  let jwtSecret = process.env.JWT_SECRET;
+
+  if (jwtSecret) {
+    return jwtSecret;
+  }
+
+  try {
+    require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+    jwtSecret = process.env.JWT_SECRET;
+  } catch {
+    // Ignore dotenv load errors; explicit guard below will handle missing secret.
+  }
+
+  return jwtSecret || null;
+};
+
 /**
  * Authenticate guardian user
  * Verifies JWT token and ensures user is a guardian
@@ -24,18 +41,15 @@ const JWT_CLOCK_TOLERANCE_SECONDS = Number.isFinite(configuredClockToleranceSeco
 const authenticateGuardian = async (req, res, next) => {
   try {
     // Get JWT secret
-    let jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      try {
-        require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
-        jwtSecret = process.env.JWT_SECRET;
-      } catch {
-        // Ignore dotenv errors
-      }
-    }
+    const jwtSecret = resolveJwtSecret();
 
     if (!jwtSecret) {
-      logger.warn('JWT_SECRET not configured');
+      logger.error('JWT_SECRET is not configured. Guardian authentication is unavailable.');
+      return res.status(500).json({
+        success: false,
+        message: 'Server authentication is not configured',
+        code: 'SERVER_CONFIG_ERROR',
+      });
     }
 
     // Check for token in cookies first, then Authorization header
@@ -57,7 +71,7 @@ const authenticateGuardian = async (req, res, next) => {
     const decoded = await new Promise((resolve, reject) => {
       jwt.verify(
         token,
-        jwtSecret || 'fallback-secret-do-not-use-in-production',
+        jwtSecret,
         { clockTolerance: JWT_CLOCK_TOLERANCE_SECONDS },
         (err, decoded) => {
           if (err) {
@@ -177,7 +191,11 @@ const optionalGuardianAuth = async (req, res, next) => {
       return next();
     }
 
-    const jwtSecret = process.env.JWT_SECRET || 'fallback-secret';
+    const jwtSecret = resolveJwtSecret();
+    if (!jwtSecret) {
+      return next();
+    }
+
     const decoded = jwt.verify(token, jwtSecret, {
       clockTolerance: JWT_CLOCK_TOLERANCE_SECONDS,
     });

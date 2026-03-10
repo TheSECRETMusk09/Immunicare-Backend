@@ -94,8 +94,7 @@ const validateLoginInput = (req, res, next) => {
     }
   }
 
-  req.body.password = password.replace(/[<>"'%\\]/g, '');
-  if (req.body.password.length > 1000) {
+  if (password.length > 1000) {
     return res.status(400).json({
       error: 'Input too long',
       code: 'INPUT_TOO_LONG',
@@ -109,8 +108,7 @@ const validateLoginInput = (req, res, next) => {
 
   if (
     (username && suspiciousPatterns.some((pattern) => pattern.test(username))) ||
-    (email && suspiciousPatterns.some((pattern) => pattern.test(email))) ||
-    suspiciousPatterns.some((pattern) => pattern.test(password))
+    (email && suspiciousPatterns.some((pattern) => pattern.test(email)))
   ) {
     return res.status(400).json({
       error: 'Invalid input format',
@@ -181,7 +179,7 @@ router.post(
   bruteForceProtection(),
   async (req, res) => {
     try {
-      const { username, password, email } = req.body;
+      const { username, password, email, expectedRole } = req.body;
 
       const result = await pool.query(
         `SELECT u.id, u.username, u.password_hash, u.role_id, u.clinic_id, u.last_login, u.guardian_id, u.email, u.is_active,
@@ -214,11 +212,26 @@ router.post(
 
       const user = result.rows[0];
       const canonicalRole = resolveCanonicalRole(user.role_name);
+      const expectedCanonicalRole = expectedRole ? resolveCanonicalRole(expectedRole) : null;
+
+      if (expectedRole && !expectedCanonicalRole) {
+        return res.status(400).json({
+          error: 'Invalid expected role',
+          code: 'INVALID_EXPECTED_ROLE',
+        });
+      }
 
       if (!canonicalRole || canonicalRole !== CANONICAL_ROLES.GUARDIAN) {
         return res.status(403).json({
           error: 'Access denied. Only guardians can log in here.',
           code: 'ACCESS_DENIED',
+        });
+      }
+
+      if (expectedCanonicalRole && canonicalRole !== expectedCanonicalRole) {
+        return res.status(403).json({
+          error: 'Access denied for requested role',
+          code: 'ROLE_MISMATCH',
         });
       }
 

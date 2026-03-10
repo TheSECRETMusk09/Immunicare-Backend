@@ -7,8 +7,8 @@ const SMS_PROVIDER = String(
   process.env.SMS_GATEWAY || process.env.SMS_PROVIDER || 'textbee',
 ).toLowerCase();
 
-const TEXTBEE_API_KEY = process.env.TEXTBEE_API_KEY || '3670caf6-dc28-4c99-8c40-c02d9e933b69';
-const TEXTBEE_DEVICE_ID = process.env.TEXTBEE_DEVICE_ID || '699811a2deb3cd9fe788a6bc';
+const TEXTBEE_API_KEY = process.env.TEXTBEE_API_KEY || '';
+const TEXTBEE_DEVICE_ID = process.env.TEXTBEE_DEVICE_ID || '';
 const TEXTBEE_BASE_URL = 'https://api.textbee.dev/api/v1/gateway/devices';
 
 const SMS_CONFIG = {
@@ -169,8 +169,19 @@ async function logSms({
   try {
     await pool.query(
       `INSERT INTO sms_logs
-       (phone_number, message, message_type, status, provider, message_id, metadata, error_message, sent_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $9 = 'sent' THEN NOW() ELSE NULL END)`,
+       (phone_number, message_content, message_type, status, provider, external_message_id, metadata, error_details, sent_at, failed_at)
+       VALUES (
+         $1,
+         $2,
+         $3,
+         $4,
+         $5,
+         $6,
+         $7,
+         $8,
+         CASE WHEN $9 = 'sent' THEN NOW() ELSE NULL END,
+         CASE WHEN $9 = 'failed' THEN NOW() ELSE NULL END
+       )`,
       [
         phoneNumber,
         message,
