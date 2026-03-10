@@ -842,9 +842,14 @@ const getReminderStats = async ({ startDate, endDate, facilityId = null }) => {
     notificationsScopeFallback,
   );
 
-  const notificationsScopeClause = notificationScopeExpr !== 'NULL'
+  const hasNotificationFacilityScope = notificationScopeExpr !== 'NULL';
+  const notificationsScopeClause = hasNotificationFacilityScope
     ? ` AND ($3::int IS NULL OR ${notificationScopeExpr} = $3)`
     : '';
+
+  const notificationParams = hasNotificationFacilityScope
+    ? [startDate, endDate, facilityId]
+    : [startDate, endDate];
 
   const notificationRows = await mapRows(
     `
@@ -863,7 +868,7 @@ const getReminderStats = async ({ startDate, endDate, facilityId = null }) => {
       WHERE n.created_at::date BETWEEN $1::date AND $2::date
       ${notificationsScopeClause}
     `,
-    [startDate, endDate, facilityId],
+    notificationParams,
   );
 
   const smsRows = await mapRows(

@@ -7,6 +7,16 @@ const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const logger = require('../config/logger');
 
+const DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS = 5;
+const configuredClockToleranceSeconds = Number.parseInt(
+  process.env.JWT_CLOCK_TOLERANCE_SECONDS || '',
+  10,
+);
+const JWT_CLOCK_TOLERANCE_SECONDS = Number.isFinite(configuredClockToleranceSeconds)
+  && configuredClockToleranceSeconds >= 0
+  ? configuredClockToleranceSeconds
+  : DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS;
+
 /**
  * Authenticate guardian user
  * Verifies JWT token and ensures user is a guardian
@@ -45,13 +55,18 @@ const authenticateGuardian = async (req, res, next) => {
 
     // Verify token
     const decoded = await new Promise((resolve, reject) => {
-      jwt.verify(token, jwtSecret || 'fallback-secret-do-not-use-in-production', (err, decoded) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(decoded);
-        }
-      });
+      jwt.verify(
+        token,
+        jwtSecret || 'fallback-secret-do-not-use-in-production',
+        { clockTolerance: JWT_CLOCK_TOLERANCE_SECONDS },
+        (err, decoded) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(decoded);
+          }
+        },
+      );
     });
 
     // Check if user is a guardian (support both canonical and legacy role values)
@@ -106,9 +121,14 @@ const authenticateGuardian = async (req, res, next) => {
 
     next();
   } catch (error) {
-    logger.error('Guardian authentication error:', error);
-
     if (error.name === 'TokenExpiredError') {
+      logger.info('Guardian access token expired', {
+        code: 'TOKEN_EXPIRED',
+        method: req.method,
+        path: req.originalUrl || req.url,
+        expiredAt: error.expiredAt,
+      });
+
       return res.status(401).json({
         success: false,
         message: 'Token expired',
@@ -117,12 +137,21 @@ const authenticateGuardian = async (req, res, next) => {
     }
 
     if (error.name === 'JsonWebTokenError') {
+      logger.warn('Guardian JWT validation failed', {
+        code: 'INVALID_TOKEN',
+        method: req.method,
+        path: req.originalUrl || req.url,
+        reason: error.message,
+      });
+
       return res.status(403).json({
         success: false,
         message: 'Invalid token',
         code: 'INVALID_TOKEN',
       });
     }
+
+    logger.error('Guardian authentication error:', error);
 
     return res.status(500).json({
       success: false,
@@ -149,7 +178,9 @@ const optionalGuardianAuth = async (req, res, next) => {
     }
 
     const jwtSecret = process.env.JWT_SECRET || 'fallback-secret';
-    const decoded = jwt.verify(token, jwtSecret);
+    const decoded = jwt.verify(token, jwtSecret, {
+      clockTolerance: JWT_CLOCK_TOLERANCE_SECONDS,
+    });
 
     // Support both canonical and legacy role values
     const canonicalRole = decoded.role?.toUpperCase();

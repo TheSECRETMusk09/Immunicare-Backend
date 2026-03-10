@@ -1,6 +1,18 @@
 const { Pool } = require('pg');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+const logger = require('./config/logger');
+
+// Validate required production database configuration
+const requiredDbEnvVars = ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
+const missingDbEnvVars = requiredDbEnvVars.filter(envVar => !process.env[envVar]);
+
+if (missingDbEnvVars.length > 0 && process.env.NODE_ENV === 'production') {
+  logger.error('CRITICAL: Missing required database configuration environment variables', {
+    missing: missingDbEnvVars,
+  });
+  throw new Error('Production database configuration is incomplete');
+}
 
 // Determine SSL configuration based on environment
 const sslConfig =
@@ -23,21 +35,19 @@ const sslConfig =
 const poolConfig = {
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT) || 5432,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: String(process.env.DB_PASSWORD),
+  database: process.env.DB_NAME || 'immunicare_prod',
+  user: process.env.DB_USER || 'immunicare_prod',
+  password: String(process.env.DB_PASSWORD || ''),
   ssl: sslConfig,
-  // Connection pool settings - increased to 50 for production
-  max: parseInt(process.env.DB_POOL_MAX) || 50, // Maximum clients in pool (50 for production, 20 for dev)
-  min: parseInt(process.env.DB_POOL_MIN) || 5, // Minimum clients in pool (increased from 2)
-  idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT) || 30000, // Close idle after 30s
-  connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT) || 10000, // Increased from 5000 to 10000
-  query_timeout: parseInt(process.env.DB_QUERY_TIMEOUT) || 30000, // Increased from 15000 to 30000
-  statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT) || 30000, // Increased from 15000 to 30000
-  // Connection queuing settings
+  // Connection pool settings optimized for production
+  max: parseInt(process.env.DB_POOL_MAX) || 30, // Reduced to 30 for production stability
+  min: parseInt(process.env.DB_POOL_MIN) || 2, // Lower minimum for idle connections
+  idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT) || 60000, // Close idle after 60s
+  connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT) || 15000, // Increased to 15s
+  query_timeout: parseInt(process.env.DB_QUERY_TIMEOUT) || 30000, // Query timeout
+  statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT) || 30000, // Statement timeout
   acquireTimeoutMillis: parseInt(process.env.DB_ACQUIRE_TIMEOUT) || 30000, // Wait up to 30s for available connection
   reapIntervalMillis: 1000, // Check for idle connections every 1s
-  // Pool management
   evictionRunIntervalMillis: 30000, // Run eviction every 30s
   numTestsPerEvictionRun: 3, // Test up to 3 connections per eviction
   application_name: 'immunicare-api',
@@ -45,58 +55,41 @@ const poolConfig = {
 
 const pool = new Pool(poolConfig);
 
-const suppressPoolLogs = process.env.DB_SUPPRESS_POOL_LOGS === 'true';
-
-const logInfo = (...args) => {
-  if (!suppressPoolLogs) {
-    console.log(...args);
-  }
-};
-
-const logWarn = (...args) => {
-  if (!suppressPoolLogs) {
-    console.warn(...args);
-  }
-};
-
-const logError = (...args) => {
-  if (!suppressPoolLogs) {
-    console.error(...args);
-  }
-};
-
-// Track pool statistics
-let totalConnections = 0;
-const idleConnections = 0;
-const waitingQueries = 0;
-
+// Pool event listeners with structured logging
 pool.on('connect', (client) => {
-  totalConnections++;
-  logInfo('Database client connected', {
-    totalConnections,
+  logger.info('PostgreSQL client connected', {
+    client: client.processID,
     timestamp: new Date().toISOString(),
   });
 });
 
 pool.on('acquire', (client) => {
-  logInfo('Database client acquired from pool');
+  logger.debug('PostgreSQL client acquired from pool', {
+    client: client.processID,
+  });
 });
 
 pool.on('release', (client) => {
-  logInfo('Database client released back to pool');
+  if (!client || !client.processID) {
+    return; // Client may be null or already disconnected
+  }
+  logger.debug('PostgreSQL client released back to pool', {
+    client: client.processID,
+  });
 });
 
 pool.on('remove', (client) => {
-  totalConnections--;
-  logInfo('Database client removed from pool', {
-    totalConnections,
+  logger.info('PostgreSQL client removed from pool', {
+    client: client.processID,
   });
 });
 
 pool.on('error', (err, client) => {
-  logError('Database pool error:', {
+  logger.error('PostgreSQL pool error', {
+    client: client?.processID,
     message: err.message,
     code: err.code,
+    stack: err.stack,
     timestamp: new Date().toISOString(),
   });
 });
@@ -134,7 +127,7 @@ const queryWithRetry = async (text, params, options = {}) => {
         throw err;
       }
 
-      logWarn(
+      logger.warn(
         `Database query failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`,
         {
           error: err.message,
@@ -197,7 +190,7 @@ const transaction = async (callback, options = {}) => {
         try {
           await client.query('ROLLBACK');
         } catch (rollbackErr) {
-          logError('Rollback failed:', rollbackErr.message);
+          logger.error('Rollback failed:', rollbackErr.message);
         }
       }
 
@@ -213,7 +206,7 @@ const transaction = async (callback, options = {}) => {
 
       if (isRetryableError && attempt < maxRetries) {
         const delay = retryDelay * Math.pow(2, attempt - 1); // Exponential backoff
-        logWarn(
+        logger.warn(
           `Transaction retry (attempt ${attempt}/${maxRetries}) after ${delay}ms due to: ${err.message}`,
         );
 
@@ -231,7 +224,7 @@ const transaction = async (callback, options = {}) => {
         try {
           client.release();
         } catch (releaseErr) {
-          logError('Client release error:', releaseErr.message);
+          logger.error('Client release error:', releaseErr.message);
         }
       }
     }
@@ -265,6 +258,10 @@ const healthCheck = async () => {
       error: null,
     };
   } catch (err) {
+    logger.error('Database health check failed', {
+      error: err.message,
+      code: err.code,
+    });
     return {
       healthy: false,
       latency: Date.now() - start,
@@ -278,9 +275,9 @@ const healthCheck = async () => {
  * @returns {Promise<void>}
  */
 const close = async () => {
-  logInfo('Closing database pool...');
+  logger.info('Closing database pool...');
   await pool.end();
-  logInfo('Database pool closed');
+  logger.info('Database pool closed');
 };
 
 module.exports = pool;

@@ -107,6 +107,13 @@ if (socketService.io) {
 }
 
 // CORS configuration - using standard cors package
+// Production: Frontend on immunicareph.site or www.immunicareph.site, API on api.immunicareph.site
+const productionOrigins = [
+  'https://immunicareph.site',
+  'https://www.immunicareph.site',
+  'https://api.immunicareph.site',
+];
+
 const configuredOrigins = [process.env.CORS_ORIGIN, process.env.FRONTEND_URL]
   .filter(Boolean)
   .flatMap((value) => value.split(','))
@@ -120,7 +127,10 @@ const defaultDevOrigins = [
   'https://127.0.0.1:3000',
 ];
 
-const allowedOrigins = Array.from(new Set([...configuredOrigins, ...defaultDevOrigins]));
+// In production, only allow production domains
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? productionOrigins
+  : Array.from(new Set([...productionOrigins, ...configuredOrigins, ...defaultDevOrigins]));
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -348,17 +358,25 @@ app.get('/favicon.ico', (req, res) => {
 });
 
 // Health check endpoint - enhanced with proper CORS and caching headers
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   // Set cache control headers to prevent caching
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
 
-  res.json({
-    status: 'OK',
+  const healthResult = await healthCheck();
+
+  res.status(healthResult.healthy ? 200 : 503).json({
+    status: healthResult.healthy ? 'OK' : 'UNHEALTHY',
     timestamp: new Date().toISOString(),
     service: 'Immunicare Backend API',
     version: '1.0.0',
+    database: {
+      healthy: healthResult.healthy,
+      latency: healthResult.latency,
+      error: healthResult.error,
+    },
+    environment: process.env.NODE_ENV || 'development',
   });
 });
 
@@ -398,6 +416,7 @@ app.use(errorHandler);
 
 // Start server with database connection verification
 const pool = require('./db');
+const { healthCheck } = require('./db');
 
 // Fix for unexpected errors on idle clients
 pool.on('error', (err, client) => {
@@ -479,18 +498,34 @@ async function startServer() {
     console.log('Starting Immunicare API Server...');
     console.log(`Base port configured: ${BASE_PORT}`);
 
-    // Test database connection with timeout
+    // Test database connection with timeout and structured health check
     console.log('Testing database connection...');
     try {
-      const dbPromise = pool.query('SELECT NOW()');
+      const dbPromise = healthCheck();
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Database connection timeout')), 5000),
+        setTimeout(() => reject(new Error('Database connection timeout')), 10000),
       );
-      await Promise.race([dbPromise, timeoutPromise]);
-      console.log('Database connection successful');
+      const health = await Promise.race([dbPromise, timeoutPromise]);
+
+      if (health.healthy) {
+        console.log(`Database connection successful (latency: ${health.latency}ms)`);
+      } else {
+        console.error('Database health check failed:', health.error);
+        if (process.env.NODE_ENV === 'production') {
+          console.error('CRITICAL: Database connection is required for production. Exiting.');
+          process.exit(1);
+        } else {
+          console.warn('Server will start without database - some features may not work');
+        }
+      }
     } catch (dbError) {
       console.error('Database connection failed:', dbError.message);
-      console.warn('Server will start without database - some features may not work');
+      if (process.env.NODE_ENV === 'production') {
+        console.error('CRITICAL: Database connection is required for production. Exiting.');
+        process.exit(1);
+      } else {
+        console.warn('Server will start without database - some features may not work');
+      }
     }
 
     // Check if base port is available, find alternative if not
