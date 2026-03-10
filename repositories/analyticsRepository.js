@@ -237,7 +237,7 @@ const getVaccineDimension = async () => {
   return rows;
 };
 
-const getInfantGuardianTotals = async ({ facilityId }) => {
+const getInfantGuardianTotals = async ({ facilityId, guardianId }) => {
   const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
 
@@ -249,6 +249,7 @@ const getInfantGuardianTotals = async ({ facilityId }) => {
           FROM patients p
           WHERE COALESCE(p.is_active, true) = true
             AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+            AND ($2::int IS NULL OR p.guardian_id = $2)
         ) AS total_infants,
         (
           SELECT COUNT(DISTINCT p.guardian_id)::int
@@ -256,9 +257,10 @@ const getInfantGuardianTotals = async ({ facilityId }) => {
           WHERE COALESCE(p.is_active, true) = true
             AND p.guardian_id IS NOT NULL
             AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+            AND ($2::int IS NULL OR p.guardian_id = $2)
         ) AS total_guardians
     `,
-    [facilityId],
+    [facilityId, guardianId],
   );
 
   return rows[0] || { total_infants: 0, total_guardians: 0 };
@@ -271,6 +273,7 @@ const getVaccinationSnapshot = async ({
   vaccineIds,
   statuses,
   overdueOnly,
+  guardianId,
 }) => {
   const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
@@ -303,6 +306,7 @@ const getVaccinationSnapshot = async ({
       WHERE COALESCE(ir.is_active, true) = true
         AND COALESCE(p.is_active, true) = true
         AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+        AND ($7::int IS NULL OR p.guardian_id = $7)
         AND ($4::int[] IS NULL OR ir.vaccine_id = ANY($4::int[]))
         AND (
           $5::text[] IS NULL
@@ -323,6 +327,7 @@ const getVaccinationSnapshot = async ({
       toNullableArray(vaccineIds),
       toNullableArray(statuses),
       Boolean(overdueOnly),
+      guardianId,
     ],
   );
 
@@ -341,6 +346,7 @@ const getVaccinationStatusBreakdown = async ({
   endDate,
   vaccineIds,
   statuses,
+  guardianId,
 }) => {
   const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
@@ -355,6 +361,7 @@ const getVaccinationStatusBreakdown = async ({
       WHERE COALESCE(ir.is_active, true) = true
         AND COALESCE(p.is_active, true) = true
         AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+        AND ($6::int IS NULL OR p.guardian_id = $6)
         AND ($2::int[] IS NULL OR ir.vaccine_id = ANY($2::int[]))
         AND (
           COALESCE(ir.admin_date, ir.next_due_date, ir.created_at::date) BETWEEN $3::date AND $4::date
@@ -366,7 +373,7 @@ const getVaccinationStatusBreakdown = async ({
       GROUP BY COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled')
       ORDER BY count DESC
     `,
-    [facilityId, toNullableArray(vaccineIds), startDate, endDate, toNullableArray(statuses)],
+    [facilityId, toNullableArray(vaccineIds), startDate, endDate, toNullableArray(statuses), guardianId],
   );
 
   return rows;
@@ -378,6 +385,7 @@ const getAppointmentSnapshot = async ({
   endDate,
   statuses,
   overdueOnly,
+  guardianId,
 }) => {
   const {
     appointmentsScope,
@@ -436,6 +444,7 @@ const getAppointmentSnapshot = async ({
       LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
       WHERE COALESCE(a.is_active, true) = true
         AND ($1::int IS NULL OR COALESCE(${patientScopeExpr}, ${appointmentScopeExpr}) = $1)
+        AND ($6::int IS NULL OR p.guardian_id = $6)
         AND (
           $4::text[] IS NULL
           OR LOWER(a.status::text) = ANY($4::text[])
@@ -448,7 +457,7 @@ const getAppointmentSnapshot = async ({
           )
         )
     `,
-    [facilityId, startDate, endDate, toNullableArray(statuses), Boolean(overdueOnly)],
+    [facilityId, startDate, endDate, toNullableArray(statuses), Boolean(overdueOnly), guardianId],
   );
 
   return rows[0] || {
@@ -469,6 +478,7 @@ const getAppointmentStatusBreakdown = async ({
   startDate,
   endDate,
   statuses,
+  guardianId,
 }) => {
   const {
     appointmentsScope,
@@ -499,6 +509,7 @@ const getAppointmentStatusBreakdown = async ({
       LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
       WHERE COALESCE(a.is_active, true) = true
         AND ($1::int IS NULL OR COALESCE(${patientScopeExpr}, ${appointmentScopeExpr}) = $1)
+        AND ($5::int IS NULL OR p.guardian_id = $5)
         AND a.scheduled_date::date BETWEEN $2::date AND $3::date
         AND (
           $4::text[] IS NULL
@@ -507,7 +518,7 @@ const getAppointmentStatusBreakdown = async ({
       GROUP BY LOWER(a.status::text)
       ORDER BY count DESC
     `,
-    [facilityId, startDate, endDate, toNullableArray(statuses)],
+    [facilityId, startDate, endDate, toNullableArray(statuses), guardianId],
   );
 
   return rows;
@@ -596,6 +607,7 @@ const getVaccineProgress = async ({
   vaccineIds,
   statuses,
   vaccineKeys,
+  guardianId,
 }) => {
   const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
@@ -621,6 +633,7 @@ const getVaccineProgress = async ({
         WHERE COALESCE(ir.is_active, true) = true
           AND COALESCE(p.is_active, true) = true
           AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+          AND ($7::int IS NULL OR p.guardian_id = $7)
       )
       SELECT
         vd.vaccine_key,
@@ -657,6 +670,7 @@ const getVaccineProgress = async ({
       toNullableArray(vaccineIds),
       toNullableArray(statuses),
       vaccineKeys,
+      guardianId,
     ],
   );
 
@@ -669,6 +683,7 @@ const getDailyVaccinationTrend = async ({
   endDate,
   vaccineIds,
   statuses,
+  guardianId,
 }) => {
   const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
@@ -684,6 +699,7 @@ const getDailyVaccinationTrend = async ({
         AND COALESCE(p.is_active, true) = true
         AND ir.admin_date BETWEEN $2::date AND $3::date
         AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+        AND ($6::int IS NULL OR p.guardian_id = $6)
         AND ($4::int[] IS NULL OR ir.vaccine_id = ANY($4::int[]))
         AND (
           $5::text[] IS NULL
@@ -692,13 +708,13 @@ const getDailyVaccinationTrend = async ({
       GROUP BY ir.admin_date::date
       ORDER BY ir.admin_date::date ASC
     `,
-    [facilityId, startDate, endDate, toNullableArray(vaccineIds), toNullableArray(statuses)],
+    [facilityId, startDate, endDate, toNullableArray(vaccineIds), toNullableArray(statuses), guardianId],
   );
 
   return rows;
 };
 
-const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, statuses }) => {
+const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, statuses, guardianId }) => {
   const {
     appointmentsScope,
     appointmentsScopeFallback,
@@ -729,6 +745,7 @@ const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, status
       WHERE COALESCE(a.is_active, true) = true
         AND a.scheduled_date::date BETWEEN $2::date AND $3::date
         AND ($1::int IS NULL OR COALESCE(${patientScopeExpr}, ${appointmentScopeExpr}) = $1)
+        AND ($5::int IS NULL OR p.guardian_id = $5)
         AND (
           $4::text[] IS NULL
           OR LOWER(a.status::text) = ANY($4::text[])
@@ -736,13 +753,13 @@ const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, status
       GROUP BY a.scheduled_date::date
       ORDER BY a.scheduled_date::date ASC
     `,
-    [facilityId, startDate, endDate, toNullableArray(statuses)],
+    [facilityId, startDate, endDate, toNullableArray(statuses), guardianId],
   );
 
   return rows;
 };
 
-const getDemographics = async ({ facilityId }) => {
+const getDemographics = async ({ facilityId, guardianId }) => {
   const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
 
@@ -770,11 +787,12 @@ const getDemographics = async ({ facilityId }) => {
         WHERE COALESCE(p.is_active, true) = true
           AND p.dob IS NOT NULL
           AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+          AND ($2::int IS NULL OR p.guardian_id = $2)
       ) age_bucket
       GROUP BY age_bucket.label, age_bucket.sort_order
       ORDER BY age_bucket.sort_order ASC
     `,
-    [facilityId],
+    [facilityId, guardianId],
   );
 
   const genderRows = await mapRows(
@@ -789,10 +807,11 @@ const getDemographics = async ({ facilityId }) => {
       FROM patients p
       WHERE COALESCE(p.is_active, true) = true
         AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+        AND ($2::int IS NULL OR p.guardian_id = $2)
       GROUP BY 1
       ORDER BY count DESC
     `,
-    [facilityId],
+    [facilityId, guardianId],
   );
 
   const coverageRows = await mapRows(
@@ -803,8 +822,9 @@ const getDemographics = async ({ facilityId }) => {
       FROM patients p
       WHERE COALESCE(p.is_active, true) = true
         AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+        AND ($2::int IS NULL OR p.guardian_id = $2)
     `,
-    [facilityId],
+    [facilityId, guardianId],
   );
 
   return {
@@ -873,6 +893,7 @@ const getRecentActivity = async ({
   startDate,
   endDate,
   limit,
+  guardianId,
 }) => {
   const {
     appointmentsScope,
@@ -938,6 +959,7 @@ const getRecentActivity = async ({
         WHERE COALESCE(ir.is_active, true) = true
           AND COALESCE(p.is_active, true) = true
           AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+          AND ($5::int IS NULL OR p.guardian_id = $5)
           AND ir.created_at::date BETWEEN $2::date AND $3::date
 
         UNION ALL
@@ -963,6 +985,7 @@ const getRecentActivity = async ({
         LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
         WHERE COALESCE(a.is_active, true) = true
           AND ($1::int IS NULL OR COALESCE(${patientScopeExpr}, ${appointmentScopeExpr}) = $1)
+          AND ($5::int IS NULL OR p.guardian_id = $5)
           AND a.updated_at::date BETWEEN $2::date AND $3::date
 
         UNION ALL
@@ -1006,7 +1029,7 @@ const getRecentActivity = async ({
       ORDER BY activity.activity_at DESC
       LIMIT $4::int
     `,
-    [facilityId, startDate, endDate, limit],
+    [facilityId, startDate, endDate, limit, guardianId],
   );
 
   return rows;

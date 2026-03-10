@@ -249,6 +249,16 @@ app.use(
 const cookieParser = require('cookie-parser');
 app.use(cookieParser());
 
+// Global input sanitization middleware - prevents XSS and injection attacks
+console.log('Loading input sanitization middleware...');
+const { createSanitizationMiddleware, preventPrototypePollution } = require('./middleware/sanitization');
+
+// Apply sanitization to all API routes
+// Exclude sensitive fields that should not be sanitized (passwords, tokens, etc.)
+app.use('/api', preventPrototypePollution);
+app.use('/api', createSanitizationMiddleware());
+console.log('Input sanitization middleware applied');
+
 // Global middleware to prevent caching for all API routes
 app.use('/api', (req, res, next) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');

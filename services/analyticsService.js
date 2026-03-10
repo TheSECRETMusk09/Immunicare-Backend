@@ -253,6 +253,7 @@ const collectDashboardData = async ({ filters }) => {
   ] = await Promise.all([
     analyticsRepository.getInfantGuardianTotals({
       facilityId: filters.facilityId,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getVaccinationSnapshot({
       facilityId: filters.facilityId,
@@ -261,6 +262,7 @@ const collectDashboardData = async ({ filters }) => {
       vaccineIds,
       statuses: statusFilters.vaccinationStatuses,
       overdueOnly: statusFilters.overdueOnly,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getVaccinationStatusBreakdown({
       facilityId: filters.facilityId,
@@ -268,6 +270,7 @@ const collectDashboardData = async ({ filters }) => {
       endDate: filters.endDate,
       vaccineIds,
       statuses: statusFilters.vaccinationStatuses,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getAppointmentSnapshot({
       facilityId: filters.facilityId,
@@ -275,12 +278,14 @@ const collectDashboardData = async ({ filters }) => {
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
       overdueOnly: statusFilters.overdueOnly,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getAppointmentStatusBreakdown({
       facilityId: filters.facilityId,
       startDate: filters.startDate,
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getInventorySnapshot({
       facilityId: filters.facilityId,
@@ -298,6 +303,7 @@ const collectDashboardData = async ({ filters }) => {
       vaccineIds,
       statuses: statusFilters.vaccinationStatuses,
       vaccineKeys,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getDailyVaccinationTrend({
       facilityId: filters.facilityId,
@@ -305,15 +311,18 @@ const collectDashboardData = async ({ filters }) => {
       endDate: filters.endDate,
       vaccineIds,
       statuses: statusFilters.vaccinationStatuses,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getDailyAppointmentTrend({
       facilityId: filters.facilityId,
       startDate: filters.startDate,
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getDemographics({
       facilityId: filters.facilityId,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getReminderStats({
       startDate: filters.startDate,
@@ -325,6 +334,7 @@ const collectDashboardData = async ({ filters }) => {
       startDate: filters.startDate,
       endDate: filters.endDate,
       limit: filters.activityLimit,
+      guardianId: filters.guardianId,
     }),
     analyticsRepository.getLowStockAlerts({
       facilityId: filters.facilityId,
@@ -471,9 +481,24 @@ const validateFilters = (query, user) => {
 
   const scopedFacilityId = resolveScopedFacilityId(user, validation.filters.facilityId);
 
+  // Extract guardianId from user object - support multiple property names
+  // The user object may have: guardian_id, guardianId, or id (for legacy tokens)
+  const isGuardian = user?.role === 'GUARDIAN' || user?.role_type === 'GUARDIAN';
+  let guardianId = null;
+
+  if (isGuardian) {
+    // Try to get guardian_id from various possible properties
+    guardianId = user?.guardian_id
+      ? (Number.isFinite(Number.parseInt(user.guardian_id, 10)) ? Number.parseInt(user.guardian_id, 10) : null)
+      : (user?.id
+        ? (Number.isFinite(Number.parseInt(user.id, 10)) ? Number.parseInt(user.id, 10) : null)
+        : null);
+  }
+
   return {
     ...validation.filters,
     facilityId: scopedFacilityId,
+    guardianId,
   };
 };
 

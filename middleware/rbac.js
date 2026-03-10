@@ -40,7 +40,7 @@ const LEGACY_GUARDIAN_ROLES = new Set(['guardian', 'user', 'parent']);
 const PERMISSIONS = {
   // Dashboard
   'dashboard:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
-  'dashboard:analytics': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'dashboard:analytics': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
 
   // Infants / Patients
   'patient:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
