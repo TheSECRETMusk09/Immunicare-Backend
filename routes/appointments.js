@@ -181,6 +181,16 @@ const sanitizeNullableInt = (value) => {
   return parsed;
 };
 
+const resolveSlotClinicId = (req, payloadClinicId) => {
+  if (payloadClinicId) {
+    return payloadClinicId;
+  }
+  if (req.user?.clinic_id) {
+    return sanitizeNullableInt(req.user.clinic_id);
+  }
+  return null;
+};
+
 const CONTROL_NUMBER_FORMAT_ERROR = 'control_number must match INF-YYYY-######';
 
 const fetchInfantOwnership = async (infantId) => {
@@ -417,6 +427,20 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
       });
 
       if (!availability.available) {
+        if (availability.code === 'SELECTED_VACCINE_OUT_OF_STOCK') {
+          try {
+            await appointmentSchedulingService.notifyGuardianVaccineUnavailable({
+              guardianId: parseInt(req.user.guardian_id, 10),
+              infantId,
+              vaccineId: sanitizeNullableInt(req.body.vaccine_id),
+              scheduledDate: normalizedScheduledDate,
+              clinicId: sanitizeNullableInt(finalClinicId),
+            });
+          } catch (notifyError) {
+            console.error('Failed to send vaccine unavailable notification:', notifyError.message);
+          }
+        }
+
         return res.status(400).json({
           error: availability.message,
           code: availability.code,
@@ -506,6 +530,35 @@ router.get('/availability/check', async (req, res) => {
   } catch (error) {
     console.error('Check appointment availability error:', error);
     res.status(500).json({ error: 'Failed to check appointment availability' });
+  }
+});
+
+// Available time slots for a selected date
+router.get('/availability/slots', async (req, res) => {
+  try {
+    const { scheduled_date, vaccine_id, clinic_id, exclude_appointment_id } = req.query;
+
+    if (!scheduled_date) {
+      return res.status(400).json({
+        error: 'scheduled_date is required',
+        code: 'SCHEDULED_DATE_REQUIRED',
+      });
+    }
+
+    const result = await appointmentSchedulingService.getAvailableTimeSlots({
+      scheduledDate: scheduled_date,
+      vaccineId: sanitizeNullableInt(vaccine_id),
+      clinicId: resolveSlotClinicId(req, sanitizeNullableInt(clinic_id)),
+      excludeAppointmentId: sanitizeNullableInt(exclude_appointment_id),
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Availability slots error:', error);
+    res.status(500).json({
+      error: 'Failed to fetch available slots',
+      code: 'AVAILABILITY_SLOTS_ERROR',
+    });
   }
 });
 

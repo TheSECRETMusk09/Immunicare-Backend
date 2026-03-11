@@ -1,5 +1,6 @@
 const pool = require('../db');
-const notificationService = require('./notificationService');
+const NotificationService = require('./notificationService');
+const smsService = require('./smsService');
 const {
   generateControlNumber: generateInfantControlNumber,
   resolveOrCreateInfantPatient,
@@ -28,7 +29,12 @@ const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   vaccineBatchesScope: 'clinic_id',
 });
 
+const notificationService = new NotificationService();
+
 let schemaColumnMappingPromise = null;
+let notificationColumnsCache = null;
+let notificationColumnsCachedAt = 0;
+const NOTIFICATION_COLUMNS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const resolveSchemaColumnMappings = async () => {
   const mappings = { ...FALLBACK_SCHEMA_COLUMNS };
@@ -114,6 +120,99 @@ const parseDate = (value) => {
 
   date.setHours(0, 0, 0, 0);
   return date;
+};
+
+const getNotificationColumns = async () => {
+  const now = Date.now();
+  if (notificationColumnsCache && now - notificationColumnsCachedAt < NOTIFICATION_COLUMNS_CACHE_TTL_MS) {
+    return notificationColumnsCache;
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'notifications'
+      `,
+    );
+
+    notificationColumnsCache = new Set(result.rows.map((row) => row.column_name));
+    notificationColumnsCachedAt = now;
+    return notificationColumnsCache;
+  } catch (error) {
+    console.error('Error resolving notification columns:', error);
+    return new Set();
+  }
+};
+
+const safeJsonParse = (value, fallback = {}) => {
+  if (!value) {
+    return fallback;
+  }
+  if (typeof value === 'object') {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return fallback;
+  }
+};
+
+const TIME_SLOT_CONFIG = Object.freeze({
+  start: '08:00',
+  end: '16:30',
+  intervalMinutes: 30,
+  lunchStart: '12:00',
+  lunchEnd: '13:00',
+});
+
+const timeToMinutes = (timeValue) => {
+  if (!timeValue) {
+    return null;
+  }
+
+  const [hours, minutes] = String(timeValue).split(':').map((part) => parseInt(part, 10));
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return null;
+  }
+
+  return hours * 60 + minutes;
+};
+
+const minutesToTime = (totalMinutes) => {
+  const safeMinutes = Math.max(0, totalMinutes);
+  const hours = Math.floor(safeMinutes / 60);
+  const minutes = safeMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+};
+
+const buildDailyTimeSlots = () => {
+  const startMinutes = timeToMinutes(TIME_SLOT_CONFIG.start);
+  const endMinutes = timeToMinutes(TIME_SLOT_CONFIG.end);
+  const lunchStartMinutes = timeToMinutes(TIME_SLOT_CONFIG.lunchStart);
+  const lunchEndMinutes = timeToMinutes(TIME_SLOT_CONFIG.lunchEnd);
+
+  if (
+    startMinutes === null ||
+    endMinutes === null ||
+    lunchStartMinutes === null ||
+    lunchEndMinutes === null
+  ) {
+    return [];
+  }
+
+  const slots = [];
+  for (let current = startMinutes; current <= endMinutes; current += TIME_SLOT_CONFIG.intervalMinutes) {
+    if (current >= lunchStartMinutes && current < lunchEndMinutes) {
+      continue;
+    }
+    slots.push(minutesToTime(current));
+  }
+
+  return slots;
 };
 
 const isWeekend = (value) => {
@@ -498,6 +597,132 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
   }
 };
 
+const getBookedTimeSlots = async ({ scheduledDate, clinicId = null, excludeAppointmentId = null }) => {
+  try {
+    const { appointmentsPatient, appointmentsScope, patientsScope } = await getSchemaColumnMappings();
+    const dateKey = toDateKey(scheduledDate);
+    if (!dateKey) {
+      return [];
+    }
+
+    const params = [dateKey];
+    let query = `
+      SELECT a.id, a.scheduled_date
+      FROM appointments a
+      LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
+      WHERE DATE(a.scheduled_date) = $1::date
+        AND a.is_active = true
+        AND a.status <> 'cancelled'
+    `;
+
+    if (excludeAppointmentId) {
+      query += ` AND a.id <> $${params.length + 1}`;
+      params.push(excludeAppointmentId);
+    }
+
+    if (clinicId) {
+      query += ` AND COALESCE(p.${patientsScope}, a.${appointmentsScope}) = $${params.length + 1}`;
+      params.push(clinicId);
+    }
+
+    const result = await pool.query(query, params);
+
+    return (result.rows || [])
+      .map((row) => {
+        const date = new Date(row.scheduled_date);
+        if (Number.isNaN(date.getTime())) {
+          return null;
+        }
+        return date.toTimeString().slice(0, 5);
+      })
+      .filter(Boolean);
+  } catch (error) {
+    console.error('Error getting booked time slots:', error);
+    return [];
+  }
+};
+
+const getAvailableTimeSlots = async ({
+  scheduledDate,
+  vaccineId = null,
+  clinicId = null,
+  excludeAppointmentId = null,
+} = {}) => {
+  try {
+    const dateOnly = parseDate(scheduledDate);
+    if (!dateOnly) {
+      return {
+        available: false,
+        code: 'INVALID_DATE',
+        message: 'Invalid appointment date',
+        slots: [],
+        bookedSlots: [],
+      };
+    }
+
+    const availability = await checkBookingAvailability({
+      scheduledDate,
+      vaccineId,
+      clinicId,
+    });
+
+    if (!availability.available) {
+      return {
+        available: false,
+        code: availability.code,
+        message: availability.message,
+        slots: [],
+        bookedSlots: [],
+        availability,
+      };
+    }
+
+    const slots = buildDailyTimeSlots();
+    const bookedSlots = await getBookedTimeSlots({
+      scheduledDate: dateOnly,
+      clinicId,
+      excludeAppointmentId,
+    });
+
+    let availableSlots = slots.filter((slot) => !bookedSlots.includes(slot));
+
+    const todayKey = toDateKey(new Date());
+    const selectedKey = toDateKey(dateOnly);
+    if (todayKey && selectedKey && todayKey === selectedKey) {
+      const now = new Date();
+      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      availableSlots = availableSlots.filter((slot) => {
+        const slotMinutes = timeToMinutes(slot);
+        return slotMinutes !== null && slotMinutes > currentMinutes;
+      });
+    }
+
+    const hasSlots = availableSlots.length > 0;
+
+    return {
+      available: hasSlots,
+      code: hasSlots ? 'SLOTS_AVAILABLE' : 'NO_SLOTS_AVAILABLE',
+      message: hasSlots
+        ? 'Available time slots loaded.'
+        : 'No available time slots for the selected date.',
+      date: toDateKey(dateOnly),
+      slots: availableSlots,
+      bookedSlots,
+      workingHours: TIME_SLOT_CONFIG,
+      availability,
+    };
+  } catch (error) {
+    console.error('Error getting available time slots:', error);
+    return {
+      available: false,
+      code: 'SLOT_LOOKUP_FAILED',
+      message: 'Failed to load time slots. Please try again.',
+      slots: [],
+      bookedSlots: [],
+    };
+  }
+};
+
 /**
  * Retrieves upcoming appointments for a specific guardian.
  * @param {number} guardianId - The ID of the guardian.
@@ -627,8 +852,233 @@ const ensureInfantRecord = async (infantData, guardianId, client = null) => {
   };
 };
 
+const resolveGuardianContact = async (guardianId) => {
+  if (!guardianId) {
+    return null;
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT g.id, g.name, g.phone, g.email
+        FROM guardians g
+        WHERE g.id = $1
+        LIMIT 1
+      `,
+      [guardianId],
+    );
+
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error fetching guardian contact:', error);
+    return null;
+  }
+};
+
+const resolveVaccineName = async (vaccineId) => {
+  if (!vaccineId) {
+    return 'selected vaccine';
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT name
+        FROM vaccines
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [vaccineId],
+    );
+
+    return result.rows[0]?.name || 'selected vaccine';
+  } catch (error) {
+    console.error('Error fetching vaccine name:', error);
+    return 'selected vaccine';
+  }
+};
+
+const buildUnavailableNotificationMessage = ({ guardianName, vaccineName, scheduledDate }) => {
+  const dateLabel = scheduledDate
+    ? new Date(scheduledDate).toLocaleDateString('en-PH', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })
+    : 'your selected date';
+
+  return `Hi ${guardianName}, ${vaccineName} is currently unavailable for ${dateLabel}. We'll notify you once stock is replenished.`;
+};
+
+const shouldDedupeUnavailableNotification = async ({ guardianId, vaccineId, dateKey }) => {
+  try {
+    const notificationColumns = await getNotificationColumns();
+    const hasMetadata = notificationColumns.has('metadata');
+
+    const selectFields = hasMetadata ? 'id, metadata' : 'id';
+    const result = await pool.query(
+      `
+        SELECT ${selectFields}
+        FROM notifications
+        WHERE guardian_id = $1
+          AND notification_type = 'vaccine_unavailable'
+          AND created_at >= DATE_TRUNC('day', NOW())
+        ORDER BY created_at DESC
+        LIMIT 25
+      `,
+      [guardianId],
+    );
+
+    const latest = result.rows || [];
+    if (!hasMetadata) {
+      return latest.length > 0;
+    }
+
+    return latest.some((row) => {
+      const metadata = safeJsonParse(row.metadata, {});
+      const metaVaccine = metadata?.vaccine_id ? parseInt(metadata.vaccine_id, 10) : null;
+      const metaDate = metadata?.date_key || null;
+      return metaVaccine === vaccineId && metaDate === dateKey;
+    });
+  } catch (error) {
+    console.error('Error checking dedupe for vaccine unavailability:', error);
+    return false;
+  }
+};
+
+const notifyGuardianVaccineUnavailable = async ({
+  guardianId,
+  infantId,
+  vaccineId,
+  scheduledDate,
+  clinicId,
+} = {}) => {
+  if (!guardianId || !vaccineId) {
+    return { notified: false, reason: 'missing_guardian_or_vaccine' };
+  }
+
+  const dateKey = toDateKey(scheduledDate);
+  if (!dateKey) {
+    return { notified: false, reason: 'invalid_date' };
+  }
+
+  const shouldSkip = await shouldDedupeUnavailableNotification({
+    guardianId,
+    vaccineId,
+    dateKey,
+  });
+
+  if (shouldSkip) {
+    return { notified: false, reason: 'duplicate' };
+  }
+
+  const [guardian, vaccineName] = await Promise.all([
+    resolveGuardianContact(guardianId),
+    resolveVaccineName(vaccineId),
+  ]);
+
+  const guardianName = guardian?.name || `Guardian #${guardianId}`;
+  const message = buildUnavailableNotificationMessage({
+    guardianName,
+    vaccineName,
+    scheduledDate,
+  });
+
+  let notificationRecord = null;
+  try {
+    const notificationColumns = await getNotificationColumns();
+    const payload = {
+      notification_type: 'vaccine_unavailable',
+      target_type: 'guardian',
+      target_id: guardianId,
+      recipient_name: guardianName,
+      recipient_phone: guardian?.phone || null,
+      recipient_email: guardian?.email || null,
+      channel: 'sms',
+      priority: 'high',
+      status: 'pending',
+      subject: 'Vaccine Unavailable',
+      message,
+      created_by: null,
+      guardian_id: guardianId,
+      target_role: 'guardian',
+      title: 'Vaccine Unavailable',
+      type: 'alert',
+      category: 'inventory',
+      is_read: false,
+      metadata: {
+        guardian_id: guardianId,
+        infant_id: infantId || null,
+        vaccine_id: vaccineId,
+        date_key: dateKey,
+        clinic_id: clinicId || null,
+        reason: 'out_of_stock',
+      },
+    };
+
+    const keys = Object.keys(payload).filter(
+      (key) => notificationColumns.has(key) && payload[key] !== undefined,
+    );
+
+    if (keys.length > 0) {
+      const placeholders = keys.map((_, index) => `$${index + 1}`);
+      const values = keys.map((key) =>
+        key === 'metadata' && typeof payload[key] !== 'string'
+          ? JSON.stringify(payload[key])
+          : payload[key],
+      );
+
+      const result = await pool.query(
+        `
+          INSERT INTO notifications (${keys.join(', ')})
+          VALUES (${placeholders.join(', ')})
+          RETURNING *
+        `,
+        values,
+      );
+      notificationRecord = result.rows[0] || null;
+    }
+  } catch (notificationError) {
+    console.error('Failed to create vaccine unavailable notification:', notificationError.message);
+  }
+
+  let smsResult = null;
+  try {
+    if (guardian?.phone) {
+      smsResult = await smsService.sendSMS(guardian.phone, message, 'vaccine_unavailable', {
+        guardianId,
+        infantId: infantId || null,
+        vaccineId,
+        scheduledDate: dateKey,
+        clinicId: clinicId || null,
+      });
+    } else {
+      throw new Error('Guardian phone number missing');
+    }
+  } catch (smsError) {
+    console.error('Failed to send vaccine unavailable SMS:', smsError.message);
+    if (notificationRecord?.id) {
+      try {
+        await pool.query(
+          'UPDATE notifications SET status = $1, failure_reason = $2 WHERE id = $3',
+          ['failed', smsError.message, notificationRecord.id],
+        );
+      } catch (updateError) {
+        console.error('Failed to update notification failure status:', updateError.message);
+      }
+    }
+  }
+
+  return {
+    notified: Boolean(notificationRecord),
+    notificationId: notificationRecord?.id || null,
+    smsSent: Boolean(smsResult?.success),
+  };
+};
+
 module.exports = {
   checkBookingAvailability,
+  getAvailableTimeSlots,
   getCalendarAvailability,
   getCalendarDateDetails,
   getHolidayInfo,
@@ -637,4 +1087,5 @@ module.exports = {
   getAppointmentsByGuardian,
   generateControlNumber,
   ensureInfantRecord,
+  notifyGuardianVaccineUnavailable,
 };

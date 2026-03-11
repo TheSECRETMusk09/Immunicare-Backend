@@ -1,6 +1,106 @@
 const pool = require('../db');
 const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
+const smsService = require('./smsService');
+
+const NOTIFICATION_COLUMNS_CACHE_TTL = 5 * 60 * 1000;
+let notificationColumnsCache = null;
+let notificationColumnsCachedAt = 0;
+
+const getNotificationColumns = async () => {
+  const now = Date.now();
+  if (notificationColumnsCache && now - notificationColumnsCachedAt < NOTIFICATION_COLUMNS_CACHE_TTL) {
+    return notificationColumnsCache;
+  }
+
+  const result = await pool.query(
+    `
+      SELECT column_name, data_type, udt_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'notifications'
+    `,
+  );
+
+  notificationColumnsCache = new Map(
+    result.rows.map((row) => [row.column_name, { dataType: row.data_type, udtName: row.udt_name }]),
+  );
+  notificationColumnsCachedAt = now;
+  return notificationColumnsCache;
+};
+
+const normalizeJsonPayload = (value) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    try {
+      JSON.parse(value);
+      return value;
+    } catch (_error) {
+      return JSON.stringify(value);
+    }
+  }
+
+  return JSON.stringify(value);
+};
+
+const parseJsonPayload = (value) => {
+  if (!value) {
+    return {};
+  }
+  if (typeof value === 'object') {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return {};
+  }
+};
+
+const PRIORITY_LABELS = ['low', 'normal', 'high', 'urgent'];
+const toPriorityLabel = (value) => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (PRIORITY_LABELS.includes(normalized)) {
+      return normalized;
+    }
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value >= 4) {
+      return 'urgent';
+    }
+    if (value >= 3) {
+      return 'high';
+    }
+    if (value <= 1) {
+      return 'low';
+    }
+  }
+
+  return 'normal';
+};
+
+const toPriorityNumber = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(1, Math.min(5, Math.round(value)));
+  }
+
+  const normalized = toPriorityLabel(value);
+  switch (normalized) {
+  case 'urgent':
+    return 5;
+  case 'high':
+    return 4;
+  case 'low':
+    return 2;
+  default:
+    return 3;
+  }
+};
 
 class NotificationService {
   constructor() {
@@ -38,33 +138,88 @@ class NotificationService {
         scheduled_for,
       } = notificationData;
 
-      // Create notification record
+      // Create notification record (adapt to schema columns)
+      const columns = await getNotificationColumns();
+      const resolvePriority = (value) => {
+        if (!columns.has('priority')) {
+          return undefined;
+        }
+
+        const columnInfo = columns.get('priority');
+        if (!columnInfo) {
+          return value;
+        }
+
+        if (columnInfo.dataType === 'integer') {
+          return toPriorityNumber(value);
+        }
+
+        if (columnInfo.dataType === 'USER-DEFINED') {
+          return toPriorityLabel(value);
+        }
+
+        return value;
+      };
+      const resolvedPriority = resolvePriority(priority);
+      const payload = {
+        notification_type,
+        target_type,
+        target_id,
+        recipient_name: notificationData.recipient_name || null,
+        recipient_email: notificationData.recipient_email || null,
+        recipient_phone: notificationData.recipient_phone || null,
+        channel,
+        priority: resolvedPriority,
+        status: scheduled_for ? 'scheduled' : 'pending',
+        subject,
+        message,
+        template_id: template_id || null,
+        template_data: template_data || {},
+        language,
+        scheduled_for: scheduled_for || null,
+        created_by: notificationData.created_by || null,
+        guardian_id: notificationData.guardian_id || null,
+        target_role: notificationData.target_role || null,
+        metadata: notificationData.metadata || null,
+        title: notificationData.title || subject || notification_type || 'Notification',
+        type: notificationData.type || notification_type || 'info',
+        category: notificationData.category || 'general',
+        is_read: notificationData.is_read ?? false,
+      };
+
+      const keys = Object.keys(payload).filter((key) => {
+        if (!columns.has(key) || payload[key] === undefined) {
+          return false;
+        }
+
+        const columnInfo = columns.get(key);
+        if (!columnInfo) {
+          return true;
+        }
+
+        const isJsonColumn =
+          columnInfo.dataType === 'json' || columnInfo.dataType === 'jsonb' || columnInfo.udtName === 'jsonb';
+
+        if (isJsonColumn) {
+          payload[key] = normalizeJsonPayload(payload[key]);
+        }
+
+        return true;
+      });
+
+      if (keys.length === 0) {
+        throw new Error('Notification table schema is missing required columns');
+      }
+
+      const placeholders = keys.map((_, index) => `$${index + 1}`);
+      const values = keys.map((key) => payload[key]);
+
       const result = await pool.query(
         `INSERT INTO notifications (
-          notification_type, target_type, target_id, recipient_name,
-          recipient_email, recipient_phone, channel, priority, status,
-          subject, message, template_id, template_data, language,
-          scheduled_for, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          ${keys.join(', ')}
+        ) VALUES (${placeholders.join(', ')})
         RETURNING *`,
-        [
-          notification_type,
-          target_type,
-          target_id,
-          notificationData.recipient_name || null,
-          notificationData.recipient_email || null,
-          notificationData.recipient_phone || null,
-          channel,
-          priority,
-          scheduled_for ? 'scheduled' : 'pending',
-          subject,
-          message,
-          template_id || null,
-          JSON.stringify(template_data || {}),
-          language,
-          scheduled_for || null,
-          notificationData.created_by || null,
-        ],
+        values,
       );
 
       const notification = result.rows[0];
@@ -167,16 +322,20 @@ class NotificationService {
   }
 
   async sendSMS(notification) {
-    // SMS implementation would go here
-    // This would typically use a service like Twilio
-    logger.info(
-      `SMS to ${notification.recipient_phone}: ${notification.message}`,
-    );
-
-    // For now, simulate SMS sending
     if (!notification.recipient_phone) {
       throw new Error('No phone number provided');
     }
+
+    await smsService.sendSMS(
+      notification.recipient_phone,
+      notification.message,
+      notification.notification_type || 'notification',
+      {
+        notificationId: notification.id,
+        targetType: notification.target_type,
+        targetId: notification.target_id,
+      },
+    );
   }
 
   async sendPushNotification(notification) {
