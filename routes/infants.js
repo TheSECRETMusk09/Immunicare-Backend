@@ -6,7 +6,6 @@ const {
   getCanonicalRole,
   requirePermission,
 } = require('../middleware/rbac');
-const appointmentSchedulingService = require('../services/appointmentSchedulingService');
 const {
   resolveOrCreateInfantPatient,
   INFANT_CONTROL_NUMBER_PATTERN,
@@ -896,13 +895,12 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
       });
     }
 
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'control_number')) {
-      return respondInfantValidationError(res, {
-        control_number: 'Child control number cannot be edited',
-      });
+    const updatePayload = { ...(req.body || {}) };
+    if (Object.prototype.hasOwnProperty.call(updatePayload, 'control_number')) {
+      delete updatePayload.control_number;
     }
 
-    const validationResult = validateInfantPayload(req.body || {});
+    const validationResult = validateInfantPayload(updatePayload);
     if (!validationResult.isValid) {
       return respondInfantValidationError(
         res,
@@ -1044,11 +1042,9 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
     }
 
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'control_number')) {
-      return res.status(400).json({
-        success: false,
-        error: 'control_number is immutable and cannot be edited',
-      });
+    const updatePayload = { ...(req.body || {}) };
+    if (Object.prototype.hasOwnProperty.call(updatePayload, 'control_number')) {
+      delete updatePayload.control_number;
     }
 
     const {
@@ -1075,7 +1071,7 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
       nbs_done,
       nbs_date,
       cellphone_number,
-    } = req.body;
+    } = updatePayload;
 
     let normalizedSex = sex;
     if (sex === 'M') {

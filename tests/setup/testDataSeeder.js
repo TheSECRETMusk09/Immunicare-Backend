@@ -2,18 +2,19 @@ const bcrypt = require('bcryptjs');
 const pool = require('../../db');
 
 const TEST_ADMIN = {
-  username: 'qa_admin',
-  email: 'qa.admin@immunicare.test',
+  username: 'enrico.torres',
+  email: 'enrico.torres@immunicare.gov.ph',
   password: 'QaAdmin!234',
+  name: 'Enrico Torres',
 };
 
 const TEST_GUARDIAN = {
-  username: 'qa.guardian',
-  email: 'qa.guardian@immunicare.test',
-  phone: '+639000000001',
+  username: 'maria.santos',
+  email: 'maria.santos@example.com',
+  phone: '+639178912345',
   password: 'QaGuardian!234',
-  name: 'QA Guardian',
-  relationship: 'parent',
+  name: 'Maria Clara Santos',
+  relationship: 'mother',
 };
 
 const ensureClinic = async () => {

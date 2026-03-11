@@ -145,5 +145,12 @@
     "type": "sql",
     "deprecated": false,
     "description": "Create and populate guardian username proposal audit artifact without applying username renames"
+  },
+  {
+    "id": "notification_orchestration_foundation_20260312",
+    "file": "20260312_notification_orchestration_foundation.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Add notification orchestration foundation fields and indexes for event contract, idempotency, callback, and channel-status tracking"
   }
 ]
