@@ -98,6 +98,16 @@ const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   notificationsMessage: null,
   notificationsType: null,
   notificationsPriority: null,
+  stockAlertsStatus: null,
+  stockAlertsPriority: null,
+  stockAlertsAlertType: null,
+  stockAlertsCurrentStock: null,
+  stockAlertsThresholdValue: null,
+  stockAlertsMessage: null,
+  stockAlertsCreatedAt: null,
+  stockAlertsUpdatedAt: null,
+  stockAlertsResolvedAt: null,
+  stockAlertsAcknowledgedAt: null,
 });
 
 let schemaColumnMappingPromise = null;
@@ -146,6 +156,11 @@ const resolveSchemaColumnMappings = async () => {
           'message',
           'notification_type',
           'priority',
+          'alert_type',
+          'current_stock',
+          'threshold_value',
+          'resolved_at',
+          'acknowledged_at',
         ],
       ],
     );
@@ -295,6 +310,46 @@ const resolveSchemaColumnMappings = async () => {
     if (available.has('notifications.priority')) {
       mappings.notificationsPriority = 'priority';
     }
+
+    if (available.has('vaccine_stock_alerts.status')) {
+      mappings.stockAlertsStatus = 'status';
+    }
+
+    if (available.has('vaccine_stock_alerts.priority')) {
+      mappings.stockAlertsPriority = 'priority';
+    }
+
+    if (available.has('vaccine_stock_alerts.alert_type')) {
+      mappings.stockAlertsAlertType = 'alert_type';
+    }
+
+    if (available.has('vaccine_stock_alerts.current_stock')) {
+      mappings.stockAlertsCurrentStock = 'current_stock';
+    }
+
+    if (available.has('vaccine_stock_alerts.threshold_value')) {
+      mappings.stockAlertsThresholdValue = 'threshold_value';
+    }
+
+    if (available.has('vaccine_stock_alerts.message')) {
+      mappings.stockAlertsMessage = 'message';
+    }
+
+    if (available.has('vaccine_stock_alerts.created_at')) {
+      mappings.stockAlertsCreatedAt = 'created_at';
+    }
+
+    if (available.has('vaccine_stock_alerts.updated_at')) {
+      mappings.stockAlertsUpdatedAt = 'updated_at';
+    }
+
+    if (available.has('vaccine_stock_alerts.resolved_at')) {
+      mappings.stockAlertsResolvedAt = 'resolved_at';
+    }
+
+    if (available.has('vaccine_stock_alerts.acknowledged_at')) {
+      mappings.stockAlertsAcknowledgedAt = 'acknowledged_at';
+    }
   } catch (error) {
     console.error('Error resolving analytics schema column mappings:', error);
   }
@@ -359,6 +414,66 @@ const buildInventoryStockExpression = ({ alias, mappings }) => {
   }
 
   return `GREATEST((${additionExpression}) - (${deductions.join(' + ')}), 0)`;
+};
+
+const buildStockAlertSeverityExpression = ({ alias, mappings, stockExpr, lowThresholdExpr, criticalThresholdExpr }) => {
+  const priorityExpr = mappings.stockAlertsPriority
+    ? `LOWER(COALESCE(${alias}.${mappings.stockAlertsPriority}::text, ''))`
+    : null;
+  const typeExpr = mappings.stockAlertsAlertType
+    ? `LOWER(COALESCE(${alias}.${mappings.stockAlertsAlertType}::text, ''))`
+    : null;
+
+  const predicates = [
+    priorityExpr ? `${priorityExpr} IN ('critical', 'urgent', 'high')` : null,
+    typeExpr ? `${typeExpr} IN ('critical', 'critical_stock', 'out_of_stock')` : null,
+    `${stockExpr} <= ${criticalThresholdExpr}`,
+  ].filter(Boolean);
+
+  const warningPredicates = [
+    typeExpr ? `${typeExpr} IN ('low_stock', 'warning')` : null,
+    `${stockExpr} <= ${lowThresholdExpr}`,
+  ].filter(Boolean);
+
+  return `
+    CASE
+      WHEN ${predicates.join(' OR ')} THEN 'critical'
+      WHEN ${warningPredicates.join(' OR ')} THEN 'warning'
+      ELSE 'warning'
+    END
+  `;
+};
+
+const buildStockAlertMessageExpression = ({ alias, mappings, stockExpr }) => {
+  if (mappings.stockAlertsMessage) {
+    return `COALESCE(NULLIF(${alias}.${mappings.stockAlertsMessage}, ''), CONCAT(COALESCE(v.name, 'Vaccine'), ' stock is low (', ${stockExpr}, ' remaining)'))`;
+  }
+
+  return `CONCAT(COALESCE(v.name, 'Vaccine'), ' stock is low (', ${stockExpr}, ' remaining)')`;
+};
+
+const buildStockAlertTimestampExpression = ({ alias, mappings }) => {
+  const candidates = [
+    mappings.stockAlertsUpdatedAt ? `${alias}.${mappings.stockAlertsUpdatedAt}` : null,
+    mappings.stockAlertsCreatedAt ? `${alias}.${mappings.stockAlertsCreatedAt}` : null,
+    mappings.stockAlertsResolvedAt ? `${alias}.${mappings.stockAlertsResolvedAt}` : null,
+    mappings.stockAlertsAcknowledgedAt ? `${alias}.${mappings.stockAlertsAcknowledgedAt}` : null,
+  ].filter(Boolean);
+
+  if (!candidates.length) {
+    return 'CURRENT_TIMESTAMP';
+  }
+
+  return `COALESCE(${candidates.join(', ')}, CURRENT_TIMESTAMP)`;
+};
+
+const buildActiveStockAlertPredicate = ({ alias, mappings }) => {
+  if (!mappings.stockAlertsStatus) {
+    return 'TRUE';
+  }
+
+  const statusExpr = `LOWER(COALESCE(${alias}.${mappings.stockAlertsStatus}::text, ''))`;
+  return `${statusExpr} NOT IN ('resolved', 'inactive', 'closed')`;
 };
 
 const mapRows = async (query, params) => {
@@ -1354,36 +1469,57 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
     ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
     : '5';
 
+  const stockAlertScopeExpr = buildScopedColumnExpression(
+    'vsa',
+    mappings.inventoryAlertsScope,
+    mappings.inventoryAlertsScopeFallback,
+  );
+  const stockAlertTimestampExpr = buildStockAlertTimestampExpression({ alias: 'vsa', mappings });
+  const stockAlertMessageExpr = buildStockAlertMessageExpression({ alias: 'vsa', mappings, stockExpr });
+  const stockAlertSeverityExpr = buildStockAlertSeverityExpression({
+    alias: 'vsa',
+    mappings,
+    stockExpr,
+    lowThresholdExpr,
+    criticalThresholdExpr,
+  });
+  const activeStockAlertPredicate = buildActiveStockAlertPredicate({ alias: 'vsa', mappings });
+
   const rows = await mapRows(
     `
+      WITH stock_alert_source AS (
+        SELECT
+          COALESCE(vsa.id::text, CONCAT('stock-', vi.id))::text AS id,
+          'inventory'::text AS type,
+          ${stockAlertSeverityExpr}::text AS severity,
+          ${stockAlertMessageExpr}::text AS message,
+          ${stockAlertTimestampExpr} AS alert_at,
+          ${stockExpr} AS stock_value
+        FROM vaccine_inventory vi
+        LEFT JOIN vaccines v ON v.id = vi.vaccine_id
+        LEFT JOIN vaccine_stock_alerts vsa
+          ON vsa.vaccine_inventory_id = vi.id
+          AND (${activeStockAlertPredicate})
+          AND ($1::int IS NULL OR ${stockAlertScopeExpr} = $1)
+        WHERE COALESCE(vi.is_active, true) = true
+          AND ($1::int IS NULL OR ${inventoryScopeExpr} = $1)
+          AND ($2::int[] IS NULL OR vi.vaccine_id = ANY($2::int[]))
+          AND ${stockExpr} <= ${lowThresholdExpr}
+      )
       SELECT
-        CONCAT('stock-', vi.id)::text AS id,
-        'inventory'::text AS type,
-        CASE
-          WHEN ${stockExpr} <= ${criticalThresholdExpr}
-            THEN 'critical'
-          ELSE 'warning'
-        END::text AS severity,
-        CONCAT(
-          COALESCE(v.name, 'Vaccine'),
-          ' stock is low (',
-          ${stockExpr},
-          ' remaining)'
-        )::text AS message,
-        vi.updated_at AS alert_at
-      FROM vaccine_inventory vi
-      LEFT JOIN vaccines v ON v.id = vi.vaccine_id
-      WHERE COALESCE(vi.is_active, true) = true
-        AND ($1::int IS NULL OR ${inventoryScopeExpr} = $1)
-        AND ($2::int[] IS NULL OR vi.vaccine_id = ANY($2::int[]))
-        AND ${stockExpr} <= ${lowThresholdExpr}
+        id,
+        type,
+        severity,
+        message,
+        alert_at
+      FROM stock_alert_source
       ORDER BY
         CASE
-          WHEN ${stockExpr} <= ${criticalThresholdExpr} THEN 0
+          WHEN severity = 'critical' THEN 0
           ELSE 1
         END ASC,
-        ${stockExpr} ASC,
-        vi.updated_at DESC
+        stock_value ASC,
+        alert_at DESC
       LIMIT $3::int
     `,
     [facilityId, toNullableArray(vaccineIds), limit],

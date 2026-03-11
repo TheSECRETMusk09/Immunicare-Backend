@@ -30,6 +30,16 @@ describe('analytics repository schema column mapping', () => {
         { table_name: 'vaccine_inventory_transactions', column_name: 'clinic_id' },
         { table_name: 'vaccine_stock_alerts', column_name: 'facility_id' },
         { table_name: 'vaccine_stock_alerts', column_name: 'clinic_id' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'status' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'priority' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'alert_type' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'current_stock' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'threshold_value' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'message' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'created_at' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'updated_at' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'resolved_at' },
+        { table_name: 'vaccine_stock_alerts', column_name: 'acknowledged_at' },
         { table_name: 'notifications', column_name: 'facility_id' },
         { table_name: 'notifications', column_name: 'clinic_id' },
         { table_name: 'notifications', column_name: 'channel' },
@@ -55,6 +65,16 @@ describe('analytics repository schema column mapping', () => {
     expect(mappings.inventoryStockOnHand).toBe('stock_on_hand');
     expect(mappings.inventoryLowStockThreshold).toBe('low_stock_threshold');
     expect(mappings.inventoryCriticalStockThreshold).toBe('critical_stock_threshold');
+    expect(mappings.stockAlertsStatus).toBe('status');
+    expect(mappings.stockAlertsPriority).toBe('priority');
+    expect(mappings.stockAlertsAlertType).toBe('alert_type');
+    expect(mappings.stockAlertsCurrentStock).toBe('current_stock');
+    expect(mappings.stockAlertsThresholdValue).toBe('threshold_value');
+    expect(mappings.stockAlertsMessage).toBe('message');
+    expect(mappings.stockAlertsCreatedAt).toBe('created_at');
+    expect(mappings.stockAlertsUpdatedAt).toBe('updated_at');
+    expect(mappings.stockAlertsResolvedAt).toBe('resolved_at');
+    expect(mappings.stockAlertsAcknowledgedAt).toBe('acknowledged_at');
     expect(mappings.notificationsScope).toBe('facility_id');
     expect(mappings.notificationsScopeFallback).toBe('clinic_id');
     expect(mappings.notificationsChannel).toBe('channel');

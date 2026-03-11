@@ -67,6 +67,15 @@ const dedupeAlertsBySignature = (alerts = []) => {
   return deduped;
 };
 
+const resolveAlertTimestamp = (value) => {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString();
+};
+
 const calculateRate = (numerator, denominator) => {
   const a = mapInt(numerator);
   const b = mapInt(denominator);
@@ -462,12 +471,12 @@ const collectDashboardData = async ({ filters }) => {
   };
 
   const inventoryAlerts = [
-    ...lowStockAlerts.map((alert) => ({
-      id: alert.id,
-      type: alert.type,
-      severity: alert.severity,
-      message: alert.message,
-      timestamp: alert.alert_at,
+    ...lowStockAlerts.map((alert, index) => ({
+      id: alert.id || `inventory-alert-${index}`,
+      type: alert.type || 'inventory',
+      severity: normalizeAlertSeverity(alert.severity),
+      message: alert.message || 'Low stock alert',
+      timestamp: resolveAlertTimestamp(alert.alert_at) || new Date().toISOString(),
     })),
   ];
 
