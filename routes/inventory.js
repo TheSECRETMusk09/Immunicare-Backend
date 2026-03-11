@@ -831,6 +831,12 @@ router.get('/vaccine-inventory', async (req, res) => {
 
     const { clinic_id, period_start, period_end } = req.query;
 
+    const scopedClinicId =
+      req.user?.clinic_id ||
+      req.user?.facility_id ||
+      req.healthCenterFilter?.clinic_id ||
+      null;
+
     const clinicIdCheck = validateNumberRange(clinic_id, {
       label: 'clinic_id',
       required: false,
@@ -855,6 +861,10 @@ router.get('/vaccine-inventory', async (req, res) => {
       errors.clinic_id = clinicIdCheck.error;
     }
 
+    if (!clinic_id && !scopedClinicId) {
+      errors.clinic_id = 'clinic_id is required for inventory access';
+    }
+
     if (hasFieldErrors(errors)) {
       return respondValidationError(res, errors);
     }
@@ -876,9 +886,11 @@ router.get('/vaccine-inventory', async (req, res) => {
     const params = [];
     let paramCount = 1;
 
-    if (clinicIdCheck.value) {
+    const effectiveClinicId = clinicIdCheck.value || Number(scopedClinicId) || null;
+
+    if (effectiveClinicId) {
       query += ` AND vi.${inventoryFacilityColumn} = $${paramCount}`;
-      params.push(clinicIdCheck.value);
+      params.push(effectiveClinicId);
       paramCount++;
     }
 

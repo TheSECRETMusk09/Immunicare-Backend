@@ -382,7 +382,31 @@ router.get('/batches', requirePermission('inventory:view'), async (_req, res) =>
 // Get valid vaccine inventory for dropdown (not expired, stock > 0, active)
 router.get('/inventory/valid', requirePermission('vaccination:create'), async (req, res) => {
   try {
-    const { vaccine_id } = req.query;
+    const { vaccine_id, clinic_id } = req.query;
+
+    const scopedClinicIdRaw =
+      req.user?.clinic_id || req.user?.facility_id || req.healthCenterFilter?.clinic_id || null;
+    const scopedClinicId = scopedClinicIdRaw ? parseInt(scopedClinicIdRaw, 10) : null;
+
+    const requestedClinicId = clinic_id !== undefined ? parseInt(clinic_id, 10) : null;
+    if (clinic_id !== undefined && Number.isNaN(requestedClinicId)) {
+      return res.status(400).json({ error: 'clinic_id must be a valid integer' });
+    }
+
+    if (requestedClinicId && scopedClinicId && requestedClinicId !== scopedClinicId) {
+      return res.status(403).json({
+        error:
+          'Cross-facility vaccine inventory access is not allowed. Use your assigned Barangay San Nicolas Health Center scope.',
+      });
+    }
+
+    const effectiveClinicId = requestedClinicId || scopedClinicId;
+    if (!effectiveClinicId) {
+      return res.status(400).json({
+        error:
+          'clinic_id scope is required to load valid vaccine inventory for Barangay San Nicolas Health Center',
+      });
+    }
 
     let query = `
       SELECT
@@ -401,10 +425,11 @@ router.get('/inventory/valid', requirePermission('vaccination:create'), async (r
         AND vb.status = 'active'
         AND vb.qty_current > 0
         AND vb.expiry_date > CURRENT_DATE
+        AND vb.clinic_id = $1
     `;
 
-    const params = [];
-    let paramCount = 1;
+    const params = [effectiveClinicId];
+    let paramCount = 2;
 
     // Filter by specific vaccine if provided
     if (vaccine_id !== undefined) {

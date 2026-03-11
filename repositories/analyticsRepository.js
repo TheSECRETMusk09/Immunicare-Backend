@@ -765,51 +765,86 @@ const getDemographics = async ({ facilityId, guardianId }) => {
 
   const ageRows = await mapRows(
     `
-      SELECT
-        age_bucket.label,
-        age_bucket.sort_order,
-        COUNT(*)::int AS count
-      FROM (
+      WITH scoped_patients AS (
         SELECT
-          CASE
-            WHEN AGE(CURRENT_DATE, p.dob) < INTERVAL '6 months' THEN '0-5 months'
-            WHEN AGE(CURRENT_DATE, p.dob) < INTERVAL '12 months' THEN '6-11 months'
-            WHEN AGE(CURRENT_DATE, p.dob) < INTERVAL '24 months' THEN '12-23 months'
-            ELSE '24+ months'
-          END AS label,
-          CASE
-            WHEN AGE(CURRENT_DATE, p.dob) < INTERVAL '6 months' THEN 1
-            WHEN AGE(CURRENT_DATE, p.dob) < INTERVAL '12 months' THEN 2
-            WHEN AGE(CURRENT_DATE, p.dob) < INTERVAL '24 months' THEN 3
-            ELSE 4
-          END AS sort_order
+          p.id,
+          p.dob
         FROM patients p
         WHERE COALESCE(p.is_active, true) = true
-          AND p.dob IS NOT NULL
           AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
           AND ($2::int IS NULL OR p.guardian_id = $2)
-      ) age_bucket
-      GROUP BY age_bucket.label, age_bucket.sort_order
-      ORDER BY age_bucket.sort_order ASC
+      )
+      SELECT
+        buckets.label,
+        buckets.sort_order,
+        COALESCE(
+          COUNT(sp.id) FILTER (
+            WHERE sp.dob IS NOT NULL
+              AND (
+                (buckets.sort_order = 1 AND AGE(CURRENT_DATE, sp.dob) < INTERVAL '6 months')
+                OR (
+                  buckets.sort_order = 2
+                  AND AGE(CURRENT_DATE, sp.dob) >= INTERVAL '6 months'
+                  AND AGE(CURRENT_DATE, sp.dob) < INTERVAL '12 months'
+                )
+                OR (
+                  buckets.sort_order = 3
+                  AND AGE(CURRENT_DATE, sp.dob) >= INTERVAL '12 months'
+                  AND AGE(CURRENT_DATE, sp.dob) < INTERVAL '24 months'
+                )
+                OR (buckets.sort_order = 4 AND AGE(CURRENT_DATE, sp.dob) >= INTERVAL '24 months')
+              )
+          ),
+          0
+        )::int AS count
+      FROM (
+        VALUES
+          (1, '0-5 months'),
+          (2, '6-11 months'),
+          (3, '12-23 months'),
+          (4, '24+ months')
+      ) AS buckets(sort_order, label)
+      LEFT JOIN scoped_patients sp ON true
+      GROUP BY buckets.label, buckets.sort_order
+      ORDER BY buckets.sort_order ASC
     `,
     [facilityId, guardianId],
   );
 
   const genderRows = await mapRows(
     `
+      WITH scoped_patients AS (
+        SELECT
+          p.id,
+          p.sex,
+          p.gender
+        FROM patients p
+        WHERE COALESCE(p.is_active, true) = true
+          AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+          AND ($2::int IS NULL OR p.guardian_id = $2)
+      ),
+      gender_counts AS (
+        SELECT
+          CASE
+            WHEN UPPER(COALESCE(NULLIF(sp.sex, ''), NULLIF(sp.gender, ''), 'UNKNOWN')) LIKE 'M%' THEN 'Male'
+            WHEN UPPER(COALESCE(NULLIF(sp.sex, ''), NULLIF(sp.gender, ''), 'UNKNOWN')) LIKE 'F%' THEN 'Female'
+            ELSE 'Other / Not specified'
+          END AS label,
+          COUNT(*)::int AS count
+        FROM scoped_patients sp
+        GROUP BY 1
+      )
       SELECT
-        CASE
-          WHEN UPPER(COALESCE(NULLIF(p.sex, ''), NULLIF(p.gender, ''), 'UNKNOWN')) LIKE 'M%' THEN 'Male'
-          WHEN UPPER(COALESCE(NULLIF(p.sex, ''), NULLIF(p.gender, ''), 'UNKNOWN')) LIKE 'F%' THEN 'Female'
-          ELSE 'Other / Not specified'
-        END AS label,
-        COUNT(*)::int AS count
-      FROM patients p
-      WHERE COALESCE(p.is_active, true) = true
-        AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
-        AND ($2::int IS NULL OR p.guardian_id = $2)
-      GROUP BY 1
-      ORDER BY count DESC
+        labels.label,
+        COALESCE(gc.count, 0)::int AS count
+      FROM (
+        VALUES
+          ('Male', 1),
+          ('Female', 2),
+          ('Other / Not specified', 3)
+      ) AS labels(label, sort_order)
+      LEFT JOIN gender_counts gc ON gc.label = labels.label
+      ORDER BY labels.sort_order ASC
     `,
     [facilityId, guardianId],
   );

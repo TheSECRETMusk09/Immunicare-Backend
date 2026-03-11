@@ -42,6 +42,7 @@ const resolveCanonicalRole = (roleName) => {
 };
 
 const MAX_GUARDIAN_USERNAME_SUFFIX = 10000;
+const GUARDIAN_USERNAME_FORMAT_REGEX = /^[a-z0-9]+(?:\.[a-z0-9]+)+$/;
 
 const normalizeGuardianUsernamePart = (value) => {
   if (value === undefined || value === null) {
@@ -84,7 +85,7 @@ const resolveUniqueGuardianUsername = async (
     FROM users
     WHERE (lower(username) = lower($1) OR lower(username) LIKE lower($2))
   `;
-  const params = [baseUsername, `${baseUsername}.%`];
+  const params = [baseUsername, `${baseUsername}%`];
 
   if (excludeUserId) {
     query += ' AND id <> $3';
@@ -103,7 +104,11 @@ const resolveUniqueGuardianUsername = async (
   }
 
   for (let suffix = 2; suffix <= MAX_GUARDIAN_USERNAME_SUFFIX; suffix += 1) {
-    const candidate = `${baseUsername}.${suffix}`;
+    const candidate = `${baseUsername}${suffix}`;
+    if (!GUARDIAN_USERNAME_FORMAT_REGEX.test(candidate)) {
+      continue;
+    }
+
     if (!takenUsernames.has(candidate.toLowerCase())) {
       return candidate;
     }

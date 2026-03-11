@@ -1,5 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { CANONICAL_ROLES, getCanonicalRole, requireSystemAdmin } = require('../middleware/rbac');
@@ -54,6 +55,16 @@ const canAccessUserScope = (req, userId) => {
 
 const GUARDIAN_PHONE_REGEX = /^(\+63|0)\d{10}$/;
 const MAX_GUARDIAN_USERNAME_SUFFIX = 10000;
+const GUARDIAN_USERNAME_FORMAT_REGEX = /^[a-z0-9]+(?:\.[a-z0-9]+)+$/;
+const GUARDIAN_PORTAL_CLINIC_NAME = 'Guardian Portal';
+
+const normalizeGuardianEmail = (value) => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
+
+  return normalized || null;
+};
 
 const normalizeGuardianUsernamePart = (value) => {
   if (value === undefined || value === null) {
@@ -120,7 +131,7 @@ const resolveUniqueGuardianUsername = async (
     FROM users
     WHERE (lower(username) = lower($1) OR lower(username) LIKE lower($2))
   `;
-  const params = [baseUsername, `${baseUsername}.%`];
+  const params = [baseUsername, `${baseUsername}%`];
 
   if (excludeUserId) {
     query += ' AND id <> $3';
@@ -139,13 +150,183 @@ const resolveUniqueGuardianUsername = async (
   }
 
   for (let suffix = 2; suffix <= MAX_GUARDIAN_USERNAME_SUFFIX; suffix += 1) {
-    const candidate = `${baseUsername}.${suffix}`;
+    const candidate = `${baseUsername}${suffix}`;
+    if (!GUARDIAN_USERNAME_FORMAT_REGEX.test(candidate)) {
+      continue;
+    }
+
     if (!takenUsernames.has(candidate.toLowerCase())) {
       return candidate;
     }
   }
 
   throw new Error('Unable to allocate unique guardian username');
+};
+
+const ensureGuardianRoleId = async (client) => {
+  const roleResult = await client.query(
+    `SELECT id
+     FROM roles
+     WHERE lower(name) = 'guardian'
+     ORDER BY id ASC
+     LIMIT 1`,
+  );
+
+  if (roleResult.rows.length === 0) {
+    throw new Error('Guardian role is not configured in roles table');
+  }
+
+  return roleResult.rows[0].id;
+};
+
+const ensureGuardianPortalClinicId = async (client) => {
+  const existingClinicResult = await client.query(
+    `SELECT id
+     FROM clinics
+     WHERE lower(name) = lower($1)
+     ORDER BY id ASC
+     LIMIT 1`,
+    [GUARDIAN_PORTAL_CLINIC_NAME],
+  );
+
+  if (existingClinicResult.rows.length > 0) {
+    return existingClinicResult.rows[0].id;
+  }
+
+  const createdClinicResult = await client.query(
+    `INSERT INTO clinics (name, region, address, contact)
+     VALUES ($1, 'Virtual', 'Online', 'N/A')
+     RETURNING id`,
+    [GUARDIAN_PORTAL_CLINIC_NAME],
+  );
+
+  return createdClinicResult.rows[0].id;
+};
+
+const resolveGuardianUserEmail = async (client, email, { excludeUserId = null } = {}) => {
+  const normalizedEmail = normalizeGuardianEmail(email);
+  if (!normalizedEmail) {
+    return null;
+  }
+
+  let query = 'SELECT id FROM users WHERE lower(email) = lower($1)';
+  const params = [normalizedEmail];
+
+  if (excludeUserId) {
+    query += ' AND id <> $2';
+    params.push(excludeUserId);
+  }
+
+  query += ' LIMIT 1';
+
+  const existingEmailResult = await client.query(query, params);
+  return existingEmailResult.rows.length === 0 ? normalizedEmail : null;
+};
+
+const buildProvisionedGuardianPassword = () => {
+  return `Guardian-${crypto.randomBytes(8).toString('hex')}`;
+};
+
+const ensureGuardianUserAccount = async (client, guardianRecord = {}) => {
+  const guardianId = parseInt(guardianRecord.id, 10);
+  if (!guardianId || guardianId <= 0) {
+    throw new Error('Guardian id is required to ensure linked user account');
+  }
+
+  await client.query('SELECT id FROM guardians WHERE id = $1 FOR UPDATE', [guardianId]);
+
+  const guardianName = String(guardianRecord.name || '').trim() || 'guardian user';
+
+  const linkedUserResult = await client.query(
+    `SELECT id, username, email
+     FROM users
+     WHERE guardian_id = $1
+     ORDER BY id DESC
+     LIMIT 1
+     FOR UPDATE`,
+    [guardianId],
+  );
+
+  const existingUser = linkedUserResult.rows[0] || null;
+
+  if (existingUser) {
+    const generatedUsername = await resolveUniqueGuardianUsername(client, {
+      fullName: guardianName,
+      excludeUserId: existingUser.id,
+    });
+
+    if (String(existingUser.username || '').trim().toLowerCase() !== generatedUsername.toLowerCase()) {
+      const updatedUserResult = await client.query(
+        `UPDATE users
+         SET username = $1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2
+         RETURNING id, username`,
+        [generatedUsername, existingUser.id],
+      );
+
+      return updatedUserResult.rows[0] || { id: existingUser.id, username: generatedUsername };
+    }
+
+    return {
+      id: existingUser.id,
+      username: generatedUsername,
+    };
+  }
+
+  const guardianRoleId = await ensureGuardianRoleId(client);
+  const guardianPortalClinicId = await ensureGuardianPortalClinicId(client);
+  const generatedUsername = await resolveUniqueGuardianUsername(client, {
+    fullName: guardianName,
+  });
+  const generatedPasswordHash = await bcrypt.hash(buildProvisionedGuardianPassword(), 10);
+  const availableEmail = await resolveGuardianUserEmail(client, guardianRecord.email);
+
+  const createdUserResult = await client.query(
+    `INSERT INTO users (
+       username,
+       email,
+       password_hash,
+       role_id,
+       guardian_id,
+       clinic_id,
+       is_active,
+       force_password_change
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, true, true)
+     RETURNING id, username`,
+    [
+      generatedUsername,
+      availableEmail,
+      generatedPasswordHash,
+      guardianRoleId,
+      guardianId,
+      guardianPortalClinicId,
+    ],
+  );
+
+  await client.query(
+    `UPDATE guardians
+     SET is_password_set = false,
+         must_change_password = true,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [guardianId],
+  );
+
+  return createdUserResult.rows[0];
+};
+
+const synchronizeGuardianUserAccounts = async (client) => {
+  const guardiansResult = await client.query(
+    `SELECT id, name, email
+     FROM guardians
+     ORDER BY id ASC`,
+  );
+
+  for (const guardian of guardiansResult.rows) {
+    await ensureGuardianUserAccount(client, guardian);
+  }
 };
 
 const normalizeGuardianProfileValidationErrors = (errors = {}) => {
@@ -284,6 +465,9 @@ const buildSystemUserResponse = (row = {}) => ({
   created_at: row.created_at || null,
   updated_at: row.updated_at || null,
   is_active: Boolean(row.is_active),
+  guardian_id: row.guardian_id || null,
+  is_guardian_account:
+    Boolean(row.guardian_id) || String(row.role_name || '').toLowerCase() === 'guardian',
   role_id: row.role_id || null,
   role_name: row.role_name || null,
   display_name: row.display_name || null,
@@ -291,6 +475,18 @@ const buildSystemUserResponse = (row = {}) => ({
   clinic_name: row.clinic_name || null,
   user_type: 'system',
 });
+
+const getRoleNameById = async (roleId) => {
+  const result = await pool.query('SELECT lower(name) AS role_name FROM roles WHERE id = $1 LIMIT 1', [
+    roleId,
+  ]);
+
+  return result.rows[0]?.role_name || null;
+};
+
+const isGuardianAccountRow = (row = {}) => {
+  return Boolean(row?.guardian_id) || String(row?.role_name || '').toLowerCase() === 'guardian';
+};
 
 const respondSystemUserSuccess = (res, {
   statusCode = 200,
@@ -332,6 +528,7 @@ const ensureSystemUserExists = async (userId) => {
        u.created_at,
        u.updated_at,
        u.is_active,
+       u.guardian_id,
        u.role_id,
        r.name as role_name,
        r.display_name,
@@ -585,9 +782,14 @@ const parseExpectedUpdatedAt = (input) => {
 
 // Get all users (including guardians) - unified view
 router.get('/all-users', requireSystemAdmin, async (req, res) => {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
+
+    await synchronizeGuardianUserAccounts(client);
+
     // Get system users
-    const systemUsersResult = await pool.query(`
+    const systemUsersResult = await client.query(`
       SELECT
         u.id,
         u.username,
@@ -595,6 +797,7 @@ router.get('/all-users', requireSystemAdmin, async (req, res) => {
         u.last_login,
         u.created_at,
         u.is_active,
+        u.guardian_id,
         r.name as role_name,
         r.display_name,
         c.name as clinic_name,
@@ -605,19 +808,10 @@ router.get('/all-users', requireSystemAdmin, async (req, res) => {
     `);
 
     // Get guardians
-    const guardiansResult = await pool.query(`
+    const guardiansResult = await client.query(`
       SELECT
         g.id,
-        COALESCE(
-          (
-            SELECT u.username
-            FROM users u
-            WHERE u.guardian_id = g.id
-            ORDER BY u.id DESC
-            LIMIT 1
-          ),
-          g.name
-        ) as username,
+        COALESCE(linked_user.username, '') as username,
         g.phone as contact,
         g.last_login,
         g.created_at,
@@ -629,7 +823,16 @@ router.get('/all-users', requireSystemAdmin, async (req, res) => {
         NULL as clinic_name,
         'guardian' as user_type
       FROM guardians g
+      LEFT JOIN LATERAL (
+        SELECT u.username
+        FROM users u
+        WHERE u.guardian_id = g.id
+        ORDER BY u.id DESC
+        LIMIT 1
+      ) linked_user ON true
     `);
+
+    await client.query('COMMIT');
 
     // Combine and return both
     const allUsers = [...systemUsersResult.rows, ...guardiansResult.rows].sort(
@@ -638,8 +841,15 @@ router.get('/all-users', requireSystemAdmin, async (req, res) => {
 
     res.json(allUsers);
   } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('Rollback error while fetching all users:', rollbackError);
+    }
     console.error('Error fetching all users:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -658,38 +868,58 @@ router.get('/', requireSystemAdmin, async (req, res) => {
 
 // Get all guardians (including infant count)
 router.get('/guardians', requireSystemAdmin, async (req, res) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query(`
+    await client.query('BEGIN');
+
+    await synchronizeGuardianUserAccounts(client);
+
+    const result = await client.query(`
       SELECT
         g.id,
-        COALESCE(
-          (
-            SELECT u.username
-            FROM users u
-            WHERE u.guardian_id = g.id
-            ORDER BY u.id DESC
-            LIMIT 1
-          ),
-          g.name
-        ) as username,
+        COALESCE(linked_user.username, '') as username,
         g.name, g.phone, g.email, g.address, g.relationship,
         g.is_password_set, g.must_change_password, g.last_login,
         g.is_active, g.created_at, g.updated_at,
-        COUNT(i.id) as infant_count
+        COALESCE(
+          (
+            SELECT COUNT(*)
+            FROM patients i
+            WHERE i.guardian_id = g.id
+              AND i.is_active = true
+          ),
+          0
+        )::int as infant_count
       FROM guardians g
-      LEFT JOIN patients i ON g.id = i.guardian_id AND i.is_active = true
-      GROUP BY g.id
+      LEFT JOIN LATERAL (
+        SELECT u.username
+        FROM users u
+        WHERE u.guardian_id = g.id
+        ORDER BY u.id DESC
+        LIMIT 1
+      ) linked_user ON true
       ORDER BY g.created_at DESC
     `);
+
+    await client.query('COMMIT');
+
     res.json({ success: true, data: result.rows });
   } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('Rollback error while fetching guardians:', rollbackError);
+    }
     console.error('Error fetching guardians:', error);
     res.status(500).json({ success: false, error: error.message, data: [] });
+  } finally {
+    client.release();
   }
 });
 
 // Create new guardian
 router.post('/guardians', requireSystemAdmin, async (req, res) => {
+  const client = await pool.connect();
   try {
     const { name, phone, email, address, relationship } = req.body;
 
@@ -700,16 +930,46 @@ router.post('/guardians', requireSystemAdmin, async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      'INSERT INTO guardians (name, phone, email, address, relationship) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    await client.query('BEGIN');
+
+    const result = await client.query(
+      `INSERT INTO guardians (
+         name,
+         phone,
+         email,
+         address,
+         relationship,
+         is_active,
+         is_password_set,
+         must_change_password
+       )
+       VALUES ($1, $2, $3, $4, $5, true, false, true)
+       RETURNING *`,
       [name, phone, email, address, relationship],
     );
 
-    socketService.broadcast('guardian_created', result.rows[0]);
-    res.status(201).json({ success: true, data: result.rows[0] });
+    const guardian = result.rows[0];
+    const guardianUser = await ensureGuardianUserAccount(client, guardian);
+
+    await client.query('COMMIT');
+
+    const responsePayload = {
+      ...guardian,
+      username: guardianUser?.username || null,
+    };
+
+    socketService.broadcast('guardian_created', responsePayload);
+    res.status(201).json({ success: true, data: responsePayload });
   } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('Rollback error while creating guardian:', rollbackError);
+    }
     console.error('Error creating guardian:', error);
     res.status(500).json({ success: false, error: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -768,19 +1028,6 @@ router.put('/guardians/:id', requireSystemAdmin, async (req, res) => {
       );
     }
 
-    const linkedUserResult = await client.query(
-      'SELECT id FROM users WHERE guardian_id = $1 ORDER BY id ASC LIMIT 1',
-      [id],
-    );
-    const linkedUserId = linkedUserResult.rows[0]?.id || null;
-
-    const generatedUsername = linkedUserId
-      ? await resolveUniqueGuardianUsername(client, {
-        fullName: name,
-        excludeUserId: linkedUserId,
-      })
-      : null;
-
     const result = await client.query(
       'UPDATE guardians SET name = $1, phone = $2, email = $3, address = $4, relationship = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6 RETURNING *',
       [name, phone, email, address, relationship, id],
@@ -791,18 +1038,13 @@ router.put('/guardians/:id', requireSystemAdmin, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Guardian not found' });
     }
 
-    if (linkedUserId && generatedUsername) {
-      await client.query(
-        'UPDATE users SET username = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        [generatedUsername, linkedUserId],
-      );
-    }
+    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0]);
 
     await client.query('COMMIT');
 
     const responsePayload = {
       ...result.rows[0],
-      username: generatedUsername || null,
+      username: ensuredGuardianUser?.username || null,
     };
 
     socketService.broadcast('guardian_updated', responsePayload);
@@ -1070,15 +1312,23 @@ router.post(
 
 // Get all system users (admin, doctor, nurse, staff)
 router.get('/system-users', requireSystemAdmin, async (req, res) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query(`
+    await client.query('BEGIN');
+
+    await synchronizeGuardianUserAccounts(client);
+
+    const result = await client.query(`
       SELECT u.id, u.username, u.contact, u.last_login, u.created_at, u.updated_at, u.is_active,
+             u.guardian_id,
              u.role_id, r.name as role_name, r.display_name, u.clinic_id, c.name as clinic_name
       FROM users u
       JOIN roles r ON u.role_id = r.id
       LEFT JOIN clinics c ON u.clinic_id = c.id
       ORDER BY u.created_at DESC
     `);
+
+    await client.query('COMMIT');
 
     return res.json({
       success: true,
@@ -1088,12 +1338,19 @@ router.get('/system-users', requireSystemAdmin, async (req, res) => {
       },
     });
   } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('Rollback error while fetching system users:', rollbackError);
+    }
     return respondSystemUserError(res, {
       statusCode: 500,
       error: 'Failed to fetch system users',
       code: 'SYSTEM_USERS_FETCH_FAILED',
       details: process.env.NODE_ENV === 'development' ? { message: error.message } : undefined,
     });
+  } finally {
+    client.release();
   }
 });
 
@@ -1115,6 +1372,26 @@ router.post('/system-users', requireSystemAdmin, async (req, res) => {
         error: validation.error,
         code: validation.code,
         field: validation.field,
+      });
+    }
+
+    const targetRoleName = await getRoleNameById(validation.data.role_id);
+    if (!targetRoleName) {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error: 'role_id does not map to an existing role',
+        code: 'INVALID_ROLE_ID',
+        field: 'role_id',
+      });
+    }
+
+    if (targetRoleName === 'guardian') {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error:
+          'Guardian accounts must be created from the Guardians tab to preserve firstname.lastname username rules.',
+        code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
+        field: 'role_id',
       });
     }
 
@@ -1217,6 +1494,35 @@ router.put('/system-users/:id', requireSystemAdmin, async (req, res) => {
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
+      });
+    }
+
+    if (isGuardianAccountRow(existingUser)) {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error:
+          'Guardian accounts are managed from the Guardians tab. Username format is enforced automatically as firstname.lastname.',
+        code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
+      });
+    }
+
+    const targetRoleName = await getRoleNameById(validation.data.role_id);
+    if (!targetRoleName) {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error: 'role_id does not map to an existing role',
+        code: 'INVALID_ROLE_ID',
+        field: 'role_id',
+      });
+    }
+
+    if (targetRoleName === 'guardian') {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error:
+          'Guardian accounts must be managed from the Guardians tab to preserve firstname.lastname username rules.',
+        code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
+        field: 'role_id',
       });
     }
 
@@ -1340,6 +1646,14 @@ router.delete('/system-users/:id', requireSystemAdmin, async (req, res) => {
       });
     }
 
+    if (isGuardianAccountRow(existingUser)) {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error: 'Guardian account lifecycle is managed from the Guardians module',
+        code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
+      });
+    }
+
     const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id, username', [userId]);
 
     if (result.rows.length === 0) {
@@ -1416,6 +1730,14 @@ router.put('/system-users/:id/toggle-active', requireSystemAdmin, async (req, re
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
+      });
+    }
+
+    if (isGuardianAccountRow(existingUser)) {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error: 'Guardian account activation state is managed from the Guardians module',
+        code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
       });
     }
 
@@ -1569,24 +1891,45 @@ router.put('/roles/:id', requireSystemAdmin, async (req, res) => {
 // Get system user password (Admin only)
 router.get('/system-users/:id/password', requireSystemAdmin, async (req, res) => {
   try {
-    const { id } = req.params;
+    const userId = requireValidIdParam(res, req.params?.id, 'id');
+    if (!userId) {
+      return;
+    }
+
+    const existingUser = await ensureSystemUserExists(userId);
+    if (!existingUser) {
+      return respondSystemUserError(res, {
+        statusCode: 404,
+        error: 'User not found',
+        code: 'SYSTEM_USER_NOT_FOUND',
+      });
+    }
+
+    if (isGuardianAccountRow(existingUser)) {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error: 'Guardian account password lifecycle is managed from the Guardians module',
+        code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
+      });
+    }
 
     // Get user from database (without password hash)
-    const userResult = await pool.query('SELECT password_hash FROM users WHERE id = $1', [id]);
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    const userResult = await pool.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
 
     // For security reasons, we won't return the actual password
     // Instead, we'll return a message indicating the user exists and can be reset
     res.json({
       message: 'Password reset available for this user',
-      user_id: id,
+      user_id: userId,
       can_reset: true,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return respondSystemUserError(res, {
+      statusCode: 500,
+      error: 'Failed to fetch system user password status',
+      code: 'SYSTEM_USER_PASSWORD_STATUS_FAILED',
+      details: process.env.NODE_ENV === 'development' ? { message: error.message } : undefined,
+    });
   }
 });
 
@@ -1615,6 +1958,14 @@ router.put('/system-users/:id/password', requireSystemAdmin, async (req, res) =>
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
+      });
+    }
+
+    if (isGuardianAccountRow(existingUser)) {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error: 'Guardian account password lifecycle is managed from the Guardians module',
+        code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
       });
     }
 
@@ -1752,19 +2103,6 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
-    const linkedUserResult = await client.query(
-      'SELECT id FROM users WHERE guardian_id = $1 ORDER BY id ASC LIMIT 1',
-      [guardianId],
-    );
-    const linkedUserId = linkedUserResult.rows[0]?.id || null;
-
-    const generatedUsername = linkedUserId
-      ? await resolveUniqueGuardianUsername(client, {
-        fullName: name,
-        excludeUserId: linkedUserId,
-      })
-      : null;
-
     const result = await client.query(
       `UPDATE guardians
        SET name = $1, phone = $2, email = $3, address = $4,
@@ -1780,18 +2118,13 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
-    if (linkedUserId && generatedUsername) {
-      await client.query(
-        'UPDATE users SET username = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        [generatedUsername, linkedUserId],
-      );
-    }
+    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0]);
 
     await client.query('COMMIT');
 
     const responsePayload = {
       ...result.rows[0],
-      username: generatedUsername || null,
+      username: ensuredGuardianUser?.username || null,
     };
 
     socketService.broadcast('guardian_updated', responsePayload);
@@ -1879,19 +2212,6 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
       });
     }
 
-    const linkedUserResult = await client.query(
-      'SELECT id FROM users WHERE guardian_id = $1 ORDER BY id ASC LIMIT 1',
-      [requestedGuardianId],
-    );
-    const linkedUserId = linkedUserResult.rows[0]?.id || null;
-
-    const generatedUsername = linkedUserId
-      ? await resolveUniqueGuardianUsername(client, {
-        fullName: profile.name,
-        excludeUserId: linkedUserId,
-      })
-      : null;
-
     const result = await client.query(
       `UPDATE guardians
        SET name = $1,
@@ -1922,18 +2242,13 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
       });
     }
 
-    if (linkedUserId && generatedUsername) {
-      await client.query(
-        'UPDATE users SET username = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        [generatedUsername, linkedUserId],
-      );
-    }
+    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0]);
 
     await client.query('COMMIT');
 
     const responsePayload = {
       ...result.rows[0],
-      username: generatedUsername || null,
+      username: ensuredGuardianUser?.username || null,
     };
 
     socketService.broadcast('guardian_updated', responsePayload);
@@ -2004,8 +2319,41 @@ router.put('/profile/:userId', async (req, res) => {
       return res.status(403).json({ error: 'Access denied to update user profile' });
     }
 
+    const userAccountResult = await pool.query(
+      `SELECT u.id, u.username, u.guardian_id, r.name as role_name
+       FROM users u
+       JOIN roles r ON u.role_id = r.id
+       WHERE u.id = $1`,
+      [userId],
+    );
+
+    if (userAccountResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const existingAccount = userAccountResult.rows[0];
+    const isGuardianManagedUsername =
+      String(existingAccount.role_name || '').toLowerCase() === 'guardian' ||
+      Boolean(existingAccount.guardian_id);
+
+    if (
+      isGuardianManagedUsername &&
+      typeof username === 'string' &&
+      username.trim() &&
+      username.trim().toLowerCase() !== String(existingAccount.username || '').trim().toLowerCase()
+    ) {
+      return res.status(400).json({
+        error: 'Guardian usernames are system-managed and follow firstname.lastname format',
+        code: 'GUARDIAN_USERNAME_MANAGED',
+      });
+    }
+
+    const resolvedUsername = isGuardianManagedUsername
+      ? String(existingAccount.username || '').trim()
+      : String(username || '').trim();
+
     // Validate input
-    if (!username || username.trim().length < 3) {
+    if (!resolvedUsername || resolvedUsername.length < 3) {
       return res.status(400).json({
         error: 'Username must be at least 3 characters long',
       });
@@ -2013,7 +2361,7 @@ router.put('/profile/:userId', async (req, res) => {
 
     // Build update query
     const setParts = ['username = $1', 'updated_at = CURRENT_TIMESTAMP'];
-    const values = [username];
+    const values = [resolvedUsername];
     let paramIndex = 1;
 
     if (contact) {

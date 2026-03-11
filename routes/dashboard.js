@@ -39,7 +39,7 @@ const guardianScopeFilterSql = `
 `;
 
 const PROVIDER_FALLBACK_LABEL = 'Provider unavailable';
-const PROVIDER_FALLBACK_LABEL_SQL = PROVIDER_FALLBACK_LABEL.replace(/'/g, "''");
+const PROVIDER_FALLBACK_LABEL_SQL = PROVIDER_FALLBACK_LABEL.replace(/'/g, '\'\'');
 const PROVIDER_NAME_COLUMNS = ['full_name', 'name', 'username', 'email'];
 
 let providerSchemaPromise = null;
@@ -208,23 +208,34 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
   try {
     noCache(res);
 
+    const limit = sanitizeLimit(req.query.limit, 20, 100);
+
     const result = await db.query(
       `
         SELECT
           a.id,
+          a.infant_id,
           a.scheduled_date,
           a.status,
           a.type,
           COALESCE(a.location, 'Main Health Center') as location,
-          CONCAT(p.first_name, ' ', p.last_name) as patient_name,
+          p.first_name,
+          p.last_name,
+          COALESCE(
+            NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), ''),
+            'Infant'
+          ) as patient_name,
+          COALESCE(NULLIF(TRIM(g.name), ''), 'Guardian unavailable') as guardian_name,
           p.control_number
         FROM appointments a
         LEFT JOIN patients p ON p.id = a.infant_id
+        LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE a.scheduled_date >= CURRENT_DATE
           AND a.is_active = true
         ORDER BY a.scheduled_date
-        LIMIT 20
+        LIMIT $1
       `,
+      [limit],
     );
 
     res.json(result.rows);
