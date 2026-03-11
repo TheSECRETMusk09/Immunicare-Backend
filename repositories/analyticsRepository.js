@@ -72,14 +72,32 @@ const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   appointmentsScopeFallback: null,
   patientsScope: 'facility_id',
   patientsScopeFallback: null,
+  immunizationStatus: null,
   inventoryScope: 'clinic_id',
   inventoryScopeFallback: null,
+  inventoryStockOnHand: null,
+  inventoryBeginningBalance: null,
+  inventoryReceivedDuringPeriod: null,
+  inventoryTransferredIn: null,
+  inventoryTransferredOut: null,
+  inventoryExpiredWasted: null,
+  inventoryIssuance: null,
+  inventoryLowStockThreshold: null,
+  inventoryCriticalStockThreshold: null,
   inventoryTransactionsScope: 'clinic_id',
   inventoryTransactionsScopeFallback: null,
   inventoryAlertsScope: 'clinic_id',
   inventoryAlertsScopeFallback: null,
   notificationsScope: null,
   notificationsScopeFallback: null,
+  notificationsChannel: null,
+  notificationsStatus: null,
+  notificationsIsRead: null,
+  notificationsTitle: null,
+  notificationsSubject: null,
+  notificationsMessage: null,
+  notificationsType: null,
+  notificationsPriority: null,
 });
 
 let schemaColumnMappingPromise = null;
@@ -99,13 +117,36 @@ const resolveSchemaColumnMappings = async () => {
       [
         [
           'appointments',
+          'immunization_records',
           'patients',
           'vaccine_inventory',
           'vaccine_inventory_transactions',
           'vaccine_stock_alerts',
           'notifications',
         ],
-        ['patient_id', 'infant_id', 'facility_id', 'clinic_id'],
+        [
+          'patient_id',
+          'infant_id',
+          'facility_id',
+          'clinic_id',
+          'status',
+          'stock_on_hand',
+          'beginning_balance',
+          'received_during_period',
+          'transferred_in',
+          'transferred_out',
+          'expired_wasted',
+          'issuance',
+          'low_stock_threshold',
+          'critical_stock_threshold',
+          'channel',
+          'is_read',
+          'title',
+          'subject',
+          'message',
+          'notification_type',
+          'priority',
+        ],
       ],
     );
 
@@ -143,6 +184,10 @@ const resolveSchemaColumnMappings = async () => {
       mappings.patientsScopeFallback = null;
     }
 
+    if (available.has('immunization_records.status')) {
+      mappings.immunizationStatus = 'status';
+    }
+
     if (available.has('vaccine_inventory.facility_id')) {
       mappings.inventoryScope = 'facility_id';
       mappings.inventoryScopeFallback = available.has('vaccine_inventory.clinic_id')
@@ -151,6 +196,42 @@ const resolveSchemaColumnMappings = async () => {
     } else if (available.has('vaccine_inventory.clinic_id')) {
       mappings.inventoryScope = 'clinic_id';
       mappings.inventoryScopeFallback = null;
+    }
+
+    if (available.has('vaccine_inventory.stock_on_hand')) {
+      mappings.inventoryStockOnHand = 'stock_on_hand';
+    }
+
+    if (available.has('vaccine_inventory.beginning_balance')) {
+      mappings.inventoryBeginningBalance = 'beginning_balance';
+    }
+
+    if (available.has('vaccine_inventory.received_during_period')) {
+      mappings.inventoryReceivedDuringPeriod = 'received_during_period';
+    }
+
+    if (available.has('vaccine_inventory.transferred_in')) {
+      mappings.inventoryTransferredIn = 'transferred_in';
+    }
+
+    if (available.has('vaccine_inventory.transferred_out')) {
+      mappings.inventoryTransferredOut = 'transferred_out';
+    }
+
+    if (available.has('vaccine_inventory.expired_wasted')) {
+      mappings.inventoryExpiredWasted = 'expired_wasted';
+    }
+
+    if (available.has('vaccine_inventory.issuance')) {
+      mappings.inventoryIssuance = 'issuance';
+    }
+
+    if (available.has('vaccine_inventory.low_stock_threshold')) {
+      mappings.inventoryLowStockThreshold = 'low_stock_threshold';
+    }
+
+    if (available.has('vaccine_inventory.critical_stock_threshold')) {
+      mappings.inventoryCriticalStockThreshold = 'critical_stock_threshold';
     }
 
     if (available.has('vaccine_inventory_transactions.facility_id')) {
@@ -182,6 +263,38 @@ const resolveSchemaColumnMappings = async () => {
       mappings.notificationsScope = 'clinic_id';
       mappings.notificationsScopeFallback = null;
     }
+
+    if (available.has('notifications.channel')) {
+      mappings.notificationsChannel = 'channel';
+    }
+
+    if (available.has('notifications.status')) {
+      mappings.notificationsStatus = 'status';
+    }
+
+    if (available.has('notifications.is_read')) {
+      mappings.notificationsIsRead = 'is_read';
+    }
+
+    if (available.has('notifications.title')) {
+      mappings.notificationsTitle = 'title';
+    }
+
+    if (available.has('notifications.subject')) {
+      mappings.notificationsSubject = 'subject';
+    }
+
+    if (available.has('notifications.message')) {
+      mappings.notificationsMessage = 'message';
+    }
+
+    if (available.has('notifications.notification_type')) {
+      mappings.notificationsType = 'notification_type';
+    }
+
+    if (available.has('notifications.priority')) {
+      mappings.notificationsPriority = 'priority';
+    }
   } catch (error) {
     console.error('Error resolving analytics schema column mappings:', error);
   }
@@ -206,6 +319,46 @@ const buildScopedColumnExpression = (alias, primaryColumn, fallbackColumn = null
   }
 
   return primary || fallback || 'NULL';
+};
+
+const buildImmunizationStatusExpression = ({ alias, statusColumn }) => {
+  const inferredStatus = `CASE WHEN ${alias}.admin_date IS NOT NULL THEN 'completed' ELSE 'scheduled' END`;
+
+  if (!statusColumn) {
+    return inferredStatus;
+  }
+
+  return `COALESCE(NULLIF(LOWER(${alias}.${statusColumn}::text), ''), ${inferredStatus})`;
+};
+
+const buildInventoryStockExpression = ({ alias, mappings }) => {
+  if (mappings.inventoryStockOnHand) {
+    return `GREATEST(COALESCE(${alias}.${mappings.inventoryStockOnHand}, 0), 0)`;
+  }
+
+  const additions = [
+    mappings.inventoryBeginningBalance,
+    mappings.inventoryReceivedDuringPeriod,
+    mappings.inventoryTransferredIn,
+  ]
+    .filter(Boolean)
+    .map((column) => `COALESCE(${alias}.${column}, 0)`);
+
+  const deductions = [
+    mappings.inventoryTransferredOut,
+    mappings.inventoryExpiredWasted,
+    mappings.inventoryIssuance,
+  ]
+    .filter(Boolean)
+    .map((column) => `COALESCE(${alias}.${column}, 0)`);
+
+  const additionExpression = additions.length ? additions.join(' + ') : '0';
+
+  if (!deductions.length) {
+    return `GREATEST(${additionExpression}, 0)`;
+  }
+
+  return `GREATEST((${additionExpression}) - (${deductions.join(' + ')}), 0)`;
 };
 
 const mapRows = async (query, params) => {
@@ -275,31 +428,35 @@ const getVaccinationSnapshot = async ({
   overdueOnly,
   guardianId,
 }) => {
-  const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
+  const { patientsScope, patientsScopeFallback, immunizationStatus } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const immunizationStatusExpr = buildImmunizationStatusExpression({
+    alias: 'ir',
+    statusColumn: immunizationStatus,
+  });
 
   const rows = await mapRows(
     `
       SELECT
         COUNT(*) FILTER (
           WHERE ir.admin_date = CURRENT_DATE
-            AND COALESCE(NULLIF(LOWER(ir.status), ''), 'completed') IN ('completed', 'attended')
+            AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS completed_today,
         COUNT(*) FILTER (
           WHERE ir.admin_date BETWEEN $2::date AND $3::date
-            AND COALESCE(NULLIF(LOWER(ir.status), ''), 'completed') IN ('completed', 'attended')
+            AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS administered_in_period,
         COUNT(*) FILTER (
           WHERE ir.next_due_date BETWEEN $2::date AND $3::date
-            AND COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled') IN ('scheduled', 'pending')
+            AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS due_in_period,
         COUNT(*) FILTER (
           WHERE ir.next_due_date < CURRENT_DATE
-            AND COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled') IN ('scheduled', 'pending')
+            AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS overdue_count,
         COUNT(DISTINCT ir.patient_id) FILTER (
           WHERE ir.admin_date BETWEEN $2::date AND $3::date
-            AND COALESCE(NULLIF(LOWER(ir.status), ''), 'completed') IN ('completed', 'attended')
+            AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS unique_infants_served
       FROM immunization_records ir
       JOIN patients p ON p.id = ir.patient_id
@@ -310,13 +467,13 @@ const getVaccinationSnapshot = async ({
         AND ($4::int[] IS NULL OR ir.vaccine_id = ANY($4::int[]))
         AND (
           $5::text[] IS NULL
-          OR COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled') = ANY($5::text[])
+          OR ${immunizationStatusExpr} = ANY($5::text[])
         )
         AND (
           $6::boolean = false
           OR (
             ir.next_due_date < CURRENT_DATE
-            AND COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled') IN ('scheduled', 'pending')
+            AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
           )
         )
     `,
@@ -348,13 +505,17 @@ const getVaccinationStatusBreakdown = async ({
   statuses,
   guardianId,
 }) => {
-  const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
+  const { patientsScope, patientsScopeFallback, immunizationStatus } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const immunizationStatusExpr = buildImmunizationStatusExpression({
+    alias: 'ir',
+    statusColumn: immunizationStatus,
+  });
 
   const rows = await mapRows(
     `
       SELECT
-        COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled') AS status,
+        ${immunizationStatusExpr} AS status,
         COUNT(*)::int AS count
       FROM immunization_records ir
       JOIN patients p ON p.id = ir.patient_id
@@ -368,9 +529,9 @@ const getVaccinationStatusBreakdown = async ({
         )
         AND (
           $5::text[] IS NULL
-          OR COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled') = ANY($5::text[])
+          OR ${immunizationStatusExpr} = ANY($5::text[])
         )
-      GROUP BY COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled')
+      GROUP BY ${immunizationStatusExpr}
       ORDER BY count DESC
     `,
     [facilityId, toNullableArray(vaccineIds), startDate, endDate, toNullableArray(statuses), guardianId],
@@ -525,21 +686,34 @@ const getAppointmentStatusBreakdown = async ({
 };
 
 const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
-  const { inventoryScope, inventoryScopeFallback } = await getSchemaColumnMappings();
+  const mappings = await getSchemaColumnMappings();
+  const {
+    inventoryScope,
+    inventoryScopeFallback,
+    inventoryLowStockThreshold,
+    inventoryCriticalStockThreshold,
+  } = mappings;
   const inventoryScopeExpr = buildScopedColumnExpression('vi', inventoryScope, inventoryScopeFallback);
+  const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
+  const lowThresholdExpr = inventoryLowStockThreshold
+    ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
+    : '10';
+  const criticalThresholdExpr = inventoryCriticalStockThreshold
+    ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
+    : '5';
 
   const rows = await mapRows(
     `
       SELECT
         COUNT(*)::int AS total_items,
-        COALESCE(SUM(GREATEST(COALESCE(vi.stock_on_hand, 0), 0)), 0)::int AS total_available_doses,
+        COALESCE(SUM(${stockExpr}), 0)::int AS total_available_doses,
         COUNT(*) FILTER (
-          WHERE COALESCE(vi.stock_on_hand, 0) <= COALESCE(vi.low_stock_threshold, 0)
+          WHERE ${stockExpr} <= ${lowThresholdExpr}
         )::int AS low_stock_count,
         COUNT(*) FILTER (
-          WHERE COALESCE(vi.stock_on_hand, 0) <= COALESCE(vi.critical_stock_threshold, 0)
+          WHERE ${stockExpr} <= ${criticalThresholdExpr}
         )::int AS critical_stock_count,
-        COUNT(*) FILTER (WHERE COALESCE(vi.stock_on_hand, 0) <= 0)::int AS out_of_stock_count
+        COUNT(*) FILTER (WHERE ${stockExpr} <= 0)::int AS out_of_stock_count
       FROM vaccine_inventory vi
       WHERE COALESCE(vi.is_active, true) = true
         AND ($1::int IS NULL OR ${inventoryScopeExpr} = $1)
@@ -558,8 +732,21 @@ const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
 };
 
 const getInventoryByVaccine = async ({ facilityId, vaccineIds, vaccineKeys }) => {
-  const { inventoryScope, inventoryScopeFallback } = await getSchemaColumnMappings();
+  const mappings = await getSchemaColumnMappings();
+  const {
+    inventoryScope,
+    inventoryScopeFallback,
+    inventoryLowStockThreshold,
+    inventoryCriticalStockThreshold,
+  } = mappings;
   const inventoryScopeExpr = buildScopedColumnExpression('vi', inventoryScope, inventoryScopeFallback);
+  const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
+  const lowThresholdExpr = inventoryLowStockThreshold
+    ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
+    : '10';
+  const criticalThresholdExpr = inventoryCriticalStockThreshold
+    ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
+    : '5';
 
   const rows = await mapRows(
     `
@@ -573,9 +760,9 @@ const getInventoryByVaccine = async ({ facilityId, vaccineIds, vaccineKeys }) =>
       inventory_rollup AS (
         SELECT
           vd.vaccine_key,
-          COALESCE(SUM(GREATEST(COALESCE(vi.stock_on_hand, 0), 0)), 0)::int AS available_doses,
-          BOOL_OR(COALESCE(vi.stock_on_hand, 0) <= COALESCE(vi.low_stock_threshold, 0)) AS low_stock,
-          BOOL_OR(COALESCE(vi.stock_on_hand, 0) <= COALESCE(vi.critical_stock_threshold, 0)) AS critical_stock
+          COALESCE(SUM(${stockExpr}), 0)::int AS available_doses,
+          BOOL_OR(${stockExpr} <= ${lowThresholdExpr}) AS low_stock,
+          BOOL_OR(${stockExpr} <= ${criticalThresholdExpr}) AS critical_stock
         FROM vaccine_dim vd
         LEFT JOIN vaccine_inventory vi
           ON vi.vaccine_id = vd.vaccine_id
@@ -609,8 +796,12 @@ const getVaccineProgress = async ({
   vaccineKeys,
   guardianId,
 }) => {
-  const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
+  const { patientsScope, patientsScopeFallback, immunizationStatus } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const immunizationStatusExpr = buildImmunizationStatusExpression({
+    alias: 'ir',
+    statusColumn: immunizationStatus,
+  });
 
   const rows = await mapRows(
     `
@@ -625,7 +816,7 @@ const getVaccineProgress = async ({
         SELECT
           ir.patient_id,
           ir.vaccine_id,
-          COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled') AS status,
+          ${immunizationStatusExpr} AS status,
           ir.admin_date::date AS admin_date,
           ir.next_due_date::date AS next_due_date
         FROM immunization_records ir
@@ -685,8 +876,12 @@ const getDailyVaccinationTrend = async ({
   statuses,
   guardianId,
 }) => {
-  const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
+  const { patientsScope, patientsScopeFallback, immunizationStatus } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const immunizationStatusExpr = buildImmunizationStatusExpression({
+    alias: 'ir',
+    statusColumn: immunizationStatus,
+  });
 
   const rows = await mapRows(
     `
@@ -703,7 +898,7 @@ const getDailyVaccinationTrend = async ({
         AND ($4::int[] IS NULL OR ir.vaccine_id = ANY($4::int[]))
         AND (
           $5::text[] IS NULL
-          OR COALESCE(NULLIF(LOWER(ir.status), ''), 'scheduled') = ANY($5::text[])
+          OR ${immunizationStatusExpr} = ANY($5::text[])
         )
       GROUP BY ir.admin_date::date
       ORDER BY ir.admin_date::date ASC
@@ -870,12 +1065,28 @@ const getDemographics = async ({ facilityId, guardianId }) => {
 };
 
 const getReminderStats = async ({ startDate, endDate, facilityId = null }) => {
-  const { notificationsScope, notificationsScopeFallback } = await getSchemaColumnMappings();
+  const {
+    notificationsScope,
+    notificationsScopeFallback,
+    notificationsChannel,
+    notificationsStatus,
+    notificationsIsRead,
+  } = await getSchemaColumnMappings();
   const notificationScopeExpr = buildScopedColumnExpression(
     'n',
     notificationsScope,
     notificationsScopeFallback,
   );
+
+  const channelExpr = notificationsChannel
+    ? `LOWER(COALESCE(n.${notificationsChannel}::text, ''))`
+    : '\'\'';
+  const statusExpr = notificationsStatus
+    ? `LOWER(COALESCE(n.${notificationsStatus}::text, ''))`
+    : '\'\'';
+  const unreadExpr = notificationsIsRead
+    ? `COALESCE(n.${notificationsIsRead}, false)`
+    : 'false';
 
   const hasNotificationFacilityScope = notificationScopeExpr !== 'NULL';
   const notificationsScopeClause = hasNotificationFacilityScope
@@ -889,16 +1100,16 @@ const getReminderStats = async ({ startDate, endDate, facilityId = null }) => {
   const notificationRows = await mapRows(
     `
       SELECT
-        COUNT(*) FILTER (WHERE LOWER(n.channel::text) = 'sms')::int AS sms_sent,
+        COUNT(*) FILTER (WHERE ${channelExpr} = 'sms')::int AS sms_sent,
         COUNT(*) FILTER (
-          WHERE LOWER(n.channel::text) = 'sms'
-            AND LOWER(n.status::text) IN ('delivered', 'read')
+          WHERE ${channelExpr} = 'sms'
+            AND ${statusExpr} IN ('delivered', 'read')
         )::int AS sms_delivered,
         COUNT(*) FILTER (
-          WHERE LOWER(n.channel::text) = 'sms'
-            AND LOWER(n.status::text) = 'failed'
+          WHERE ${channelExpr} = 'sms'
+            AND ${statusExpr} = 'failed'
         )::int AS sms_failed,
-        COUNT(*) FILTER (WHERE COALESCE(n.is_read, false) = false)::int AS unread_notifications
+        COUNT(*) FILTER (WHERE ${unreadExpr} = false)::int AS unread_notifications
       FROM notifications n
       WHERE n.created_at::date BETWEEN $1::date AND $2::date
       ${notificationsScopeClause}
@@ -942,10 +1153,17 @@ const getRecentActivity = async ({
     appointmentsPatientFallback,
     patientsScope,
     patientsScopeFallback,
+    immunizationStatus,
     inventoryTransactionsScope,
     inventoryTransactionsScopeFallback,
     notificationsScope,
     notificationsScopeFallback,
+    notificationsTitle,
+    notificationsSubject,
+    notificationsMessage,
+    notificationsType,
+    notificationsStatus,
+    notificationsPriority,
   } = await getSchemaColumnMappings();
   const appointmentPatientExpr = buildScopedColumnExpression(
     'a',
@@ -953,6 +1171,10 @@ const getRecentActivity = async ({
     appointmentsPatientFallback,
   );
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const immunizationStatusExpr = buildImmunizationStatusExpression({
+    alias: 'ir',
+    statusColumn: immunizationStatus,
+  });
   const appointmentScopeExpr = buildScopedColumnExpression(
     'a',
     appointmentsScope,
@@ -968,6 +1190,42 @@ const getRecentActivity = async ({
     notificationsScope,
     notificationsScopeFallback,
   );
+
+  const notificationTitleExpr = notificationsTitle
+    ? `NULLIF(n.${notificationsTitle}, '')`
+    : null;
+  const notificationSubjectExpr = notificationsSubject
+    ? `NULLIF(n.${notificationsSubject}, '')`
+    : null;
+  const notificationMessageExpr = notificationsMessage
+    ? `NULLIF(n.${notificationsMessage}, '')`
+    : null;
+  const notificationTypeExpr = notificationsType
+    ? `NULLIF(n.${notificationsType}, '')`
+    : null;
+  const notificationStatusExpr = notificationsStatus
+    ? `LOWER(COALESCE(n.${notificationsStatus}::text, ''))`
+    : '\'\'';
+  const notificationPriorityExpr = notificationsPriority
+    ? `LOWER(COALESCE(n.${notificationsPriority}::text, ''))`
+    : '\'\'';
+
+  const notificationTitleFallback = [
+    notificationTitleExpr,
+    notificationSubjectExpr,
+    '\'Notification\'',
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  const notificationDescriptionFallback = [
+    notificationSubjectExpr,
+    notificationMessageExpr,
+    notificationTypeExpr,
+    '\'Notification event\'',
+  ]
+    .filter(Boolean)
+    .join(', ');
 
   const notificationScopeClause = notificationScopeExpr !== 'NULL'
     ? ` AND ($1::int IS NULL OR ${notificationScopeExpr} = $1)`
@@ -989,7 +1247,7 @@ const getRecentActivity = async ({
           )::text AS description,
           ir.created_at AS activity_at,
           CASE
-            WHEN COALESCE(NULLIF(LOWER(ir.status), ''), 'completed') IN ('completed', 'attended')
+            WHEN ${immunizationStatusExpr} IN ('completed', 'attended')
               THEN 'success'
             ELSE 'info'
           END::text AS severity
@@ -1054,12 +1312,12 @@ const getRecentActivity = async ({
         SELECT
           CONCAT('notification-', n.id)::text AS id,
           'reminder'::text AS type,
-          COALESCE(NULLIF(n.title, ''), 'Notification')::text AS title,
-          COALESCE(NULLIF(n.subject, ''), NULLIF(n.message, ''), n.notification_type)::text AS description,
+          COALESCE(${notificationTitleFallback})::text AS title,
+          COALESCE(${notificationDescriptionFallback})::text AS description,
           n.created_at AS activity_at,
           CASE
-            WHEN LOWER(n.status::text) = 'failed' THEN 'error'
-            WHEN LOWER(n.priority::text) IN ('high', 'urgent') THEN 'warning'
+            WHEN ${notificationStatusExpr} = 'failed' THEN 'error'
+            WHEN ${notificationPriorityExpr} IN ('high', 'urgent', 'critical') THEN 'warning'
             ELSE 'info'
           END::text AS severity
         FROM notifications n
@@ -1080,8 +1338,21 @@ const resetSchemaColumnMappingCache = () => {
 };
 
 const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
-  const { inventoryScope, inventoryScopeFallback } = await getSchemaColumnMappings();
+  const mappings = await getSchemaColumnMappings();
+  const {
+    inventoryScope,
+    inventoryScopeFallback,
+    inventoryLowStockThreshold,
+    inventoryCriticalStockThreshold,
+  } = mappings;
   const inventoryScopeExpr = buildScopedColumnExpression('vi', inventoryScope, inventoryScopeFallback);
+  const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
+  const lowThresholdExpr = inventoryLowStockThreshold
+    ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
+    : '10';
+  const criticalThresholdExpr = inventoryCriticalStockThreshold
+    ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
+    : '5';
 
   const rows = await mapRows(
     `
@@ -1089,14 +1360,14 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
         CONCAT('stock-', vi.id)::text AS id,
         'inventory'::text AS type,
         CASE
-          WHEN COALESCE(vi.stock_on_hand, 0) <= COALESCE(vi.critical_stock_threshold, 0)
+          WHEN ${stockExpr} <= ${criticalThresholdExpr}
             THEN 'critical'
           ELSE 'warning'
         END::text AS severity,
         CONCAT(
           COALESCE(v.name, 'Vaccine'),
           ' stock is low (',
-          COALESCE(vi.stock_on_hand, 0),
+          ${stockExpr},
           ' remaining)'
         )::text AS message,
         vi.updated_at AS alert_at
@@ -1105,13 +1376,13 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
       WHERE COALESCE(vi.is_active, true) = true
         AND ($1::int IS NULL OR ${inventoryScopeExpr} = $1)
         AND ($2::int[] IS NULL OR vi.vaccine_id = ANY($2::int[]))
-        AND COALESCE(vi.stock_on_hand, 0) <= COALESCE(vi.low_stock_threshold, 0)
+        AND ${stockExpr} <= ${lowThresholdExpr}
       ORDER BY
         CASE
-          WHEN COALESCE(vi.stock_on_hand, 0) <= COALESCE(vi.critical_stock_threshold, 0) THEN 0
+          WHEN ${stockExpr} <= ${criticalThresholdExpr} THEN 0
           ELSE 1
         END ASC,
-        COALESCE(vi.stock_on_hand, 0) ASC,
+        ${stockExpr} ASC,
         vi.updated_at DESC
       LIMIT $3::int
     `,

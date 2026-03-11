@@ -31,6 +31,42 @@ const mapInt = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const normalizeAlertSeverity = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'critical' || normalized === 'error') {
+    return 'critical';
+  }
+
+  if (normalized === 'warning' || normalized === 'warn' || normalized === 'high') {
+    return 'warning';
+  }
+
+  return normalized || 'warning';
+};
+
+const dedupeAlertsBySignature = (alerts = []) => {
+  const seen = new Set();
+  const deduped = [];
+
+  alerts.forEach((item, index) => {
+    const signature = `${String(item?.type || '').toLowerCase()}|${String(item?.message || '').toLowerCase()}|${String(item?.timestamp || '')}`;
+    if (seen.has(signature)) {
+      return;
+    }
+
+    seen.add(signature);
+    deduped.push({
+      id: item?.id || `alert-${index}`,
+      type: item?.type || 'alert',
+      severity: normalizeAlertSeverity(item?.severity),
+      message: item?.message || 'Alert',
+      timestamp: item?.timestamp || null,
+    });
+  });
+
+  return deduped;
+};
+
 const calculateRate = (numerator, denominator) => {
   const a = mapInt(numerator);
   const b = mapInt(denominator);
@@ -425,7 +461,7 @@ const collectDashboardData = async ({ filters }) => {
     }),
   };
 
-  const alerts = [
+  const inventoryAlerts = [
     ...lowStockAlerts.map((alert) => ({
       id: alert.id,
       type: alert.type,
@@ -434,6 +470,36 @@ const collectDashboardData = async ({ filters }) => {
       timestamp: alert.alert_at,
     })),
   ];
+
+  const overdueVaccinationAlerts = summary.overdueVaccinations > 0
+    ? [
+      {
+        id: `overdue-vaccinations-${filters.startDate}-${filters.endDate}`,
+        type: 'vaccination',
+        severity: summary.overdueVaccinations >= 10 ? 'critical' : 'warning',
+        message: `${summary.overdueVaccinations} infant vaccination${summary.overdueVaccinations === 1 ? '' : 's'} overdue`,
+        timestamp: new Date().toISOString(),
+      },
+    ]
+    : [];
+
+  const failedSmsAlerts = reminders.failedSmsCount > 0
+    ? [
+      {
+        id: `failed-sms-${filters.startDate}-${filters.endDate}`,
+        type: 'reminder',
+        severity: reminders.failedSmsCount >= 5 ? 'critical' : 'warning',
+        message: `${reminders.failedSmsCount} reminder SMS failed in selected period`,
+        timestamp: new Date().toISOString(),
+      },
+    ]
+    : [];
+
+  const alerts = dedupeAlertsBySignature([
+    ...inventoryAlerts,
+    ...overdueVaccinationAlerts,
+    ...failedSmsAlerts,
+  ]);
 
   const criticalAlerts = alerts.filter((item) => item.severity === 'critical');
 

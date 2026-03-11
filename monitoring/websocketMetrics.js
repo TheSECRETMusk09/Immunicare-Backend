@@ -16,7 +16,7 @@ class WebSocketMetrics extends EventEmitter {
         peak: 0,
         mobile: 0,
         desktop: 0,
-        tablet: 0
+        tablet: 0,
       },
       reconnections: {
         total: 0,
@@ -25,8 +25,8 @@ class WebSocketMetrics extends EventEmitter {
         byDevice: {
           mobile: 0,
           desktop: 0,
-          tablet: 0
-        }
+          tablet: 0,
+        },
       },
       latency: {
         connect: [],
@@ -35,18 +35,18 @@ class WebSocketMetrics extends EventEmitter {
         byDevice: {
           mobile: { connect: [], message: [] },
           desktop: { connect: [], message: [] },
-          tablet: { connect: [], message: [] }
-        }
+          tablet: { connect: [], message: [] },
+        },
       },
       events: {
         received: 0,
         sent: 0,
-        dropped: 0
+        dropped: 0,
       },
       errors: {
         total: 0,
-        byType: {}
-      }
+        byType: {},
+      },
     };
 
     this.latencyMaxHistory = options.latencyMaxHistory || 1000;
@@ -55,13 +55,22 @@ class WebSocketMetrics extends EventEmitter {
       averageLatency: 2000, // 2 seconds
       mobileLatency: 3000, // 3 seconds
       connectionFailureRate: 0.05, // 5%
-      eventDropRate: 0.01 // 1%
+      eventDropRate: 0.01, // 1%
     };
 
     // Start periodic metrics collection
-    this.metricsInterval = setInterval(() => {
-      this.collectMetrics();
-    }, 30000); // Every 30 seconds
+    // Disable background interval in test runs to prevent Jest open-handle leaks.
+    this.metricsInterval = null;
+    const shouldStartCollector =
+      options.enableCollector !== false &&
+      process.env.NODE_ENV !== 'test' &&
+      process.env.JEST_WORKER_ID === undefined;
+
+    if (shouldStartCollector) {
+      this.metricsInterval = setInterval(() => {
+        this.collectMetrics();
+      }, 30000); // Every 30 seconds
+    }
   }
 
   /**
@@ -94,9 +103,9 @@ class WebSocketMetrics extends EventEmitter {
       metadata,
       latency: {
         connect: metadata.connectTime || 0,
-        lastMessage: 0
+        lastMessage: 0,
       },
-      reconnections: 0
+      reconnections: 0,
     });
 
     this.metrics.connections.total++;
@@ -122,7 +131,9 @@ class WebSocketMetrics extends EventEmitter {
    */
   trackDisconnection(socketId, reason = 'unknown') {
     const connection = this.connections.get(socketId);
-    if (!connection) return;
+    if (!connection) {
+      return;
+    }
 
     const { deviceType } = connection;
 
@@ -242,7 +253,9 @@ class WebSocketMetrics extends EventEmitter {
    */
   getAverageLatency(type) {
     const latencies = this.metrics.latency[type];
-    if (latencies.length === 0) return 0;
+    if (latencies.length === 0) {
+      return 0;
+    }
     return latencies.reduce((a, b) => a + b, 0) / latencies.length;
   }
 
@@ -254,7 +267,9 @@ class WebSocketMetrics extends EventEmitter {
    */
   getDeviceLatency(deviceType, latencyType) {
     const latencies = this.metrics.latency.byDevice[deviceType]?.[latencyType];
-    if (!latencies || latencies.length === 0) return 0;
+    if (!latencies || latencies.length === 0) {
+      return 0;
+    }
     return latencies.reduce((a, b) => a + b, 0) / latencies.length;
   }
 
@@ -264,7 +279,9 @@ class WebSocketMetrics extends EventEmitter {
    */
   getReconnectionRate() {
     const total = this.metrics.connections.total;
-    if (total === 0) return 0;
+    if (total === 0) {
+      return 0;
+    }
     return this.metrics.reconnections.total / total;
   }
 
@@ -309,8 +326,8 @@ class WebSocketMetrics extends EventEmitter {
           rate,
           total: this.metrics.reconnections.total,
           successful: this.metrics.reconnections.successful,
-          failed: this.metrics.reconnections.failed
-        }
+          failed: this.metrics.reconnections.failed,
+        },
       });
     }
   }
@@ -333,7 +350,7 @@ class WebSocketMetrics extends EventEmitter {
         type: 'HIGH_LATENCY',
         severity: 'warning',
         message: `${type} latency (${duration}ms) exceeds threshold for ${deviceType}`,
-        data: { type, duration, deviceType, threshold }
+        data: { type, duration, deviceType, threshold },
       });
     }
   }
@@ -343,7 +360,9 @@ class WebSocketMetrics extends EventEmitter {
    */
   checkDropRate() {
     const total = this.metrics.events.sent + this.metrics.events.received;
-    if (total === 0) return;
+    if (total === 0) {
+      return;
+    }
 
     const dropRate = this.metrics.events.dropped / total;
     if (dropRate > this.alertThresholds.eventDropRate) {
@@ -351,7 +370,7 @@ class WebSocketMetrics extends EventEmitter {
         type: 'HIGH_EVENT_DROP_RATE',
         severity: 'error',
         message: `Event drop rate (${(dropRate * 100).toFixed(1)}%) exceeds threshold`,
-        data: { dropRate }
+        data: { dropRate },
       });
     }
   }
@@ -394,28 +413,28 @@ class WebSocketMetrics extends EventEmitter {
         averageLatency: {
           connect: this.getAverageLatency('connect'),
           message: this.getAverageLatency('message'),
-          reconnection: this.getAverageLatency('reconnection')
+          reconnection: this.getAverageLatency('reconnection'),
         },
         deviceLatency: {
           mobile: {
             connect: this.getDeviceLatency('mobile', 'connect'),
-            message: this.getDeviceLatency('mobile', 'message')
+            message: this.getDeviceLatency('mobile', 'message'),
           },
           desktop: {
             connect: this.getDeviceLatency('desktop', 'connect'),
-            message: this.getDeviceLatency('desktop', 'message')
+            message: this.getDeviceLatency('desktop', 'message'),
           },
           tablet: {
             connect: this.getDeviceLatency('tablet', 'connect'),
-            message: this.getDeviceLatency('tablet', 'message')
-          }
+            message: this.getDeviceLatency('tablet', 'message'),
+          },
         },
         reconnectionRate: this.getReconnectionRate(),
         healthScore: this.getHealthScore(),
         dropRate: this.metrics.events.sent > 0
           ? this.metrics.events.dropped / this.metrics.events.sent
-          : 0
-      }
+          : 0,
+      },
     };
   }
 
@@ -428,27 +447,27 @@ class WebSocketMetrics extends EventEmitter {
       connections: {
         mobile: this.metrics.connections.mobile,
         desktop: this.metrics.connections.desktop,
-        tablet: this.metrics.connections.tablet
+        tablet: this.metrics.connections.tablet,
       },
       latency: {
         mobile: {
           connect: this.getDeviceLatency('mobile', 'connect'),
-          message: this.getDeviceLatency('mobile', 'message')
+          message: this.getDeviceLatency('mobile', 'message'),
         },
         desktop: {
           connect: this.getDeviceLatency('desktop', 'connect'),
-          message: this.getDeviceLatency('desktop', 'message')
+          message: this.getDeviceLatency('desktop', 'message'),
         },
         tablet: {
           connect: this.getDeviceLatency('tablet', 'connect'),
-          message: this.getDeviceLatency('tablet', 'message')
-        }
+          message: this.getDeviceLatency('tablet', 'message'),
+        },
       },
       reconnections: {
         mobile: this.metrics.reconnections.byDevice.mobile,
         desktop: this.metrics.reconnections.byDevice.desktop,
-        tablet: this.metrics.reconnections.byDevice.tablet
-      }
+        tablet: this.metrics.reconnections.byDevice.tablet,
+      },
     };
   }
 
@@ -475,8 +494,8 @@ class WebSocketMetrics extends EventEmitter {
       byDevice: {
         mobile: { connect: [], message: [] },
         desktop: { connect: [], message: [] },
-        tablet: { connect: [], message: [] }
-      }
+        tablet: { connect: [], message: [] },
+      },
     };
 
     this.metrics.events = { received: 0, sent: 0, dropped: 0 };
@@ -487,7 +506,10 @@ class WebSocketMetrics extends EventEmitter {
    * Gracefully shutdown
    */
   shutdown() {
-    clearInterval(this.metricsInterval);
+    if (this.metricsInterval) {
+      clearInterval(this.metricsInterval);
+      this.metricsInterval = null;
+    }
     this.removeAllListeners();
   }
 }
