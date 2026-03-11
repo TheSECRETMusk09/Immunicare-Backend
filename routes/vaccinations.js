@@ -14,6 +14,119 @@ const reminderService = new VaccinationReminderService();
 
 router.use(authenticateToken);
 
+const PROVIDER_FALLBACK_LABEL = 'Provider unavailable';
+const PROVIDER_FALLBACK_LABEL_SQL = PROVIDER_FALLBACK_LABEL.replace(/'/g, '\'\'');
+const PROVIDER_NAME_COLUMNS = ['full_name', 'name', 'username', 'email'];
+
+let providerSchemaPromise = null;
+
+const resolveProviderSchema = async () => {
+  try {
+    const [tablesResult, columnsResult] = await Promise.all([
+      pool.query(
+        `
+          SELECT table_name
+          FROM information_schema.tables
+          WHERE table_schema = current_schema()
+            AND table_name = ANY($1::text[])
+        `,
+        [['users', 'admin']],
+      ),
+      pool.query(
+        `
+          SELECT table_name, column_name
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = ANY($1::text[])
+            AND column_name = ANY($2::text[])
+        `,
+        [['users', 'admin'], PROVIDER_NAME_COLUMNS],
+      ),
+    ]);
+
+    const availableTables = new Set((tablesResult.rows || []).map((row) => row.table_name));
+    const columnsByTable = {
+      users: new Set(),
+      admin: new Set(),
+    };
+
+    (columnsResult.rows || []).forEach((row) => {
+      if (!columnsByTable[row.table_name]) {
+        columnsByTable[row.table_name] = new Set();
+      }
+      columnsByTable[row.table_name].add(row.column_name);
+    });
+
+    return {
+      tables: availableTables,
+      columnsByTable,
+    };
+  } catch (error) {
+    console.error('Error resolving vaccination provider schema:', error);
+    return {
+      tables: new Set(['users']),
+      columnsByTable: {
+        users: new Set(['username', 'email']),
+        admin: new Set(),
+      },
+    };
+  }
+};
+
+const getProviderSchema = async () => {
+  if (!providerSchemaPromise) {
+    providerSchemaPromise = resolveProviderSchema();
+  }
+
+  return providerSchemaPromise;
+};
+
+const buildProviderNameCandidates = (alias, availableColumns) =>
+  PROVIDER_NAME_COLUMNS
+    .filter((column) => availableColumns.has(column))
+    .map((column) => `NULLIF(TRIM(${alias}.${column}), '')`);
+
+const getProviderSqlFragments = async () => {
+  const schema = await getProviderSchema();
+  const providerJoins = [];
+  const providerNameCandidates = [];
+
+  if (schema.tables.has('users')) {
+    providerJoins.push('LEFT JOIN users provider_user ON provider_user.id = ir.administered_by');
+    providerNameCandidates.push(
+      ...buildProviderNameCandidates('provider_user', schema.columnsByTable.users || new Set()),
+    );
+  }
+
+  if (schema.tables.has('admin')) {
+    providerJoins.push('LEFT JOIN admin provider_admin ON provider_admin.id = ir.administered_by');
+    providerNameCandidates.push(
+      ...buildProviderNameCandidates('provider_admin', schema.columnsByTable.admin || new Set()),
+    );
+  }
+
+  const providerValueExpression =
+    providerNameCandidates.length > 0
+      ? `COALESCE(${providerNameCandidates.join(', ')}, '${PROVIDER_FALLBACK_LABEL_SQL}')`
+      : `'${PROVIDER_FALLBACK_LABEL_SQL}'`;
+
+  return {
+    providerJoinsSql: providerJoins.join('\n'),
+    providerValueExpression,
+  };
+};
+
+const normalizeVaccinationProvider = (record) => {
+  const providerName =
+    record?.provider_name || record?.administered_by_name || PROVIDER_FALLBACK_LABEL;
+
+  return {
+    ...record,
+    provider_name: providerName,
+    administered_by_name: record?.administered_by_name || providerName,
+  };
+};
+
 const sanitizeLimit = (value, fallback = 20, max = 200) => {
   const parsed = parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed <= 0) {
@@ -39,6 +152,8 @@ const guardianOwnsInfant = async (guardianId, infantId) => {
 };
 
 const getVaccinationRecord = async (id) => {
+  const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+
   const result = await pool.query(
     `
       SELECT
@@ -48,17 +163,24 @@ const getVaccinationRecord = async (id) => {
         p.first_name AS patient_first_name,
         p.last_name AS patient_last_name,
         v.name as vaccine_name,
-        v.code as vaccine_code
+        v.code as vaccine_code,
+        ${providerValueExpression} AS provider_name,
+        ${providerValueExpression} AS administered_by_name
       FROM immunization_records ir
       LEFT JOIN patients p ON p.id = ir.patient_id
       JOIN vaccines v ON v.id = ir.vaccine_id
+      ${providerJoinsSql}
       WHERE ir.id = $1
       LIMIT 1
     `,
     [id],
   );
 
-  return result.rows[0] || null;
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return normalizeVaccinationProvider(result.rows[0]);
 };
 
 // Base route
@@ -92,16 +214,19 @@ router.get('/records/infant/:infantId', async (req, res) => {
       }
     }
 
+    const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+
     const result = await pool.query(
       `
         SELECT
           ir.*,
           v.name as vaccine_name,
           v.code as vaccine_code,
-          u.username as administered_by_name
+          ${providerValueExpression} as provider_name,
+          ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
-        LEFT JOIN users u ON u.id = ir.administered_by
+        ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
@@ -109,7 +234,7 @@ router.get('/records/infant/:infantId', async (req, res) => {
       [infantId],
     );
 
-    res.json(result.rows);
+    res.json(result.rows.map(normalizeVaccinationProvider));
   } catch (error) {
     console.error('Error fetching infant vaccination records:', error);
     res.status(500).json({ error: 'Failed to fetch infant vaccination records' });
@@ -120,6 +245,8 @@ router.get('/records/infant/:infantId', async (req, res) => {
 router.get('/records', requirePermission('vaccination:view'), async (req, res) => {
   try {
     const limit = sanitizeLimit(req.query.limit, 200, 500);
+    const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+
     const result = await pool.query(
       `
         SELECT
@@ -142,11 +269,14 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
           p.last_name as patient_last_name,
           p.dob as patient_dob,
           g.name as guardian_name,
-          g.phone as guardian_phone
+          g.phone as guardian_phone,
+          ${providerValueExpression} as provider_name,
+          ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
         LEFT JOIN patients p ON p.id = ir.patient_id
         LEFT JOIN guardians g ON g.id = p.guardian_id
+        ${providerJoinsSql}
         WHERE ir.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
         LIMIT $1
@@ -154,7 +284,7 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
       [limit],
     );
 
-    res.json(result.rows);
+    res.json(result.rows.map(normalizeVaccinationProvider));
   } catch (error) {
     console.error('Error fetching vaccination records:', error);
     res.status(500).json({ error: 'Failed to fetch vaccination records' });
@@ -615,16 +745,19 @@ router.get('/patient/:patientId', async (req, res) => {
       }
     }
 
+    const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+
     const result = await pool.query(
       `
         SELECT
           ir.*,
           v.name as vaccine_name,
           v.code as vaccine_code,
-          u.username as administered_by_name
+          ${providerValueExpression} as provider_name,
+          ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
-        LEFT JOIN users u ON u.id = ir.administered_by
+        ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
@@ -632,7 +765,7 @@ router.get('/patient/:patientId', async (req, res) => {
       [patientId],
     );
 
-    res.json(result.rows);
+    res.json(result.rows.map(normalizeVaccinationProvider));
   } catch (error) {
     console.error('Error fetching patient vaccinations:', error);
     res.status(500).json({ error: 'Failed to fetch patient vaccinations' });
@@ -687,14 +820,19 @@ router.get('/patient/:patientId/history', async (req, res) => {
       }
     }
 
+    const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+
     const records = await pool.query(
       `
         SELECT
           ir.*,
           v.name as vaccine_name,
-          v.code as vaccine_code
+          v.code as vaccine_code,
+          ${providerValueExpression} as provider_name,
+          ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
+        ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
         ORDER BY ir.admin_date ASC NULLS LAST, ir.created_at ASC
@@ -735,7 +873,7 @@ router.get('/patient/:patientId/history', async (req, res) => {
 
     res.json({
       patient: patient.rows[0],
-      vaccinationHistory: records.rows,
+      vaccinationHistory: records.rows.map(normalizeVaccinationProvider),
       nextScheduledVaccine: nextVaccine,
     });
   } catch (error) {

@@ -1,6 +1,5 @@
 const pool = require('../db');
 const NotificationService = require('./notificationService');
-const smsService = require('./smsService');
 const {
   generateControlNumber: generateInfantControlNumber,
   resolveOrCreateInfantPatient,
@@ -144,20 +143,6 @@ const getNotificationColumns = async () => {
   } catch (error) {
     console.error('Error resolving notification columns:', error);
     return new Set();
-  }
-};
-
-const safeJsonParse = (value, fallback = {}) => {
-  if (!value) {
-    return fallback;
-  }
-  if (typeof value === 'object') {
-    return value;
-  }
-  try {
-    return JSON.parse(value);
-  } catch (_error) {
-    return fallback;
   }
 };
 
@@ -910,39 +895,107 @@ const buildUnavailableNotificationMessage = ({ guardianName, vaccineName, schedu
   return `Hi ${guardianName}, ${vaccineName} is currently unavailable for ${dateLabel}. We'll notify you once stock is replenished.`;
 };
 
+const VACCINE_UNAVAILABLE_NOTIFICATION_TYPE = 'vaccine_unavailable';
+
+const buildGuardianNotificationScopeClause = (notificationColumns, guardianId, params) => {
+  if (notificationColumns.has('guardian_id')) {
+    params.push(guardianId);
+    return `guardian_id = $${params.length}`;
+  }
+
+  if (notificationColumns.has('target_type') && notificationColumns.has('target_id')) {
+    params.push('guardian');
+    const targetTypePlaceholder = `$${params.length}`;
+    params.push(guardianId);
+    const targetIdPlaceholder = `$${params.length}`;
+    return `target_type = ${targetTypePlaceholder} AND target_id = ${targetIdPlaceholder}`;
+  }
+
+  return null;
+};
+
 const shouldDedupeUnavailableNotification = async ({ guardianId, vaccineId, dateKey }) => {
   try {
     const notificationColumns = await getNotificationColumns();
-    const hasMetadata = notificationColumns.has('metadata');
-
-    const selectFields = hasMetadata ? 'id, metadata' : 'id';
-    const result = await pool.query(
-      `
-        SELECT ${selectFields}
-        FROM notifications
-        WHERE guardian_id = $1
-          AND notification_type = 'vaccine_unavailable'
-          AND created_at >= DATE_TRUNC('day', NOW())
-        ORDER BY created_at DESC
-        LIMIT 25
-      `,
-      [guardianId],
+    const params = [VACCINE_UNAVAILABLE_NOTIFICATION_TYPE];
+    const guardianScopeClause = buildGuardianNotificationScopeClause(
+      notificationColumns,
+      guardianId,
+      params,
     );
 
-    const latest = result.rows || [];
-    if (!hasMetadata) {
-      return latest.length > 0;
+    if (!guardianScopeClause) {
+      return false;
     }
 
-    return latest.some((row) => {
-      const metadata = safeJsonParse(row.metadata, {});
-      const metaVaccine = metadata?.vaccine_id ? parseInt(metadata.vaccine_id, 10) : null;
-      const metaDate = metadata?.date_key || null;
-      return metaVaccine === vaccineId && metaDate === dateKey;
-    });
+    const hasMetadata = notificationColumns.has('metadata');
+
+    let metadataClause = '';
+    if (hasMetadata) {
+      params.push(dateKey);
+      const datePlaceholder = `$${params.length}`;
+      params.push(String(vaccineId));
+      const vaccinePlaceholder = `$${params.length}`;
+      metadataClause = `
+        AND COALESCE(metadata->>'date_key', '') = ${datePlaceholder}
+        AND COALESCE(metadata->>'vaccine_id', '') = ${vaccinePlaceholder}
+      `;
+    }
+
+    const result = await pool.query(
+      `
+        SELECT id
+        FROM notifications
+        WHERE notification_type = $1
+          AND ${guardianScopeClause}
+          AND created_at >= DATE_TRUNC('day', NOW())
+          ${metadataClause}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      params,
+    );
+
+    return (result.rows || []).length > 0;
   } catch (error) {
     console.error('Error checking dedupe for vaccine unavailability:', error);
     return false;
+  }
+};
+
+const buildVaccineUnavailableMetadata = ({ guardianId, infantId, vaccineId, dateKey, clinicId }) => ({
+  guardian_id: guardianId,
+  infant_id: infantId || null,
+  vaccine_id: vaccineId,
+  date_key: dateKey,
+  clinic_id: clinicId || null,
+  reason: 'out_of_stock',
+});
+
+const withVaccineUnavailableLock = async ({ guardianId, vaccineId, dateKey }, callback) => {
+  const lockKey = `vaccine_unavailable:${guardianId}:${vaccineId}:${dateKey}`;
+  let lockAcquired = false;
+
+  try {
+    const lockResult = await pool.query(
+      'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
+      [lockKey],
+    );
+
+    lockAcquired = Boolean(lockResult.rows[0]?.locked);
+    if (!lockAcquired) {
+      return { notified: false, reason: 'duplicate_in_progress' };
+    }
+
+    return await callback();
+  } finally {
+    if (lockAcquired) {
+      try {
+        await pool.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]);
+      } catch (unlockError) {
+        console.error('Failed to release vaccine unavailable notification lock:', unlockError.message);
+      }
+    }
   }
 };
 
@@ -962,118 +1015,96 @@ const notifyGuardianVaccineUnavailable = async ({
     return { notified: false, reason: 'invalid_date' };
   }
 
-  const shouldSkip = await shouldDedupeUnavailableNotification({
-    guardianId,
-    vaccineId,
-    dateKey,
-  });
-
-  if (shouldSkip) {
-    return { notified: false, reason: 'duplicate' };
-  }
-
-  const [guardian, vaccineName] = await Promise.all([
-    resolveGuardianContact(guardianId),
-    resolveVaccineName(vaccineId),
-  ]);
-
-  const guardianName = guardian?.name || `Guardian #${guardianId}`;
-  const message = buildUnavailableNotificationMessage({
-    guardianName,
-    vaccineName,
-    scheduledDate,
-  });
-
-  let notificationRecord = null;
-  try {
-    const notificationColumns = await getNotificationColumns();
-    const payload = {
-      notification_type: 'vaccine_unavailable',
-      target_type: 'guardian',
-      target_id: guardianId,
-      recipient_name: guardianName,
-      recipient_phone: guardian?.phone || null,
-      recipient_email: guardian?.email || null,
-      channel: 'sms',
-      priority: 'high',
-      status: 'pending',
-      subject: 'Vaccine Unavailable',
-      message,
-      created_by: null,
-      guardian_id: guardianId,
-      target_role: 'guardian',
-      title: 'Vaccine Unavailable',
-      type: 'alert',
-      category: 'inventory',
-      is_read: false,
-      metadata: {
-        guardian_id: guardianId,
-        infant_id: infantId || null,
-        vaccine_id: vaccineId,
-        date_key: dateKey,
-        clinic_id: clinicId || null,
-        reason: 'out_of_stock',
-      },
-    };
-
-    const keys = Object.keys(payload).filter(
-      (key) => notificationColumns.has(key) && payload[key] !== undefined,
-    );
-
-    if (keys.length > 0) {
-      const placeholders = keys.map((_, index) => `$${index + 1}`);
-      const values = keys.map((key) =>
-        key === 'metadata' && typeof payload[key] !== 'string'
-          ? JSON.stringify(payload[key])
-          : payload[key],
-      );
-
-      const result = await pool.query(
-        `
-          INSERT INTO notifications (${keys.join(', ')})
-          VALUES (${placeholders.join(', ')})
-          RETURNING *
-        `,
-        values,
-      );
-      notificationRecord = result.rows[0] || null;
-    }
-  } catch (notificationError) {
-    console.error('Failed to create vaccine unavailable notification:', notificationError.message);
-  }
-
-  let smsResult = null;
-  try {
-    if (guardian?.phone) {
-      smsResult = await smsService.sendSMS(guardian.phone, message, 'vaccine_unavailable', {
+  return withVaccineUnavailableLock(
+    { guardianId, vaccineId, dateKey },
+    async () => {
+      const shouldSkip = await shouldDedupeUnavailableNotification({
         guardianId,
-        infantId: infantId || null,
         vaccineId,
-        scheduledDate: dateKey,
-        clinicId: clinicId || null,
+        dateKey,
       });
-    } else {
-      throw new Error('Guardian phone number missing');
-    }
-  } catch (smsError) {
-    console.error('Failed to send vaccine unavailable SMS:', smsError.message);
-    if (notificationRecord?.id) {
-      try {
-        await pool.query(
-          'UPDATE notifications SET status = $1, failure_reason = $2 WHERE id = $3',
-          ['failed', smsError.message, notificationRecord.id],
-        );
-      } catch (updateError) {
-        console.error('Failed to update notification failure status:', updateError.message);
-      }
-    }
-  }
 
-  return {
-    notified: Boolean(notificationRecord),
-    notificationId: notificationRecord?.id || null,
-    smsSent: Boolean(smsResult?.success),
-  };
+      if (shouldSkip) {
+        return { notified: false, reason: 'duplicate' };
+      }
+
+      const [guardian, vaccineName] = await Promise.all([
+        resolveGuardianContact(guardianId),
+        resolveVaccineName(vaccineId),
+      ]);
+
+      const guardianName = guardian?.name || `Guardian #${guardianId}`;
+      const message = buildUnavailableNotificationMessage({
+        guardianName,
+        vaccineName,
+        scheduledDate,
+      });
+
+      const metadata = buildVaccineUnavailableMetadata({
+        guardianId,
+        infantId,
+        vaccineId,
+        dateKey,
+        clinicId,
+      });
+
+      try {
+        const dispatchResult = await notificationService.sendNotification({
+          notification_type: VACCINE_UNAVAILABLE_NOTIFICATION_TYPE,
+          target_type: 'guardian',
+          target_id: guardianId,
+          recipient_name: guardianName,
+          recipient_phone: guardian?.phone || null,
+          recipient_email: guardian?.email || null,
+          channel: 'sms',
+          priority: 'high',
+          subject: 'Vaccine Unavailable',
+          message,
+          created_by: null,
+          guardian_id: guardianId,
+          target_role: 'guardian',
+          title: 'Vaccine Unavailable',
+          type: 'alert',
+          category: 'inventory',
+          is_read: false,
+          metadata,
+          template_data: {
+            guardian_name: guardianName,
+            vaccine_name: vaccineName,
+            date_key: dateKey,
+          },
+        });
+
+        const notificationId = dispatchResult?.notification?.id || null;
+        let persistedNotification = null;
+
+        if (notificationId) {
+          try {
+            persistedNotification = await notificationService.getNotification(notificationId);
+          } catch (readError) {
+            console.error('Failed to fetch vaccine unavailable notification status:', readError.message);
+          }
+        }
+
+        const finalStatus =
+          persistedNotification?.status || dispatchResult?.notification?.status || null;
+
+        return {
+          notified: Boolean(notificationId),
+          notificationId,
+          smsSent: finalStatus === 'sent',
+          status: finalStatus,
+        };
+      } catch (notificationError) {
+        console.error('Failed to trigger vaccine unavailable notification pipeline:', notificationError.message);
+        return {
+          notified: false,
+          reason: 'notification_pipeline_failed',
+          error: notificationError.message,
+        };
+      }
+    },
+  );
 };
 
 module.exports = {

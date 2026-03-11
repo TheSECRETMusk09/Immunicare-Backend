@@ -38,6 +38,119 @@ const guardianScopeFilterSql = `
   p.guardian_id
 `;
 
+const PROVIDER_FALLBACK_LABEL = 'Provider unavailable';
+const PROVIDER_FALLBACK_LABEL_SQL = PROVIDER_FALLBACK_LABEL.replace(/'/g, "''");
+const PROVIDER_NAME_COLUMNS = ['full_name', 'name', 'username', 'email'];
+
+let providerSchemaPromise = null;
+
+const resolveProviderSchema = async () => {
+  try {
+    const [tablesResult, columnsResult] = await Promise.all([
+      db.query(
+        `
+          SELECT table_name
+          FROM information_schema.tables
+          WHERE table_schema = current_schema()
+            AND table_name = ANY($1::text[])
+        `,
+        [['users', 'admin']],
+      ),
+      db.query(
+        `
+          SELECT table_name, column_name
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = ANY($1::text[])
+            AND column_name = ANY($2::text[])
+        `,
+        [['users', 'admin'], PROVIDER_NAME_COLUMNS],
+      ),
+    ]);
+
+    const availableTables = new Set((tablesResult.rows || []).map((row) => row.table_name));
+    const columnsByTable = {
+      users: new Set(),
+      admin: new Set(),
+    };
+
+    (columnsResult.rows || []).forEach((row) => {
+      if (!columnsByTable[row.table_name]) {
+        columnsByTable[row.table_name] = new Set();
+      }
+      columnsByTable[row.table_name].add(row.column_name);
+    });
+
+    return {
+      tables: availableTables,
+      columnsByTable,
+    };
+  } catch (error) {
+    console.error('Error resolving dashboard vaccination provider schema:', error);
+    return {
+      tables: new Set(['users']),
+      columnsByTable: {
+        users: new Set(['username', 'email']),
+        admin: new Set(),
+      },
+    };
+  }
+};
+
+const getProviderSchema = async () => {
+  if (!providerSchemaPromise) {
+    providerSchemaPromise = resolveProviderSchema();
+  }
+
+  return providerSchemaPromise;
+};
+
+const buildProviderNameCandidates = (alias, availableColumns) =>
+  PROVIDER_NAME_COLUMNS
+    .filter((column) => availableColumns.has(column))
+    .map((column) => `NULLIF(TRIM(${alias}.${column}), '')`);
+
+const getProviderSqlFragments = async () => {
+  const schema = await getProviderSchema();
+  const providerJoins = [];
+  const providerNameCandidates = [];
+
+  if (schema.tables.has('users')) {
+    providerJoins.push('LEFT JOIN users provider_user ON provider_user.id = ir.administered_by');
+    providerNameCandidates.push(
+      ...buildProviderNameCandidates('provider_user', schema.columnsByTable.users || new Set()),
+    );
+  }
+
+  if (schema.tables.has('admin')) {
+    providerJoins.push('LEFT JOIN admin provider_admin ON provider_admin.id = ir.administered_by');
+    providerNameCandidates.push(
+      ...buildProviderNameCandidates('provider_admin', schema.columnsByTable.admin || new Set()),
+    );
+  }
+
+  const providerValueExpression =
+    providerNameCandidates.length > 0
+      ? `COALESCE(${providerNameCandidates.join(', ')}, '${PROVIDER_FALLBACK_LABEL_SQL}')`
+      : `'${PROVIDER_FALLBACK_LABEL_SQL}'`;
+
+  return {
+    providerJoinsSql: providerJoins.join('\n'),
+    providerValueExpression,
+  };
+};
+
+const normalizeVaccinationProvider = (record) => {
+  const providerName =
+    record?.provider_name || record?.administered_by_name || PROVIDER_FALLBACK_LABEL;
+
+  return {
+    ...record,
+    provider_name: providerName,
+    administered_by_name: record?.administered_by_name || providerName,
+  };
+};
+
 // Health check endpoint (public)
 router.get('/health', async (_req, res) => {
   try {
@@ -308,6 +421,8 @@ router.get('/guardian/:guardianId/vaccinations', authenticateToken, async (req, 
     const limit = sanitizeLimit(req.query.limit, 20, 100);
     noCache(res);
 
+    const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+
     const result = await db.query(
       `
         SELECT
@@ -315,10 +430,13 @@ router.get('/guardian/:guardianId/vaccinations', authenticateToken, async (req, 
           p.first_name,
           p.last_name,
           p.control_number,
-          v.name as vaccine_name
+          v.name as vaccine_name,
+          ${providerValueExpression} as provider_name,
+          ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         LEFT JOIN patients p ON p.id = ir.patient_id
         JOIN vaccines v ON v.id = ir.vaccine_id
+        ${providerJoinsSql}
         WHERE ${guardianScopeFilterSql} = $1
           AND ir.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
@@ -327,7 +445,7 @@ router.get('/guardian/:guardianId/vaccinations', authenticateToken, async (req, 
       [guardianId, limit],
     );
 
-    res.json(result.rows);
+    res.json(result.rows.map(normalizeVaccinationProvider));
   } catch (error) {
     console.error('Guardian vaccinations error:', error);
     next(error);
@@ -640,12 +758,20 @@ router.get('/guardian/:guardianId/vaccinations/:infantId', authenticateToken, as
       return res.status(403).json({ error: 'Infant does not belong to this guardian' });
     }
 
+    const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+
     const result = await db.query(
       `
-        SELECT ir.*, v.name as vaccine_name, vb.lot_no as batch_number
+        SELECT
+          ir.*,
+          v.name as vaccine_name,
+          vb.lot_no as batch_number,
+          ${providerValueExpression} as provider_name,
+          ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
         LEFT JOIN vaccine_batches vb ON vb.id = ir.batch_id
+        ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
@@ -653,7 +779,7 @@ router.get('/guardian/:guardianId/vaccinations/:infantId', authenticateToken, as
       [infantId],
     );
 
-    res.json(result.rows);
+    res.json(result.rows.map(normalizeVaccinationProvider));
   } catch (error) {
     console.error('Guardian infant vaccinations error:', error);
     next(error);
