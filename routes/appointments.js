@@ -77,6 +77,9 @@ const getPatientFacilityColumn = () =>
 const getAppointmentFacilityColumn = () =>
   resolveFirstExistingColumn('appointments', ['clinic_id', 'facility_id'], 'clinic_id');
 
+const getAppointmentPatientColumn = () =>
+  resolveFirstExistingColumn('appointments', ['infant_id', 'patient_id'], 'infant_id');
+
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 const APPOINTMENT_STATUS_VALUES = [
@@ -255,6 +258,7 @@ const fetchInfantOwnership = async (infantId) => {
 const fetchAppointmentById = async (id) => {
   const patientFacilityColumn = await getPatientFacilityColumn();
   const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+  const appointmentPatientColumn = await getAppointmentPatientColumn();
 
   const result = await pool.query(
     `
@@ -269,7 +273,7 @@ const fetchAppointmentById = async (id) => {
         g.phone AS guardian_phone,
         g.email AS guardian_email
       FROM appointments a
-      LEFT JOIN patients p ON p.id = a.infant_id
+      LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE a.id = $1
       LIMIT 1
@@ -287,6 +291,7 @@ router.get('/', async (req, res) => {
     const canonicalRole = getCanonicalRole(req);
     const patientFacilityColumn = await getPatientFacilityColumn();
     const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+    const appointmentPatientColumn = await getAppointmentPatientColumn();
 
     const params = [];
     let query = `
@@ -300,7 +305,7 @@ router.get('/', async (req, res) => {
         g.name AS guardian_name,
         g.phone AS guardian_phone
       FROM appointments a
-      LEFT JOIN patients p ON p.id = a.infant_id
+      LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE a.is_active = true
     `;
@@ -330,7 +335,7 @@ router.get('/', async (req, res) => {
     }
 
     if (infant_id) {
-      query += ` AND a.infant_id = $${params.length + 1}`;
+      query += ` AND a.${appointmentPatientColumn} = $${params.length + 1}`;
       params.push(parseInt(infant_id, 10));
     }
 
@@ -709,6 +714,7 @@ router.get('/availability/date/:date', async (req, res) => {
 router.get('/date/:date', requirePermission('appointment:view'), async (req, res) => {
   try {
     const { date } = req.params;
+    const appointmentPatientColumn = await getAppointmentPatientColumn();
     const result = await pool.query(
       `
         SELECT
@@ -719,7 +725,7 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
           g.name AS guardian_name,
           g.phone AS guardian_phone
         FROM appointments a
-        LEFT JOIN patients p ON p.id = a.infant_id
+        LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE DATE(a.scheduled_date) = $1
         ORDER BY a.scheduled_date ASC
@@ -738,6 +744,7 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
 router.get('/upcoming', requirePermission('appointment:view'), async (req, res) => {
   try {
     const limit = sanitizeLimit(req.query.limit, 10, 100);
+    const appointmentPatientColumn = await getAppointmentPatientColumn();
     const result = await pool.query(
       `
         SELECT
@@ -748,7 +755,7 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
           g.name AS guardian_name,
           g.phone AS guardian_phone
         FROM appointments a
-        LEFT JOIN patients p ON p.id = a.infant_id
+        LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE a.scheduled_date >= CURRENT_DATE
           AND a.status = 'scheduled'
