@@ -32,6 +32,51 @@ const router = express.Router();
 
 router.use(authenticateToken);
 
+const schemaCache = {
+  columns: new Map(),
+};
+
+const resolveFirstExistingColumn = async (
+  tableName,
+  candidateColumns,
+  fallback = candidateColumns[0],
+) => {
+  const cacheKey = `${tableName}:${candidateColumns.join(',')}`;
+  if (schemaCache.columns.has(cacheKey)) {
+    return schemaCache.columns.get(cacheKey);
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = ANY($2::text[])
+      `,
+      [tableName, candidateColumns],
+    );
+
+    const availableColumns = new Set(result.rows.map((row) => row.column_name));
+    const resolvedColumn =
+      candidateColumns.find((columnName) => availableColumns.has(columnName)) ||
+      fallback;
+
+    schemaCache.columns.set(cacheKey, resolvedColumn);
+    return resolvedColumn;
+  } catch (_error) {
+    schemaCache.columns.set(cacheKey, fallback);
+    return fallback;
+  }
+};
+
+const getPatientFacilityColumn = () =>
+  resolveFirstExistingColumn('patients', ['clinic_id', 'facility_id'], 'clinic_id');
+
+const getAppointmentFacilityColumn = () =>
+  resolveFirstExistingColumn('appointments', ['clinic_id', 'facility_id'], 'clinic_id');
+
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 const APPOINTMENT_STATUS_VALUES = [
@@ -208,6 +253,9 @@ const fetchInfantOwnership = async (infantId) => {
 };
 
 const fetchAppointmentById = async (id) => {
+  const patientFacilityColumn = await getPatientFacilityColumn();
+  const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+
   const result = await pool.query(
     `
       SELECT
@@ -216,7 +264,7 @@ const fetchAppointmentById = async (id) => {
         p.last_name AS last_name,
         p.control_number AS control_number,
         p.guardian_id AS owner_guardian_id,
-        COALESCE(p.clinic_id, a.clinic_id) AS resolved_clinic_id,
+        COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) AS resolved_clinic_id,
         g.name AS guardian_name,
         g.phone AS guardian_phone,
         g.email AS guardian_email
@@ -237,6 +285,8 @@ router.get('/', async (req, res) => {
   try {
     const { status, date, infant_id, clinic_id } = req.query;
     const canonicalRole = getCanonicalRole(req);
+    const patientFacilityColumn = await getPatientFacilityColumn();
+    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
 
     const params = [];
     let query = `
@@ -246,7 +296,7 @@ router.get('/', async (req, res) => {
         p.last_name AS last_name,
         p.control_number AS control_number,
         p.guardian_id AS owner_guardian_id,
-        COALESCE(p.clinic_id, a.clinic_id) AS resolved_clinic_id,
+        COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) AS resolved_clinic_id,
         g.name AS guardian_name,
         g.phone AS guardian_phone
       FROM appointments a
@@ -265,7 +315,7 @@ router.get('/', async (req, res) => {
     }
 
     if (canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && clinic_id) {
-      query += ` AND COALESCE(p.clinic_id, a.clinic_id) = $${params.length + 1}`;
+      query += ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = $${params.length + 1}`;
       params.push(parseInt(clinic_id, 10));
     }
 
