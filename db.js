@@ -1,6 +1,6 @@
 const { Pool } = require('pg');
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+const loadBackendEnv = require('./config/loadEnv');
+loadBackendEnv();
 const logger = require('./config/logger');
 
 // Validate required production database configuration

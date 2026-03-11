@@ -452,12 +452,14 @@ createRefreshTokensTable().catch((error) => {
 });
 
 // Schedule periodic cleanup of expired tokens (every hour)
-setInterval(
-  () => {
-    cleanupExpiredTokens();
-  },
-  60 * 60 * 1000,
-);
+if (process.env.NODE_ENV !== 'test') {
+  setInterval(
+    () => {
+      cleanupExpiredTokens();
+    },
+    60 * 60 * 1000,
+  );
+}
 
 module.exports = {
   generateAccessToken,

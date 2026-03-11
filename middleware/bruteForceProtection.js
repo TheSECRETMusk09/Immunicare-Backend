@@ -41,7 +41,7 @@ const getFailedAttempts = (identifier) => {
     failedAttempts.set(identifier, {
       count: 0,
       lastAttempt: null,
-      history: []
+      history: [],
     });
   }
   return failedAttempts.get(identifier);
@@ -61,7 +61,7 @@ const recordFailedAttempt = (identifier, req) => {
   record.history.push({
     timestamp: now,
     ip: req.ip,
-    userAgent: req.get('User-Agent')
+    userAgent: req.get('User-Agent'),
   });
 
   // Keep only last 20 attempts for analysis
@@ -89,8 +89,8 @@ const recordFailedAttempt = (identifier, req) => {
           identifier: identifier.substring(0, 3) + '***',
           attempts: record.count,
           reason: 'HARD_LOCKOUT_THRESHOLD_EXCEEDED',
-          lockoutDuration: LOCKOUT_DURATION
-        }
+          lockoutDuration: LOCKOUT_DURATION,
+        },
       });
     } catch (seError) {
       console.warn('Could not log brute force lockout event:', seError.message);
@@ -108,8 +108,8 @@ const recordFailedAttempt = (identifier, req) => {
         details: {
           identifier: identifier.substring(0, 3) + '***',
           attempts: record.count,
-          delayMs: delayInfo.delay
-        }
+          delayMs: delayInfo.delay,
+        },
       });
     } catch (seError) {
       console.warn('Could not log brute force event:', seError.message);
@@ -215,7 +215,7 @@ const calculateDelay = (attemptCount) => {
     return {
       delay: Math.min(delay, MAX_DELAY),
       type: 'progressive',
-      remainingAttempts: MAX_ATTEMPTS - attemptCount
+      remainingAttempts: MAX_ATTEMPTS - attemptCount,
     };
   }
 
@@ -258,7 +258,7 @@ const bruteForceProtection = (options = {}) => {
           code: 'ACCOUNT_LOCKED',
           lockoutDuration: Math.ceil(lockoutDuration / 60000), // minutes
           retryAfter: remainingTime,
-          attemptCount: options.attemptCount
+          attemptCount: options.attemptCount,
         });
       }
 
@@ -272,9 +272,9 @@ const bruteForceProtection = (options = {}) => {
         message:
           delayInfo.delay > 0
             ? `Please wait ${Math.ceil(delayInfo.delay / 1000)} seconds before trying again.`
-            : 'Please try again.'
+            : 'Please try again.',
       });
-    }
+    },
   } = options;
 
   return (req, res, next) => {
@@ -308,8 +308,8 @@ const bruteForceProtection = (options = {}) => {
           details: {
             identifier: identifier.substring(0, 3) + '***',
             remainingTime,
-            type: 'hard_lockout'
-          }
+            type: 'hard_lockout',
+          },
         });
       } catch (seError) {
         console.warn('Could not log brute force event:', seError.message);
@@ -318,7 +318,7 @@ const bruteForceProtection = (options = {}) => {
       return res.status(429).json({
         error: 'Account temporarily locked due to too many failed attempts',
         code: 'ACCOUNT_LOCKED',
-        retryAfter: remainingTime
+        retryAfter: remainingTime,
       });
     }
 
@@ -395,8 +395,8 @@ const checkBruteForce = async (req, success) => {
           userAgent: req.get('User-Agent'),
           details: {
             identifier: identifier.substring(0, 3) + '***',
-            attempts: getAttemptCount(identifier)
-          }
+            attempts: getAttemptCount(identifier),
+          },
         });
       } catch (seError) {
         // Security event logging failed - don't break the flow
@@ -427,7 +427,7 @@ const getBruteForceStatus = (identifier) => {
     remainingLockoutTime: getRemainingLockoutTime(identifier),
     delayInfo,
     lockoutThreshold: HARD_LOCKOUT_THRESHOLD,
-    softLockoutThreshold: SOFT_LOCKOUT_THRESHOLD
+    softLockoutThreshold: SOFT_LOCKOUT_THRESHOLD,
   };
 };
 
@@ -460,7 +460,9 @@ const cleanup = () => {
 };
 
 // Run cleanup every hour
-setInterval(cleanup, 60 * 60 * 1000);
+if (process.env.NODE_ENV !== 'test') {
+  setInterval(cleanup, 60 * 60 * 1000);
+}
 
 module.exports = {
   bruteForceProtection,
@@ -478,5 +480,5 @@ module.exports = {
   LOCKOUT_DURATION,
   SOFT_LOCKOUT_THRESHOLD,
   HARD_LOCKOUT_THRESHOLD,
-  MAX_DELAY
+  MAX_DELAY,
 };

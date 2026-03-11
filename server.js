@@ -6,8 +6,8 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-// Always load backend/.env even if process is started from repo root
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+const loadBackendEnv = require('./config/loadEnv');
+loadBackendEnv();
 
 // Import auth middleware
 const { preventGuardianAccess, requestIdMiddleware } = require('./middleware/auth');
