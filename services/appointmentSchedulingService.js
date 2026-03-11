@@ -148,7 +148,7 @@ const getNotificationColumns = async () => {
 
 const TIME_SLOT_CONFIG = Object.freeze({
   start: '08:00',
-  end: '16:30',
+  end: '16:00',
   intervalMinutes: 30,
   lunchStart: '12:00',
   lunchEnd: '13:00',
