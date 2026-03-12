@@ -462,7 +462,7 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
       }
     }
 
-    const finalStatus = guardianFlow ? 'pending' : normalized.status || 'scheduled';
+    const finalStatus = guardianFlow ? 'scheduled' : normalized.status || 'scheduled';
     const finalClinicId = clinicIdCheck.value || infant.clinic_id || req.user.clinic_id || null;
 
     // Generate appointment control number

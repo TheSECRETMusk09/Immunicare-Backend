@@ -35,16 +35,16 @@ const OTP_PURPOSE_MAP = {
 };
 
 const OTP_MESSAGE_BY_PURPOSE = {
-  phone_verification: 'Your Immunicare phone verification code is {code}. It expires in {minutes} minutes.',
-  password_reset: 'Your Immunicare password reset code is {code}. It expires in {minutes} minutes.',
-  login: 'Your Immunicare login OTP is {code}. It expires in {minutes} minutes.',
+  phone_verification: 'Immunicare: Your phone verification code is {code}. It expires in {minutes} minutes. Do not share this code.',
+  password_reset: 'Immunicare: Your password reset code is {code}. It expires in {minutes} minutes. Do not share this code.',
+  login: 'Immunicare: Your login verification code is {code}. It expires in {minutes} minutes. Do not share this code.',
 };
 
 const APPOINTMENT_MESSAGE_BY_TYPE = {
-  nextAppointment:
-    'Scheduled for {vaccineType} vaccination on {scheduledDate} at Barangay San Nicolas Health Center, Pasig City.',
-  missedAppointment:
-    'Missed {vaccineType} vaccination scheduled on {scheduledDate} at Barangay San Nicolas Health Center, Pasig City.',
+  nextAppointment: 'Immunicare Reminder: {baby_name}\'s vaccination appointment is scheduled on {scheduledDate} at {location}. Please arrive 15 minutes early.',
+  nextAppointment24h: 'Immunicare: Hi {guardian_name}, this is a reminder that {baby_name}\'s vaccination appointment is TOMORROW ({scheduledDate}) at {time}. Location: {location}. Please arrive 15 minutes early.',
+  nextAppointment48h: 'Immunicare: Hi {guardian_name}, this is a reminder that {baby_name}\'s vaccination appointment is in 2 days ({scheduledDate}) at {time}. Location: {location}. Please arrive 15 minutes early.',
+  missedAppointment: 'Immunicare Alert: {baby_name}\'s vaccination appointment on {scheduledDate} was missed. Please contact the health center at your earliest convenience to reschedule. Location: {location}.',
 };
 
 function normalizePurpose(purpose) {
@@ -548,22 +548,41 @@ function formatReminderDateLabel(dateInput) {
   });
 }
 
-function createAppointmentReminderMessage(vaccineType, scheduledDate) {
-  const normalizedVaccineType = String(vaccineType || 'scheduled vaccine').trim();
-  const dateLabel = formatReminderDateLabel(scheduledDate);
+function createAppointmentReminderMessage(vaccineType, scheduledDate, options = {}) {
+  const { hoursUntil = 48, childName = 'Your child', guardianName = '', location = 'Barangay San Nicolas Health Center' } = options;
+  const normalizedVaccineType = String(vaccineType || 'vaccination').trim();
+  const dateObj = scheduledDate ? new Date(scheduledDate) : null;
+  const dateLabel = dateObj ? dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'your scheduled date';
+  const timeLabel = dateObj ? dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
 
-  return APPOINTMENT_MESSAGE_BY_TYPE.nextAppointment
-    .replace('{vaccineType}', normalizedVaccineType)
-    .replace('{scheduledDate}', dateLabel);
+  // Use different message template based on hours until appointment
+  if (hoursUntil <= 24) {
+    return APPOINTMENT_MESSAGE_BY_TYPE.nextAppointment24h
+      .replace('{guardian_name}', guardianName || 'Guardian')
+      .replace('{baby_name}', childName)
+      .replace('{scheduledDate}', dateLabel)
+      .replace('{time}', timeLabel)
+      .replace('{location}', location);
+  }
+
+  return APPOINTMENT_MESSAGE_BY_TYPE.nextAppointment48h
+    .replace('{guardian_name}', guardianName || 'Guardian')
+    .replace('{baby_name}', childName)
+    .replace('{scheduledDate}', dateLabel)
+    .replace('{time}', timeLabel)
+    .replace('{location}', location);
 }
 
-function createMissedAppointmentMessage(vaccineType, scheduledDate) {
-  const normalizedVaccineType = String(vaccineType || 'scheduled vaccine').trim();
+function createMissedAppointmentMessage(vaccineType, scheduledDate, options = {}) {
+  const { childName = 'Your child', location = 'Barangay San Nicolas Health Center' } = options;
+  const normalizedVaccineType = String(vaccineType || 'vaccination').trim();
   const dateLabel = formatReminderDateLabel(scheduledDate);
 
   return APPOINTMENT_MESSAGE_BY_TYPE.missedAppointment
+    .replace('{baby_name}', childName)
     .replace('{vaccineType}', normalizedVaccineType)
-    .replace('{scheduledDate}', dateLabel);
+    .replace('{scheduledDate}', dateLabel)
+    .replace('{location}', location);
 }
 
 async function sendAppointmentReminder(appointment) {
@@ -575,23 +594,35 @@ async function sendAppointmentReminder(appointment) {
     appointment?.infant_first_name ||
     'your child';
 
+  const guardianName = appointment?.guardianName || appointment?.guardian_name || 'Guardian';
+
   const vaccineType =
     appointment?.vaccineName ||
     appointment?.vaccine_name ||
     appointment?.type ||
     appointment?.appointment_type ||
     appointment?.vaccine ||
-    'scheduled vaccine';
+    'vaccination';
+
+  const hoursUntil = appointment?.hoursUntil || appointment?.hours_until || 48;
+  const location = appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
 
   const scheduledDateSource =
     appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
-  const message = createAppointmentReminderMessage(vaccineType, scheduledDateSource);
+
+  const message = createAppointmentReminderMessage(vaccineType, scheduledDateSource, {
+    hoursUntil,
+    childName,
+    guardianName,
+    location,
+  });
 
   const sendResult = await sendSMS(phoneNumber, message, 'appointment_reminder', {
     appointmentId: appointment?.appointmentId || appointment?.appointment_id,
     infantName: childName,
     vaccineType,
     scheduledDate: scheduledDateSource,
+    hoursUntil,
   });
 
   return {
@@ -616,12 +647,17 @@ async function sendMissedAppointmentNotification(appointment) {
     appointment?.type ||
     appointment?.appointment_type ||
     appointment?.vaccine ||
-    'scheduled vaccine';
+    'vaccination';
 
   const scheduledDateSource =
     appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
 
-  const message = createMissedAppointmentMessage(vaccineType, scheduledDateSource);
+  const location = appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
+
+  const message = createMissedAppointmentMessage(vaccineType, scheduledDateSource, {
+    childName,
+    location,
+  });
 
   const sendResult = await sendSMS(phoneNumber, message, 'missed_appointment', {
     appointmentId: appointment?.appointmentId || appointment?.appointment_id,
@@ -641,22 +677,28 @@ async function sendAppointmentConfirmation(payload) {
   const phoneNumber = payload?.phoneNumber || payload?.guardianPhone;
   const guardianName = payload?.guardianName || 'Guardian';
   const childName = payload?.childName || payload?.babyName || 'your child';
-  const vaccineName = payload?.vaccineName || 'scheduled vaccine';
+  const vaccineName = payload?.vaccineName || 'vaccination';
   const scheduledDateSource = payload?.scheduledDate || payload?.appointmentDate || payload?.date;
   const dateObj = scheduledDateSource ? new Date(scheduledDateSource) : new Date();
   const dateLabel = dateObj.toLocaleDateString('en-PH', {
-    month: 'short',
+    month: 'long',
     day: 'numeric',
     year: 'numeric',
   });
-  const location = payload?.location || payload?.clinicName || 'San Nicolas Health Center';
+  const timeLabel = dateObj.toLocaleTimeString('en-PH', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const location = payload?.location || payload?.clinicName || 'Barangay San Nicolas Health Center';
 
   const message =
-    `Immunicare: Hi ${guardianName}, ${childName}'s appointment for ${vaccineName} is confirmed on ${dateLabel} at ${location}.`;
+    `Immunicare: Hi ${guardianName}, ${childName}'s ${vaccineName} appointment has been confirmed for ${dateLabel} at ${timeLabel}. ` +
+    `Location: ${location}. Please arrive 15 minutes early. Thank you!`;
 
   const sendResult = await sendSMS(phoneNumber, message, 'appointment_confirmation', {
     childName,
     vaccineName,
+    scheduledDate: dateLabel,
   });
 
   return {
@@ -672,17 +714,18 @@ async function sendVaccinationReminder(payload) {
   const vaccineName = payload?.vaccineName || 'scheduled vaccine';
   const dueDateSource = payload?.dueDate || payload?.date;
   const dueLabel = dueDateSource
-    ? new Date(dueDateSource).toLocaleDateString('en-PH', {
-      month: 'short',
+    ? new Date(dueDateSource).toLocaleDateString('en-US', {
+      month: 'long',
       day: 'numeric',
       year: 'numeric',
     })
     : 'soon';
 
-  const message = `Immunicare Reminder: ${childName} is due for ${vaccineName} on ${dueLabel}. Please coordinate with your health center.`;
+  const message = `Immunicare Reminder: ${childName} is due for ${vaccineName} on ${dueLabel}. Please coordinate with your health center at Barangay San Nicolas Health Center to schedule an appointment.`;
   const sendResult = await sendSMS(phoneNumber, message, 'vaccination_reminder', {
     childName,
     vaccineName,
+    dueDate: dueLabel,
   });
 
   return {
@@ -711,7 +754,7 @@ async function sendPasswordResetSMS(phoneNumber, code) {
 }
 
 async function sendWelcomeSMS(phoneNumber, name) {
-  const message = `Welcome to Immunicare, ${name}! Your account has been successfully verified. You can now log in to manage your child's vaccination schedule.`;
+  const message = `Welcome to Immunicare, ${name}! Your account has been successfully verified. You can now log in to manage your child's vaccination schedule at the Barangay San Nicolas Health Center.`;
   return sendSMS(
     phoneNumber,
     message,

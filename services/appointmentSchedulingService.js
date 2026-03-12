@@ -782,16 +782,29 @@ const createAppointmentAndNotify = async (appointmentData) => {
     const details = detailsResult.rows[0];
 
     // 3. Send notifications (offloaded, doesn't block the response)
-    if (details) {
+    if (details && details.guardianPhone) {
       const appointmentDate = new Date(scheduled_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
       const appointmentTime = new Date(scheduled_date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-      // Send SMS
-      const smsMessage = `Immunicare Confirmation: Appointment for ${details.infantName} is set for ${appointmentDate} at ${appointmentTime}. Vaccine: ${details.vaccineName}.`;
-      notificationService.sendSms(details.guardianPhone, smsMessage);
+      // Send SMS using the improved smsService
+      const smsService = require('./smsService');
+      smsService.sendAppointmentConfirmation({
+        phoneNumber: details.guardianPhone,
+        guardianName: details.guardianName,
+        childName: details.infantName,
+        vaccineName: details.vaccineName,
+        scheduledDate: scheduled_date,
+        location: details.clinicName,
+      }).catch(err => console.error('Appointment confirmation SMS failed:', err.message));
 
       // Send Email
-      notificationService.sendEmail(details.guardianEmail, 'Immunicare Appointment Confirmation', 'appointmentConfirmation', { ...details, appointmentDate, appointmentTime });
+      const notificationService = require('./notificationService');
+      notificationService.sendEmail(
+        details.guardianEmail,
+        'Immunicare Appointment Confirmation',
+        'appointmentConfirmation',
+        { ...details, appointmentDate, appointmentTime },
+      ).catch(err => console.error('Appointment confirmation email failed:', err.message));
     }
 
     return newAppointment;
@@ -1107,6 +1120,87 @@ const notifyGuardianVaccineUnavailable = async ({
   );
 };
 
+/**
+ * Process missed appointments and send SMS notifications
+ * This should be called periodically (e.g., daily) to detect and notify about missed appointments
+ */
+const processMissedAppointments = async () => {
+  try {
+    // Find appointments that were scheduled but not attended
+    const query = `
+      SELECT
+        a.id as appointment_id,
+        a.scheduled_date,
+        a.type as appointment_type,
+        a.status,
+        p.id as infant_id,
+        p.first_name as infant_first_name,
+        p.last_name as infant_last_name,
+        g.id as guardian_id,
+        g.name as guardian_name,
+        g.phone as guardian_phone
+      FROM appointments a
+      JOIN patients p ON a.infant_id = p.id
+      JOIN guardians g ON p.guardian_id = g.id
+      WHERE a.scheduled_date < NOW() - INTERVAL '2 hours'
+        AND a.status IN ('scheduled', 'no-show')
+        AND a.is_active = true
+        AND a.sms_missed_notification_sent IS NULL
+        OR FALSE
+    `;
+
+    const result = await pool.query(query);
+    const missedAppointments = result.rows;
+
+    if (missedAppointments.length === 0) {
+      return { processed: 0, message: 'No missed appointments found' };
+    }
+
+    const smsService = require('./smsService');
+    let sentCount = 0;
+    let failedCount = 0;
+
+    for (const appointment of missedAppointments) {
+      if (!appointment.guardian_phone) {
+        failedCount++;
+        continue;
+      }
+
+      try {
+        const result = await smsService.sendMissedAppointmentNotification({
+          phoneNumber: appointment.guardian_phone,
+          childName: `${appointment.infant_first_name} ${appointment.infant_last_name}`,
+          vaccineType: appointment.appointment_type || 'vaccination',
+          scheduledDate: appointment.scheduled_date,
+        });
+
+        if (result.success) {
+          // Mark notification as sent
+          await pool.query(
+            'UPDATE appointments SET sms_missed_notification_sent = TRUE WHERE id = $1',
+            [appointment.appointment_id],
+          );
+          sentCount++;
+        } else {
+          failedCount++;
+        }
+      } catch (error) {
+        console.error('Failed to send missed appointment SMS:', error.message);
+        failedCount++;
+      }
+    }
+
+    return {
+      processed: missedAppointments.length,
+      sent: sentCount,
+      failed: failedCount,
+    };
+  } catch (error) {
+    console.error('Error processing missed appointments:', error);
+    return { error: error.message };
+  }
+};
+
 module.exports = {
   checkBookingAvailability,
   getAvailableTimeSlots,
@@ -1119,4 +1213,5 @@ module.exports = {
   generateControlNumber,
   ensureInfantRecord,
   notifyGuardianVaccineUnavailable,
+  processMissedAppointments, // Export missed appointment processor
 };

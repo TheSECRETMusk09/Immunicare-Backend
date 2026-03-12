@@ -5,6 +5,8 @@
 
 const logger = require('../config/logger');
 const pool = require('../db');
+const appointmentSchedulingService = require('../services/appointmentSchedulingService');
+const smsService = require('../services/smsService');
 
 const FATAL_DB_CONFIG_ERROR_CODES = new Set([
   '28P01',
@@ -25,6 +27,8 @@ const isAuthOrConfigDbError = (error) => isFatalDbConfigError(error?.code) || is
 // Job intervals (in milliseconds)
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
+const REMINDER_CHECK_INTERVAL = 60 * 60 * 1000; // 1 hour - check for appointment reminders
+const MISSED_APPOINTMENT_CHECK_INTERVAL = 2 * 60 * 60 * 1000; // 2 hours - check for missed appointments
 
 let jobs = [];
 let isInitialized = false;
@@ -197,6 +201,135 @@ async function runCleanupTasks() {
 }
 
 /**
+ * Send appointment reminder SMS to guardians
+ * This runs periodically to check for upcoming appointments and send reminders
+ */
+async function sendAppointmentReminders() {
+  const exists = await checkTableExists('appointments');
+  if (!exists) {
+    logger.debug('Skipping appointment reminders because appointments table does not exist or DB is unavailable.');
+    return;
+  }
+
+  try {
+    // Find appointments scheduled for the next 24-48 hours that haven't been reminded
+    const query = `
+      SELECT
+        a.id as appointment_id,
+        a.scheduled_date,
+        a.type as appointment_type,
+        a.reminder_sent_24h,
+        a.reminder_sent_48h,
+        p.id as infant_id,
+        p.first_name as infant_first_name,
+        p.last_name as infant_last_name,
+        g.id as guardian_id,
+        g.name as guardian_name,
+        g.phone as guardian_phone
+      FROM appointments a
+      JOIN patients p ON a.infant_id = p.id
+      JOIN guardians g ON p.guardian_id = g.id
+      WHERE a.scheduled_date BETWEEN NOW() + INTERVAL '20 hours' AND NOW() + INTERVAL '48 hours'
+        AND a.status IN ('scheduled')
+        AND a.is_active = true
+    `;
+
+    const result = await pool.query(query);
+    const upcomingAppointments = result.rows;
+
+    if (upcomingAppointments.length === 0) {
+      logger.debug('No upcoming appointments found for reminders');
+      return;
+    }
+
+    let sent24hCount = 0;
+    let sent48hCount = 0;
+    let failedCount = 0;
+
+    for (const appointment of upcomingAppointments) {
+      if (!appointment.guardian_phone) {
+        failedCount++;
+        continue;
+      }
+
+      const hoursUntil = Math.round(
+        (new Date(appointment.scheduled_date) - new Date()) / (1000 * 60 * 60),
+      );
+
+      // Send 48-hour reminder if not already sent
+      if (hoursUntil <= 48 && !appointment.reminder_sent_48h) {
+        try {
+          const smsResult = await smsService.sendAppointmentReminder({
+            phoneNumber: appointment.guardian_phone,
+            childName: `${appointment.infant_first_name} ${appointment.infant_last_name}`,
+            scheduledDate: appointment.scheduled_date,
+            hoursUntil: 48,
+          });
+
+          if (smsResult.success) {
+            await pool.query(
+              'UPDATE appointments SET reminder_sent_48h = TRUE WHERE id = $1',
+              [appointment.appointment_id],
+            );
+            sent48hCount++;
+          }
+        } catch (error) {
+          logger.error('Failed to send 48h reminder:', error.message);
+          failedCount++;
+        }
+      }
+
+      // Send 24-hour reminder if not already sent
+      if (hoursUntil <= 24 && !appointment.reminder_sent_24h) {
+        try {
+          const smsResult = await smsService.sendAppointmentReminder({
+            phoneNumber: appointment.guardian_phone,
+            childName: `${appointment.infant_first_name} ${appointment.infant_last_name}`,
+            scheduledDate: appointment.scheduled_date,
+            hoursUntil: 24,
+          });
+
+          if (smsResult.success) {
+            await pool.query(
+              'UPDATE appointments SET reminder_sent_24h = TRUE WHERE id = $1',
+              [appointment.appointment_id],
+            );
+            sent24hCount++;
+          }
+        } catch (error) {
+          logger.error('Failed to send 24h reminder:', error.message);
+          failedCount++;
+        }
+      }
+    }
+
+    logger.info(`Appointment reminders: 48h=${sent48hCount}, 24h=${sent24hCount}, failed=${failedCount}`);
+  } catch (error) {
+    logger.error('Error sending appointment reminders:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+      errno: error.errno,
+      syscall: error.syscall,
+    });
+  }
+}
+
+/**
+ * Process missed appointments and send notifications
+ */
+async function processMissedAppointmentsJob() {
+  try {
+    const result = await appointmentSchedulingService.processMissedAppointments();
+    if (result && result.processed !== undefined) {
+      logger.info(`Missed appointments processed: ${result.processed}, sent: ${result.sent}, failed: ${result.failed}`);
+    }
+  } catch (error) {
+    logger.error('Error processing missed appointments:', error.message);
+  }
+}
+
+/**
  * Initialize the scheduler
  * Sets up all scheduled jobs
  */
@@ -231,6 +364,38 @@ function initScheduler() {
 
   jobs.push(sessionCleanupJob);
 
+  // Schedule appointment reminder checks
+  const reminderJob = setInterval(() => {
+    sendAppointmentReminders().catch((err) => {
+      logger.error('Error in appointment reminder job:', err.message);
+    });
+  }, REMINDER_CHECK_INTERVAL);
+
+  jobs.push(reminderJob);
+
+  // Run reminders immediately on startup (after a short delay)
+  setTimeout(() => {
+    sendAppointmentReminders().catch((err) => {
+      logger.error('Error running initial appointment reminders:', err.message);
+    });
+  }, 30000); // 30 second delay to allow DB connection
+
+  // Schedule missed appointment processing
+  const missedAppointmentJob = setInterval(() => {
+    processMissedAppointmentsJob().catch((err) => {
+      logger.error('Error in missed appointment job:', err.message);
+    });
+  }, MISSED_APPOINTMENT_CHECK_INTERVAL);
+
+  jobs.push(missedAppointmentJob);
+
+  // Run missed appointment check after a delay
+  setTimeout(() => {
+    processMissedAppointmentsJob().catch((err) => {
+      logger.error('Error running initial missed appointment check:', err.message);
+    });
+  }, 60000); // 1 minute delay
+
   isInitialized = true;
   logger.info('Scheduler initialized successfully');
 }
@@ -260,3 +425,5 @@ module.exports = initScheduler;
 module.exports.stopScheduler = stopScheduler;
 module.exports.getStatus = getStatus;
 module.exports.runCleanupTasks = runCleanupTasks;
+module.exports.sendAppointmentReminders = sendAppointmentReminders;
+module.exports.processMissedAppointmentsJob = processMissedAppointmentsJob;

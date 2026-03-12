@@ -282,7 +282,7 @@ router.get(
         COUNT(CASE WHEN a.status = 'attended' THEN 1 END) as completed,
         COUNT(CASE WHEN a.status = 'cancelled' THEN 1 END) as cancelled,
         COUNT(CASE WHEN a.status = 'no_show' THEN 1 END) as no_shows,
-        COUNT(CASE WHEN a.status IN ('scheduled', 'pending', 'confirmed') THEN 1 END) as scheduled,
+        COUNT(CASE WHEN a.status IN ('scheduled', 'no-show') THEN 1 END) as scheduled,
         a.appointment_type
       FROM appointments a
       WHERE ($1::date IS NULL OR a.appointment_date >= $1)
