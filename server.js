@@ -75,6 +75,40 @@ server.on('clientError', (err, socket) => {
 const PORT = process.env.PORT || 5000;
 const HTTPS_PORT = process.env.HTTPS_PORT || 5443;
 const ENABLE_HTTPS = process.env.ENABLE_HTTPS === 'true';
+const runtimeStateDir = path.join(__dirname, '.runtime');
+const runtimePortStateFile = path.join(runtimeStateDir, 'active-port.json');
+
+const writeRuntimePortState = (port, status = 'running') => {
+  try {
+    fs.mkdirSync(runtimeStateDir, { recursive: true });
+    fs.writeFileSync(
+      runtimePortStateFile,
+      JSON.stringify(
+        {
+          port,
+          status,
+          pid: process.pid,
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+  } catch (error) {
+    console.warn('Failed to write backend runtime port state:', error.message);
+  }
+};
+
+const clearRuntimePortState = () => {
+  try {
+    if (fs.existsSync(runtimePortStateFile)) {
+      fs.unlinkSync(runtimePortStateFile);
+    }
+  } catch (error) {
+    console.warn('Failed to clear backend runtime port state:', error.message);
+  }
+};
 
 // HTTPS server (optional)
 let httpsServer = null;
@@ -595,6 +629,7 @@ async function startServer() {
 
     // Export the actual port being used
     process.env.ACTUAL_PORT = currentPort;
+    writeRuntimePortState(currentPort, 'running');
 
     // Start HTTPS server if enabled
     if (ENABLE_HTTPS) {
@@ -643,6 +678,7 @@ async function startServer() {
 // Graceful shutdown handler with Socket.io cleanup
 async function gracefulShutdown(signal) {
   console.log(`\n${signal} received, initiating graceful shutdown...`);
+  writeRuntimePortState(process.env.ACTUAL_PORT || BASE_PORT, 'stopping');
 
   // Close all Socket.io connections first
   try {
@@ -707,10 +743,13 @@ async function gracefulShutdown(signal) {
       console.error('Error closing database pool:', err.message);
     }
 
+    clearRuntimePortState();
+
     console.log('Graceful shutdown complete');
     process.exit(0);
   } catch (err) {
     console.error('Error during shutdown:', err);
+    clearRuntimePortState();
     process.exit(1);
   }
 }
@@ -743,6 +782,7 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
   console.error('Error stack:', err.stack);
+  writeRuntimePortState(process.env.ACTUAL_PORT || BASE_PORT, 'crashed');
   // Attempt graceful shutdown
   const closeServers = () => {
     let serversClosed = 0;
@@ -752,6 +792,7 @@ process.on('uncaughtException', (err) => {
       serversClosed++;
       if (serversClosed === totalServers) {
         console.error('Servers closed due to uncaught exception');
+        clearRuntimePortState();
         process.exit(1);
       }
     });
@@ -761,6 +802,7 @@ process.on('uncaughtException', (err) => {
         serversClosed++;
         if (serversClosed === totalServers) {
           console.error('Servers closed due to uncaught exception');
+          clearRuntimePortState();
           process.exit(1);
         }
       });

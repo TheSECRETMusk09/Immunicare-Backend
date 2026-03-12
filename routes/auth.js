@@ -43,6 +43,7 @@ const resolveCanonicalRole = (roleName) => {
 
 const MAX_GUARDIAN_USERNAME_SUFFIX = 10000;
 const GUARDIAN_USERNAME_FORMAT_REGEX = /^[a-z0-9]+(?:\.[a-z0-9]+)+$/;
+const GUARDIAN_CONTROL_NUMBER_REGEX = /^GD-(\d{4,})$/i;
 
 const normalizeGuardianUsernamePart = (value) => {
   if (value === undefined || value === null) {
@@ -117,6 +118,67 @@ const resolveUniqueGuardianUsername = async (
   throw new Error('Unable to allocate unique guardian username');
 };
 
+const normalizeLoginIdentifier = (rawIdentifier = '') => String(rawIdentifier || '').trim();
+
+const parseGuardianControlNumber = (identifier) => {
+  const normalized = normalizeLoginIdentifier(identifier);
+  const match = normalized.match(GUARDIAN_CONTROL_NUMBER_REGEX);
+
+  if (!match) {
+    return null;
+  }
+
+  const numericPart = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(numericPart) || numericPart <= 0) {
+    return null;
+  }
+
+  return numericPart;
+};
+
+const findUserForLogin = async (identifier) => {
+  const normalizedIdentifier = normalizeLoginIdentifier(identifier);
+
+  const baseQuery = `
+    SELECT u.id, u.username, u.password_hash, u.role_id, u.clinic_id, u.last_login, u.guardian_id, u.email, u.is_active,
+           u.force_password_change, r.name as role_name, r.display_name, c.name as clinic_name
+    FROM users u
+    JOIN roles r ON u.role_id = r.id
+    LEFT JOIN clinics c ON u.clinic_id = c.id
+    WHERE u.username = $1 OR u.email = $1
+    LIMIT 1
+  `;
+
+  const baseResult = await pool.query(baseQuery, [normalizedIdentifier]);
+  if (baseResult.rows.length > 0) {
+    return baseResult.rows[0];
+  }
+
+  const guardianControlNumber = parseGuardianControlNumber(normalizedIdentifier);
+  if (!guardianControlNumber) {
+    return null;
+  }
+
+  const guardianQuery = `
+    SELECT u.id, u.username, u.password_hash, u.role_id, u.clinic_id, u.last_login, u.guardian_id, u.email, u.is_active,
+           u.force_password_change, r.name as role_name, r.display_name, c.name as clinic_name
+    FROM users u
+    JOIN roles r ON u.role_id = r.id
+    LEFT JOIN clinics c ON u.clinic_id = c.id
+    WHERE u.guardian_id = $1
+      AND LOWER(r.name) = 'guardian'
+      AND u.is_active = true
+    LIMIT 1
+  `;
+
+  const guardianResult = await pool.query(guardianQuery, [guardianControlNumber]);
+  if (guardianResult.rows.length > 0) {
+    return guardianResult.rows[0];
+  }
+
+  return null;
+};
+
 // Handle OPTIONS requests for all auth routes
 router.options('*', (req, res) => {
   res.status(204).send();
@@ -149,7 +211,7 @@ const validateLoginInput = (req, res, next) => {
 
   if (!username && !email) {
     return res.status(400).json({
-      error: 'Username or email is required',
+      error: 'Username, email, or Guardian ID is required',
       code: 'MISSING_CREDENTIALS',
     });
   }
@@ -591,23 +653,15 @@ router.post(
   async (req, res) => {
     try {
       const { username, password, email, expectedRole } = req.body;
+      const loginIdentifier = normalizeLoginIdentifier(username || email);
 
-      // Query user by username or email
-      const result = await pool.query(
-        `SELECT u.id, u.username, u.password_hash, u.role_id, u.clinic_id, u.last_login, u.guardian_id, u.email, u.is_active,
-               u.force_password_change, r.name as role_name, r.display_name, c.name as clinic_name
-        FROM users u
-        JOIN roles r ON u.role_id = r.id
-        LEFT JOIN clinics c ON u.clinic_id = c.id
-        WHERE u.username = $1 OR u.email = $1`,
-        [username || email],
-      );
+      const user = await findUserForLogin(loginIdentifier);
 
-      if (result.rows.length === 0) {
+      if (!user) {
         // Log failed attempt (optional - may fail if table doesn't exist)
         try {
           await securityEventService.logLoginFailed(
-            username,
+            loginIdentifier,
             req.ip,
             req.get('User-Agent'),
             'USER_NOT_FOUND',
@@ -623,8 +677,6 @@ router.post(
           code: 'INVALID_CREDENTIALS',
         });
       }
-
-      const user = result.rows[0];
       const canonicalRole = resolveCanonicalRole(user.role_name);
       const expectedCanonicalRole = expectedRole ? resolveCanonicalRole(expectedRole) : null;
 
@@ -680,7 +732,7 @@ router.post(
         // Log failed attempt
         try {
           await securityEventService.logLoginFailed(
-            username,
+            loginIdentifier,
             req.ip,
             req.get('User-Agent'),
             'ACCOUNT_INACTIVE',
@@ -703,7 +755,7 @@ router.post(
         // Log failed attempt
         try {
           await securityEventService.logLoginFailed(
-            username,
+            loginIdentifier,
             req.ip,
             req.get('User-Agent'),
             'INVALID_PASSWORD',

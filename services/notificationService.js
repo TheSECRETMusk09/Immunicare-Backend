@@ -46,20 +46,6 @@ const normalizeJsonPayload = (value) => {
   return JSON.stringify(value);
 };
 
-const parseJsonPayload = (value) => {
-  if (!value) {
-    return {};
-  }
-  if (typeof value === 'object') {
-    return value;
-  }
-  try {
-    return JSON.parse(value);
-  } catch (_error) {
-    return {};
-  }
-};
-
 const PRIORITY_LABELS = ['low', 'normal', 'high', 'urgent'];
 const toPriorityLabel = (value) => {
   if (typeof value === 'string') {
@@ -126,6 +112,7 @@ class NotificationService {
     try {
       const {
         notification_type,
+        event_type,
         target_type,
         target_id,
         channel,
@@ -163,6 +150,7 @@ class NotificationService {
       const resolvedPriority = resolvePriority(priority);
       const payload = {
         notification_type,
+        event_type: event_type || notification_type,
         target_type,
         target_id,
         recipient_name: notificationData.recipient_name || null,
@@ -171,6 +159,10 @@ class NotificationService {
         channel,
         priority: resolvedPriority,
         status: scheduled_for ? 'scheduled' : 'pending',
+        trace_id: notificationData.trace_id || null,
+        idempotency_key: notificationData.idempotency_key || null,
+        channel_status: notificationData.channel_status || null,
+        callback_status: notificationData.callback_status || null,
         subject,
         message,
         template_id: template_id || null,
@@ -179,6 +171,10 @@ class NotificationService {
         scheduled_for: scheduled_for || null,
         created_by: notificationData.created_by || null,
         guardian_id: notificationData.guardian_id || null,
+        recipient_guardian_id: notificationData.recipient_guardian_id || null,
+        recipient_user_id: notificationData.recipient_user_id || null,
+        recipient_admin_id: notificationData.recipient_admin_id || null,
+        orchestration_version: notificationData.orchestration_version || 'v1',
         target_role: notificationData.target_role || null,
         metadata: notificationData.metadata || null,
         title: notificationData.title || subject || notification_type || 'Notification',
@@ -224,8 +220,9 @@ class NotificationService {
 
       const notification = result.rows[0];
 
-      // Send immediately if not scheduled
-      if (!scheduled_for) {
+      // Send immediately if not scheduled (unless orchestration already dispatched channels)
+      const skipImmediateProcessing = Boolean(notificationData.skipImmediateProcessing);
+      if (!scheduled_for && !skipImmediateProcessing) {
         await this.processNotification(notification.id);
       }
 

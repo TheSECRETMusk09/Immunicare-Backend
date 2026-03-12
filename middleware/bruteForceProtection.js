@@ -10,14 +10,23 @@ const crypto = require('crypto');
 const failedAttempts = new Map();
 const lockedAccounts = new Map();
 
-// Configuration - Progressive delay strategy
-const MAX_ATTEMPTS = parseInt(process.env.BRUTE_FORCE_MAX_ATTEMPTS) || 5;
-const LOCKOUT_DURATION = parseInt(process.env.BRUTE_FORCE_LOCKOUT_DURATION) || 30 * 60 * 1000; // 30 minutes (only for extreme cases)
-const PROGRESSIVE_DELAY = true;
-const DELAY_INCREMENT = 1000; // 1 second base delay
-const MAX_DELAY = 30000; // 30 seconds max delay
-const SOFT_LOCKOUT_THRESHOLD = 10; // After 10 attempts, apply longer delays
-const HARD_LOCKOUT_THRESHOLD = 20; // After 20 attempts, apply hard lockout
+// Configuration - hard lockout policy
+// Default policy: lock for 15 minutes after 3 failed attempts.
+const parsedMaxAttempts = Number.parseInt(process.env.BRUTE_FORCE_MAX_ATTEMPTS || '', 10);
+const parsedLockoutDuration = Number.parseInt(process.env.BRUTE_FORCE_LOCKOUT_DURATION || '', 10);
+
+const MAX_ATTEMPTS = Number.isFinite(parsedMaxAttempts) && parsedMaxAttempts > 0
+  ? parsedMaxAttempts
+  : 3;
+const LOCKOUT_DURATION = Number.isFinite(parsedLockoutDuration) && parsedLockoutDuration > 0
+  ? parsedLockoutDuration
+  : 15 * 60 * 1000;
+
+const PROGRESSIVE_DELAY = false;
+const DELAY_INCREMENT = 1000;
+const MAX_DELAY = 30000;
+const SOFT_LOCKOUT_THRESHOLD = MAX_ATTEMPTS;
+const HARD_LOCKOUT_THRESHOLD = MAX_ATTEMPTS;
 
 /**
  * Generate a fingerprint for the client
@@ -72,7 +81,7 @@ const recordFailedAttempt = (identifier, req) => {
   // Calculate delay info
   const delayInfo = calculateDelay(record.count);
 
-  // Only apply hard lockout for extreme cases (20+ attempts)
+  // Apply hard lockout once threshold is reached
   if (record.count >= HARD_LOCKOUT_THRESHOLD) {
     lockAccount(identifier);
 
@@ -94,25 +103,6 @@ const recordFailedAttempt = (identifier, req) => {
       });
     } catch (seError) {
       console.warn('Could not log brute force lockout event:', seError.message);
-    }
-  } else if (record.count >= SOFT_LOCKOUT_THRESHOLD) {
-    // Log soft lockout event
-    try {
-      const securityEventService = require('../services/securityEventService');
-      securityEventService.logEvent({
-        userId: null,
-        eventType: 'BRUTE_FORCE_SOFT_LOCKOUT',
-        severity: 'INFO',
-        ipAddress: req.ip,
-        userAgent: req.get('User-Agent'),
-        details: {
-          identifier: identifier.substring(0, 3) + '***',
-          attempts: record.count,
-          delayMs: delayInfo.delay,
-        },
-      });
-    } catch (seError) {
-      console.warn('Could not log brute force event:', seError.message);
     }
   }
 };
@@ -190,53 +180,29 @@ const getAttemptCount = (identifier) => {
 };
 
 /**
- * Calculate delay for next attempt using progressive exponential backoff
+ * Calculate delay/lockout status
  * @param {number} attemptCount - Number of failed attempts
  * @returns {Object} Delay information with delay time and type
  */
 const calculateDelay = (attemptCount) => {
-  if (!PROGRESSIVE_DELAY) {
-    return { delay: 0, type: 'none' };
-  }
-
-  // Progressive delay strategy:
-  // 1-3 attempts: No delay (give users a chance to correct typos)
-  // 4-5 attempts: 2-4 seconds (slow down guessing)
-  // 6-9 attempts: 8-16 seconds (significant slowdown)
-  // 10+ attempts: 30 seconds (soft lockout behavior)
-
-  if (attemptCount <= 3) {
-    return { delay: 0, type: 'none', remainingAttempts: MAX_ATTEMPTS - attemptCount };
-  }
-
-  if (attemptCount <= 5) {
-    // 2-4 seconds for 4-5 attempts
-    const delay = DELAY_INCREMENT * Math.pow(2, attemptCount - 3); // 2s, 4s
+  if (attemptCount < MAX_ATTEMPTS) {
     return {
-      delay: Math.min(delay, MAX_DELAY),
-      type: 'progressive',
-      remainingAttempts: MAX_ATTEMPTS - attemptCount,
+      delay: 0,
+      type: 'none',
+      remainingAttempts: Math.max(0, MAX_ATTEMPTS - attemptCount),
     };
   }
 
-  if (attemptCount < SOFT_LOCKOUT_THRESHOLD) {
-    // 8-16 seconds for 6-9 attempts
-    const delay = DELAY_INCREMENT * Math.pow(2, attemptCount - 2); // 8s, 16s, 32s(capped)
-    return { delay: Math.min(delay, MAX_DELAY), type: 'progressive', remainingAttempts: 0 };
-  }
-
-  if (attemptCount < HARD_LOCKOUT_THRESHOLD) {
-    // Soft lockout: 30 seconds delay
-    return { delay: MAX_DELAY, type: 'soft_lockout', remainingAttempts: 0 };
-  }
-
-  // Hard lockout only for extreme cases (20+ attempts)
-  return { delay: LOCKOUT_DURATION, type: 'hard_lockout', remainingAttempts: 0 };
+  return {
+    delay: LOCKOUT_DURATION,
+    type: 'hard_lockout',
+    remainingAttempts: 0,
+  };
 };
 
 /**
  * Brute force protection middleware for login
- * Uses progressive delay strategy instead of hard lockout
+ * Uses hard lockout after configured failed attempts
  * @param {Object} options - Middleware options
  * @returns {Function} Express middleware
  */
@@ -262,17 +228,13 @@ const bruteForceProtection = (options = {}) => {
         });
       }
 
-      // For progressive delay, return 429 with delay info but allow retry
       return res.status(429).json({
         error: 'Too many failed attempts. Please wait before trying again.',
         code: 'RATE_LIMITED',
         retryAfterMs: delayInfo.delay,
         attemptCount: options.attemptCount,
         delayType: delayInfo.type,
-        message:
-          delayInfo.delay > 0
-            ? `Please wait ${Math.ceil(delayInfo.delay / 1000)} seconds before trying again.`
-            : 'Please try again.',
+        message: `Please wait ${Math.ceil(delayInfo.delay / 1000)} seconds before trying again.`,
       });
     },
   } = options;
@@ -292,7 +254,7 @@ const bruteForceProtection = (options = {}) => {
       identifier = req.body?.username?.toLowerCase() || req.ip;
     }
 
-    // Check if account is hard locked (only for extreme cases)
+    // Check if account is hard locked
     if (isAccountLocked(identifier)) {
       const remainingTime = getRemainingLockoutTime(identifier);
 
@@ -322,7 +284,7 @@ const bruteForceProtection = (options = {}) => {
       });
     }
 
-    // Calculate delay info for progressive strategy
+    // Calculate delay/lockout info
     const attemptCount = getAttemptCount(identifier);
     const delayInfo = calculateDelay(attemptCount);
 
@@ -343,17 +305,30 @@ const bruteForceProtection = (options = {}) => {
         }
       }
 
-      // Add delay info to failed login responses
+      // Add attempt info to failed login responses
       if (res.statusCode === 401 && data?.error?.includes('credentials')) {
-        data.attemptCount = attemptCount;
-        data.remainingAttempts =
-          delayInfo.remainingAttempts !== undefined
-            ? delayInfo.remainingAttempts
-            : Math.max(0, maxAttempts - attemptCount);
+        const liveAttemptCount = getAttemptCount(identifier);
+        const remainingAttempts = Math.max(0, maxAttempts - liveAttemptCount);
 
-        // Add warning if approaching limits
-        if (attemptCount >= 3 && attemptCount < HARD_LOCKOUT_THRESHOLD) {
-          data.warning = 'Multiple failed attempts detected. Please verify your credentials.';
+        // If threshold was just reached by this request, convert this response to lockout.
+        if (isAccountLocked(identifier)) {
+          const remainingTime = getRemainingLockoutTime(identifier);
+          res.statusCode = 429;
+          return originalJson({
+            error: 'Account temporarily locked due to too many failed attempts',
+            code: 'ACCOUNT_LOCKED',
+            lockoutDuration: Math.ceil(lockoutDuration / 60000),
+            retryAfter: remainingTime,
+            attemptCount: liveAttemptCount,
+            remainingAttempts: 0,
+          });
+        }
+
+        data.attemptCount = liveAttemptCount;
+        data.remainingAttempts = remainingAttempts;
+
+        if (remainingAttempts <= 1) {
+          data.warning = 'You have one attempt remaining before a temporary lockout.';
         }
       }
 
