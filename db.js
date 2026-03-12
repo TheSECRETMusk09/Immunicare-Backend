@@ -1,6 +1,7 @@
 const { Pool } = require('pg');
 const loadBackendEnv = require('./config/loadEnv');
 loadBackendEnv();
+const { getPrimaryDbPassword, getPrimaryDbUser } = require('./config/dbCredentials');
 const logger = require('./config/logger');
 
 // Validate required production database configuration
@@ -36,8 +37,8 @@ const poolConfig = {
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT) || 5432,
   database: process.env.DB_NAME || 'immunicare_prod',
-  user: process.env.DB_USER || 'immunicare_prod',
-  password: String(process.env.DB_PASSWORD || ''),
+  user: getPrimaryDbUser() || 'immunicare_prod',
+  password: getPrimaryDbPassword(),
   ssl: sslConfig,
   // Connection pool settings optimized for production
   max: parseInt(process.env.DB_POOL_MAX) || 30, // Reduced to 30 for production stability

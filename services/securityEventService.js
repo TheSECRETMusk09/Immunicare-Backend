@@ -7,6 +7,7 @@ const mainPool = require('../db');
 const { Pool } = require('pg');
 const dns = require('dns').promises;
 const logger = require('../config/logger');
+const { getSecurityDbUser, getSecurityDbPassword } = require('../config/dbCredentials');
 
 // Event types
 const EVENT_TYPES = {
@@ -99,8 +100,8 @@ const configureDatabaseConnection = async () => {
       host: process.env.SECURITY_DB_HOST,
       port: parseInt(process.env.SECURITY_DB_PORT) || 5432,
       database: process.env.SECURITY_DB_NAME || 'security_events',
-      user: process.env.SECURITY_DB_USER,
-      password: process.env.SECURITY_DB_PASSWORD,
+      user: getSecurityDbUser(),
+      password: getSecurityDbPassword(),
       connectionTimeoutMillis: 5000, // Fail fast in dev
     };
 

@@ -2,6 +2,7 @@
 -- IMMUNICARE DATABASE-ONLY SYNTHETIC DATA GENERATION SCRIPT
 -- MARKER PREFIX: SYNPH26
 -- SQL DIALECT: PostgreSQL
+-- CONSTRAINTS: NO SCHEMA CHANGES | NO NEW TABLES | NO PROCEDURES/FUNCTIONS | NO DELETE/TRUNCATE
 -- =====================================================================================================
 
 -- =====================================================================================================
@@ -562,4 +563,1605 @@ SET name = EXCLUDED.name,
     delivery_email = EXCLUDED.delivery_email,
     quality_rating = EXCLUDED.quality_rating,
     reliability_rating = EXCLUDED.reliability_rating,
-    service_rating = EXCLUDED{
+    service_rating = EXCLUDED.service_rating,
+    rating_count = EXCLUDED.rating_count,
+    is_preferred = EXCLUDED.is_preferred,
+    is_active = true,
+    payment_method = EXCLUDED.payment_method,
+    total_orders = EXCLUDED.total_orders,
+    total_order_value = EXCLUDED.total_order_value,
+    updated_at = CURRENT_TIMESTAMP;
+
+-- =====================================================================================================
+-- 3) GUARDIANS + GUARDIAN CONTACTS + SYSTEM USERS (deterministic top-up)
+-- =====================================================================================================
+WITH target_guardians AS (
+  SELECT
+    gs AS n,
+    'SYNPH26 Guardian ' || LPAD(gs::text, 5, '0') AS full_name,
+    (ARRAY['Santos','Reyes','Cruz','Bautista','Garcia','Torres','Mendoza','Flores','Navarro','Valdez'])[1 + ((gs * 11) % 10)] AS last_name,
+    (ARRAY['Miguel','Carla','Paolo','Rica','Jerome','Leah','Noel','Janine','Francis','Bianca'])[1 + ((gs * 7) % 10)] AS first_name,
+    '+639' || LPAD((700000000 + gs)::text, 9, '0') AS phone,
+    'syn_guard_' || LPAD(gs::text, 5, '0') || '@synthetic-immunicare.ph' AS email,
+    ((gs % 999) + 1)::text || ' Purok ' || ((gs % 20) + 1)::text || ', Brgy. San Isidro, Quezon City, Metro Manila, NCR 1100' AS address,
+    CASE WHEN gs % 2 = 0 THEN 'Mother' ELSE 'Father' END AS relationship,
+    ((gs - 1) % GREATEST((SELECT COUNT(*) FROM clinics), 1)) + 1 AS clinic_pick
+  FROM generate_series(1, 40000) gs
+),
+resolved AS (
+  SELECT
+    tg.n,
+    tg.full_name,
+    tg.first_name,
+    tg.last_name,
+    tg.phone,
+    tg.email,
+    tg.address,
+    tg.relationship,
+    c.id AS clinic_id
+  FROM target_guardians tg
+  JOIN clinics c
+    ON c.id = tg.clinic_pick
+)
+INSERT INTO guardians (
+  name,
+  phone,
+  email,
+  address,
+  relationship,
+  is_active,
+  created_at,
+  updated_at,
+  first_name,
+  last_name,
+  is_primary_guardian,
+  clinic_id,
+  emergency_contact,
+  emergency_phone
+)
+SELECT
+  r.full_name,
+  r.phone,
+  r.email,
+  r.address,
+  r.relationship,
+  true,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  r.first_name,
+  r.last_name,
+  true,
+  r.clinic_id,
+  'Emergency Contact ' || r.first_name || ' ' || r.last_name,
+  '+639' || LPAD((800000000 + r.n)::text, 9, '0')
+FROM resolved r
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM guardians gx
+  WHERE gx.email = r.email
+     OR gx.phone = r.phone
+);
+
+INSERT INTO guardian_phone_numbers (
+  guardian_id,
+  phone_number,
+  is_primary,
+  is_verified,
+  created_at,
+  updated_at
+)
+SELECT
+  g.id,
+  g.phone,
+  true,
+  true,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+FROM guardians g
+WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
+  AND g.phone LIKE '+639%'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM guardian_phone_numbers gp
+    WHERE gp.guardian_id = g.id
+      AND gp.phone_number = g.phone
+  );
+
+INSERT INTO guardian_notification_preferences (
+  guardian_id,
+  sms_enabled,
+  email_enabled,
+  push_enabled,
+  reminder_days_before,
+  notification_type,
+  preferred_time,
+  is_active,
+  created_at,
+  updated_at
+)
+SELECT
+  g.id,
+  true,
+  true,
+  false,
+  3,
+  'vaccination_reminder',
+  '08:00'::time,
+  true,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+FROM guardians g
+WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
+ON CONFLICT DO NOTHING;
+
+WITH role_map AS (
+  SELECT id
+  FROM roles
+  WHERE name = 'guardian'
+  LIMIT 1
+),
+seed_users AS (
+  SELECT
+    g.id AS guardian_id,
+    g.clinic_id,
+    'syn_guard_user_' || LPAD(g.id::text, 6, '0') AS username,
+    'syn_guard_user_' || LPAD(g.id::text, 6, '0') || '@synthetic-immunicare.ph' AS email,
+    g.phone
+  FROM guardians g
+  WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
+)
+INSERT INTO users (
+  username,
+  password_hash,
+  role_id,
+  clinic_id,
+  contact,
+  email,
+  guardian_id,
+  is_active,
+  created_at,
+  updated_at,
+  force_password_change,
+  role
+)
+SELECT
+  su.username,
+  'SYNPH26_HASH_PLACEHOLDER',
+  rm.id,
+  su.clinic_id,
+  su.phone,
+  su.email,
+  su.guardian_id,
+  true,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  false,
+  'guardian'
+FROM seed_users su
+CROSS JOIN role_map rm
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM users u
+  WHERE u.guardian_id = su.guardian_id
+);
+
+-- =====================================================================================================
+-- 4) PATIENTS + INFANTS TOP-UP TO EXACT 100000 MARKER ROWS (last 5 years)
+-- =====================================================================================================
+WITH desired AS (
+  SELECT
+    gs AS n,
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control,
+    (ARRAY['Juan','Maria','Jose','Ana','Carlo','Liza','Noah','Mika','Ethan','Luna'])[1 + ((gs * 3) % 10)] AS first_name,
+    (ARRAY['Dela Cruz','Santos','Reyes','Garcia','Torres','Mendoza','Flores','Navarro','Bautista','Valdez'])[1 + ((gs * 5) % 10)] AS last_name,
+    (ARRAY['A','B','C','D','E','F','G','H','I','J'])[1 + ((gs * 7) % 10)] AS middle_name,
+    (CURRENT_DATE - ((gs * 17) % 1825) * INTERVAL '1 day')::date AS dob,
+    CASE WHEN (gs % 2 = 0) THEN 'F' ELSE 'M' END AS sex,
+    ((gs - 1) % GREATEST((SELECT COUNT(*) FROM guardians WHERE email LIKE 'syn_guard_%@synthetic-immunicare.ph'), 1)) + 1 AS guardian_ordinal
+  FROM generate_series(1, 100000) gs
+),
+guardian_pool AS (
+  SELECT
+    g.id,
+    g.clinic_id,
+    ROW_NUMBER() OVER (ORDER BY g.id) AS rn
+  FROM guardians g
+  WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
+),
+resolved AS (
+  SELECT
+    d.n,
+    d.marker_control,
+    d.first_name,
+    d.last_name,
+    d.middle_name,
+    d.dob,
+    d.sex,
+    gp.id AS guardian_id,
+    gp.clinic_id,
+    '+639' || LPAD((710000000 + d.n)::text, 9, '0') AS cellphone
+  FROM desired d
+  JOIN guardian_pool gp
+    ON gp.rn = d.guardian_ordinal
+)
+INSERT INTO patients (
+  name,
+  date_of_birth,
+  gender,
+  parent_guardian,
+  contact_number,
+  address,
+  created_at,
+  updated_at,
+  guardian_id,
+  first_name,
+  last_name,
+  middle_name,
+  dob,
+  sex,
+  contact,
+  barangay,
+  health_center,
+  cellphone_number,
+  control_number,
+  facility_id,
+  is_active
+)
+SELECT
+  r.first_name || ' ' || r.last_name,
+  r.dob,
+  CASE WHEN r.sex = 'F' THEN 'Female' ELSE 'Male' END,
+  'SYNPH26 Guardian Link',
+  r.cellphone,
+  'SYNPH26 Address Block, Brgy. San Isidro, Quezon City, Metro Manila',
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  r.guardian_id,
+  r.first_name,
+  r.last_name,
+  r.middle_name,
+  r.dob,
+  r.sex,
+  r.cellphone,
+  'Brgy. San Isidro',
+  'Barangay Health Center',
+  r.cellphone,
+  r.marker_control,
+  r.clinic_id,
+  true
+FROM resolved r
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM patients p
+  WHERE p.control_number = r.marker_control
+);
+
+WITH marker_patients AS (
+  SELECT
+    p.id,
+    p.control_number,
+    p.first_name,
+    p.last_name,
+    p.middle_name,
+    p.dob,
+    p.sex,
+    p.guardian_id,
+    p.facility_id,
+    p.contact,
+    p.cellphone_number,
+    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
+  FROM patients p
+  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+),
+missing_infants AS (
+  SELECT mp.*
+  FROM marker_patients mp
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM infants i
+    WHERE i.patient_control_number = mp.control_number
+  )
+)
+INSERT INTO infants (
+  first_name,
+  last_name,
+  middle_name,
+  dob,
+  sex,
+  address,
+  contact,
+  guardian_id,
+  clinic_id,
+  mother_name,
+  father_name,
+  barangay,
+  health_center,
+  family_no,
+  place_of_birth,
+  nbs_done,
+  nbs_date,
+  cellphone_number,
+  is_active,
+  created_at,
+  updated_at,
+  patient_control_number
+)
+SELECT
+  mi.first_name,
+  mi.last_name,
+  mi.middle_name,
+  mi.dob,
+  mi.sex::infant_sex,
+  'SYNPH26 Address Block, Brgy. San Isidro, Quezon City, Metro Manila',
+  COALESCE(mi.contact, mi.cellphone_number, '+639199000000'),
+  mi.guardian_id,
+  mi.facility_id,
+  'SYNPH26 Mother ' || mi.last_name,
+  'SYNPH26 Father ' || mi.last_name,
+  'Brgy. San Isidro',
+  'Barangay Health Center',
+  'SYNFAM-' || LPAD(mi.rn::text, 6, '0'),
+  'Quezon City',
+  true,
+  mi.dob + INTERVAL '2 days',
+  COALESCE(mi.cellphone_number, mi.contact, '+639199000000'),
+  true,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  mi.control_number
+FROM missing_infants mi;
+
+-- =====================================================================================================
+-- 5) STAFF / CREATOR PREREQUISITES FOR TRANSACTIONS
+-- =====================================================================================================
+WITH role_admin AS (
+  SELECT id
+  FROM roles
+  WHERE name = 'system_admin'
+  LIMIT 1
+),
+role_hw AS (
+  SELECT id
+  FROM roles
+  WHERE name = 'health_worker'
+  LIMIT 1
+),
+base_clinic AS (
+  SELECT id
+  FROM clinics
+  ORDER BY id
+  LIMIT 1
+),
+seed_staff AS (
+  SELECT *
+  FROM (
+    VALUES
+      ('syn_admin_001', 'syn_admin_001@synthetic-immunicare.ph', 'system_admin'),
+      ('syn_admin_002', 'syn_admin_002@synthetic-immunicare.ph', 'system_admin'),
+      ('syn_hw_001', 'syn_hw_001@synthetic-immunicare.ph', 'health_worker'),
+      ('syn_hw_002', 'syn_hw_002@synthetic-immunicare.ph', 'health_worker'),
+      ('syn_hw_003', 'syn_hw_003@synthetic-immunicare.ph', 'health_worker'),
+      ('syn_hw_004', 'syn_hw_004@synthetic-immunicare.ph', 'health_worker')
+  ) AS x(username, email, role_name)
+)
+INSERT INTO users (
+  username,
+  password_hash,
+  role_id,
+  clinic_id,
+  contact,
+  email,
+  is_active,
+  created_at,
+  updated_at,
+  force_password_change,
+  role
+)
+SELECT
+  ss.username,
+  'SYNPH26_HASH_PLACEHOLDER',
+  CASE
+    WHEN ss.role_name = 'system_admin' THEN ra.id
+    ELSE rh.id
+  END,
+  bc.id,
+  '+639' || LPAD((720000000 + ROW_NUMBER() OVER (ORDER BY ss.username))::text, 9, '0'),
+  ss.email,
+  true,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  false,
+  CASE WHEN ss.role_name = 'system_admin' THEN 'admin' ELSE 'health_worker' END
+FROM seed_staff ss
+CROSS JOIN role_admin ra
+CROSS JOIN role_hw rh
+CROSS JOIN base_clinic bc
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM users u
+  WHERE u.username = ss.username
+);
+
+-- =====================================================================================================
+-- 6) VACCINE BATCHES + INVENTORY BASELINES
+-- =====================================================================================================
+WITH active_vaccines AS (
+  SELECT id, code, name
+  FROM vaccines
+  WHERE is_active = true
+    AND code LIKE 'SYNPH26-%'
+),
+active_clinics AS (
+  SELECT id
+  FROM clinics
+),
+staff_user AS (
+  SELECT id AS user_id
+  FROM users
+  WHERE username IN ('syn_admin_001', 'syn_hw_001')
+  ORDER BY id
+  LIMIT 1
+),
+crossed AS (
+  SELECT
+    v.id AS vaccine_id,
+    c.id AS clinic_id,
+    ROW_NUMBER() OVER (ORDER BY v.id, c.id) AS rn
+  FROM active_vaccines v
+  CROSS JOIN active_clinics c
+)
+INSERT INTO vaccine_batches (
+  vaccine_id,
+  lot_no,
+  expiry_date,
+  manufacture_date,
+  qty_received,
+  qty_current,
+  qty_initial,
+  supplier_id,
+  clinic_id,
+  storage_conditions,
+  status,
+  is_active,
+  created_at,
+  updated_at
+)
+SELECT
+  cr.vaccine_id,
+  'SYNLOT-' || LPAD(cr.vaccine_id::text, 4, '0') || '-' || LPAD(cr.clinic_id::text, 4, '0'),
+  CURRENT_DATE + (((cr.rn % 730) + 365) * INTERVAL '1 day'),
+  CURRENT_DATE - (((cr.rn % 180) + 30) * INTERVAL '1 day'),
+  500 + (cr.rn % 1500),
+  250 + (cr.rn % 900),
+  500 + (cr.rn % 1500),
+  (SELECT s.id FROM suppliers s WHERE s.supplier_code LIKE 'SYNPH26SUP%' ORDER BY s.id OFFSET ((cr.rn - 1) % 120) LIMIT 1),
+  cr.clinic_id,
+  'SYNPH26 cold chain compliant',
+  'active'::batch_status,
+  true,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+FROM crossed cr
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM vaccine_batches vb
+  WHERE vb.lot_no = 'SYNLOT-' || LPAD(cr.vaccine_id::text, 4, '0') || '-' || LPAD(cr.clinic_id::text, 4, '0')
+);
+
+WITH inventory_seed AS (
+  SELECT
+    vb.vaccine_id,
+    vb.clinic_id,
+    vb.lot_no,
+    ROW_NUMBER() OVER (ORDER BY vb.vaccine_id, vb.clinic_id) AS rn
+  FROM vaccine_batches vb
+  WHERE vb.lot_no LIKE 'SYNLOT-%'
+),
+seed_user AS (
+  SELECT id AS user_id
+  FROM users
+  WHERE username = 'syn_admin_001'
+  LIMIT 1
+)
+INSERT INTO vaccine_inventory (
+  vaccine_id,
+  clinic_id,
+  beginning_balance,
+  received_during_period,
+  lot_batch_number,
+  transferred_in,
+  transferred_out,
+  expired_wasted,
+  issuance,
+  low_stock_threshold,
+  critical_stock_threshold,
+  is_low_stock,
+  is_critical_stock,
+  period_start,
+  period_end,
+  created_by,
+  updated_by,
+  created_at,
+  updated_at,
+  stock_on_hand,
+  is_active
+)
+SELECT
+  i.vaccine_id,
+  i.clinic_id,
+  800 + (i.rn % 300),
+  500 + (i.rn % 200),
+  i.lot_no,
+  100 + (i.rn % 50),
+  90 + (i.rn % 40),
+  10 + (i.rn % 10),
+  700 + (i.rn % 250),
+  120,
+  60,
+  false,
+  false,
+  date_trunc('month', CURRENT_DATE)::date,
+  (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month - 1 day')::date,
+  su.user_id,
+  su.user_id,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  0,
+  true
+FROM inventory_seed i
+CROSS JOIN seed_user su
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM vaccine_inventory vi
+  WHERE vi.vaccine_id = i.vaccine_id
+    AND vi.clinic_id = i.clinic_id
+    AND COALESCE(vi.lot_batch_number, '') = i.lot_no
+);
+
+UPDATE vaccine_inventory vi
+SET stock_on_hand = GREATEST(
+      COALESCE(vi.beginning_balance, 0)
+      + COALESCE(vi.received_during_period, 0)
+      + COALESCE(vi.transferred_in, 0)
+      - COALESCE(vi.transferred_out, 0)
+      - COALESCE(vi.expired_wasted, 0)
+      - COALESCE(vi.issuance, 0),
+      0
+    ),
+    is_critical_stock = (
+      GREATEST(
+        COALESCE(vi.beginning_balance, 0)
+        + COALESCE(vi.received_during_period, 0)
+        + COALESCE(vi.transferred_in, 0)
+        - COALESCE(vi.transferred_out, 0)
+        - COALESCE(vi.expired_wasted, 0)
+        - COALESCE(vi.issuance, 0),
+        0
+      ) <= COALESCE(vi.critical_stock_threshold, 5)
+    ),
+    is_low_stock = (
+      GREATEST(
+        COALESCE(vi.beginning_balance, 0)
+        + COALESCE(vi.received_during_period, 0)
+        + COALESCE(vi.transferred_in, 0)
+        - COALESCE(vi.transferred_out, 0)
+        - COALESCE(vi.expired_wasted, 0)
+        - COALESCE(vi.issuance, 0),
+        0
+      ) <= COALESCE(vi.low_stock_threshold, 10)
+    ),
+    updated_at = CURRENT_TIMESTAMP
+WHERE vi.lot_batch_number LIKE 'SYNLOT-%';
+
+-- =====================================================================================================
+-- 7) VACCINATION REMINDERS (top-up ~1,000,000)
+-- =====================================================================================================
+WITH marker_patients AS (
+  SELECT
+    p.id,
+    p.guardian_id,
+    p.dob,
+    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
+  FROM patients p
+  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+),
+target AS (
+  SELECT 1000000::bigint AS target_count
+),
+current_count AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM vaccination_reminders vr
+  WHERE COALESCE(vr.notes, '') LIKE 'SYNPH26-TXN-%'
+),
+deficit AS (
+  SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
+  FROM target t
+  CROSS JOIN current_count c
+),
+seed AS (
+  SELECT
+    gs AS n,
+    mp.id AS patient_id,
+    mp.guardian_id,
+    v.id AS vaccine_id,
+    1 + (gs % 3) AS dose_number,
+    (CURRENT_DATE - ((gs * 5) % 365))::date AS due_date,
+    (CURRENT_DATE - ((gs * 5) % 365) - ((gs % 14) * INTERVAL '1 day'))::date AS reminder_date,
+    CASE (gs % 5)
+      WHEN 0 THEN 'pending'
+      WHEN 1 THEN 'sent'
+      WHEN 2 THEN 'read'
+      WHEN 3 THEN 'completed'
+      ELSE 'pending'
+    END AS status
+  FROM deficit d
+  JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
+  JOIN marker_patients mp ON mp.rn = ((gs - 1) % 100000) + 1
+  JOIN vaccines v ON v.code IN ('SYNPH26-BCG','SYNPH26-HEPB','SYNPH26-PENTA','SYNPH26-OPV','SYNPH26-IPV','SYNPH26-PCV','SYNPH26-MMR')
+           AND v.id = (
+             SELECT vv.id
+             FROM vaccines vv
+             WHERE vv.code IN ('SYNPH26-BCG','SYNPH26-HEPB','SYNPH26-PENTA','SYNPH26-OPV','SYNPH26-IPV','SYNPH26-PCV','SYNPH26-MMR')
+             ORDER BY vv.id
+             OFFSET ((gs - 1) % 7)
+             LIMIT 1
+           )
+)
+INSERT INTO vaccination_reminders (
+  infant_id,
+  vaccine_id,
+  due_date,
+  reminder_date,
+  status,
+  sent_at,
+  created_at,
+  updated_at,
+  patient_id,
+  guardian_id,
+  dose_number,
+  scheduled_date,
+  reminder_sent_at,
+  is_read,
+  is_completed,
+  completed_at,
+  notes
+)
+SELECT
+  NULL,
+  s.vaccine_id,
+  s.due_date,
+  s.reminder_date,
+  s.status,
+  CASE WHEN s.status IN ('sent','read','completed') THEN (s.reminder_date + INTERVAL '8 hours')::timestamp ELSE NULL END,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  s.patient_id,
+  s.guardian_id,
+  s.dose_number,
+  s.due_date,
+  CASE WHEN s.status IN ('sent','read','completed') THEN (s.reminder_date + INTERVAL '8 hours')::timestamp ELSE NULL END,
+  (s.status IN ('read','completed')),
+  (s.status = 'completed'),
+  CASE WHEN s.status = 'completed' THEN (s.due_date + INTERVAL '1 day')::timestamp ELSE NULL END,
+  'SYNPH26-TXN-VR-' || LPAD(s.n::text, 10, '0')
+FROM seed s;
+
+-- =====================================================================================================
+-- 8) APPOINTMENTS (top-up to 2,700,000 marker rows)
+-- =====================================================================================================
+WITH marker_patients AS (
+  SELECT
+    p.id,
+    p.guardian_id,
+    COALESCE(p.facility_id, 1) AS clinic_id,
+    p.dob,
+    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
+  FROM patients p
+  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+),
+creator_users AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM users
+  WHERE username LIKE 'syn_%'
+),
+target AS (
+  SELECT 2700000::bigint AS target_count
+),
+current_count AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM appointments a
+  WHERE COALESCE(a.notes, '') LIKE 'SYNPH26-TXN-AP-%'
+),
+deficit AS (
+  SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
+  FROM target t
+  CROSS JOIN current_count c
+),
+seed AS (
+  SELECT
+    gs AS n,
+    mp.id AS patient_id,
+    mp.guardian_id,
+    mp.clinic_id,
+    cu.id AS created_by,
+    (CURRENT_DATE - ((gs % 730) * INTERVAL '1 day') + ((gs % 24) * INTERVAL '1 hour'))::timestamptz AS scheduled_date,
+    CASE (gs % 6)
+      WHEN 0 THEN 'scheduled'
+      WHEN 1 THEN 'attended'
+      WHEN 2 THEN 'confirmed'
+      WHEN 3 THEN 'rescheduled'
+      WHEN 4 THEN 'cancelled'
+      ELSE 'no-show'
+    END::appointment_status AS status,
+    CASE WHEN gs % 5 = 0 THEN 'Follow-up Visit' ELSE 'Vaccination Appointment' END AS type,
+    'Room ' || ((gs % 12) + 1)::text || ', Immunization Wing' AS location
+  FROM deficit d
+  JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
+  JOIN marker_patients mp ON mp.rn = ((gs - 1) % 100000) + 1
+  JOIN creator_users cu ON cu.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM creator_users), 1)) + 1
+)
+INSERT INTO appointments (
+  infant_id,
+  scheduled_date,
+  type,
+  status,
+  notes,
+  cancellation_reason,
+  completion_notes,
+  duration_minutes,
+  created_by,
+  clinic_id,
+  is_active,
+  created_at,
+  updated_at,
+  location,
+  confirmation_status,
+  confirmed_at,
+  confirmation_method,
+  sms_confirmation_sent,
+  sms_confirmation_sent_at,
+  guardian_id
+)
+SELECT
+  s.patient_id,
+  s.scheduled_date,
+  s.type,
+  s.status,
+  'SYNPH26-TXN-AP-' || LPAD(s.n::text, 10, '0'),
+  CASE WHEN s.status = 'cancelled' THEN 'SYNPH26 schedule conflict' ELSE NULL END,
+  CASE WHEN s.status = 'attended' THEN 'SYNPH26 completed successfully' ELSE NULL END,
+  15 + (s.n % 45),
+  s.created_by,
+  s.clinic_id,
+  true,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  s.location,
+  CASE
+    WHEN s.status IN ('confirmed','attended') THEN 'confirmed'
+    WHEN s.status = 'cancelled' THEN 'cancelled'
+    ELSE 'pending'
+  END,
+  CASE WHEN s.status IN ('confirmed','attended') THEN s.scheduled_date - INTERVAL '1 day' ELSE NULL END,
+  CASE WHEN s.status IN ('confirmed','attended') THEN 'sms' ELSE NULL END,
+  (s.status IN ('confirmed','attended')),
+  CASE WHEN s.status IN ('confirmed','attended') THEN s.scheduled_date - INTERVAL '1 day' ELSE NULL END,
+  s.guardian_id
+FROM seed s;
+
+-- =====================================================================================================
+-- 9) IMMUNIZATION RECORDS (top-up to 3,200,000 marker rows)
+-- =====================================================================================================
+WITH marker_patients AS (
+  SELECT
+    p.id,
+    p.dob,
+    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
+  FROM patients p
+  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+),
+vaccines_pick AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM vaccines
+  WHERE code IN ('SYNPH26-BCG','SYNPH26-HEPB','SYNPH26-PENTA','SYNPH26-OPV','SYNPH26-IPV','SYNPH26-PCV','SYNPH26-MMR')
+),
+batches_pick AS (
+  SELECT id, vaccine_id, ROW_NUMBER() OVER (PARTITION BY vaccine_id ORDER BY id) AS rn
+  FROM vaccine_batches
+  WHERE lot_no LIKE 'SYNLOT-%'
+),
+admin_users AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM users
+  WHERE username LIKE 'syn_%'
+),
+target AS (
+  SELECT 3200000::bigint AS target_count
+),
+current_count AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM immunization_records ir
+  WHERE COALESCE(ir.notes, '') LIKE 'SYNPH26-TXN-IR-%'
+),
+deficit AS (
+  SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
+  FROM target t
+  CROSS JOIN current_count c
+),
+seed AS (
+  SELECT
+    gs AS n,
+    mp.id AS patient_id,
+    mp.dob,
+    vp.id AS vaccine_id,
+    vp.rn AS vaccine_rn,
+    au.id AS administered_by,
+    CASE
+      WHEN gs % 5 IN (0,1,2) THEN 'completed'
+      WHEN gs % 5 = 3 THEN 'scheduled'
+      ELSE 'pending'
+    END AS status,
+    (mp.dob + (((gs % 1600) + 14) * INTERVAL '1 day'))::date AS admin_date_raw,
+    (mp.dob + (((gs % 1600) + 42) * INTERVAL '1 day'))::date AS next_due_raw,
+    1 + (gs % 3) AS dose_no
+  FROM deficit d
+  JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
+  JOIN marker_patients mp ON mp.rn = ((gs - 1) % 100000) + 1
+  JOIN vaccines_pick vp ON vp.rn = ((gs - 1) % 7) + 1
+  JOIN admin_users au ON au.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM admin_users), 1)) + 1
+),
+seed_with_batch AS (
+  SELECT
+    s.*,
+    (
+      SELECT bp.id
+      FROM batches_pick bp
+      WHERE bp.vaccine_id = s.vaccine_id
+      ORDER BY bp.rn
+      OFFSET ((s.n - 1) % GREATEST((SELECT COUNT(*) FROM batches_pick b2 WHERE b2.vaccine_id = s.vaccine_id), 1))
+      LIMIT 1
+    ) AS batch_id,
+    LEAST(s.admin_date_raw, CURRENT_DATE)::date AS admin_date,
+    LEAST(s.next_due_raw, CURRENT_DATE + 365)::date AS next_due_date
+  FROM seed s
+)
+INSERT INTO immunization_records (
+  patient_id,
+  vaccine_id,
+  batch_id,
+  admin_date,
+  next_due_date,
+  status,
+  notes,
+  administered_by,
+  created_at,
+  updated_at,
+  is_active,
+  dose_no,
+  site_of_injection,
+  reactions
+)
+SELECT
+  swb.patient_id,
+  swb.vaccine_id,
+  swb.batch_id,
+  CASE WHEN swb.status = 'completed' THEN swb.admin_date ELSE NULL END,
+  CASE WHEN swb.status IN ('scheduled','pending') THEN swb.next_due_date ELSE NULL END,
+  swb.status,
+  'SYNPH26-TXN-IR-' || LPAD(swb.n::text, 10, '0'),
+  swb.administered_by,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  true,
+  swb.dose_no,
+  CASE (swb.n % 4)
+    WHEN 0 THEN 'left deltoid'
+    WHEN 1 THEN 'right deltoid'
+    WHEN 2 THEN 'left thigh'
+    ELSE 'right thigh'
+  END,
+  CASE WHEN swb.n % 20 = 0 THEN 'SYNPH26 mild fever observed' ELSE NULL END
+FROM seed_with_batch swb;
+
+-- =====================================================================================================
+-- 10) NOTIFICATIONS (top-up to 1,400,000 marker rows)
+-- =====================================================================================================
+WITH marker_patients AS (
+  SELECT
+    p.id,
+    p.guardian_id,
+    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
+  FROM patients p
+  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+),
+creator_users AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM users
+  WHERE username LIKE 'syn_%'
+),
+target AS (
+  SELECT 1400000::bigint AS target_count
+),
+current_count AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM notifications n
+  WHERE COALESCE(n.message, '') LIKE 'SYNPH26-TXN-NF-%'
+),
+deficit AS (
+  SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
+  FROM target t
+  CROSS JOIN current_count c
+),
+seed AS (
+  SELECT
+    gs AS n,
+    mp.id AS patient_id,
+    mp.guardian_id,
+    cu.id AS created_by,
+    CASE (gs % 4)
+      WHEN 0 THEN 'sms'
+      WHEN 1 THEN 'push'
+      WHEN 2 THEN 'email'
+      ELSE 'both'
+    END::channel_type AS channel,
+    CASE (gs % 4)
+      WHEN 0 THEN 'normal'
+      WHEN 1 THEN 'high'
+      WHEN 2 THEN 'urgent'
+      ELSE 'low'
+    END::notification_priority AS priority,
+    CASE (gs % 7)
+      WHEN 0 THEN 'pending'
+      WHEN 1 THEN 'queued'
+      WHEN 2 THEN 'sending'
+      WHEN 3 THEN 'sent'
+      WHEN 4 THEN 'delivered'
+      WHEN 5 THEN 'read'
+      ELSE 'failed'
+    END::notification_status AS status,
+    CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS created_at
+  FROM deficit d
+  JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
+  JOIN marker_patients mp ON mp.rn = ((gs - 1) % 100000) + 1
+  JOIN creator_users cu ON cu.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM creator_users), 1)) + 1
+)
+INSERT INTO notifications (
+  notification_type,
+  target_type,
+  target_id,
+  recipient_name,
+  recipient_email,
+  recipient_phone,
+  channel,
+  priority,
+  status,
+  scheduled_for,
+  sent_at,
+  delivered_at,
+  read_at,
+  failed_at,
+  failure_reason,
+  retry_count,
+  max_retries,
+  subject,
+  message,
+  template_id,
+  related_entity_type,
+  related_entity_id,
+  language,
+  requires_response,
+  created_by,
+  created_at,
+  updated_at,
+  user_id,
+  guardian_id,
+  target_role,
+  title,
+  is_read,
+  action_url
+)
+SELECT
+  'vaccination_reminder',
+  'guardian',
+  s.guardian_id,
+  'SYNPH26 Guardian ' || s.guardian_id,
+  'syn_guard_user_' || LPAD(s.guardian_id::text, 6, '0') || '@synthetic-immunicare.ph',
+  '+639' || LPAD((700000000 + ((s.guardian_id % 100000) + 1))::text, 9, '0'),
+  s.channel,
+  s.priority,
+  s.status,
+  s.created_at + INTERVAL '1 hour',
+  CASE WHEN s.status IN ('sent','delivered','read') THEN s.created_at + INTERVAL '2 hours' ELSE NULL END,
+  CASE WHEN s.status IN ('delivered','read') THEN s.created_at + INTERVAL '3 hours' ELSE NULL END,
+  CASE WHEN s.status = 'read' THEN s.created_at + INTERVAL '4 hours' ELSE NULL END,
+  CASE WHEN s.status = 'failed' THEN s.created_at + INTERVAL '2 hours' ELSE NULL END,
+  CASE WHEN s.status = 'failed' THEN 'SYNPH26 simulated gateway timeout' ELSE NULL END,
+  (s.n % 3),
+  3,
+  'SYNPH26 Vaccination Reminder',
+  'SYNPH26-TXN-NF-' || LPAD(s.n::text, 10, '0') || ' | Your child has a vaccination schedule due soon.',
+  'SYNPH26-TPL',
+  'patient',
+  s.patient_id,
+  'en',
+  false,
+  s.created_by,
+  s.created_at,
+  CURRENT_TIMESTAMP,
+  s.created_by,
+  s.guardian_id,
+  'guardian',
+  'SYNPH26 Vaccination Update',
+  (s.status = 'read'),
+  '/guardian/vaccinations'
+FROM seed s;
+
+-- =====================================================================================================
+-- 11) SMS LOGS (top-up to 1,100,000 marker rows)
+-- =====================================================================================================
+WITH marker_guardians AS (
+  SELECT
+    g.id,
+    g.phone,
+    ROW_NUMBER() OVER (ORDER BY g.id) AS rn
+  FROM guardians g
+  WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
+),
+target AS (
+  SELECT 1100000::bigint AS target_count
+),
+current_count AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM sms_logs s
+  WHERE COALESCE(s.message, '') LIKE 'SYNPH26-TXN-SMS-%'
+),
+deficit AS (
+  SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
+  FROM target t
+  CROSS JOIN current_count c
+),
+seed AS (
+  SELECT
+    gs AS n,
+    mg.phone,
+    CASE (gs % 4)
+      WHEN 0 THEN 'appointment_reminder'
+      WHEN 1 THEN 'vaccination_reminder'
+      WHEN 2 THEN 'otp'
+      ELSE 'general'
+    END AS message_type,
+    CASE (gs % 5)
+      WHEN 0 THEN 'pending'
+      WHEN 1 THEN 'sent'
+      WHEN 2 THEN 'delivered'
+      WHEN 3 THEN 'failed'
+      ELSE 'sent'
+    END AS status,
+    CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS created_at
+  FROM deficit d
+  JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
+  JOIN marker_guardians mg ON mg.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM marker_guardians), 1)) + 1
+)
+INSERT INTO sms_logs (
+  phone_number,
+  message,
+  message_type,
+  status,
+  provider,
+  message_id,
+  metadata,
+  attempts,
+  sent_at,
+  failed_at,
+  error_message,
+  created_at
+)
+SELECT
+  s.phone,
+  'SYNPH26-TXN-SMS-' || LPAD(s.n::text, 10, '0') || ' | Immunicare reminder message.',
+  s.message_type,
+  s.status,
+  'log',
+  'SYNMSG-' || LPAD(s.n::text, 12, '0'),
+  jsonb_build_object('marker', 'SYNPH26', 'sequence', s.n),
+  jsonb_build_array(jsonb_build_object('attempt', 1, 'status', s.status)),
+  CASE WHEN s.status IN ('sent','delivered') THEN s.created_at + INTERVAL '2 minutes' ELSE NULL END,
+  CASE WHEN s.status = 'failed' THEN s.created_at + INTERVAL '2 minutes' ELSE NULL END,
+  CASE WHEN s.status = 'failed' THEN 'SYNPH26 simulated carrier reject' ELSE NULL END,
+  s.created_at
+FROM seed s;
+
+-- =====================================================================================================
+-- 12) INVENTORY TRANSACTIONS (top-up to 550,000 marker rows)
+-- =====================================================================================================
+WITH batches AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM vaccine_batches
+  WHERE lot_no LIKE 'SYNLOT-%'
+),
+users_pick AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM users
+  WHERE username LIKE 'syn_%'
+),
+target AS (
+  SELECT 550000::bigint AS target_count
+),
+current_count AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM inventory_transactions it
+  WHERE COALESCE(it.notes, '') LIKE 'SYNPH26-TXN-IT-%'
+),
+deficit AS (
+  SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
+  FROM target t
+  CROSS JOIN current_count c
+),
+seed AS (
+  SELECT
+    gs AS n,
+    b.id AS batch_id,
+    u.id AS user_id,
+    CASE (gs % 4)
+      WHEN 0 THEN 'RECEIVE'
+      WHEN 1 THEN 'ISSUE'
+      WHEN 2 THEN 'WASTAGE'
+      ELSE 'ADJUST'
+    END::txn_type AS txn_type,
+    1 + (gs % 50) AS qty,
+    CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS created_at
+  FROM deficit d
+  JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
+  JOIN batches b ON b.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM batches), 1)) + 1
+  JOIN users_pick u ON u.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM users_pick), 1)) + 1
+)
+INSERT INTO inventory_transactions (
+  batch_id,
+  txn_type,
+  qty,
+  user_id,
+  notes,
+  created_at
+)
+SELECT
+  s.batch_id,
+  s.txn_type,
+  s.qty,
+  s.user_id,
+  'SYNPH26-TXN-IT-' || LPAD(s.n::text, 10, '0'),
+  s.created_at
+FROM seed s;
+
+-- =====================================================================================================
+-- 13) VACCINE INVENTORY TRANSACTIONS (top-up to 650,000 marker rows)
+-- =====================================================================================================
+WITH inventories AS (
+  SELECT
+    vi.id,
+    vi.vaccine_id,
+    vi.clinic_id,
+    COALESCE(vi.stock_on_hand, 0) AS stock_on_hand,
+    ROW_NUMBER() OVER (ORDER BY vi.id) AS rn
+  FROM vaccine_inventory vi
+  WHERE COALESCE(vi.lot_batch_number, '') LIKE 'SYNLOT-%'
+),
+users_pick AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM users
+  WHERE username LIKE 'syn_%'
+),
+target AS (
+  SELECT 650000::bigint AS target_count
+),
+current_count AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM vaccine_inventory_transactions vit
+  WHERE COALESCE(vit.reference_number, '') LIKE 'SYNREF-%'
+),
+deficit AS (
+  SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
+  FROM target t
+  CROSS JOIN current_count c
+),
+seed AS (
+  SELECT
+    gs AS n,
+    i.id AS vaccine_inventory_id,
+    i.vaccine_id,
+    i.clinic_id,
+    u.id AS performed_by,
+    CASE (gs % 4)
+      WHEN 0 THEN 'RECEIVE'
+      WHEN 1 THEN 'ISSUE'
+      WHEN 2 THEN 'WASTAGE'
+      ELSE 'ADJUST'
+    END AS transaction_type,
+    1 + (gs % 40) AS quantity,
+    (100 + (gs % 900)) AS previous_balance,
+    CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS created_at
+  FROM deficit d
+  JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
+  JOIN inventories i ON i.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM inventories), 1)) + 1
+  JOIN users_pick u ON u.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM users_pick), 1)) + 1
+)
+INSERT INTO vaccine_inventory_transactions (
+  vaccine_inventory_id,
+  vaccine_id,
+  clinic_id,
+  transaction_type,
+  quantity,
+  previous_balance,
+  new_balance,
+  lot_number,
+  batch_number,
+  expiry_date,
+  supplier_name,
+  reference_number,
+  performed_by,
+  approved_by,
+  notes,
+  triggered_low_stock_alert,
+  triggered_critical_stock_alert,
+  created_at
+)
+SELECT
+  s.vaccine_inventory_id,
+  s.vaccine_id,
+  s.clinic_id,
+  s.transaction_type,
+  s.quantity,
+  s.previous_balance,
+  CASE
+    WHEN s.transaction_type IN ('ISSUE', 'WASTAGE') THEN GREATEST(s.previous_balance - s.quantity, 0)
+    ELSE s.previous_balance + s.quantity
+  END,
+  'SYNLOT-' || LPAD(s.vaccine_id::text, 4, '0') || '-' || LPAD(s.clinic_id::text, 4, '0'),
+  'SYNLOT-' || LPAD(s.vaccine_id::text, 4, '0') || '-' || LPAD(s.clinic_id::text, 4, '0'),
+  CURRENT_DATE + (((s.n % 700) + 300) * INTERVAL '1 day'),
+  'SYNPH26 Supplier',
+  'SYNREF-' || LPAD(s.n::text, 12, '0'),
+  s.performed_by,
+  s.performed_by,
+  'SYNPH26 inventory movement',
+  (s.n % 20 = 0),
+  (s.n % 55 = 0),
+  s.created_at
+FROM seed s;
+
+-- =====================================================================================================
+-- 14) AUDIT LOGS (top-up to 400,000 marker rows)
+-- =====================================================================================================
+WITH users_pick AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
+  FROM users
+  WHERE username LIKE 'syn_%'
+),
+target AS (
+  SELECT 400000::bigint AS target_count
+),
+current_count AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM audit_logs al
+  WHERE COALESCE(al.new_values, '') LIKE '%SYNPH26-TXN-AUD-%'
+),
+deficit AS (
+  SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
+  FROM target t
+  CROSS JOIN current_count c
+),
+seed AS (
+  SELECT
+    gs AS n,
+    u.id AS user_id,
+    CASE (gs % 6)
+      WHEN 0 THEN 'appointment.create'
+      WHEN 1 THEN 'appointment.update'
+      WHEN 2 THEN 'immunization.record'
+      WHEN 3 THEN 'inventory.transaction'
+      WHEN 4 THEN 'notification.dispatch'
+      ELSE 'dashboard.view'
+    END AS event_type,
+    CASE (gs % 5)
+      WHEN 0 THEN 'appointments'
+      WHEN 1 THEN 'immunization_records'
+      WHEN 2 THEN 'vaccine_inventory_transactions'
+      WHEN 3 THEN 'notifications'
+      ELSE 'patients'
+    END AS entity_type,
+    1 + (gs % 100000) AS entity_id,
+    CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS ts
+  FROM deficit d
+  JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
+  JOIN users_pick u ON u.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM users_pick), 1)) + 1
+)
+INSERT INTO audit_logs (
+  user_id,
+  event_type,
+  entity_type,
+  entity_id,
+  old_values,
+  new_values,
+  metadata,
+  timestamp,
+  ip_address,
+  user_agent
+)
+SELECT
+  s.user_id,
+  s.event_type,
+  s.entity_type,
+  s.entity_id,
+  NULL,
+  'SYNPH26-TXN-AUD-' || LPAD(s.n::text, 10, '0'),
+  json_build_object('marker', 'SYNPH26', 'event_seq', s.n)::text,
+  s.ts,
+  '127.0.0.1',
+  'SYNPH26 synthetic generator'
+FROM seed s;
+
+-- =====================================================================================================
+-- 15) DOWNSTREAM CONSISTENCY UPDATES (marker-scoped only)
+-- =====================================================================================================
+
+UPDATE notifications n
+SET sent_at = COALESCE(n.sent_at, CASE WHEN n.status IN ('sent','delivered','read') THEN n.created_at + INTERVAL '2 hours' END),
+    delivered_at = COALESCE(n.delivered_at, CASE WHEN n.status IN ('delivered','read') THEN n.created_at + INTERVAL '3 hours' END),
+    read_at = COALESCE(n.read_at, CASE WHEN n.status = 'read' THEN n.created_at + INTERVAL '4 hours' END),
+    failed_at = COALESCE(n.failed_at, CASE WHEN n.status = 'failed' THEN n.created_at + INTERVAL '2 hours' END),
+    is_read = CASE WHEN n.status = 'read' THEN true ELSE n.is_read END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE COALESCE(n.message, '') LIKE 'SYNPH26-TXN-NF-%';
+
+UPDATE appointments a
+SET scheduled_date = GREATEST(a.scheduled_date, (p.dob + INTERVAL '7 days')::timestamptz),
+    updated_at = CURRENT_TIMESTAMP
+FROM patients p
+WHERE a.infant_id = p.id
+  AND p.control_number LIKE 'SYNPH26-INF-%'
+  AND a.scheduled_date::date < p.dob;
+
+UPDATE immunization_records ir
+SET admin_date = CASE
+      WHEN ir.admin_date IS NOT NULL AND ir.admin_date < p.dob THEN p.dob + INTERVAL '14 days'
+      ELSE ir.admin_date
+    END,
+    next_due_date = CASE
+      WHEN ir.next_due_date IS NOT NULL AND ir.next_due_date < p.dob THEN p.dob + INTERVAL '42 days'
+      ELSE ir.next_due_date
+    END,
+    updated_at = CURRENT_TIMESTAMP
+FROM patients p
+WHERE ir.patient_id = p.id
+  AND p.control_number LIKE 'SYNPH26-INF-%'
+  AND (
+    (ir.admin_date IS NOT NULL AND ir.admin_date < p.dob)
+    OR (ir.next_due_date IS NOT NULL AND ir.next_due_date < p.dob)
+  );
+
+UPDATE vaccine_inventory vi
+SET stock_on_hand = GREATEST(
+      COALESCE(vi.beginning_balance, 0)
+      + COALESCE(vi.received_during_period, 0)
+      + COALESCE(vi.transferred_in, 0)
+      - COALESCE(vi.transferred_out, 0)
+      - COALESCE(vi.expired_wasted, 0)
+      - COALESCE(vi.issuance, 0),
+      0
+    ),
+    is_critical_stock = (
+      GREATEST(
+        COALESCE(vi.beginning_balance, 0)
+        + COALESCE(vi.received_during_period, 0)
+        + COALESCE(vi.transferred_in, 0)
+        - COALESCE(vi.transferred_out, 0)
+        - COALESCE(vi.expired_wasted, 0)
+        - COALESCE(vi.issuance, 0),
+        0
+      ) <= COALESCE(vi.critical_stock_threshold, 5)
+    ),
+    is_low_stock = (
+      GREATEST(
+        COALESCE(vi.beginning_balance, 0)
+        + COALESCE(vi.received_during_period, 0)
+        + COALESCE(vi.transferred_in, 0)
+        - COALESCE(vi.transferred_out, 0)
+        - COALESCE(vi.expired_wasted, 0)
+        - COALESCE(vi.issuance, 0),
+        0
+      ) <= COALESCE(vi.low_stock_threshold, 10)
+    ),
+    updated_at = CURRENT_TIMESTAMP
+WHERE COALESCE(vi.lot_batch_number, '') LIKE 'SYNLOT-%';
+
+-- =====================================================================================================
+-- 16) VALIDATION QUERIES
+-- =====================================================================================================
+
+-- 16.1 Exact target counts
+SELECT
+  'marker_patients_exact_100000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM patients
+WHERE control_number LIKE 'SYNPH26-INF-%';
+
+SELECT
+  'appointments_marker_target_2700000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM appointments
+WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-AP-%';
+
+SELECT
+  'immunization_records_marker_target_3200000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM immunization_records
+WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IR-%';
+
+SELECT
+  'notifications_marker_target_1400000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM notifications
+WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-NF-%';
+
+SELECT
+  'sms_logs_marker_target_1100000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM sms_logs
+WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-SMS-%';
+
+SELECT
+  'inventory_transactions_marker_target_550000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM inventory_transactions
+WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IT-%';
+
+SELECT
+  'vaccine_inventory_transactions_marker_target_650000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM vaccine_inventory_transactions
+WHERE COALESCE(reference_number, '') LIKE 'SYNREF-%';
+
+SELECT
+  'audit_logs_marker_target_400000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM audit_logs
+WHERE COALESCE(new_values, '') LIKE '%SYNPH26-TXN-AUD-%';
+
+SELECT
+  'vaccination_reminders_marker_target_1000000' AS check_name,
+  COUNT(*)::bigint AS actual_count
+FROM vaccination_reminders
+WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-VR-%';
+
+SELECT
+  'transactional_marker_total_10000000' AS check_name,
+  (
+    (SELECT COUNT(*)::bigint FROM appointments WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-AP-%')
+    + (SELECT COUNT(*)::bigint FROM immunization_records WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IR-%')
+    + (SELECT COUNT(*)::bigint FROM notifications WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-NF-%')
+    + (SELECT COUNT(*)::bigint FROM sms_logs WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-SMS-%')
+    + (SELECT COUNT(*)::bigint FROM inventory_transactions WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IT-%')
+    + (SELECT COUNT(*)::bigint FROM vaccine_inventory_transactions WHERE COALESCE(reference_number, '') LIKE 'SYNREF-%')
+    + (SELECT COUNT(*)::bigint FROM audit_logs WHERE COALESCE(new_values, '') LIKE '%SYNPH26-TXN-AUD-%')
+  ) AS actual_count;
+
+-- 16.2 Dashboard module coverage status distributions
+SELECT status, COUNT(*)::bigint AS cnt
+FROM appointments
+WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-AP-%'
+GROUP BY status
+ORDER BY cnt DESC;
+
+SELECT status, COUNT(*)::bigint AS cnt
+FROM immunization_records
+WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IR-%'
+GROUP BY status
+ORDER BY cnt DESC;
+
+SELECT status, COUNT(*)::bigint AS cnt
+FROM notifications
+WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-NF-%'
+GROUP BY status
+ORDER BY cnt DESC;
+
+SELECT status, COUNT(*)::bigint AS cnt
+FROM sms_logs
+WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-SMS-%'
+GROUP BY status
+ORDER BY cnt DESC;
+
+SELECT
+  COUNT(*) FILTER (WHERE is_low_stock)::bigint AS low_stock_rows,
+  COUNT(*) FILTER (WHERE is_critical_stock)::bigint AS critical_stock_rows
+FROM vaccine_inventory
+WHERE COALESCE(lot_batch_number, '') LIKE 'SYNLOT-%';
+
+-- 16.3 FK integrity checks for marker-scoped data
+SELECT
+  COUNT(*)::bigint AS orphan_appointments
+FROM appointments a
+LEFT JOIN patients p ON p.id = a.infant_id
+WHERE COALESCE(a.notes, '') LIKE 'SYNPH26-TXN-AP-%'
+  AND p.id IS NULL;
+
+SELECT
+  COUNT(*)::bigint AS orphan_immunization_patients
+FROM immunization_records ir
+LEFT JOIN patients p ON p.id = ir.patient_id
+WHERE COALESCE(ir.notes, '') LIKE 'SYNPH26-TXN-IR-%'
+  AND p.id IS NULL;
+
+SELECT
+  COUNT(*)::bigint AS orphan_immunization_batches
+FROM immunization_records ir
+LEFT JOIN vaccine_batches vb ON vb.id = ir.batch_id
+WHERE COALESCE(ir.notes, '') LIKE 'SYNPH26-TXN-IR-%'
+  AND vb.id IS NULL;
+
+SELECT
+  COUNT(*)::bigint AS orphan_inventory_txn_batches
+FROM inventory_transactions it
+LEFT JOIN vaccine_batches vb ON vb.id = it.batch_id
+WHERE COALESCE(it.notes, '') LIKE 'SYNPH26-TXN-IT-%'
+  AND vb.id IS NULL;
+
+SELECT
+  COUNT(*)::bigint AS orphan_vaccine_inventory_txn_inventory
+FROM vaccine_inventory_transactions vit
+LEFT JOIN vaccine_inventory vi ON vi.id = vit.vaccine_inventory_id
+WHERE COALESCE(vit.reference_number, '') LIKE 'SYNREF-%'
+  AND vi.id IS NULL;
+
+-- 16.4 Date sanity checks
+SELECT
+  COUNT(*)::bigint AS appointments_before_dob
+FROM appointments a
+JOIN patients p ON p.id = a.infant_id
+WHERE COALESCE(a.notes, '') LIKE 'SYNPH26-TXN-AP-%'
+  AND a.scheduled_date::date < p.dob;
+
+SELECT
+  COUNT(*)::bigint AS immunization_before_dob
+FROM immunization_records ir
+JOIN patients p ON p.id = ir.patient_id
+WHERE COALESCE(ir.notes, '') LIKE 'SYNPH26-TXN-IR-%'
+  AND ir.admin_date IS NOT NULL
+  AND ir.admin_date < p.dob;
+
+-- 16.5 Philippine format checks
+SELECT
+  COUNT(*)::bigint AS invalid_guardian_mobile_format
+FROM guardians g
+WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
+  AND g.phone !~ '^\+639[0-9]{9}$';
+
+SELECT
+  COUNT(*)::bigint AS invalid_patient_mobile_format
+FROM patients p
+WHERE p.control_number LIKE 'SYNPH26-INF-%'
+  AND COALESCE(p.cellphone_number, p.contact, '') !~ '^\+639[0-9]{9}$';
+
+SELECT
+  COUNT(*)::bigint AS incomplete_guardian_address_format
+FROM guardians g
+WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
+  AND (
+    g.address IS NULL
+    OR g.address NOT ILIKE '%Brgy.%'
+    OR g.address NOT ILIKE '%Metro Manila%'
+  );
+
+-- 16.6 Rerun deficit proof (all should be zero after successful run)
+SELECT
+  GREATEST(100000 - (SELECT COUNT(*)::bigint FROM patients WHERE control_number LIKE 'SYNPH26-INF-%'), 0)::bigint AS patients_deficit,
+  GREATEST(2700000 - (SELECT COUNT(*)::bigint FROM appointments WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-AP-%'), 0)::bigint AS appointments_deficit,
+  GREATEST(3200000 - (SELECT COUNT(*)::bigint FROM immunization_records WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IR-%'), 0)::bigint AS immunization_deficit,
+  GREATEST(1400000 - (SELECT COUNT(*)::bigint FROM notifications WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-NF-%'), 0)::bigint AS notifications_deficit,
+  GREATEST(1100000 - (SELECT COUNT(*)::bigint FROM sms_logs WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-SMS-%'), 0)::bigint AS sms_deficit,
+  GREATEST(550000 - (SELECT COUNT(*)::bigint FROM inventory_transactions WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IT-%'), 0)::bigint AS inventory_txn_deficit,
+  GREATEST(650000 - (SELECT COUNT(*)::bigint FROM vaccine_inventory_transactions WHERE COALESCE(reference_number, '') LIKE 'SYNREF-%'), 0)::bigint AS vaccine_inventory_txn_deficit,
+  GREATEST(400000 - (SELECT COUNT(*)::bigint FROM audit_logs WHERE COALESCE(new_values, '') LIKE '%SYNPH26-TXN-AUD-%'), 0)::bigint AS audit_deficit,
+  GREATEST(1000000 - (SELECT COUNT(*)::bigint FROM vaccination_reminders WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-VR-%'), 0)::bigint AS reminders_deficit;
+
+-- =====================================================================================================
+-- END OF SINGLE EXECUTABLE SQL OUTPUT
+-- =====================================================================================================
