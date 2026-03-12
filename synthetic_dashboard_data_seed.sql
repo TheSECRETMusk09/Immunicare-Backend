@@ -682,7 +682,7 @@ ON CONFLICT DO NOTHING;
 WITH role_map AS (
   SELECT id
   FROM roles
-  WHERE name = 'guardian'
+  WHERE LOWER(name) = 'guardian'
   LIMIT 1
 ),
 seed_users AS (
@@ -903,7 +903,7 @@ SELECT
   mi.sex::infant_sex,
   'SYNPH26 Address Block, Brgy. San Nicolas, Pasig City, Metro Manila',
   COALESCE(mi.contact, mi.cellphone_number, '+639199000000'),
-  mi.guardian_id,
+  NULL,
   mi.facility_id,
   'SYNPH26 Mother ' || mi.last_name,
   'SYNPH26 Father ' || mi.last_name,
@@ -926,13 +926,13 @@ FROM missing_infants mi;
 WITH role_admin AS (
   SELECT id
   FROM roles
-  WHERE name = 'system_admin'
+  WHERE LOWER(name) = 'system_admin'
   LIMIT 1
 ),
 role_hw AS (
   SELECT id
   FROM roles
-  WHERE name = 'health_worker'
+  WHERE LOWER(name) = 'health_worker'
   LIMIT 1
 ),
 base_clinic AS (
@@ -1195,7 +1195,7 @@ target AS (
 current_count AS (
   SELECT COUNT(*)::bigint AS cnt
   FROM vaccination_reminders vr
-  WHERE COALESCE(vr.notes, '') LIKE 'SYNPH26-TXN-%'
+  WHERE COALESCE(vr.notes, '') LIKE 'SYNPH26-TXN-VR-%'
 ),
 deficit AS (
   SELECT GREATEST(t.target_count - c.cnt, 0)::bigint AS to_add
@@ -1209,8 +1209,8 @@ seed AS (
     mp.guardian_id,
     v.id AS vaccine_id,
     1 + (gs % 3) AS dose_number,
-    (CURRENT_DATE - ((gs * 5) % 365))::date AS due_date,
-    (CURRENT_DATE - ((gs * 5) % 365) - ((gs % 14) * INTERVAL '1 day'))::date AS reminder_date,
+    (CURRENT_DATE - (((gs * 5) % 365) * INTERVAL '1 day'))::date AS due_date,
+    (CURRENT_DATE - (((gs * 5) % 365) * INTERVAL '1 day') - ((gs % 14) * INTERVAL '1 day'))::date AS reminder_date,
     CASE (gs % 5)
       WHEN 0 THEN 'pending'
       WHEN 1 THEN 'sent'
@@ -1278,25 +1278,35 @@ WITH target_controls AS (
     'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
   FROM generate_series(1, 100000) gs
 ),
-marker_patients AS (
+marker_subjects AS (
   SELECT
-    canonical.id,
-    canonical.guardian_id,
-    COALESCE(canonical.facility_id, 1) AS clinic_id,
-    canonical.dob,
-    ROW_NUMBER() OVER (ORDER BY canonical.id) AS rn
-  FROM (
+    p.id AS patient_id,
+    i.id AS infant_id,
+    p.guardian_id,
+    COALESCE(p.facility_id, i.clinic_id, 1) AS clinic_id,
+    p.dob,
+    ROW_NUMBER() OVER (ORDER BY p.id, i.id) AS rn
+  FROM target_controls tc
+  JOIN LATERAL (
     SELECT
-      p.id,
-      p.guardian_id,
-      p.facility_id,
-      p.dob,
-      ROW_NUMBER() OVER (PARTITION BY tc.marker_control ORDER BY p.id) AS control_rank
-    FROM target_controls tc
-    JOIN patients p
-      ON p.control_number = tc.marker_control
-  ) canonical
-  WHERE canonical.control_rank = 1
+      p1.id,
+      p1.guardian_id,
+      p1.facility_id,
+      p1.dob
+    FROM patients p1
+    WHERE p1.control_number = tc.marker_control
+    ORDER BY p1.id
+    LIMIT 1
+  ) p ON true
+  JOIN LATERAL (
+    SELECT
+      i1.id,
+      i1.clinic_id
+    FROM infants i1
+    WHERE i1.patient_control_number = tc.marker_control
+    ORDER BY i1.id
+    LIMIT 1
+  ) i ON true
 ),
 creator_users AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
@@ -1319,7 +1329,8 @@ deficit AS (
 seed AS (
   SELECT
     gs AS n,
-    mp.id AS patient_id,
+    mp.patient_id,
+    mp.infant_id,
     mp.guardian_id,
     mp.clinic_id,
     cu.id AS created_by,
@@ -1336,7 +1347,7 @@ seed AS (
     'Room ' || ((gs % 12) + 1)::text || ', Immunization Wing' AS location
   FROM deficit d
   JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
-  JOIN marker_patients mp ON mp.rn = ((gs - 1) % 100000) + 1
+  JOIN marker_subjects mp ON mp.rn = ((gs - 1) % 100000) + 1
   JOIN creator_users cu ON cu.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM creator_users), 1)) + 1
 )
 INSERT INTO appointments (
@@ -1362,7 +1373,7 @@ INSERT INTO appointments (
   guardian_id
 )
 SELECT
-  s.patient_id,
+  s.infant_id,
   s.scheduled_date,
   s.type,
   s.status,
@@ -1422,10 +1433,21 @@ batches_pick AS (
   FROM vaccine_batches
   WHERE lot_no LIKE 'SYNLOT-%'
 ),
+batch_counts AS (
+  SELECT
+    bp.vaccine_id,
+    COUNT(*)::int AS batch_count
+  FROM batches_pick bp
+  GROUP BY bp.vaccine_id
+),
 admin_users AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
   FROM users
   WHERE username LIKE 'syn_%'
+),
+admin_user_count AS (
+  SELECT GREATEST(COUNT(*), 1)::int AS cnt
+  FROM admin_users
 ),
 target AS (
   SELECT 3200000::bigint AS target_count
@@ -1460,22 +1482,20 @@ seed AS (
   JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
   JOIN marker_patients mp ON mp.rn = ((gs - 1) % 100000) + 1
   JOIN vaccines_pick vp ON vp.rn = ((gs - 1) % 7) + 1
-  JOIN admin_users au ON au.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM admin_users), 1)) + 1
+  JOIN admin_users au ON au.rn = ((gs - 1) % (SELECT cnt FROM admin_user_count)) + 1
 ),
 seed_with_batch AS (
   SELECT
     s.*,
-    (
-      SELECT bp.id
-      FROM batches_pick bp
-      WHERE bp.vaccine_id = s.vaccine_id
-      ORDER BY bp.rn
-      OFFSET ((s.n - 1) % GREATEST((SELECT COUNT(*) FROM batches_pick b2 WHERE b2.vaccine_id = s.vaccine_id), 1))
-      LIMIT 1
-    ) AS batch_id,
+    bp.id AS batch_id,
     LEAST(s.admin_date_raw, CURRENT_DATE)::date AS admin_date,
     LEAST(s.next_due_raw, CURRENT_DATE + 365)::date AS next_due_date
   FROM seed s
+  JOIN batch_counts bc
+    ON bc.vaccine_id = s.vaccine_id
+  JOIN batches_pick bp
+    ON bp.vaccine_id = s.vaccine_id
+   AND bp.rn = ((s.n - 1) % bc.batch_count) + 1
 )
 INSERT INTO immunization_records (
   patient_id,
@@ -1544,6 +1564,10 @@ creator_users AS (
   FROM users
   WHERE username LIKE 'syn_%'
 ),
+creator_user_count AS (
+  SELECT GREATEST(COUNT(*), 1)::int AS cnt
+  FROM creator_users
+),
 target AS (
   SELECT 1400000::bigint AS target_count
 ),
@@ -1588,7 +1612,8 @@ seed AS (
   FROM deficit d
   JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
   JOIN marker_patients mp ON mp.rn = ((gs - 1) % 100000) + 1
-  JOIN creator_users cu ON cu.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM creator_users), 1)) + 1
+  JOIN creator_user_count cuc ON true
+  JOIN creator_users cu ON cu.rn = ((gs - 1) % cuc.cnt) + 1
 )
 INSERT INTO notifications (
   notification_type,
@@ -1672,6 +1697,10 @@ WITH marker_guardians AS (
   FROM guardians g
   WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
 ),
+marker_guardian_count AS (
+  SELECT GREATEST(COUNT(*), 1)::int AS cnt
+  FROM marker_guardians
+),
 target AS (
   SELECT 1100000::bigint AS target_count
 ),
@@ -1705,7 +1734,8 @@ seed AS (
     CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS created_at
   FROM deficit d
   JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
-  JOIN marker_guardians mg ON mg.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM marker_guardians), 1)) + 1
+  JOIN marker_guardian_count mgc ON true
+  JOIN marker_guardians mg ON mg.rn = ((gs - 1) % mgc.cnt) + 1
 )
 INSERT INTO sms_logs (
   phone_number,
@@ -1744,10 +1774,18 @@ WITH batches AS (
   FROM vaccine_batches
   WHERE lot_no LIKE 'SYNLOT-%'
 ),
+batches_count AS (
+  SELECT GREATEST(COUNT(*), 1)::int AS cnt
+  FROM batches
+),
 users_pick AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
   FROM users
   WHERE username LIKE 'syn_%'
+),
+users_pick_count AS (
+  SELECT GREATEST(COUNT(*), 1)::int AS cnt
+  FROM users_pick
 ),
 target AS (
   SELECT 550000::bigint AS target_count
@@ -1777,8 +1815,10 @@ seed AS (
     CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS created_at
   FROM deficit d
   JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
-  JOIN batches b ON b.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM batches), 1)) + 1
-  JOIN users_pick u ON u.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM users_pick), 1)) + 1
+  JOIN batches_count bc ON true
+  JOIN users_pick_count upc ON true
+  JOIN batches b ON b.rn = ((gs - 1) % bc.cnt) + 1
+  JOIN users_pick u ON u.rn = ((gs - 1) % upc.cnt) + 1
 )
 INSERT INTO inventory_transactions (
   batch_id,
@@ -1810,10 +1850,18 @@ WITH inventories AS (
   FROM vaccine_inventory vi
   WHERE COALESCE(vi.lot_batch_number, '') LIKE 'SYNLOT-%'
 ),
+inventories_count AS (
+  SELECT GREATEST(COUNT(*), 1)::int AS cnt
+  FROM inventories
+),
 users_pick AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
   FROM users
   WHERE username LIKE 'syn_%'
+),
+users_pick_count AS (
+  SELECT GREATEST(COUNT(*), 1)::int AS cnt
+  FROM users_pick
 ),
 target AS (
   SELECT 650000::bigint AS target_count
@@ -1846,8 +1894,10 @@ seed AS (
     CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS created_at
   FROM deficit d
   JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
-  JOIN inventories i ON i.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM inventories), 1)) + 1
-  JOIN users_pick u ON u.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM users_pick), 1)) + 1
+  JOIN inventories_count ic ON true
+  JOIN users_pick_count upc ON true
+  JOIN inventories i ON i.rn = ((gs - 1) % ic.cnt) + 1
+  JOIN users_pick u ON u.rn = ((gs - 1) % upc.cnt) + 1
 )
 INSERT INTO vaccine_inventory_transactions (
   vaccine_inventory_id,
@@ -1901,6 +1951,10 @@ WITH users_pick AS (
   FROM users
   WHERE username LIKE 'syn_%'
 ),
+users_pick_count AS (
+  SELECT GREATEST(COUNT(*), 1)::int AS cnt
+  FROM users_pick
+),
 target AS (
   SELECT 400000::bigint AS target_count
 ),
@@ -1937,7 +1991,8 @@ seed AS (
     CURRENT_TIMESTAMP - ((gs % 365) * INTERVAL '1 day') AS ts
   FROM deficit d
   JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
-  JOIN users_pick u ON u.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM users_pick), 1)) + 1
+  JOIN users_pick_count upc ON true
+  JOIN users_pick u ON u.rn = ((gs - 1) % upc.cnt) + 1
 )
 INSERT INTO audit_logs (
   user_id,
@@ -1980,8 +2035,10 @@ WHERE COALESCE(n.message, '') LIKE 'SYNPH26-TXN-NF-%';
 UPDATE appointments a
 SET scheduled_date = GREATEST(a.scheduled_date, (p.dob + INTERVAL '7 days')::timestamptz),
     updated_at = CURRENT_TIMESTAMP
-FROM patients p
-WHERE a.infant_id = p.id
+FROM infants i
+JOIN patients p
+  ON p.control_number = i.patient_control_number
+WHERE a.infant_id = i.id
   AND p.control_number LIKE 'SYNPH26-INF-%'
   AND a.scheduled_date::date < p.dob;
 
@@ -2232,9 +2289,9 @@ WHERE COALESCE(lot_batch_number, '') LIKE 'SYNLOT-%';
 SELECT
   COUNT(*)::bigint AS orphan_appointments
 FROM appointments a
-LEFT JOIN patients p ON p.id = a.infant_id
+LEFT JOIN infants i ON i.id = a.infant_id
 WHERE COALESCE(a.notes, '') LIKE 'SYNPH26-TXN-AP-%'
-  AND p.id IS NULL;
+  AND i.id IS NULL;
 
 SELECT
   COUNT(*)::bigint AS orphan_immunization_patients
@@ -2268,7 +2325,8 @@ WHERE COALESCE(vit.reference_number, '') LIKE 'SYNREF-%'
 SELECT
   COUNT(*)::bigint AS appointments_before_dob
 FROM appointments a
-JOIN patients p ON p.id = a.infant_id
+JOIN infants i ON i.id = a.infant_id
+JOIN patients p ON p.control_number = i.patient_control_number
 WHERE COALESCE(a.notes, '') LIKE 'SYNPH26-TXN-AP-%'
   AND a.scheduled_date::date < p.dob;
 
