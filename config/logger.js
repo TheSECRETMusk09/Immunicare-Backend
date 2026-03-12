@@ -1,8 +1,64 @@
 const winston = require('winston');
 const path = require('path');
 
+const REDACTION_PATTERNS = [
+  /(\"?(?:token|password|secret|api[_-]?key|auth[_-]?token|refresh[_-]?token)\"?\s*[:=]\s*\"?)([^\",\s}]+)/gi,
+  /(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi,
+];
+
+const redactString = (value) => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  return REDACTION_PATTERNS.reduce((acc, pattern) => acc.replace(pattern, '$1[REDACTED]'), value);
+};
+
+const sanitizeMetadata = (value) => {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return redactString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeMetadata(item));
+  }
+
+  if (typeof value === 'object') {
+    const sanitized = {};
+    for (const [key, raw] of Object.entries(value)) {
+      if (/(password|secret|token|api[_-]?key|auth[_-]?token|refresh[_-]?token)/i.test(key)) {
+        sanitized[key] = '[REDACTED]';
+      } else {
+        sanitized[key] = sanitizeMetadata(raw);
+      }
+    }
+    return sanitized;
+  }
+
+  return value;
+};
+
+const redactFormat = winston.format((info) => {
+  const cloned = { ...info };
+  cloned.message = redactString(cloned.message);
+
+  for (const [key, value] of Object.entries(cloned)) {
+    if (key === 'level' || key === 'message' || key === 'timestamp') {
+      continue;
+    }
+    cloned[key] = sanitizeMetadata(value);
+  }
+
+  return cloned;
+});
+
 // Custom format for console output
 const consoleFormat = winston.format.combine(
+  redactFormat(),
   winston.format.colorize(),
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.printf(({ level, message, timestamp, ...metadata }) => {
@@ -11,14 +67,15 @@ const consoleFormat = winston.format.combine(
       msg += ` ${JSON.stringify(metadata)}`;
     }
     return msg;
-  })
+  }),
 );
 
 // Custom format for file output (JSON)
 const fileFormat = winston.format.combine(
+  redactFormat(),
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
   winston.format.errors({ stack: true }),
-  winston.format.json()
+  winston.format.json(),
 );
 
 // Determine log level based on environment
@@ -37,14 +94,14 @@ const logger = winston.createLogger({
   format: fileFormat,
   defaultMeta: {
     service: 'immunicare-api',
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
   },
   transports: [
     // Console transport
     new winston.transports.Console({
       format: consoleFormat,
       handleExceptions: true,
-      handleRejections: true
+      handleRejections: true,
     }),
     // Error log file - for errors only
     new winston.transports.File({
@@ -53,13 +110,13 @@ const logger = winston.createLogger({
       maxsize: 5242880, // 5MB
       maxFiles: 5,
       handleExceptions: true,
-      handleRejections: true
+      handleRejections: true,
     }),
     // Combined log file - all levels
     new winston.transports.File({
       filename: path.join(logsDir, 'combined.log'),
       maxsize: 5242880, // 5MB
-      maxFiles: 5
+      maxFiles: 5,
     }),
     // Debug log file - for development
     ...(process.env.NODE_ENV !== 'production'
@@ -68,33 +125,33 @@ const logger = winston.createLogger({
           filename: path.join(logsDir, 'debug.log'),
           level: 'debug',
           maxsize: 5242880, // 5MB
-          maxFiles: 3
-        })
+          maxFiles: 3,
+        }),
       ]
-      : [])
+      : []),
   ],
   exceptionHandlers: [
     new winston.transports.File({
       filename: path.join(logsDir, 'exceptions.log'),
       maxsize: 5242880, // 5MB
-      maxFiles: 5
-    })
+      maxFiles: 5,
+    }),
   ],
   rejectionHandlers: [
     new winston.transports.File({
       filename: path.join(logsDir, 'rejections.log'),
       maxsize: 5242880, // 5MB
-      maxFiles: 5
-    })
+      maxFiles: 5,
+    }),
   ],
-  exitOnError: false // Do not exit on handled exceptions
+  exitOnError: false, // Do not exit on handled exceptions
 });
 
 // Create a child logger with request context
 logger.createRequestLogger = (requestId, userId = null) => {
   return logger.child({
     requestId,
-    userId
+    userId,
   });
 };
 
@@ -108,7 +165,7 @@ logger.logPerformance = (operation, durationMs, metadata = {}) => {
   logger.info(`Performance: ${operation} completed in ${durationMs}ms`, {
     operation,
     durationMs,
-    ...metadata
+    ...metadata,
   });
 };
 
@@ -118,7 +175,7 @@ logger.logSecurity = (event, details = {}) => {
     securityEvent: true,
     event,
     ...details,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 };
 
@@ -129,7 +186,7 @@ logger.logAudit = (action, userId, details = {}) => {
     action,
     userId,
     ...details,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 };
 
@@ -142,7 +199,7 @@ logger.logRequest = (req, statusCode, durationMs) => {
     durationMs,
     ip: req.ip || req.connection.remoteAddress,
     userAgent: req.get('user-agent'),
-    userId: req.user?.id || 'anonymous'
+    userId: req.user?.id || 'anonymous',
   };
 
   if (statusCode >= 400) {

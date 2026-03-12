@@ -65,9 +65,19 @@ const isSystemAdminUser = (user) =>
   normalizeRole(user?.runtime_role || user?.role_type || user?.roleName || user?.role) ===
   CANONICAL_ROLES.SYSTEM_ADMIN;
 
-// Initialize analytics and preferences tables
-notificationAnalytics.initializeAnalyticsTable();
-notificationPreferences.initializePreferencesTable();
+// Initialize analytics and preferences tables (best effort, non-blocking)
+notificationAnalytics.initializeAnalyticsTable().catch((error) => {
+  logger.warn('Notification analytics initialization skipped/failed', {
+    message: error?.message,
+    code: error?.code,
+  });
+});
+notificationPreferences.initializePreferencesTable().catch((error) => {
+  logger.warn('Notification preferences initialization skipped/failed', {
+    message: error?.message,
+    code: error?.code,
+  });
+});
 
 // Get all notifications for current user with enhanced filtering
 router.get('/', auth, async (req, res) => {
@@ -120,14 +130,14 @@ router.get('/', auth, async (req, res) => {
     // Apply pagination
     const paginatedNotifications = notifications.slice(
       parseInt(offset),
-      parseInt(offset) + parseInt(limit)
+      parseInt(offset) + parseInt(limit),
     );
 
     res.json({
       notifications: paginatedNotifications,
       total: notifications.length,
       offset: parseInt(offset),
-      limit: parseInt(limit)
+      limit: parseInt(limit),
     });
   } catch (error) {
     logger.error('Error fetching notifications:', error);
@@ -206,7 +216,7 @@ router.get('/stats', auth, async (req, res) => {
     const [stats, performance, userEngagement] = await Promise.all([
       Notification.getStats(userId),
       notificationAnalytics.getNotificationPerformance(timeRange),
-      notificationAnalytics.getUserEngagement(userId, timeRange)
+      notificationAnalytics.getUserEngagement(userId, timeRange),
     ]);
 
     res.json({
@@ -216,7 +226,7 @@ router.get('/stats', auth, async (req, res) => {
       mediumPriorityCount: stats.medium_priority_count || 0,
       lowPriorityCount: stats.low_priority_count || 0,
       performance,
-      userEngagement
+      userEngagement,
     });
   } catch (error) {
     logger.error('Error fetching notification stats:', error);
@@ -240,14 +250,14 @@ router.get('/analytics', auth, async (req, res) => {
       notificationAnalytics.getOverallStats(timeRange),
       notificationAnalytics.getFunnelAnalysis(timeRange),
       notificationAnalytics.getTrendingTypes(timeRange),
-      notificationAnalytics.getBestSendTimes(null, timeRange)
+      notificationAnalytics.getBestSendTimes(null, timeRange),
     ]);
 
     res.json({
       overall,
       funnel,
       trending,
-      bestSendTimes: bestTimes
+      bestSendTimes: bestTimes,
     });
   } catch (error) {
     logger.error('Error fetching notification analytics:', error);
@@ -299,7 +309,7 @@ router.post('/preferences/dnd', auth, async (req, res) => {
     const preferences = await notificationPreferences.setDoNotDisturb(
       userId,
       enabled,
-      durationMinutes
+      durationMinutes,
     );
     res.json(preferences);
   } catch (error) {
@@ -351,7 +361,7 @@ router.post('/', auth, async (req, res) => {
       actionRequired = false,
       actionUrl,
       channel = 'in_app',
-      actions = []
+      actions = [],
     } = req.body;
 
     // Check if notification should be sent based on preferences
@@ -365,7 +375,7 @@ router.post('/', auth, async (req, res) => {
       if (!prefCheck.allowed) {
         return res.status(200).json({
           message: 'Notification skipped due to user preferences',
-          reason: prefCheck.reason
+          reason: prefCheck.reason,
         });
       }
     }
@@ -382,7 +392,7 @@ router.post('/', auth, async (req, res) => {
       relatedEntityId,
       actionRequired,
       actionUrl,
-      channel
+      channel,
     });
 
     // Track delivery
@@ -523,7 +533,7 @@ router.patch('/read-all', auth, async (req, res) => {
 
     // Send real-time update
     socketService.sendToUser(userId, 'notifications-read-all', {
-      count: updatedNotifications.length
+      count: updatedNotifications.length,
     });
 
     res.json({ success: true, modifiedCount: updatedNotifications.length });
@@ -597,7 +607,7 @@ router.post('/alerts', auth, async (req, res) => {
       expiresAt: additionalData?.expiresAt,
       thresholdValue: additionalData?.thresholdValue,
       currentValue: additionalData?.currentValue,
-      triggerCondition: additionalData?.triggerCondition
+      triggerCondition: additionalData?.triggerCondition,
     });
 
     // Send real-time alert
@@ -615,7 +625,7 @@ router.post('/alerts', auth, async (req, res) => {
           : 'system',
       priority: severity === 'critical' ? 5 : severity === 'high' ? 4 : 3,
       relatedEntityType: 'alert',
-      relatedEntityId: alert.id
+      relatedEntityId: alert.id,
     });
 
     res.status(201).json({ alert, notification });
@@ -685,14 +695,14 @@ router.get('/category/:category', auth, async (req, res) => {
     if (isSystemAdminUser(user)) {
       notifications = await require('../db').query(
         'SELECT * FROM notifications WHERE category = $1 ORDER BY created_at DESC',
-        [category]
+        [category],
       );
     } else {
       notifications = await require('../db').query(
         `SELECT * FROM notifications
          WHERE category = $1 AND (user_id = $2 OR user_id IS NULL)
          ORDER BY created_at DESC`,
-        [category, userId]
+        [category, userId],
       );
     }
 

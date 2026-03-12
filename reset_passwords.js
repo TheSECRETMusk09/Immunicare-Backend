@@ -62,7 +62,7 @@ async function resetPasswords() {
         `);
 
     if (adminCheck.rows.length > 0) {
-      const match = await bcrypt.compare('admin123', adminCheck.rows[0].password_hash);
+      const match = await bcrypt.compare('Admin2026!', adminCheck.rows[0].password_hash);
       console.log(`Admin password match: ${match ? '✅' : '❌'}`);
     }
 
@@ -77,7 +77,7 @@ async function resetPasswords() {
         `);
 
     if (guardianCheck.rows.length > 0) {
-      const match = await bcrypt.compare('guardian123', guardianCheck.rows[0].password_hash);
+      const match = await bcrypt.compare('Guardian2026!', guardianCheck.rows[0].password_hash);
       console.log(`Guardian password match: ${match ? '✅' : '❌'}`);
     }
 

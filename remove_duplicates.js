@@ -3,16 +3,8 @@
  * Removes duplicate records identified in the cleanup analysis
  */
 
-const { Pool } = require('pg');
+const pool = require('./db');
 require('dotenv').config();
-
-const pool = new Pool({
-  user: process.env.DB_USER || 'immunicare_dev',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'immunicare_dev',
-  password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
-  port: parseInt(process.env.DB_PORT) || 5432
-});
 
 async function removeDuplicates() {
   const client = await pool.connect();

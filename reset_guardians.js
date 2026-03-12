@@ -8,23 +8,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
+const pool = require('./db');
 const bcrypt = require('bcryptjs');
 
 // Load environment variables
 require('dotenv').config();
-
-// Database configuration
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'immunicare_dev',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-  max: 5,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000
-});
 
 const DEFAULT_PASSWORD = 'password'; // Simple password for testing
 
@@ -51,13 +39,13 @@ async function resetGuardians() {
       { name: 'is_primary_guardian', type: 'BOOLEAN DEFAULT false' },
       { name: 'must_change_password', type: 'BOOLEAN DEFAULT false' },
       { name: 'is_password_set', type: 'BOOLEAN DEFAULT false' },
-      { name: 'relationship_to_student', type: 'VARCHAR(50)' }
+      { name: 'relationship_to_student', type: 'VARCHAR(50)' },
     ];
 
     for (const col of columnsToAdd) {
       try {
         await client.query(
-          `ALTER TABLE guardians ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`
+          `ALTER TABLE guardians ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`,
         );
       } catch (e) {
         // Column might already exist, ignore
@@ -71,7 +59,7 @@ async function resetGuardians() {
     // Get role and clinic IDs
     const roleResult = await client.query('SELECT id FROM roles WHERE name = \'guardian\'');
     const clinicResult = await client.query(
-      'SELECT id FROM clinics WHERE name = \'Guardian Portal\''
+      'SELECT id FROM clinics WHERE name = \'Guardian Portal\'',
     );
 
     let guardianRoleId = roleResult.rows[0]?.id;
@@ -112,7 +100,7 @@ async function resetGuardians() {
         last_name: 'Santos',
         phone: '+63-917-123-4567',
         email: 'maria.santos@email.com',
-        rel: 'mother'
+        rel: 'mother',
       },
       {
         id: 2,
@@ -120,7 +108,7 @@ async function resetGuardians() {
         last_name: 'dela Cruz',
         phone: '+63-918-234-5678',
         email: 'juan.delacruz@email.com',
-        rel: 'father'
+        rel: 'father',
       },
       {
         id: 3,
@@ -128,7 +116,7 @@ async function resetGuardians() {
         last_name: 'Reyes',
         phone: '+63-919-345-6789',
         email: 'ana.reyes@email.com',
-        rel: 'mother'
+        rel: 'mother',
       },
       {
         id: 4,
@@ -136,7 +124,7 @@ async function resetGuardians() {
         last_name: 'Garcia',
         phone: '+63-920-456-7890',
         email: 'pedro.garcia@email.com',
-        rel: 'father'
+        rel: 'father',
       },
       {
         id: 5,
@@ -144,7 +132,7 @@ async function resetGuardians() {
         last_name: 'Lim',
         phone: '+63-921-567-8901',
         email: 'carmen.lim@email.com',
-        rel: 'grandmother'
+        rel: 'grandmother',
       },
       {
         id: 6,
@@ -152,7 +140,7 @@ async function resetGuardians() {
         last_name: 'Mendoza',
         phone: '+63-922-678-9012',
         email: 'robert.mendoza@email.com',
-        rel: 'legal_guardian'
+        rel: 'legal_guardian',
       },
       {
         id: 7,
@@ -160,7 +148,7 @@ async function resetGuardians() {
         last_name: 'Flores-Bautista',
         phone: '+63-923-789-0123',
         email: 'elena.bautista@email.com',
-        rel: 'foster_parent'
+        rel: 'foster_parent',
       },
       {
         id: 8,
@@ -168,7 +156,7 @@ async function resetGuardians() {
         last_name: 'Tan',
         phone: '+63-924-890-1234',
         email: 'michael.tan@email.com',
-        rel: 'father'
+        rel: 'father',
       },
       {
         id: 9,
@@ -176,7 +164,7 @@ async function resetGuardians() {
         last_name: 'Ong',
         phone: '+63-925-901-2345',
         email: 'sarah.ong@email.com',
-        rel: 'mother'
+        rel: 'mother',
       },
       {
         id: 10,
@@ -184,8 +172,8 @@ async function resetGuardians() {
         last_name: 'Cruz',
         phone: '+63-926-012-3456',
         email: 'david.cruz@email.com',
-        rel: 'stepfather'
-      }
+        rel: 'stepfather',
+      },
     ];
 
     for (const g of guardians) {
@@ -195,7 +183,7 @@ async function resetGuardians() {
                 INSERT INTO guardians (id, name, first_name, last_name, phone, email, relationship, password, is_password_set, is_active, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             `,
-        [g.id, fullName, g.first_name, g.last_name, g.phone, g.email, g.rel, hashedPassword]
+        [g.id, fullName, g.first_name, g.last_name, g.phone, g.email, g.rel, hashedPassword],
       );
       console.log(`   ✅ Inserted guardian: ${fullName}`);
     }
@@ -209,21 +197,21 @@ async function resetGuardians() {
 
       // Check if user exists
       const existingUser = await client.query('SELECT id FROM users WHERE guardian_id = $1', [
-        g.id
+        g.id,
       ]);
 
       if (existingUser.rows.length > 0) {
         // Update existing user
         await client.query(
           `
-                    UPDATE users SET 
+                    UPDATE users SET
                         password_hash = $1,
                         email = $2,
                         contact = $3,
                         is_active = true
                     WHERE guardian_id = $4
                 `,
-          [hashedPassword, g.email, g.phone, g.id]
+          [hashedPassword, g.email, g.phone, g.id],
         );
         console.log(`   🔄 Updated user: ${username}`);
       } else {
@@ -233,7 +221,7 @@ async function resetGuardians() {
                     INSERT INTO users (username, password_hash, role_id, clinic_id, email, contact, guardian_id, is_active)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, true)
                 `,
-          [username, hashedPassword, guardianRoleId, guardianClinicId, g.email, g.phone, g.id]
+          [username, hashedPassword, guardianRoleId, guardianClinicId, g.email, g.phone, g.id],
         );
         console.log(`   ✅ Created user: ${username}`);
       }

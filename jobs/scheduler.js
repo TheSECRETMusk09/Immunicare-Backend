@@ -4,6 +4,23 @@
  */
 
 const logger = require('../config/logger');
+const pool = require('../db');
+
+const FATAL_DB_CONFIG_ERROR_CODES = new Set([
+  '28P01',
+  '28000',
+  '3D000',
+  '3F000',
+  '42501',
+]);
+
+const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
+const isScramPasswordTypeError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('sasl') && message.includes('client password must be a string');
+};
+
+const isAuthOrConfigDbError = (error) => isFatalDbConfigError(error?.code) || isScramPasswordTypeError(error);
 
 // Job intervals (in milliseconds)
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
@@ -11,6 +28,7 @@ const SESSION_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
 
 let jobs = [];
 let isInitialized = false;
+let dbUnavailableForScheduler = false;
 
 // Cache for table existence checks
 const tableExistsCache = new Map();
@@ -22,13 +40,16 @@ const TABLE_CACHE_TTL = 60 * 60 * 1000; // 1 hour
  * @returns {Promise<boolean>} - True if table exists
  */
 async function checkTableExists(tableName) {
+  if (dbUnavailableForScheduler) {
+    return false;
+  }
+
   const cached = tableExistsCache.get(tableName);
   if (cached && cached.timestamp > Date.now() - TABLE_CACHE_TTL) {
     return cached.exists;
   }
 
   try {
-    const pool = require('../db');
     const result = await pool.query(
       `SELECT EXISTS (
         SELECT FROM information_schema.tables
@@ -41,6 +62,17 @@ async function checkTableExists(tableName) {
     tableExistsCache.set(tableName, { exists, timestamp: Date.now() });
     return exists;
   } catch (error) {
+    if (isAuthOrConfigDbError(error)) {
+      if (!dbUnavailableForScheduler) {
+        dbUnavailableForScheduler = true;
+        logger.error('Scheduler detected DB authentication/configuration failure. Disabling scheduled DB cleanup tasks for this process.', {
+          code: error.code || 'DB_AUTH_CONFIG',
+          message: error.message,
+        });
+      }
+      return false;
+    }
+
     logger.error(`Error checking table existence for ${tableName}:`, {
       message: error.message,
       code: error.code,
@@ -54,17 +86,13 @@ async function checkTableExists(tableName) {
  * Cleanup expired sessions from the database
  */
 async function cleanupExpiredSessions() {
+  const exists = await checkTableExists('user_sessions');
+  if (!exists) {
+    logger.debug('Skipping session cleanup because \'user_sessions\' table does not exist or DB is unavailable.');
+    return;
+  }
+
   try {
-    // Check if table exists first
-    const exists = await checkTableExists('user_sessions');
-
-    if (!exists) {
-      logger.warn('Table \'user_sessions\' does not exist, skipping session cleanup. Run migrations to create it.');
-      return;
-    }
-
-    const pool = require('../db');
-
     // First check if the expires_at column exists
     const columnCheck = await pool.query(
       `SELECT EXISTS (
@@ -88,15 +116,10 @@ async function cleanupExpiredSessions() {
       logger.info(`Cleaned up ${result.rowCount} expired sessions`);
     }
   } catch (error) {
-    // Only log as error if it's not a "table doesn't exist" error
-    if (error.code === '42P01') { // undefined_table
-      logger.warn('Table \'user_sessions\' not accessible, skipping cleanup. Check permissions and configuration.');
-    } else {
-      logger.error('Error cleaning up expired sessions:', {
-        message: error.message,
-        code: error.code,
-      });
-    }
+    logger.error('Error during session cleanup execution:', {
+      message: error.message,
+      code: error.code,
+    });
   }
 }
 
@@ -104,16 +127,13 @@ async function cleanupExpiredSessions() {
  * Cleanup old notification logs
  */
 async function cleanupOldNotifications() {
+  const exists = await checkTableExists('notification_logs');
+  if (!exists) {
+    logger.debug('Skipping notification cleanup because \'notification_logs\' table does not exist or DB is unavailable.');
+    return;
+  }
+
   try {
-    // Check if table exists first
-    const exists = await checkTableExists('notification_logs');
-
-    if (!exists) {
-      logger.warn('Table \'notification_logs\' does not exist, skipping notification cleanup. Run migrations to create it.');
-      return;
-    }
-
-    const pool = require('../db');
     // Keep only last 90 days of notification logs
     const result = await pool.query(
       `DELETE FROM notification_logs
@@ -124,15 +144,10 @@ async function cleanupOldNotifications() {
       logger.info(`Cleaned up ${result.rowCount} old notification logs`);
     }
   } catch (error) {
-    // Only log as error if it's not a "table doesn't exist" error
-    if (error.code === '42P01') { // undefined_table
-      logger.warn('Table \'notification_logs\' not accessible, skipping cleanup. Check permissions and configuration.');
-    } else {
-      logger.error('Error cleaning up old notifications:', {
-        message: error.message,
-        code: error.code,
-      });
-    }
+    logger.error('Error during old notification cleanup execution:', {
+      message: error.message,
+      code: error.code,
+    });
   }
 }
 
@@ -140,22 +155,13 @@ async function cleanupOldNotifications() {
  * Cleanup expired password reset tokens
  */
 async function cleanupExpiredTokens() {
+  const exists = await checkTableExists('password_reset_otps');
+  if (!exists) {
+    logger.debug('Skipping token cleanup because \'password_reset_otps\' table does not exist or DB is unavailable.');
+    return;
+  }
+
   try {
-    // Check if table exists first
-    let exists;
-    try {
-      exists = await checkTableExists('password_reset_otps');
-    } catch (_checkError) {
-      logger.debug('Could not check password_reset_otps table existence, skipping cleanup');
-      return;
-    }
-
-    if (!exists) {
-      logger.debug('password_reset_otps table does not exist, skipping cleanup');
-      return;
-    }
-
-    const pool = require('../db');
     const result = await pool.query(
       `DELETE FROM password_reset_otps
        WHERE expires_at < NOW()
@@ -165,15 +171,10 @@ async function cleanupExpiredTokens() {
       logger.info(`Cleaned up ${result.rowCount} expired password reset tokens`);
     }
   } catch (error) {
-    // Only log as error if it's not a "table doesn't exist" error
-    if (error.code === '42P01') { // undefined_table
-      logger.debug('password_reset_otps table not accessible, skipping cleanup');
-    } else {
-      logger.error('Error cleaning up expired tokens:', {
-        message: error.message,
-        code: error.code,
-      });
-    }
+    logger.error('Error during expired token cleanup execution:', {
+      message: error.message,
+      code: error.code,
+    });
   }
 }
 
@@ -181,6 +182,11 @@ async function cleanupExpiredTokens() {
  * Run all cleanup tasks
  */
 async function runCleanupTasks() {
+  if (dbUnavailableForScheduler) {
+    logger.warn('Scheduled cleanup tasks skipped because DB is unavailable for scheduler.');
+    return;
+  }
+
   logger.info('Running scheduled cleanup tasks...');
   await Promise.allSettled([
     cleanupExpiredSessions(),

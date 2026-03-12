@@ -1,9 +1,32 @@
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const logger = require('../config/logger');
+const loadBackendEnv = require('../config/loadEnv');
+loadBackendEnv();
 
-// Load environment variables
-require('dotenv').config();
+const parseOriginList = (...values) =>
+  values
+    .filter(Boolean)
+    .flatMap((value) => String(value).split(','))
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+const getAllowedOrigins = () => {
+  const runtimeEnv = process.env.NODE_ENV || 'development';
+  const configuredOrigins = parseOriginList(process.env.CORS_ORIGIN, process.env.FRONTEND_URL);
+  const devOrigins = [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'https://localhost:3000',
+    'https://127.0.0.1:3000',
+  ];
+
+  if (runtimeEnv === 'production') {
+    return Array.from(new Set(configuredOrigins));
+  }
+
+  return Array.from(new Set([...configuredOrigins, ...devOrigins]));
+};
 
 class SocketService {
   constructor() {
@@ -13,16 +36,17 @@ class SocketService {
   }
 
   initialize(server) {
-    // Determine allowed origins based on environment
-    const allowedOrigins = [
-      process.env.FRONTEND_URL || 'http://localhost:3000',
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      'https://localhost:3000',
-      'https://127.0.0.1:3000',
-    ];
+    const runtimeEnv = process.env.NODE_ENV || 'development';
+    const allowedOrigins = getAllowedOrigins();
+    const socketPath = process.env.SOCKET_PATH || '/socket.io';
+    const jwtSecret = process.env.JWT_SECRET;
+
+    if (!jwtSecret) {
+      throw new Error('JWT_SECRET is required for socket authentication');
+    }
 
     this.io = new Server(server, {
+      path: socketPath,
       cors: {
         origin: (origin, callback) => {
           // Allow requests with no origin (like server-to-server or proxy)
@@ -34,7 +58,10 @@ class SocketService {
             callback(null, true);
           } else {
             // Allow any localhost origin for development
-            if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+            if (
+              runtimeEnv !== 'production' &&
+              (origin.includes('localhost') || origin.includes('127.0.0.1'))
+            ) {
               return callback(null, true);
             }
             callback(new Error('Not allowed by CORS'));
@@ -61,14 +88,16 @@ class SocketService {
           return next(new Error('Authentication error: No token provided'));
         }
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+        const decoded = jwt.verify(token, jwtSecret);
         socket.userId = decoded.userId || decoded.id;
         socket.userRole = decoded.role;
         socket.clinicId = decoded.clinicId;
 
         next();
       } catch (error) {
-        logger.error('Socket authentication error:', error);
+        logger.warn('Socket authentication failed', {
+          message: error.message,
+        });
         next(new Error('Authentication error: Invalid token'));
       }
     });

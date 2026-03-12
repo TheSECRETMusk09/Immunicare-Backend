@@ -88,26 +88,7 @@ INSERT INTO clinics (name, region, address, contact, created_at, updated_at)
 SELECT v.name, v.region, v.address, v.contact, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM (
   VALUES
-    ('Barangay San Nicolas Health Center', 'NCR', '118 P. Guevarra St, Barangay 281, San Nicolas, Manila, Metro Manila, NCR 1010', '+639171000101'),
-    ('Tondo I District Health Center', 'NCR', '1852 Tayuman St, Barangay 93, Tondo, Manila, Metro Manila, NCR 1013', '+639171000102'),
-    ('Batasan Hills Health Center', 'NCR', '44 IBP Rd, Batasan Hills, Quezon City, Metro Manila, NCR 1126', '+639171000103'),
-    ('Bagong Silang Health Station', 'NCR', '243 Kanlaon St, Barangay 176, Bagong Silang, Caloocan, NCR 1428', '+639171000104'),
-    ('Malanday Health Center', 'NCR', '72 Gen. Luna St, Malanday, Marikina, NCR 1805', '+639171000105'),
-    ('Poblacion Health Center - San Jose Del Monte', 'Region III', '31 Quirino Hwy, Poblacion, San Jose del Monte, Bulacan, Region III 3023', '+639171000106'),
-    ('Meycauayan City Primary Care Center', 'Region III', '20 Iba St, Sto. Niño, Meycauayan, Bulacan, Region III 3020', '+639171000107'),
-    ('Angeles City Family Health Unit', 'Region III', '14 Sto. Rosario St, Angeles, Pampanga, Region III 2009', '+639171000108'),
-    ('San Fernando Maternal and Child Clinic', 'Region III', '55 Lazatin Blvd, San Agustin, City of San Fernando, Pampanga, Region III 2000', '+639171000109'),
-    ('Malolos City Child Wellness Center', 'Region III', '61 Paseo del Congreso, Malolos, Bulacan, Region III 3000', '+639171000110'),
-    ('Antipolo City Health Center I', 'Region IV-A', '36 M. Santos Ext, San Roque, Antipolo, Rizal, Region IV-A 1870', '+639171000111'),
-    ('Bacoor Family Immunization Unit', 'Region IV-A', '22 Aguinaldo Hwy, Bacoor, Cavite, Region IV-A 4102', '+639171000112'),
-    ('Dasmarinas Child Care Clinic', 'Region IV-A', '18 Governor''s Dr, Dasmarinas, Cavite, Region IV-A 4114', '+639171000113'),
-    ('Calamba Rural Health Unit 2', 'Region IV-A', '29 Crossing, Calamba, Laguna, Region IV-A 4027', '+639171000114'),
-    ('Tanauan City Health and Nutrition Office', 'Region IV-A', '40 J. P. Laurel Hwy, Tanauan, Batangas, Region IV-A 4232', '+639171000115'),
-    ('Lipa City Women and Child Center', 'Region IV-A', '64 C. M. Recto Ave, Lipa, Batangas, Region IV-A 4217', '+639171000116'),
-    ('Cebu City Immunization Hub', 'Region VII', '87 Osmena Blvd, Cebu City, Cebu, Region VII 6000', '+639171000117'),
-    ('Mandaue Child Health Clinic', 'Region VII', '29 A. S. Fortuna St, Mandaue, Cebu, Region VII 6014', '+639171000118'),
-    ('Davao City North Health Center', 'Region XI', '91 Mamay Rd, Buhangin, Davao City, Region XI 8000', '+639171000119'),
-    ('Cagayan de Oro Family Health Unit', 'Region X', '33 Velez St, Cagayan de Oro, Misamis Oriental, Region X 9000', '+639171000120')
+    ('San Nicolas Health Center Pasig City', 'NCR', '45 San Nicolas St, Barangay San Nicolas, Pasig City, Metro Manila, NCR 1600', '+639171000101')
 ) AS v(name, region, address, contact)
 ON CONFLICT (name) DO UPDATE
 SET region = EXCLUDED.region,
@@ -425,26 +406,26 @@ WITH city_ref AS (
   SELECT *
   FROM (
     VALUES
-      (1, 'Manila', 'Metro Manila', 'NCR', '1000'),
+      (1, 'Pasig', 'Metro Manila', 'NCR', '1600'),
       (2, 'Quezon City', 'Metro Manila', 'NCR', '1100'),
-      (3, 'Caloocan', 'Metro Manila', 'NCR', '1400'),
-      (4, 'Makati', 'Metro Manila', 'NCR', '1200'),
-      (5, 'Pasig', 'Metro Manila', 'NCR', '1600'),
-      (6, 'San Jose del Monte', 'Bulacan', 'Region III', '3023'),
-      (7, 'Malolos', 'Bulacan', 'Region III', '3000'),
-      (8, 'Meycauayan', 'Bulacan', 'Region III', '3020'),
-      (9, 'Angeles', 'Pampanga', 'Region III', '2009'),
-      (10, 'San Fernando', 'Pampanga', 'Region III', '2000'),
-      (11, 'Antipolo', 'Rizal', 'Region IV-A', '1870'),
-      (12, 'Bacoor', 'Cavite', 'Region IV-A', '4102'),
-      (13, 'Dasmarinas', 'Cavite', 'Region IV-A', '4114'),
-      (14, 'Calamba', 'Laguna', 'Region IV-A', '4027'),
-      (15, 'Lipa', 'Batangas', 'Region IV-A', '4217'),
-      (16, 'Batangas City', 'Batangas', 'Region IV-A', '4200'),
-      (17, 'Cebu City', 'Cebu', 'Region VII', '6000'),
-      (18, 'Mandaue', 'Cebu', 'Region VII', '6014'),
-      (19, 'Davao City', 'Davao del Sur', 'Region XI', '8000'),
-      (20, 'Cagayan de Oro', 'Misamis Oriental', 'Region X', '9000')
+      (3, 'Manila', 'Metro Manila', 'NCR', '1000'),
+      (4, 'Taguig', 'Metro Manila', 'NCR', '1630'),
+      (5, 'Makati', 'Metro Manila', 'NCR', '1226'),
+      (6, 'Mandaluyong', 'Metro Manila', 'NCR', '1550'),
+      (7, 'Marikina', 'Metro Manila', 'NCR', '1800'),
+      (8, 'San Juan', 'Metro Manila', 'NCR', '1500'),
+      (9, 'Caloocan', 'Metro Manila', 'NCR', '1400'),
+      (10, 'Pasay', 'Metro Manila', 'NCR', '1300'),
+      (11, 'Paranaque', 'Metro Manila', 'NCR', '1700'),
+      (12, 'Las Pinas', 'Metro Manila', 'NCR', '1740'),
+      (13, 'Muntinlupa', 'Metro Manila', 'NCR', '1780'),
+      (14, 'Valenzuela', 'Metro Manila', 'NCR', '1440'),
+      (15, 'Malabon', 'Metro Manila', 'NCR', '1470'),
+      (16, 'Navotas', 'Metro Manila', 'NCR', '1485'),
+      (17, 'Pateros', 'Metro Manila', 'NCR', '1620'),
+      (18, 'Antipolo', 'Rizal', 'Region IV-A', '1870'),
+      (19, 'Cainta', 'Rizal', 'Region IV-A', '1900'),
+      (20, 'Taytay', 'Rizal', 'Region IV-A', '1920')
   ) AS x(loc_id, city, province, region, postal_code)
 ),
 seed AS (
@@ -575,7 +556,13 @@ SET name = EXCLUDED.name,
 -- =====================================================================================================
 -- 3) GUARDIANS + GUARDIAN CONTACTS + SYSTEM USERS (deterministic top-up)
 -- =====================================================================================================
-WITH target_guardians AS (
+WITH target_clinic AS (
+  SELECT id AS clinic_id
+  FROM clinics
+  WHERE name = 'San Nicolas Health Center Pasig City'
+  LIMIT 1
+),
+target_guardians AS (
   SELECT
     gs AS n,
     'SYNPH26 Guardian ' || LPAD(gs::text, 5, '0') AS full_name,
@@ -583,9 +570,8 @@ WITH target_guardians AS (
     (ARRAY['Miguel','Carla','Paolo','Rica','Jerome','Leah','Noel','Janine','Francis','Bianca'])[1 + ((gs * 7) % 10)] AS first_name,
     '+639' || LPAD((700000000 + gs)::text, 9, '0') AS phone,
     'syn_guard_' || LPAD(gs::text, 5, '0') || '@synthetic-immunicare.ph' AS email,
-    ((gs % 999) + 1)::text || ' Purok ' || ((gs % 20) + 1)::text || ', Brgy. San Isidro, Quezon City, Metro Manila, NCR 1100' AS address,
-    CASE WHEN gs % 2 = 0 THEN 'Mother' ELSE 'Father' END AS relationship,
-    ((gs - 1) % GREATEST((SELECT COUNT(*) FROM clinics), 1)) + 1 AS clinic_pick
+    ((gs % 999) + 1)::text || ' Purok ' || ((gs % 20) + 1)::text || ', Brgy. San Nicolas, Pasig City, Metro Manila, NCR 1600' AS address,
+    CASE WHEN gs % 2 = 0 THEN 'Mother' ELSE 'Father' END AS relationship
   FROM generate_series(1, 40000) gs
 ),
 resolved AS (
@@ -598,10 +584,9 @@ resolved AS (
     tg.email,
     tg.address,
     tg.relationship,
-    c.id AS clinic_id
+    tc.clinic_id
   FROM target_guardians tg
-  JOIN clinics c
-    ON c.id = tg.clinic_pick
+  CROSS JOIN target_clinic tc
 )
 INSERT INTO guardians (
   name,
@@ -813,7 +798,7 @@ SELECT
   CASE WHEN r.sex = 'F' THEN 'Female' ELSE 'Male' END,
   'SYNPH26 Guardian Link',
   r.cellphone,
-  'SYNPH26 Address Block, Brgy. San Isidro, Quezon City, Metro Manila',
+  'SYNPH26 Address Block, Brgy. San Nicolas, Pasig City, Metro Manila',
   CURRENT_TIMESTAMP,
   CURRENT_TIMESTAMP,
   r.guardian_id,
@@ -836,10 +821,16 @@ WHERE NOT EXISTS (
   WHERE p.control_number = r.marker_control
 );
 
-WITH marker_patients AS (
+WITH target_controls AS (
+  SELECT
+    gs AS n,
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
+  FROM generate_series(1, 100000) gs
+),
+marker_patients AS (
   SELECT
     p.id,
-    p.control_number,
+    tc.marker_control AS control_number,
     p.first_name,
     p.last_name,
     p.middle_name,
@@ -849,17 +840,35 @@ WITH marker_patients AS (
     p.facility_id,
     p.contact,
     p.cellphone_number,
-    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
-  FROM patients p
-  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+    ROW_NUMBER() OVER (PARTITION BY tc.marker_control ORDER BY p.id) AS control_rank
+  FROM target_controls tc
+  JOIN patients p
+    ON p.control_number = tc.marker_control
+),
+canonical_marker_patients AS (
+  SELECT
+    mp.id,
+    mp.control_number,
+    mp.first_name,
+    mp.last_name,
+    mp.middle_name,
+    mp.dob,
+    mp.sex,
+    mp.guardian_id,
+    mp.facility_id,
+    mp.contact,
+    mp.cellphone_number,
+    ROW_NUMBER() OVER (ORDER BY mp.id) AS rn
+  FROM marker_patients mp
+  WHERE mp.control_rank = 1
 ),
 missing_infants AS (
-  SELECT mp.*
-  FROM marker_patients mp
+  SELECT cmp.*
+  FROM canonical_marker_patients cmp
   WHERE NOT EXISTS (
     SELECT 1
     FROM infants i
-    WHERE i.patient_control_number = mp.control_number
+    WHERE i.patient_control_number = cmp.control_number
   )
 )
 INSERT INTO infants (
@@ -892,7 +901,7 @@ SELECT
   mi.middle_name,
   mi.dob,
   mi.sex::infant_sex,
-  'SYNPH26 Address Block, Brgy. San Isidro, Quezon City, Metro Manila',
+  'SYNPH26 Address Block, Brgy. San Nicolas, Pasig City, Metro Manila',
   COALESCE(mi.contact, mi.cellphone_number, '+639199000000'),
   mi.guardian_id,
   mi.facility_id,
@@ -901,7 +910,7 @@ SELECT
   'Brgy. San Isidro',
   'Barangay Health Center',
   'SYNFAM-' || LPAD(mi.rn::text, 6, '0'),
-  'Quezon City',
+  'Pasig City',
   true,
   mi.dob + INTERVAL '2 days',
   COALESCE(mi.cellphone_number, mi.contact, '+639199000000'),
@@ -929,7 +938,7 @@ role_hw AS (
 base_clinic AS (
   SELECT id
   FROM clinics
-  ORDER BY id
+  WHERE name = 'San Nicolas Health Center Pasig City'
   LIMIT 1
 ),
 seed_staff AS (
@@ -994,6 +1003,7 @@ WITH active_vaccines AS (
 active_clinics AS (
   SELECT id
   FROM clinics
+  WHERE name = 'San Nicolas Health Center Pasig City'
 ),
 staff_user AS (
   SELECT id AS user_id
@@ -1156,14 +1166,28 @@ WHERE vi.lot_batch_number LIKE 'SYNLOT-%';
 -- =====================================================================================================
 -- 7) VACCINATION REMINDERS (top-up ~1,000,000)
 -- =====================================================================================================
-WITH marker_patients AS (
+WITH target_controls AS (
   SELECT
-    p.id,
-    p.guardian_id,
-    p.dob,
-    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
-  FROM patients p
-  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
+  FROM generate_series(1, 100000) gs
+),
+marker_patients AS (
+  SELECT
+    canonical.id,
+    canonical.guardian_id,
+    canonical.dob,
+    ROW_NUMBER() OVER (ORDER BY canonical.id) AS rn
+  FROM (
+    SELECT
+      p.id,
+      p.guardian_id,
+      p.dob,
+      ROW_NUMBER() OVER (PARTITION BY tc.marker_control ORDER BY p.id) AS control_rank
+    FROM target_controls tc
+    JOIN patients p
+      ON p.control_number = tc.marker_control
+  ) canonical
+  WHERE canonical.control_rank = 1
 ),
 target AS (
   SELECT 1000000::bigint AS target_count
@@ -1249,15 +1273,30 @@ FROM seed s;
 -- =====================================================================================================
 -- 8) APPOINTMENTS (top-up to 2,700,000 marker rows)
 -- =====================================================================================================
-WITH marker_patients AS (
+WITH target_controls AS (
   SELECT
-    p.id,
-    p.guardian_id,
-    COALESCE(p.facility_id, 1) AS clinic_id,
-    p.dob,
-    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
-  FROM patients p
-  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
+  FROM generate_series(1, 100000) gs
+),
+marker_patients AS (
+  SELECT
+    canonical.id,
+    canonical.guardian_id,
+    COALESCE(canonical.facility_id, 1) AS clinic_id,
+    canonical.dob,
+    ROW_NUMBER() OVER (ORDER BY canonical.id) AS rn
+  FROM (
+    SELECT
+      p.id,
+      p.guardian_id,
+      p.facility_id,
+      p.dob,
+      ROW_NUMBER() OVER (PARTITION BY tc.marker_control ORDER BY p.id) AS control_rank
+    FROM target_controls tc
+    JOIN patients p
+      ON p.control_number = tc.marker_control
+  ) canonical
+  WHERE canonical.control_rank = 1
 ),
 creator_users AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
@@ -1352,13 +1391,26 @@ FROM seed s;
 -- =====================================================================================================
 -- 9) IMMUNIZATION RECORDS (top-up to 3,200,000 marker rows)
 -- =====================================================================================================
-WITH marker_patients AS (
+WITH target_controls AS (
   SELECT
-    p.id,
-    p.dob,
-    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
-  FROM patients p
-  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
+  FROM generate_series(1, 100000) gs
+),
+marker_patients AS (
+  SELECT
+    canonical.id,
+    canonical.dob,
+    ROW_NUMBER() OVER (ORDER BY canonical.id) AS rn
+  FROM (
+    SELECT
+      p.id,
+      p.dob,
+      ROW_NUMBER() OVER (PARTITION BY tc.marker_control ORDER BY p.id) AS control_rank
+    FROM target_controls tc
+    JOIN patients p
+      ON p.control_number = tc.marker_control
+  ) canonical
+  WHERE canonical.control_rank = 1
 ),
 vaccines_pick AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
@@ -1466,13 +1518,26 @@ FROM seed_with_batch swb;
 -- =====================================================================================================
 -- 10) NOTIFICATIONS (top-up to 1,400,000 marker rows)
 -- =====================================================================================================
-WITH marker_patients AS (
+WITH target_controls AS (
   SELECT
-    p.id,
-    p.guardian_id,
-    ROW_NUMBER() OVER (ORDER BY p.id) AS rn
-  FROM patients p
-  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
+  FROM generate_series(1, 100000) gs
+),
+marker_patients AS (
+  SELECT
+    canonical.id,
+    canonical.guardian_id,
+    ROW_NUMBER() OVER (ORDER BY canonical.id) AS rn
+  FROM (
+    SELECT
+      p.id,
+      p.guardian_id,
+      ROW_NUMBER() OVER (PARTITION BY tc.marker_control ORDER BY p.id) AS control_rank
+    FROM target_controls tc
+    JOIN patients p
+      ON p.control_number = tc.marker_control
+  ) canonical
+  WHERE canonical.control_rank = 1
 ),
 creator_users AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn
@@ -1978,11 +2043,99 @@ WHERE COALESCE(vi.lot_batch_number, '') LIKE 'SYNLOT-%';
 -- =====================================================================================================
 
 -- 16.1 Exact target counts
+WITH target_controls AS (
+  SELECT
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
+  FROM generate_series(1, 100000) gs
+)
 SELECT
   'marker_patients_exact_100000' AS check_name,
   COUNT(*)::bigint AS actual_count
-FROM patients
-WHERE control_number LIKE 'SYNPH26-INF-%';
+FROM target_controls tc
+WHERE EXISTS (
+  SELECT 1
+  FROM patients p
+  WHERE p.control_number = tc.marker_control
+);
+
+WITH target_controls AS (
+  SELECT
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
+  FROM generate_series(1, 100000) gs
+),
+marker_patients AS (
+  SELECT
+    tc.marker_control,
+    COUNT(p.id)::bigint AS patient_rows
+  FROM target_controls tc
+  LEFT JOIN patients p
+    ON p.control_number = tc.marker_control
+  GROUP BY tc.marker_control
+),
+marker_infants AS (
+  SELECT
+    tc.marker_control,
+    COUNT(i.id)::bigint AS infant_rows
+  FROM target_controls tc
+  LEFT JOIN infants i
+    ON i.patient_control_number = tc.marker_control
+  GROUP BY tc.marker_control
+),
+marker_infants_outside_target AS (
+  SELECT COUNT(*)::bigint AS cnt
+  FROM infants i
+  WHERE i.patient_control_number LIKE 'SYNPH26-INF-%'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM target_controls tc
+      WHERE tc.marker_control = i.patient_control_number
+    )
+)
+SELECT
+  'marker_patients_duplicate_controls_should_be_0' AS check_name,
+  COALESCE(SUM(GREATEST(mp.patient_rows - 1, 0)), 0)::bigint AS actual_count
+FROM marker_patients mp
+UNION ALL
+SELECT
+  'marker_infants_exact_100000' AS check_name,
+  COALESCE(SUM(mi.infant_rows), 0)::bigint AS actual_count
+FROM marker_infants mi
+UNION ALL
+SELECT
+  'marker_infants_distinct_control_exact_100000' AS check_name,
+  COUNT(*) FILTER (WHERE mi.infant_rows > 0)::bigint AS actual_count
+FROM marker_infants mi
+UNION ALL
+SELECT
+  'marker_infants_duplicate_controls_should_be_0' AS check_name,
+  COALESCE(SUM(GREATEST(mi.infant_rows - 1, 0)), 0)::bigint AS actual_count
+FROM marker_infants mi
+UNION ALL
+SELECT
+  'target_controls_missing_patient_should_be_0' AS check_name,
+  COUNT(*) FILTER (WHERE mp.patient_rows = 0)::bigint AS actual_count
+FROM marker_patients mp
+UNION ALL
+SELECT
+  'target_controls_missing_infant_should_be_0' AS check_name,
+  COUNT(*) FILTER (WHERE mi.infant_rows = 0)::bigint AS actual_count
+FROM marker_infants mi
+UNION ALL
+SELECT
+  'marker_infants_without_patient_should_be_0' AS check_name,
+  COUNT(*) FILTER (WHERE mp.patient_rows = 0 AND mi.infant_rows > 0)::bigint AS actual_count
+FROM marker_patients mp
+JOIN marker_infants mi
+  ON mi.marker_control = mp.marker_control
+UNION ALL
+SELECT
+  'marker_infants_outside_target_range_should_be_0' AS check_name,
+  cnt AS actual_count
+FROM marker_infants_outside_target
+UNION ALL
+SELECT
+  'marker_infants_over_target_100000' AS check_name,
+  GREATEST((SELECT COALESCE(SUM(infant_rows), 0)::bigint FROM marker_infants) - 100000, 0)::bigint AS actual_count;
 
 SELECT
   'appointments_marker_target_2700000' AS check_name,
@@ -2151,8 +2304,36 @@ WHERE g.email LIKE 'syn_guard_%@synthetic-immunicare.ph'
   );
 
 -- 16.6 Rerun deficit proof (all should be zero after successful run)
+WITH target_controls AS (
+  SELECT
+    'SYNPH26-INF-' || LPAD(gs::text, 6, '0') AS marker_control
+  FROM generate_series(1, 100000) gs
+)
 SELECT
-  GREATEST(100000 - (SELECT COUNT(*)::bigint FROM patients WHERE control_number LIKE 'SYNPH26-INF-%'), 0)::bigint AS patients_deficit,
+  GREATEST(
+    100000 - (
+      SELECT COUNT(*)::bigint
+      FROM target_controls tc
+      WHERE EXISTS (
+        SELECT 1
+        FROM patients p
+        WHERE p.control_number = tc.marker_control
+      )
+    ),
+    0
+  )::bigint AS patients_deficit,
+  GREATEST(
+    100000 - (
+      SELECT COUNT(*)::bigint
+      FROM target_controls tc
+      WHERE EXISTS (
+        SELECT 1
+        FROM infants i
+        WHERE i.patient_control_number = tc.marker_control
+      )
+    ),
+    0
+  )::bigint AS infants_deficit,
   GREATEST(2700000 - (SELECT COUNT(*)::bigint FROM appointments WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-AP-%'), 0)::bigint AS appointments_deficit,
   GREATEST(3200000 - (SELECT COUNT(*)::bigint FROM immunization_records WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IR-%'), 0)::bigint AS immunization_deficit,
   GREATEST(1400000 - (SELECT COUNT(*)::bigint FROM notifications WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-NF-%'), 0)::bigint AS notifications_deficit,
@@ -2161,6 +2342,28 @@ SELECT
   GREATEST(650000 - (SELECT COUNT(*)::bigint FROM vaccine_inventory_transactions WHERE COALESCE(reference_number, '') LIKE 'SYNREF-%'), 0)::bigint AS vaccine_inventory_txn_deficit,
   GREATEST(400000 - (SELECT COUNT(*)::bigint FROM audit_logs WHERE COALESCE(new_values, '') LIKE '%SYNPH26-TXN-AUD-%'), 0)::bigint AS audit_deficit,
   GREATEST(1000000 - (SELECT COUNT(*)::bigint FROM vaccination_reminders WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-VR-%'), 0)::bigint AS reminders_deficit;
+
+-- 16.7 Over-target diagnostics (non-zero means marker rows already exceeded target before rerun)
+SELECT
+  GREATEST((SELECT COUNT(*)::bigint FROM appointments WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-AP-%') - 2700000, 0)::bigint AS appointments_over_target,
+  GREATEST((SELECT COUNT(*)::bigint FROM immunization_records WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IR-%') - 3200000, 0)::bigint AS immunization_over_target,
+  GREATEST((SELECT COUNT(*)::bigint FROM notifications WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-NF-%') - 1400000, 0)::bigint AS notifications_over_target,
+  GREATEST((SELECT COUNT(*)::bigint FROM sms_logs WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-SMS-%') - 1100000, 0)::bigint AS sms_over_target,
+  GREATEST((SELECT COUNT(*)::bigint FROM inventory_transactions WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IT-%') - 550000, 0)::bigint AS inventory_txn_over_target,
+  GREATEST((SELECT COUNT(*)::bigint FROM vaccine_inventory_transactions WHERE COALESCE(reference_number, '') LIKE 'SYNREF-%') - 650000, 0)::bigint AS vaccine_inventory_txn_over_target,
+  GREATEST((SELECT COUNT(*)::bigint FROM audit_logs WHERE COALESCE(new_values, '') LIKE '%SYNPH26-TXN-AUD-%') - 400000, 0)::bigint AS audit_over_target,
+  GREATEST(
+    (
+      (SELECT COUNT(*)::bigint FROM appointments WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-AP-%')
+      + (SELECT COUNT(*)::bigint FROM immunization_records WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IR-%')
+      + (SELECT COUNT(*)::bigint FROM notifications WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-NF-%')
+      + (SELECT COUNT(*)::bigint FROM sms_logs WHERE COALESCE(message, '') LIKE 'SYNPH26-TXN-SMS-%')
+      + (SELECT COUNT(*)::bigint FROM inventory_transactions WHERE COALESCE(notes, '') LIKE 'SYNPH26-TXN-IT-%')
+      + (SELECT COUNT(*)::bigint FROM vaccine_inventory_transactions WHERE COALESCE(reference_number, '') LIKE 'SYNREF-%')
+      + (SELECT COUNT(*)::bigint FROM audit_logs WHERE COALESCE(new_values, '') LIKE '%SYNPH26-TXN-AUD-%')
+    ) - 10000000,
+    0
+  )::bigint AS transactional_total_over_target;
 
 -- =====================================================================================================
 -- END OF SINGLE EXECUTABLE SQL OUTPUT

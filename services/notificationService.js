@@ -1,7 +1,7 @@
 const pool = require('../db');
-const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
 const smsService = require('./smsService');
+const { getTransporter, EMAIL_CONFIG } = require('../config/email');
 
 const NOTIFICATION_COLUMNS_CACHE_TTL = 5 * 60 * 1000;
 let notificationColumnsCache = null;
@@ -91,21 +91,27 @@ const toPriorityNumber = (value) => {
 class NotificationService {
   constructor() {
     this.transporter = null;
-    this.initializeEmailTransporter();
+    this.transporterPromise = null;
   }
 
-  initializeEmailTransporter() {
-    // Configure email transporter for notifications
-    // In production, use environment variables for credentials
-    this.transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: process.env.SMTP_PORT || 587,
-      secure: false, // true for 465, false for other ports
-      auth: {
-        user: process.env.SMTP_USER || 'your-email@gmail.com',
-        pass: process.env.SMTP_PASS || 'your-app-password',
-      },
-    });
+  async getEmailTransporter() {
+    if (this.transporter) {
+      return this.transporter;
+    }
+
+    if (!this.transporterPromise) {
+      this.transporterPromise = getTransporter()
+        .then((transporter) => {
+          this.transporter = transporter;
+          return transporter;
+        })
+        .catch((error) => {
+          this.transporterPromise = null;
+          throw error;
+        });
+    }
+
+    return this.transporterPromise;
   }
 
   async sendNotification(notificationData) {
@@ -307,15 +313,33 @@ class NotificationService {
       throw new Error('No email address provided');
     }
 
+    if (EMAIL_CONFIG.emailDisabled) {
+      logger.info('Email delivery skipped because EMAIL_DISABLED=true', {
+        notificationId: notification.id,
+      });
+      return;
+    }
+
+    const fromAddress = EMAIL_CONFIG.from.address;
+    if (!fromAddress) {
+      throw new Error('MAIL_FROM_EMAIL is required to send email notifications');
+    }
+
+    const transporter = await this.getEmailTransporter();
+    const fromName = EMAIL_CONFIG.from.name || 'Immunicare';
+    const formattedFrom = fromAddress.includes('<')
+      ? fromAddress
+      : `${fromName} <${fromAddress}>`;
+
     const mailOptions = {
-      from: process.env.FROM_EMAIL || 'noreply@immunicare.com',
+      from: formattedFrom,
       to: notification.recipient_email,
       subject: notification.subject,
       text: notification.message,
       html: this.generateEmailHTML(notification),
     };
 
-    await this.transporter.sendMail(mailOptions);
+    await transporter.sendMail(mailOptions);
   }
 
   async sendSMS(notification) {

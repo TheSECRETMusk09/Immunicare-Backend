@@ -18,7 +18,8 @@
  * - EMAIL_MAX_PER_DAY: Max emails per day (default: 500)
  */
 
-require('dotenv').config();
+const loadBackendEnv = require('./loadEnv');
+loadBackendEnv();
 const nodemailer = require('nodemailer');
 const logger = require('./logger');
 const axios = require('axios');
@@ -29,7 +30,7 @@ const axios = require('axios');
 const EMAIL_CONFIG = {
   // SMTP Configuration
   smtp: {
-    host: process.env.SMTP_HOST || 'localhost',
+    host: process.env.SMTP_HOST || '',
     port: parseInt(process.env.SMTP_PORT) || 587,
     secure: process.env.SMTP_SECURE === 'true' || process.env.SMTP_SECURE === true,
     user: process.env.SMTP_USER || '',
@@ -41,7 +42,7 @@ const EMAIL_CONFIG = {
 
   // Email sender configuration
   from: {
-    address: process.env.MAIL_FROM_EMAIL || 'noreply@immunicare.com',
+    address: process.env.MAIL_FROM_EMAIL || '',
     name: process.env.MAIL_FROM_NAME || 'Immunicare',
   },
 
@@ -55,7 +56,7 @@ const EMAIL_CONFIG = {
 
   // MailerSend API Configuration
   mailersend: {
-    enabled: true,
+    enabled: !!process.env.MAILERSEND_API_KEY,
     apiKey: process.env.MAILERSEND_API_KEY,
   },
 
@@ -92,12 +93,14 @@ const EMAIL_CONFIG = {
 
   // Frontend URL for links in emails
   frontend: {
-    url: process.env.FRONTEND_URL || 'http://localhost:3000',
+    url: process.env.FRONTEND_URL || '',
     passwordResetPath: '/reset-password',
     emailVerificationPath: '/verify-email',
     appointmentPath: '/appointments',
   },
 };
+
+const runtimeEnv = process.env.NODE_ENV || 'development';
 
 /**
  * Email Message Types
@@ -276,8 +279,8 @@ async function validateConfig() {
   }
 
   // Check SMTP configuration
-  if (!EMAIL_CONFIG.smtp.host) {
-    errors.push('SMTP host not configured (SMTP_HOST)');
+  if (runtimeEnv !== 'production' && !EMAIL_CONFIG.smtp.host) {
+    warnings.push('SMTP host not configured (SMTP_HOST)');
   }
 
   if (!EMAIL_CONFIG.smtp.port) {
@@ -306,7 +309,7 @@ async function validateConfig() {
   // Validate MailerSend configuration if enabled
   if (EMAIL_CONFIG.mailersend.enabled) {
     if (!EMAIL_CONFIG.mailersend.apiKey) {
-            warnings.push('MailerSend API key missing (MAILERSEND_API_KEY)');
+      warnings.push('MailerSend API key missing (MAILERSEND_API_KEY)');
     } else {
       info.push('MailerSend API is enabled and configured');
     }
@@ -315,6 +318,26 @@ async function validateConfig() {
   // Check frontend URL
   if (!EMAIL_CONFIG.frontend.url) {
     warnings.push('Frontend URL not configured - email links may be broken');
+  }
+
+  const hasMailerSend = !!EMAIL_CONFIG.mailersend.apiKey;
+  const hasResend = !!EMAIL_CONFIG.resend.apiKey;
+  const hasSmtp = !!(
+    EMAIL_CONFIG.smtp.host &&
+    EMAIL_CONFIG.smtp.user &&
+    EMAIL_CONFIG.smtp.password
+  );
+
+  if (!hasMailerSend && !hasResend && !hasSmtp) {
+    if (runtimeEnv === 'production') {
+      errors.push(
+        'No email provider configured. Configure MAILERSEND_API_KEY, RESEND_API_KEY, or SMTP_HOST/SMTP_USER/SMTP_PASSWORD.',
+      );
+    } else {
+      warnings.push(
+        'No email provider configured. Configure MAILERSEND_API_KEY, RESEND_API_KEY, or SMTP_HOST/SMTP_USER/SMTP_PASSWORD.',
+      );
+    }
   }
 
   // Validate port number
@@ -326,7 +349,7 @@ async function validateConfig() {
   const isValid = errors.length === 0;
 
   // Try to verify connection if SMTP is configured
-  if (isValid && EMAIL_CONFIG.smtp.host && EMAIL_CONFIG.smtp.user) {
+  if (isValid && hasSmtp) {
     try {
       const transporter = createSMTPTransporter();
       await transporter.verify();

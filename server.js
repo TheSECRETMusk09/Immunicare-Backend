@@ -8,6 +8,8 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const loadBackendEnv = require('./config/loadEnv');
 loadBackendEnv();
+const { validateEnv } = require('./utils/envValidator');
+validateEnv(true);
 
 // Import auth middleware
 const { preventGuardianAccess, requestIdMiddleware } = require('./middleware/auth');
@@ -140,14 +142,7 @@ if (socketService.io) {
   });
 }
 
-// CORS configuration - using standard cors package
-// Production: Frontend on immunicareph.site or www.immunicareph.site, API on api.immunicareph.site
-const productionOrigins = [
-  'https://immunicareph.site',
-  'https://www.immunicareph.site',
-  'https://api.immunicareph.site',
-];
-
+// CORS configuration - environment-driven allowlist
 const configuredOrigins = [process.env.CORS_ORIGIN, process.env.FRONTEND_URL]
   .filter(Boolean)
   .flatMap((value) => value.split(','))
@@ -163,8 +158,8 @@ const defaultDevOrigins = [
 
 // In production, only allow production domains
 const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? productionOrigins
-  : Array.from(new Set([...productionOrigins, ...configuredOrigins, ...defaultDevOrigins]));
+  ? Array.from(new Set(configuredOrigins))
+  : Array.from(new Set([...configuredOrigins, ...defaultDevOrigins]));
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -545,20 +540,41 @@ async function startServer() {
         console.log(`Database connection successful (latency: ${health.latency}ms)`);
       } else {
         console.error('Database health check failed:', health.error);
+        const isAuthOrConfigDbError = ['28P01', '28000', '3D000', '3F000', '42501'].includes(
+          health.code,
+        );
+
+        const isScramPasswordTypeError =
+          typeof health.error === 'string' &&
+          health.error.toLowerCase().includes('sasl') &&
+          health.error.toLowerCase().includes('client password must be a string');
+
+        if (isAuthOrConfigDbError || isScramPasswordTypeError) {
+          console.error(
+            'Detected database authentication/configuration error. Check DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD in backend/.env.development.',
+          );
+
+          if (isScramPasswordTypeError) {
+            console.error(
+              'Detected invalid DB_PASSWORD type/value for PostgreSQL SCRAM auth. Ensure DB_PASSWORD is a plain non-empty string when the DB user requires password authentication.',
+            );
+          }
+        }
+
         if (process.env.NODE_ENV === 'production') {
-          console.error('CRITICAL: Database connection is required for production. Exiting.');
+          logger.error('CRITICAL: Database connection is required for production. Exiting.');
           process.exit(1);
         } else {
-          console.warn('Server will start without database - some features may not work');
+          logger.warn('Server will start without database - some features may not work');
         }
       }
     } catch (dbError) {
-      console.error('Database connection failed:', dbError.message);
+      logger.error('Database connection failed:', dbError.message);
       if (process.env.NODE_ENV === 'production') {
-        console.error('CRITICAL: Database connection is required for production. Exiting.');
+        logger.error('CRITICAL: Database connection is required for production. Exiting.');
         process.exit(1);
       } else {
-        console.warn('Server will start without database - some features may not work');
+        logger.warn('Server will start without database - some features may not work');
       }
     }
 

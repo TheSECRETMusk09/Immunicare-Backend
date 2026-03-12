@@ -7,7 +7,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
 // Test configuration
-const JWT_SECRET = process.env.JWT_SECRET || 'immunicare-secret-key';
+const JWT_SECRET = process.env.JWT_SECRET;
 
 const testResults = {
   passed: 0,

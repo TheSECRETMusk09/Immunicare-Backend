@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
-const path = require('path');
+const loadBackendEnv = require('../config/loadEnv');
+loadBackendEnv();
 const {
   normalizeRole,
   CANONICAL_ROLES,
@@ -25,20 +26,7 @@ const getCanonicalUser = (user) => {
 };
 
 const resolveJwtSecret = () => {
-  let jwtSecret = process.env.JWT_SECRET;
-
-  if (jwtSecret) {
-    return jwtSecret;
-  }
-
-  try {
-    require('dotenv').config({ path: path.join(__dirname, '../.env') });
-    jwtSecret = process.env.JWT_SECRET;
-  } catch (_error) {
-    // Ignore dotenv load errors here; explicit guard below will handle missing secrets.
-  }
-
-  return jwtSecret || null;
+  return process.env.JWT_SECRET || null;
 };
 
 const authenticateToken = (req, res, next) => {

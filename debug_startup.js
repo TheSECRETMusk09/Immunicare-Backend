@@ -43,10 +43,10 @@ try {
   pool = timeModuleLoad('pg-pool', () => {
     const { Pool } = require('pg');
     return new Pool({
-      user: process.env.DB_USER || 'postgres',
+      user: process.env.DB_USER || 'immunicare_dev',
       host: process.env.DB_HOST || 'localhost',
       database: process.env.DB_NAME || 'immunicare_db',
-      password: process.env.DB_PASSWORD || '123123',
+      password: process.env.DB_PASSWORD || '',
       port: parseInt(process.env.DB_PORT) || 5432,
       max: 5,
       connectionTimeoutMillis: 5000,

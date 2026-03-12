@@ -12,7 +12,7 @@ const pool = new Pool({
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'immunicare_dev',
   user: process.env.DB_USER || 'immunicare_dev',
-  password: String(process.env.DB_PASSWORD) || 'ImmunicareDev2024!'
+  password: String(process.env.DB_PASSWORD) || ''
 });
 
 // Admin data to be configured

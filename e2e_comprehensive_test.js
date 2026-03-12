@@ -24,7 +24,7 @@ const TEST_CONFIG = {
     port: 5432,
     database: 'immunicare_dev',
     user: 'immunicare_dev',
-    password: 'ImmunicareDev2024!'
+    password: ''
   }
 };
 

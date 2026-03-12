@@ -10,17 +10,8 @@
  */
 
 const smsService = require('../services/smsService');
-const { Pool } = require('pg');
+const pool = require('../db');
 const logger = require('../config/logger');
-
-// Database connection
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT) || 5432,
-  database: process.env.DB_NAME || 'immunicare_dev',
-  user: process.env.DB_USER || 'immunicare_dev',
-  password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
-});
 
 /**
  * Send OTP for phone verification

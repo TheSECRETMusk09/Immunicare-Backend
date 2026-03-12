@@ -253,7 +253,7 @@ describe('Security Tests', () => {
       const jwt = require('jsonwebtoken');
       const expiredToken = jwt.sign(
         { id: 1, role: 'admin' },
-        process.env.JWT_SECRET || 'test-secret',
+        process.env.JWT_SECRET,
         { expiresIn: '-1h' }
       );
 

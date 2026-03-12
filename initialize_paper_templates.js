@@ -1,23 +1,14 @@
-const { Pool } = require('pg');
+const pool = require('./db');
 require('dotenv').config();
 
-// Database connection
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'immunicare_dev',
-  user: process.env.DB_USER || 'immunicare_dev',
-  password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
-});
-
 async function initializePaperTemplates() {
+  const client = await pool.connect();
   try {
     console.log('📋 Initializing Paper Templates...');
 
     // Get admin user ID
     const adminResult = await pool.query(
-      'SELECT id FROM users WHERE username = \'admin\' LIMIT 1'
+      'SELECT id FROM users WHERE username = \'admin\' LIMIT 1',
     );
 
     if (adminResult.rows.length === 0) {
@@ -38,37 +29,37 @@ async function initializePaperTemplates() {
             name: 'child_name',
             label: 'Child\'s Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'date_of_birth',
             label: 'Date of Birth',
             type: 'date',
-            required: true
+            required: true,
           },
           {
             name: 'guardian_name',
             label: 'Guardian Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'health_center',
             label: 'Health Center',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'vaccines',
             label: 'Vaccination Schedule',
             type: 'object',
-            required: true
-          }
+            required: true,
+          },
         ],
         validation_rules: {
           child_name: { minLength: 2, maxLength: 100 },
-          guardian_name: { minLength: 2, maxLength: 100 }
-        }
+          guardian_name: { minLength: 2, maxLength: 100 },
+        },
       },
       {
         name: 'Immunization Record Certificate',
@@ -80,44 +71,44 @@ async function initializePaperTemplates() {
             name: 'child_name',
             label: 'Child\'s Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'date_of_birth',
             label: 'Date of Birth',
             type: 'date',
-            required: true
+            required: true,
           },
           {
             name: 'gender',
             label: 'Gender',
             type: 'select',
             options: ['Male', 'Female'],
-            required: true
+            required: true,
           },
           {
             name: 'guardian_name',
             label: 'Guardian Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'guardian_contact',
             label: 'Guardian Contact',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'vaccinations',
             label: 'Vaccination Records',
             type: 'array',
-            required: true
-          }
+            required: true,
+          },
         ],
         validation_rules: {
           child_name: { minLength: 2, maxLength: 100 },
-          guardian_contact: { pattern: '^[+]?[0-9\\s\\-\\(\\)]{10,}$' }
-        }
+          guardian_contact: { pattern: '^[+]?[0-9\\s\\-\\(\\)]{10,}$' },
+        },
       },
       {
         name: 'Digital Vaccination Card',
@@ -129,37 +120,37 @@ async function initializePaperTemplates() {
             name: 'child_name',
             label: 'Child\'s Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'date_of_birth',
             label: 'Date of Birth',
             type: 'date',
-            required: true
+            required: true,
           },
           {
             name: 'qr_code_data',
             label: 'QR Code Data',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'verification_hash',
             label: 'Verification Hash',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'valid_until',
             label: 'Valid Until',
             type: 'date',
-            required: true
-          }
+            required: true,
+          },
         ],
         validation_rules: {
           child_name: { minLength: 2, maxLength: 100 },
-          qr_code_data: { minLength: 10 }
-        }
+          qr_code_data: { minLength: 10 },
+        },
       },
       {
         name: 'Growth Chart Record',
@@ -171,30 +162,30 @@ async function initializePaperTemplates() {
             name: 'child_name',
             label: 'Child\'s Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'date_of_birth',
             label: 'Date of Birth',
             type: 'date',
-            required: true
+            required: true,
           },
           {
             name: 'measurements',
             label: 'Growth Measurements',
             type: 'array',
-            required: true
+            required: true,
           },
           {
             name: 'milestones',
             label: 'Development Milestones',
             type: 'array',
-            required: false
-          }
+            required: false,
+          },
         ],
         validation_rules: {
-          child_name: { minLength: 2, maxLength: 100 }
-        }
+          child_name: { minLength: 2, maxLength: 100 },
+        },
       },
       {
         name: 'Health Information Summary',
@@ -205,43 +196,43 @@ async function initializePaperTemplates() {
             name: 'child_name',
             label: 'Child\'s Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'date_of_birth',
             label: 'Date of Birth',
             type: 'date',
-            required: true
+            required: true,
           },
           {
             name: 'blood_type',
             label: 'Blood Type',
             type: 'select',
             options: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'],
-            required: false
+            required: false,
           },
           {
             name: 'allergies',
             label: 'Known Allergies',
             type: 'array',
-            required: false
+            required: false,
           },
           {
             name: 'medical_conditions',
             label: 'Medical Conditions',
             type: 'array',
-            required: false
+            required: false,
           },
           {
             name: 'emergency_contact',
             label: 'Emergency Contact',
             type: 'object',
-            required: true
-          }
+            required: true,
+          },
         ],
         validation_rules: {
-          child_name: { minLength: 2, maxLength: 100 }
-        }
+          child_name: { minLength: 2, maxLength: 100 },
+        },
       },
       {
         name: 'Appointment Confirmation Letter',
@@ -253,39 +244,39 @@ async function initializePaperTemplates() {
             name: 'child_name',
             label: 'Child\'s Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'guardian_name',
             label: 'Guardian Name',
             type: 'text',
-            required: true
+            required: true,
           },
           {
             name: 'appointment_date',
             label: 'Appointment Date',
             type: 'datetime',
-            required: true
+            required: true,
           },
           {
             name: 'appointment_type',
             label: 'Appointment Type',
             type: 'text',
-            required: true
+            required: true,
           },
           { name: 'location', label: 'Location', type: 'text', required: true },
           {
             name: 'doctor_name',
             label: 'Doctor Name',
             type: 'text',
-            required: true
-          }
+            required: true,
+          },
         ],
         validation_rules: {
           child_name: { minLength: 2, maxLength: 100 },
-          guardian_name: { minLength: 2, maxLength: 100 }
-        }
-      }
+          guardian_name: { minLength: 2, maxLength: 100 },
+        },
+      },
     ];
 
     // Insert templates
@@ -294,7 +285,7 @@ async function initializePaperTemplates() {
       try {
         const result = await pool.query(
           `INSERT INTO paper_templates (
-            name, description, template_type, fields, validation_rules, 
+            name, description, template_type, fields, validation_rules,
             created_by, is_active
           ) VALUES ($1, $2, $3, $4, $5, $6, $7)
           ON CONFLICT DO NOTHING
@@ -306,8 +297,8 @@ async function initializePaperTemplates() {
             JSON.stringify(template.fields),
             JSON.stringify(template.validation_rules),
             adminId,
-            true
-          ]
+            true,
+          ],
         );
 
         if (result.rows.length > 0) {
@@ -319,7 +310,7 @@ async function initializePaperTemplates() {
       } catch (error) {
         console.log(
           `   ❌ Error creating template ${template.name}:`,
-          error.message
+          error.message,
         );
       }
     }
@@ -330,7 +321,7 @@ async function initializePaperTemplates() {
 
     // Display summary
     const allTemplates = await pool.query(
-      'SELECT name, template_type, is_active FROM paper_templates ORDER BY template_type, name'
+      'SELECT name, template_type, is_active FROM paper_templates ORDER BY template_type, name',
     );
 
     console.log('\n📊 Available Templates:');
@@ -342,6 +333,9 @@ async function initializePaperTemplates() {
     console.error('❌ Error initializing paper templates:', error.message);
     process.exit(1);
   } finally {
+    if (client) {
+      client.release();
+    }
     await pool.end();
   }
 }

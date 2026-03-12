@@ -181,7 +181,7 @@ describe('Authentication Tests', () => {
     it('should reject expired token', async () => {
       const expiredToken = jwt.sign(
         { id: 1, role: 'admin' },
-        process.env.JWT_SECRET || 'test-secret',
+        process.env.JWT_SECRET,
         { expiresIn: '-1h' }
       );
 

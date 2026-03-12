@@ -42,7 +42,7 @@ const generateAuthToken = (user) => {
       role: user.role,
       health_center_id: user.health_center_id
     },
-    process.env.JWT_SECRET || 'test-secret-key',
+    process.env.JWT_SECRET,
     { expiresIn: '1h' }
   );
 };

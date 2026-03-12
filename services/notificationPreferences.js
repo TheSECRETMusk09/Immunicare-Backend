@@ -2,6 +2,45 @@ const pool = require('../db');
 const logger = require('../config/logger');
 
 class NotificationPreferencesService {
+  constructor() {
+    this.preferencesTableReady = false;
+    this.preferencesInitAttempted = false;
+    this.preferencesDisabledReason = null;
+  }
+
+  isFatalDbConfigError(error) {
+    const code = error?.code;
+    return ['28P01', '28000', '3D000', '3F000', '42501'].includes(code);
+  }
+
+  markPreferencesDisabled(reason, details = {}) {
+    if (!this.preferencesDisabledReason) {
+      this.preferencesDisabledReason = reason;
+      logger.warn('Notification preferences DB integration disabled for this process', {
+        reason,
+        ...details,
+      });
+    }
+    this.preferencesTableReady = false;
+  }
+
+  async ensurePreferencesReady() {
+    if (this.preferencesTableReady) {
+      return true;
+    }
+
+    if (this.preferencesDisabledReason) {
+      return false;
+    }
+
+    if (!this.preferencesInitAttempted) {
+      this.preferencesInitAttempted = true;
+      await this.initializePreferencesTable();
+    }
+
+    return this.preferencesTableReady;
+  }
+
   // Default preferences for new users
   static DEFAULT_PREFERENCES = {
     // Channel preferences
@@ -9,45 +48,45 @@ class NotificationPreferencesService {
       inApp: true,
       email: true,
       sms: false,
-      push: true
+      push: true,
     },
     // Notification type preferences
     types: {
       appointment: {
         enabled: true,
         channels: ['inApp', 'email', 'push'],
-        reminderDays: [1, 3, 7]
+        reminderDays: [1, 3, 7],
       },
       inventory: {
         enabled: true,
         channels: ['inApp', 'email'],
         lowStockThreshold: 10,
-        expirationWarningDays: 30
+        expirationWarningDays: 30,
       },
       system: {
         enabled: true,
         channels: ['inApp', 'email'],
         includeMaintenance: true,
-        includeUpdates: true
+        includeUpdates: true,
       },
       compliance: {
         enabled: true,
         channels: ['inApp', 'email'],
         includeRegulatory: true,
-        includeAudit: true
+        includeAudit: true,
       },
       alerts: {
         enabled: true,
         channels: ['inApp', 'email', 'sms', 'push'],
-        criticalOnly: false
+        criticalOnly: false,
       },
       reports: {
         enabled: true,
         channels: ['inApp', 'email'],
         dailySummary: false,
         weeklySummary: true,
-        monthlySummary: false
-      }
+        monthlySummary: false,
+      },
     },
     // Priority preferences
     priority: {
@@ -55,26 +94,26 @@ class NotificationPreferencesService {
         enabled: true,
         sound: true,
         vibration: true,
-        channels: ['inApp', 'email', 'sms', 'push']
+        channels: ['inApp', 'email', 'sms', 'push'],
       },
       high: {
         enabled: true,
         sound: true,
         vibration: true,
-        channels: ['inApp', 'email', 'push']
+        channels: ['inApp', 'email', 'push'],
       },
       medium: {
         enabled: true,
         sound: false,
         vibration: false,
-        channels: ['inApp', 'email']
+        channels: ['inApp', 'email'],
       },
       low: {
         enabled: true,
         sound: false,
         vibration: false,
-        channels: ['inApp']
-      }
+        channels: ['inApp'],
+      },
     },
     // Quiet hours
     quietHours: {
@@ -82,28 +121,33 @@ class NotificationPreferencesService {
       startTime: '22:00',
       endTime: '08:00',
       allowCritical: true,
-      timezone: 'UTC'
+      timezone: 'UTC',
     },
     // Do not disturb
     doNotDisturb: {
       enabled: false,
       until: null,
-      allowCritical: true
+      allowCritical: true,
     },
     // Frequency limits
     frequencyLimits: {
       maxPerHour: 10,
       maxPerDay: 50,
-      cooldownMinutes: 5
-    }
+      cooldownMinutes: 5,
+    },
   };
 
   // Get user preferences
   async getUserPreferences(userId) {
+    const ready = await this.ensurePreferencesReady();
+    if (!ready) {
+      return { ...NotificationPreferencesService.DEFAULT_PREFERENCES };
+    }
+
     try {
       const result = await pool.query(
         'SELECT preferences FROM user_notification_preferences WHERE user_id = $1',
-        [userId]
+        [userId],
       );
 
       if (result.rows.length === 0) {
@@ -115,6 +159,14 @@ class NotificationPreferencesService {
       const userPrefs = result.rows[0].preferences || {};
       return this.mergePreferences(NotificationPreferencesService.DEFAULT_PREFERENCES, userPrefs);
     } catch (error) {
+      if (this.isFatalDbConfigError(error)) {
+        this.markPreferencesDisabled('db_auth_or_config', {
+          code: error.code,
+          message: error.message,
+        });
+        return { ...NotificationPreferencesService.DEFAULT_PREFERENCES };
+      }
+
       logger.error('Error getting user preferences:', error);
       throw error;
     }
@@ -122,6 +174,12 @@ class NotificationPreferencesService {
 
   // Update user preferences
   async updateUserPreferences(userId, preferences) {
+    const ready = await this.ensurePreferencesReady();
+    if (!ready) {
+      const mergedPrefs = this.mergePreferences(NotificationPreferencesService.DEFAULT_PREFERENCES, preferences || {});
+      return mergedPrefs;
+    }
+
     try {
       const currentPrefs = await this.getUserPreferences(userId);
       const mergedPrefs = this.mergePreferences(currentPrefs, preferences);
@@ -134,12 +192,20 @@ class NotificationPreferencesService {
            preferences = EXCLUDED.preferences,
            updated_at = CURRENT_TIMESTAMP
          RETURNING *`,
-        [userId, JSON.stringify(mergedPrefs)]
+        [userId, JSON.stringify(mergedPrefs)],
       );
 
       logger.info(`Updated preferences for user ${userId}`);
       return result.rows[0].preferences;
     } catch (error) {
+      if (this.isFatalDbConfigError(error)) {
+        this.markPreferencesDisabled('db_auth_or_config', {
+          code: error.code,
+          message: error.message,
+        });
+        return this.mergePreferences(NotificationPreferencesService.DEFAULT_PREFERENCES, preferences || {});
+      }
+
       logger.error('Error updating user preferences:', error);
       throw error;
     }
@@ -201,7 +267,7 @@ class NotificationPreferencesService {
         allowed: finalChannels.length > 0,
         channels: finalChannels,
         sound: priorityPrefs.sound,
-        vibration: priorityPrefs.vibration
+        vibration: priorityPrefs.vibration,
       };
     } catch (error) {
       logger.error('Error checking notification preferences:', error);
@@ -212,17 +278,30 @@ class NotificationPreferencesService {
 
   // Get notification frequency for user
   async getNotificationFrequency(userId, timeRange = '1hour') {
+    const ready = await this.ensurePreferencesReady();
+    if (!ready) {
+      return 0;
+    }
+
     try {
       const dateFilter = this.getDateFilter(timeRange);
 
       const result = await pool.query(
         `SELECT COUNT(*) as count FROM notifications
          WHERE user_id = $1 AND created_at >= $2`,
-        [userId, dateFilter]
+        [userId, dateFilter],
       );
 
       return parseInt(result.rows[0].count);
     } catch (error) {
+      if (this.isFatalDbConfigError(error)) {
+        this.markPreferencesDisabled('db_auth_or_config', {
+          code: error.code,
+          message: error.message,
+        });
+        return 0;
+      }
+
       logger.error('Error getting notification frequency:', error);
       return 0;
     }
@@ -236,7 +315,7 @@ class NotificationPreferencesService {
 
       const [hourlyCount, dailyCount] = await Promise.all([
         this.getNotificationFrequency(userId, '1hour'),
-        this.getNotificationFrequency(userId, '1day')
+        this.getNotificationFrequency(userId, '1day'),
       ]);
 
       if (hourlyCount >= limits.maxPerHour) {
@@ -244,7 +323,7 @@ class NotificationPreferencesService {
           allowed: false,
           reason: 'hourly_limit_exceeded',
           count: hourlyCount,
-          limit: limits.maxPerHour
+          limit: limits.maxPerHour,
         };
       }
 
@@ -253,7 +332,7 @@ class NotificationPreferencesService {
           allowed: false,
           reason: 'daily_limit_exceeded',
           count: dailyCount,
-          limit: limits.maxPerDay
+          limit: limits.maxPerDay,
         };
       }
 
@@ -266,6 +345,20 @@ class NotificationPreferencesService {
 
   // Get user's notification summary
   async getUserSummary(userId) {
+    const ready = await this.ensurePreferencesReady();
+    if (!ready) {
+      return {
+        preferences: { ...NotificationPreferencesService.DEFAULT_PREFERENCES },
+        stats: {
+          total: 0,
+          unread: 0,
+          critical: 0,
+          high: 0,
+          normal: 0,
+        },
+      };
+    }
+
     try {
       const [prefs, stats] = await Promise.all([
         this.getUserPreferences(userId),
@@ -278,8 +371,8 @@ class NotificationPreferencesService {
             SUM(CASE WHEN priority < 2 THEN 1 ELSE 0 END) as normal
           FROM notifications
           WHERE user_id = $1`,
-          [userId]
-        )
+          [userId],
+        ),
       ]);
 
       return {
@@ -289,10 +382,27 @@ class NotificationPreferencesService {
           unread: parseInt(stats.rows[0].unread),
           critical: parseInt(stats.rows[0].critical),
           high: parseInt(stats.rows[0].high),
-          normal: parseInt(stats.rows[0].normal)
-        }
+          normal: parseInt(stats.rows[0].normal),
+        },
       };
     } catch (error) {
+      if (this.isFatalDbConfigError(error)) {
+        this.markPreferencesDisabled('db_auth_or_config', {
+          code: error.code,
+          message: error.message,
+        });
+        return {
+          preferences: { ...NotificationPreferencesService.DEFAULT_PREFERENCES },
+          stats: {
+            total: 0,
+            unread: 0,
+            critical: 0,
+            high: 0,
+            normal: 0,
+          },
+        };
+      }
+
       logger.error('Error getting user summary:', error);
       throw error;
     }
@@ -300,12 +410,25 @@ class NotificationPreferencesService {
 
   // Reset user preferences to defaults
   async resetToDefaults(userId) {
+    const ready = await this.ensurePreferencesReady();
+    if (!ready) {
+      return NotificationPreferencesService.DEFAULT_PREFERENCES;
+    }
+
     try {
       await pool.query('DELETE FROM user_notification_preferences WHERE user_id = $1', [userId]);
 
       logger.info(`Reset preferences to defaults for user ${userId}`);
       return NotificationPreferencesService.DEFAULT_PREFERENCES;
     } catch (error) {
+      if (this.isFatalDbConfigError(error)) {
+        this.markPreferencesDisabled('db_auth_or_config', {
+          code: error.code,
+          message: error.message,
+        });
+        return NotificationPreferencesService.DEFAULT_PREFERENCES;
+      }
+
       logger.error('Error resetting user preferences:', error);
       throw error;
     }
@@ -386,7 +509,7 @@ class NotificationPreferencesService {
       const timeStr = date.toLocaleTimeString('en-US', options);
       const [hours, minutes] = timeStr.split(':').map(Number);
       return { hours, minutes };
-    } catch (error) {
+    } catch (_error) {
       // Fallback to UTC if timezone is invalid
       return { hours: date.getUTCHours(), minutes: date.getUTCMinutes() };
     }
@@ -428,27 +551,68 @@ class NotificationPreferencesService {
 
   // Initialize preferences table
   async initializePreferencesTable() {
-    try {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS user_notification_preferences (
-          id SERIAL PRIMARY KEY,
-          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE UNIQUE,
-          preferences JSONB NOT NULL DEFAULT '{}',
-          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-
-      // Create index
-      await pool.query(
-        'CREATE INDEX IF NOT EXISTS idx_user_notification_preferences_user_id ON user_notification_preferences(user_id)'
-      );
-
-      logger.info('User notification preferences table initialized');
-    } catch (error) {
-      logger.error('Error initializing preferences table:', error);
-      // Continue without preferences table if initialization fails
+    if (this.preferencesDisabledReason) {
+      return false;
     }
+
+    const isTransientConnectionError = (code) =>
+      ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', '08006', '08003', '57P01', '57P02', '57P03'].includes(code);
+
+    const maxRetries = 2;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS user_notification_preferences (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+            preferences JSONB NOT NULL DEFAULT '{}',
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+        // Create index
+        await pool.query(
+          'CREATE INDEX IF NOT EXISTS idx_user_notification_preferences_user_id ON user_notification_preferences(user_id)',
+        );
+
+        this.preferencesTableReady = true;
+        this.preferencesDisabledReason = null;
+        logger.info('User notification preferences table initialized');
+        return true;
+      } catch (error) {
+        if (this.isFatalDbConfigError(error)) {
+          this.markPreferencesDisabled('db_auth_or_config', {
+            code: error.code,
+            message: error.message,
+          });
+          return false;
+        }
+
+        const canRetry = isTransientConnectionError(error?.code) && attempt < maxRetries;
+        if (canRetry) {
+          const delay = 500 * Math.pow(2, attempt);
+          logger.warn('Transient DB error while initializing notification preferences table, retrying', {
+            attempt: attempt + 1,
+            maxAttempts: maxRetries + 1,
+            delay,
+            code: error.code,
+            message: error.message,
+          });
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        logger.error('Error initializing preferences table:', error);
+        // Continue without preferences table if initialization fails
+        this.preferencesTableReady = false;
+        return false;
+      }
+    }
+
+    this.preferencesTableReady = false;
+    return false;
   }
 }
 

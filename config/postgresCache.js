@@ -1,29 +1,88 @@
-require('dotenv').config();
 const { Pool } = require('pg');
 const logger = require('./logger');
+const loadBackendEnv = require('./loadEnv');
+loadBackendEnv();
+const { getPrimaryDbPassword, getPrimaryDbUser } = require('./dbCredentials');
+
+const FATAL_DB_CONFIG_ERROR_CODES = new Set([
+  '28P01',
+  '28000',
+  '3D000',
+  '3F000',
+  '42501',
+]);
+
+const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
+
+const runtimeEnv = process.env.NODE_ENV || 'development';
+const parseInteger = (value, fallback) => {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const host = process.env.DB_HOST || (runtimeEnv === 'production' ? '' : 'localhost');
+const port = parseInteger(process.env.DB_PORT, 5432);
+const database = process.env.DB_NAME || (runtimeEnv === 'production' ? '' : 'immunicare_dev');
+const user = getPrimaryDbUser() || (runtimeEnv === 'production' ? '' : 'postgres');
+const password = getPrimaryDbPassword();
+
+if (runtimeEnv === 'production') {
+  const missing = [];
+  if (!host) {
+    missing.push('DB_HOST');
+  }
+  if (!database) {
+    missing.push('DB_NAME');
+  }
+  if (!user) {
+    missing.push('DB_USER');
+  }
+  if (!password) {
+    missing.push('DB_PASSWORD');
+  }
+
+  if (missing.length > 0) {
+    throw new Error(`PostgreSQL cache requires production DB credentials: ${missing.join(', ')}`);
+  }
+}
 
 // PostgreSQL connection for cache
 const cachePool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'immunicare_dev',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
-  max: 20, // Maximum number of clients in the pool
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000
+  host,
+  port,
+  database,
+  user,
+  password,
+  max: parseInteger(process.env.DB_POOL_MAX, 20),
+  idleTimeoutMillis: parseInteger(process.env.DB_IDLE_TIMEOUT, 30000),
+  connectionTimeoutMillis: parseInteger(process.env.DB_CONNECTION_TIMEOUT, 10000),
 });
+
+let cacheDisabled = false;
 
 // Cache client that mimics Redis API
 const postgresCache = {
   // Initialize cache connection
   async connect() {
+    if (cacheDisabled) {
+      return false;
+    }
+
     try {
       const client = await cachePool.connect();
       logger.info('PostgreSQL cache connected successfully');
       client.release();
       return true;
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return false;
+      }
+
       logger.error('PostgreSQL cache connection error:', error);
       return false;
     }
@@ -31,6 +90,10 @@ const postgresCache = {
 
   // Get value from cache
   async get(key) {
+    if (cacheDisabled) {
+      return null;
+    }
+
     try {
       const query = 'SELECT get_cache_value($1) as value';
       const result = await cachePool.query(query, [key]);
@@ -45,6 +108,15 @@ const postgresCache = {
       }
       return null;
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache get disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return null;
+      }
+
       logger.error('Cache get error:', error);
       return null;
     }
@@ -52,12 +124,25 @@ const postgresCache = {
 
   // Set value in cache (without expiration)
   async set(key, value) {
+    if (cacheDisabled) {
+      return null;
+    }
+
     try {
       const stringValue = typeof value === 'string' ? value : JSON.stringify(value);
       const query = 'SELECT set_cache_value($1, $2, NULL)';
       await cachePool.query(query, [key, stringValue]);
       return 'OK';
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache set disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return null;
+      }
+
       logger.error('Cache set error:', error);
       return null;
     }
@@ -65,12 +150,25 @@ const postgresCache = {
 
   // Set value in cache with expiration (in seconds)
   async setex(key, seconds, value) {
+    if (cacheDisabled) {
+      return null;
+    }
+
     try {
       const stringValue = typeof value === 'string' ? value : JSON.stringify(value);
       const query = 'SELECT set_cache_value($1, $2, $3)';
       await cachePool.query(query, [key, stringValue, seconds]);
       return 'OK';
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache setex disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return null;
+      }
+
       logger.error('Cache setex error:', error);
       return null;
     }
@@ -78,11 +176,24 @@ const postgresCache = {
 
   // Delete value from cache
   async del(key) {
+    if (cacheDisabled) {
+      return 0;
+    }
+
     try {
       const query = 'SELECT delete_cache_value($1)';
       await cachePool.query(query, [key]);
       return 1;
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache del disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return 0;
+      }
+
       logger.error('Cache del error:', error);
       return 0;
     }
@@ -90,11 +201,24 @@ const postgresCache = {
 
   // Get all keys matching pattern
   async keys(pattern = '%') {
+    if (cacheDisabled) {
+      return [];
+    }
+
     try {
       const query = 'SELECT * FROM get_cache_keys($1)';
       const result = await cachePool.query(query, [pattern]);
       return result.rows.map((row) => row.cache_key);
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache keys disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return [];
+      }
+
       logger.error('Cache keys error:', error);
       return [];
     }
@@ -102,11 +226,24 @@ const postgresCache = {
 
   // Clear all cache
   async flushall() {
+    if (cacheDisabled) {
+      return null;
+    }
+
     try {
       const query = 'SELECT clear_all_cache()';
       await cachePool.query(query);
       return 'OK';
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache flushall disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return null;
+      }
+
       logger.error('Cache flushall error:', error);
       return null;
     }
@@ -114,6 +251,10 @@ const postgresCache = {
 
   // Clean up expired cache entries
   async cleanup() {
+    if (cacheDisabled) {
+      return 0;
+    }
+
     try {
       const query = 'SELECT cleanup_expired_cache()';
       const result = await cachePool.query(query);
@@ -123,6 +264,15 @@ const postgresCache = {
       }
       return deletedCount;
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache cleanup disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return 0;
+      }
+
       logger.error('Cache cleanup error:', error);
       return 0;
     }
@@ -141,6 +291,10 @@ const postgresCache = {
 
   // Set multiple values
   async mset(keyValuePairs) {
+    if (cacheDisabled) {
+      return null;
+    }
+
     try {
       const client = await cachePool.connect();
       try {
@@ -160,6 +314,15 @@ const postgresCache = {
         client.release();
       }
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache mset disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return null;
+      }
+
       logger.error('Cache mset error:', error);
       return null;
     }
@@ -208,6 +371,10 @@ const postgresCache = {
 
   // Get TTL (time to live) in seconds
   async ttl(key) {
+    if (cacheDisabled) {
+      return -2;
+    }
+
     try {
       const query = `
         SELECT EXTRACT(EPOCH FROM (expires_at - CURRENT_TIMESTAMP)) as ttl
@@ -221,6 +388,15 @@ const postgresCache = {
       }
       return -1; // Key exists but no expiration
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache ttl disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return -2;
+      }
+
       logger.error('Cache ttl error:', error);
       return -2; // Key does not exist
     }
@@ -238,6 +414,10 @@ const postgresCache = {
 
   // Quit connection
   async quit() {
+    if (cacheDisabled) {
+      return 'OK';
+    }
+
     try {
       await cachePool.end();
       logger.info('PostgreSQL cache connection closed');
@@ -250,9 +430,18 @@ const postgresCache = {
 
   // Get cache statistics
   async getStats() {
+    if (cacheDisabled) {
+      return {
+        total_entries: 0,
+        active_entries: 0,
+        expired_entries: 0,
+        disabled: true,
+      };
+    }
+
     try {
       const query = `
-        SELECT 
+        SELECT
           COUNT(*) as total_entries,
           COUNT(CASE WHEN expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP THEN 1 END) as active_entries,
           COUNT(CASE WHEN expires_at < CURRENT_TIMESTAMP THEN 1 END) as expired_entries
@@ -261,10 +450,24 @@ const postgresCache = {
       const result = await cachePool.query(query);
       return result.rows[0];
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        cacheDisabled = true;
+        logger.warn('PostgreSQL cache stats disabled due to DB authentication/configuration failure', {
+          code: error.code,
+          message: error.message,
+        });
+        return {
+          total_entries: 0,
+          active_entries: 0,
+          expired_entries: 0,
+          disabled: true,
+        };
+      }
+
       logger.error('Cache getStats error:', error);
       return null;
     }
-  }
+  },
 };
 
 // Initialize cache connection
@@ -281,7 +484,7 @@ setInterval(
   () => {
     postgresCache.cleanup();
   },
-  60 * 60 * 1000
+  60 * 60 * 1000,
 );
 
 module.exports = postgresCache;

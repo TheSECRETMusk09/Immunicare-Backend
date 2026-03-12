@@ -72,7 +72,7 @@ async function verifyDatabase() {
     port: parseInt(env.DB_PORT) || 5432,
     database: env.DB_NAME || 'immunicare_dev',
     user: env.DB_USER || 'immunicare_dev',
-    password: env.DB_PASSWORD || 'ImmunicareDev2024!'
+    password: env.DB_PASSWORD || ''
   });
 
   try {
@@ -256,7 +256,7 @@ async function verifyUsers() {
     port: parseInt(env.DB_PORT) || 5432,
     database: env.DB_NAME || 'immunicare_dev',
     user: env.DB_USER || 'immunicare_dev',
-    password: env.DB_PASSWORD || 'ImmunicareDev2024!'
+    password: env.DB_PASSWORD || ''
   });
 
   try {

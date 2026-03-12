@@ -57,6 +57,9 @@ Immunicare_Dev.sql
 .env
 .env.*
 !.env.example
+!.env.development.example
+!.env.production.example
+!.env.test.example
 !.env.sms.example
 
 # OS/editor

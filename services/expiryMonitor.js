@@ -6,10 +6,21 @@
 const pool = require('../db');
 const smsService = require('./smsService');
 
+const FATAL_DB_CONFIG_ERROR_CODES = new Set([
+  '28P01',
+  '28000',
+  '3D000',
+  '3F000',
+  '42501',
+]);
+
+const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
+
 class ExpiryMonitor {
   constructor() {
     this.checkInterval = null;
     this.intervalHours = 24; // Check once daily
+    this.dbUnavailable = false;
   }
 
   /**
@@ -43,6 +54,11 @@ class ExpiryMonitor {
    * Check for expiring vaccines
    */
   async checkExpiringVaccines() {
+    if (this.dbUnavailable) {
+      console.warn('Skipping expiry monitor check due to DB authentication/configuration error');
+      return;
+    }
+
     try {
       console.log('Checking for expiring vaccines...');
 
@@ -122,6 +138,12 @@ class ExpiryMonitor {
       // Check for expired batches
       await this.markExpiredBatches();
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        this.dbUnavailable = true;
+        console.error('Disabling expiry monitor DB operations for this process due to authentication/configuration error:', error.message);
+        return;
+      }
+
       console.error('Error checking expiring vaccines:', error);
     }
   }
@@ -130,6 +152,10 @@ class ExpiryMonitor {
    * Mark expired batches
    */
   async markExpiredBatches() {
+    if (this.dbUnavailable) {
+      return;
+    }
+
     try {
       const updateQuery = `
                 UPDATE vaccine_batches
@@ -145,6 +171,12 @@ class ExpiryMonitor {
         console.log(`Marked ${result.rowCount} batches as expired`);
       }
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        this.dbUnavailable = true;
+        console.error('Disabling expiry monitor DB operations for this process due to authentication/configuration error:', error.message);
+        return;
+      }
+
       console.error('Error marking expired batches:', error);
     }
   }
@@ -153,6 +185,10 @@ class ExpiryMonitor {
    * Send expiry alert SMS
    */
   async sendExpiryAlert(alertType, items) {
+    if (this.dbUnavailable) {
+      return;
+    }
+
     try {
       const recipients = [];
 
@@ -240,6 +276,12 @@ class ExpiryMonitor {
         }
       }
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        this.dbUnavailable = true;
+        console.error('Disabling expiry monitor DB operations for this process due to authentication/configuration error:', error.message);
+        return;
+      }
+
       console.error('Error sending expiry alert:', error);
     }
   }
@@ -248,6 +290,10 @@ class ExpiryMonitor {
    * Get expiring vaccines summary
    */
   async getExpiringSummary() {
+    if (this.dbUnavailable) {
+      return [];
+    }
+
     const query = `
             SELECT
                 CASE
@@ -265,9 +311,17 @@ class ExpiryMonitor {
             GROUP BY alert_type
         `;
 
-    const result = await pool.query(query);
-
-    return result.rows;
+    try {
+      const result = await pool.query(query);
+      return result.rows;
+    } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        this.dbUnavailable = true;
+        console.error('Disabling expiry monitor DB operations for this process due to authentication/configuration error:', error.message);
+        return [];
+      }
+      throw error;
+    }
   }
 
   /**

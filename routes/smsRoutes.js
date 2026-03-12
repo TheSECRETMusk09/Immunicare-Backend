@@ -17,7 +17,10 @@
 const express = require('express');
 const router = express.Router();
 const smsService = require('../services/smsService');
-const { authenticateToken, requireGuardian } = require('../middleware/auth');
+const { authenticateToken, requireRole } = require('../middleware/auth');
+const pool = require('../db');
+
+const requireGuardian = requireRole(['GUARDIAN']);
 
 /**
  * @route POST /api/sms/send-otp
@@ -175,14 +178,6 @@ router.get('/config-status', authenticateToken, async (req, res) => {
 router.get('/preferences', authenticateToken, requireGuardian, async (req, res) => {
   try {
     const guardianId = req.user.guardianId;
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME || 'immunicare_dev',
-      user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
-    });
 
     // Get phone numbers and preferences
     const query = `
@@ -202,8 +197,6 @@ router.get('/preferences', authenticateToken, requireGuardian, async (req, res) 
       success: true,
       phoneNumbers: result.rows,
     });
-
-    pool.end();
   } catch (error) {
     console.error('Get SMS preferences error:', error);
     res.status(500).json({
@@ -230,15 +223,6 @@ router.put('/preferences', authenticateToken, requireGuardian, async (req, res) 
       });
     }
 
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME || 'immunicare_dev',
-      user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
-    });
-
     const query = `
       UPDATE guardian_phone_numbers
       SET sms_preferences = $1, updated_at = NOW()
@@ -264,8 +248,6 @@ router.put('/preferences', authenticateToken, requireGuardian, async (req, res) 
       message: 'SMS preferences updated',
       preferences: result.rows[0],
     });
-
-    pool.end();
   } catch (error) {
     console.error('Update SMS preferences error:', error);
     res.status(500).json({
@@ -349,15 +331,6 @@ router.post('/confirm-phone', authenticateToken, requireGuardian, async (req, re
       });
     }
 
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME || 'immunicare_dev',
-      user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
-    });
-
     // If setting as primary, unset other primary numbers
     if (setPrimary) {
       await pool.query(
@@ -386,8 +359,6 @@ router.post('/confirm-phone', authenticateToken, requireGuardian, async (req, re
       message: 'Phone number verified successfully',
       phoneNumber: result.rows[0],
     });
-
-    pool.end();
   } catch (error) {
     console.error('Confirm phone error:', error);
     res.status(500).json({
@@ -412,15 +383,6 @@ router.post('/password-reset', async (req, res) => {
         error: 'Phone number is required',
       });
     }
-
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME || 'immunicare_dev',
-      user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
-    });
 
     // Check if phone number exists in guardian records
     const formattedNumber = smsService.formatPhoneNumber(phoneNumber);
@@ -456,8 +418,6 @@ router.post('/password-reset', async (req, res) => {
       message: 'If the phone number is registered, you will receive a verification code',
       expiresIn: result.success ? result.expiresIn : undefined,
     });
-
-    pool.end();
   } catch (error) {
     console.error('Password reset error:', error);
     res.status(500).json({
@@ -476,15 +436,6 @@ router.get('/logs', authenticateToken, requireGuardian, async (req, res) => {
   try {
     const guardianId = req.user.guardianId;
     const { limit = 20, offset = 0 } = req.query;
-
-    const { Pool } = require('pg');
-    const pool = new Pool({
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME || 'immunicare_dev',
-      user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || 'ImmunicareDev2024!',
-    });
 
     // Get guardian's phone numbers
     const phoneQuery = 'SELECT phone_number FROM guardian_phone_numbers WHERE guardian_id = $1';
@@ -529,8 +480,6 @@ router.get('/logs', authenticateToken, requireGuardian, async (req, res) => {
       limit: parseInt(limit),
       offset: parseInt(offset),
     });
-
-    pool.end();
   } catch (error) {
     console.error('Get SMS logs error:', error);
     res.status(500).json({

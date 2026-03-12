@@ -6,6 +6,8 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const logger = require('../config/logger');
+const loadBackendEnv = require('../config/loadEnv');
+loadBackendEnv();
 
 const DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS = 5;
 const configuredClockToleranceSeconds = Number.parseInt(
@@ -18,20 +20,7 @@ const JWT_CLOCK_TOLERANCE_SECONDS = Number.isFinite(configuredClockToleranceSeco
   : DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS;
 
 const resolveJwtSecret = () => {
-  let jwtSecret = process.env.JWT_SECRET;
-
-  if (jwtSecret) {
-    return jwtSecret;
-  }
-
-  try {
-    require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
-    jwtSecret = process.env.JWT_SECRET;
-  } catch {
-    // Ignore dotenv load errors; explicit guard below will handle missing secret.
-  }
-
-  return jwtSecret || null;
+  return process.env.JWT_SECRET || null;
 };
 
 /**

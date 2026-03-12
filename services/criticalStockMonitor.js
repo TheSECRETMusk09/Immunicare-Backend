@@ -8,10 +8,21 @@ const pool = require('../db');
 const smsService = require('./smsService');
 const socketService = require('./socketService');
 
+const FATAL_DB_CONFIG_ERROR_CODES = new Set([
+  '28P01',
+  '28000',
+  '3D000',
+  '3F000',
+  '42501',
+]);
+
+const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
+
 class CriticalStockMonitor {
   constructor() {
     this.checkInterval = null;
     this.intervalMinutes = 15;
+    this.dbUnavailable = false;
   }
 
   start() {
@@ -260,6 +271,11 @@ class CriticalStockMonitor {
   }
 
   async checkStockLevels() {
+    if (this.dbUnavailable) {
+      console.warn('Skipping critical stock monitor check due to DB authentication/configuration error');
+      return;
+    }
+
     try {
       console.log('Checking critical stock levels...');
       const config = await this.getSystemConfig();
@@ -274,6 +290,12 @@ class CriticalStockMonitor {
         `Stock monitor sync complete. Critical: ${criticalItems.length}, Low: ${lowItems.length}`,
       );
     } catch (error) {
+      if (isFatalDbConfigError(error?.code)) {
+        this.dbUnavailable = true;
+        console.error('Disabling critical stock monitor DB operations for this process due to authentication/configuration error:', error.message);
+        return;
+      }
+
       console.error('Error checking critical stock:', error);
     }
   }
@@ -318,4 +340,3 @@ class CriticalStockMonitor {
 }
 
 module.exports = new CriticalStockMonitor();
-

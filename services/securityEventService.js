@@ -9,6 +9,32 @@ const dns = require('dns').promises;
 const logger = require('../config/logger');
 const { getSecurityDbUser, getSecurityDbPassword } = require('../config/dbCredentials');
 
+const RETRYABLE_CONNECTION_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  '08006',
+  '08003',
+  '57P01',
+  '57P02',
+  '57P03',
+]);
+
+const FATAL_DB_CONFIG_ERROR_CODES = new Set([
+  '28P01',
+  '28000',
+  '3D000',
+  '3F000',
+  '42501',
+]);
+
+const isRetryableConnectionError = (code) => RETRYABLE_CONNECTION_ERROR_CODES.has(code);
+const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
+const isScramPasswordTypeError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('sasl') && message.includes('client password must be a string');
+};
+
 // Event types
 const EVENT_TYPES = {
   // Authentication events
@@ -72,6 +98,37 @@ let tableVerified = false;
 let activePool = mainPool; // Default to main pool
 const isSecurityDbEnabled = process.env.SECURITY_DB_ENABLED !== 'false';
 
+const canAttemptSchemaInitialization = () => {
+  if (!isSecurityDbEnabled) {
+    return false;
+  }
+
+  if (!activePool) {
+    return false;
+  }
+
+  if (activePool !== mainPool && !process.env.SECURITY_DB_HOST) {
+    return false;
+  }
+
+  return true;
+};
+
+const shouldDisableSecurityDbForError = (error) => isFatalDbConfigError(error?.code) || isScramPasswordTypeError(error);
+
+const disableSecurityDbWrites = (reason, error) => {
+  logger.error(
+    'Security schema initialization failed due to DB authentication/configuration error. Disabling security DB writes for this process.',
+    {
+      reason,
+      code: error?.code || null,
+      message: error?.message || null,
+    },
+  );
+  activePool = null;
+  tableVerified = false;
+};
+
 /**
  * Initialize security events table
  */
@@ -129,11 +186,32 @@ const configureDatabaseConnection = async () => {
  * Initialize schema with retry policy and lock detection
  */
 const initializeSchemaWithRetry = async (attempt = 1, maxRetries = 3) => {
+  if (!canAttemptSchemaInitialization()) {
+    logger.warn('Security schema initialization skipped due to disabled or unavailable DB configuration.');
+    return;
+  }
+
   try {
     await createTable();
     tableVerified = true;
     logger.info('Security events table initialized successfully');
   } catch (error) {
+    const errorCode = error?.code;
+
+    if (shouldDisableSecurityDbForError(error)) {
+      disableSecurityDbWrites('db_auth_or_config', error);
+      return;
+    }
+
+    if (!isRetryableConnectionError(errorCode)) {
+      logger.error('Security schema initialization failed with non-retryable error.', {
+        code: errorCode,
+        message: error.message,
+      });
+      tableVerified = false;
+      return;
+    }
+
     logger.warn(`Schema initialization attempt ${attempt}/${maxRetries} failed: ${error.message}`);
 
     // Lock Detection
@@ -156,12 +234,18 @@ const initializeSchemaWithRetry = async (attempt = 1, maxRetries = 3) => {
       }
     }
 
-    if (attempt < maxRetries) {
+    if (attempt < maxRetries && isRetryableConnectionError(errorCode)) {
       const backoff = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
       logger.info(`Retrying in ${backoff}ms...`);
-      setTimeout(() => initializeSchemaWithRetry(attempt + 1, maxRetries), backoff);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+      return initializeSchemaWithRetry(attempt + 1, maxRetries);
     } else {
-      throw new Error(`Failed to initialize security schema after ${maxRetries} attempts`);
+      logger.warn('Security schema initialization exhausted retries. Continuing without security DB table initialization for this process.', {
+        attempts: maxRetries,
+        code: errorCode,
+      });
+      tableVerified = false;
+      return;
     }
   }
 };
@@ -173,6 +257,10 @@ initialize().catch(err => console.error('Security Service Init Error:', err));
  * Check if the security_events table exists
  */
 const tableExists = async () => {
+  if (!activePool) {
+    return false;
+  }
+
   try {
     const result = await activePool.query(`
       SELECT EXISTS (
@@ -193,6 +281,10 @@ const tableExists = async () => {
  * @param {Object} event - Event details
  */
 const logEvent = async (event) => {
+  if (!activePool || !isSecurityDbEnabled) {
+    return false;
+  }
+
   try {
     // Ensure table exists before logging
     if (!tableVerified) {
@@ -256,6 +348,10 @@ const logEvent = async (event) => {
 
     return true;
   } catch (error) {
+    if (shouldDisableSecurityDbForError(error)) {
+      disableSecurityDbWrites('log_event_auth_config_failure', error);
+    }
+
     // Don't throw - logging failure shouldn't break app
     console.warn('Error logging security event:', error.message);
     return false;
@@ -444,6 +540,10 @@ const logRateLimitExceeded = async (ipAddress, endpoint, requestCount) => {
  * @returns {Promise<Array>} Array of security events
  */
 const getUserEvents = async (userId, limit = 100) => {
+  if (!activePool) {
+    return [];
+  }
+
   try {
     // Ensure table exists
     if (!tableVerified) {
@@ -475,6 +575,10 @@ const getUserEvents = async (userId, limit = 100) => {
  * @returns {Promise<Array>} Array of security events
  */
 const getEventsByIP = async (ipAddress, limit = 100) => {
+  if (!activePool) {
+    return [];
+  }
+
   try {
     // Ensure table exists
     if (!tableVerified) {
@@ -506,6 +610,10 @@ const getEventsByIP = async (ipAddress, limit = 100) => {
  */
 const getRecentEvents = async (options = {}) => {
   const { limit = 100, offset = 0, severity, eventType, startDate, endDate } = options;
+
+  if (!activePool) {
+    return [];
+  }
 
   try {
     // Ensure table exists
@@ -562,6 +670,10 @@ const getRecentEvents = async (options = {}) => {
  * @returns {Promise<Object>} Event counts by type
  */
 const getEventCounts = async (startDate, endDate) => {
+  if (!activePool) {
+    return [];
+  }
+
   try {
     // Ensure table exists
     if (!tableVerified) {
@@ -591,6 +703,11 @@ const getEventCounts = async (startDate, endDate) => {
  * Create security events table
  */
 const createTable = async () => {
+  if (!activePool) {
+    logger.warn('Skipping security_events table creation because no active DB pool is available.');
+    return false;
+  }
+
   try {
     await activePool.query(`
       CREATE TABLE IF NOT EXISTS security_events (
@@ -616,7 +733,14 @@ const createTable = async () => {
     logger.info('Security events table created/verified');
     return true;
   } catch (error) {
-    logger.error('Error creating security events table:', error);
+    if (shouldDisableSecurityDbForError(error)) {
+      logger.warn('Security events table creation failed due to DB authentication/configuration issue.', {
+        code: error?.code || 'DB_AUTH_CONFIG',
+        message: error?.message,
+      });
+    } else {
+      logger.error('Error creating security events table:', error);
+    }
     throw error;
   }
 };
@@ -626,6 +750,10 @@ const createTable = async () => {
  * @param {number} daysToKeep - Number of days to retain events
  */
 const cleanupOldEvents = async (daysToKeep = 90) => {
+  if (!activePool) {
+    return 0;
+  }
+
   try {
     const result = await activePool.query(
       `DELETE FROM security_events

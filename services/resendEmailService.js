@@ -1,18 +1,44 @@
 /**
  * Resend Email Service
  * Handles sending transactional emails using Resend API
- * API Key: re_AKwnFd6N_LjNQ3NDzjicCW18zddC2Bkk2
  */
+
+const loadBackendEnv = require('../config/loadEnv');
+loadBackendEnv();
 
 const { Resend } = require('resend');
 const logger = require('../config/logger');
 
-// Initialize Resend client
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resend = null;
+let resendInitializationError = null;
+
+const isDevLikeEnvironment = () => process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
+
+const getResendClient = () => {
+  const apiKey = process.env.RESEND_API_KEY;
+
+  if (!apiKey) {
+    return null;
+  }
+
+  if (resend) {
+    return resend;
+  }
+
+  try {
+    resend = new Resend(apiKey);
+    resendInitializationError = null;
+    return resend;
+  } catch (error) {
+    resendInitializationError = error;
+    logger.error(`Failed to initialize Resend client: ${error.message}`);
+    return null;
+  }
+};
 
 // Email from address
-const EMAIL_FROM = process.env.RESEND_EMAIL_FROM || 'Immunicare <onboarding@resend.dev>';
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const EMAIL_FROM = process.env.RESEND_EMAIL_FROM || process.env.MAIL_FROM_EMAIL || 'Immunicare <noreply@localhost>';
+const FRONTEND_URL = process.env.FRONTEND_URL || (isDevLikeEnvironment() ? 'http://localhost:3000' : '');
 
 /**
  * Send email using Resend API
@@ -20,9 +46,36 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
  */
 const sendEmail = async (options) => {
   const { to, subject, html, text, cc, bcc, replyTo } = options;
+  const resendClient = getResendClient();
+
+  if (!resendClient) {
+    const configError = resendInitializationError
+      ? `Resend client initialization failed: ${resendInitializationError.message}`
+      : 'RESEND_API_KEY is not configured';
+
+    if (isDevLikeEnvironment()) {
+      logger.warn(`[DEV EMAIL] Resend unavailable: ${configError}`);
+      logger.info(`[DEV EMAIL] To: ${to}`);
+      logger.info(`[DEV EMAIL] Subject: ${subject}`);
+      logger.info(`[DEV EMAIL] Content: ${text || html}`);
+      return {
+        success: true,
+        devMode: true,
+        skipped: true,
+        reason: configError,
+        content: { to, subject, text, html },
+      };
+    }
+
+    logger.error(`Failed to send email to ${to}: ${configError}`);
+    return {
+      success: false,
+      error: configError,
+    };
+  }
 
   try {
-    const data = await resend.emails.send({
+    const data = await resendClient.emails.send({
       from: EMAIL_FROM,
       to: Array.isArray(to) ? to : [to],
       subject: subject,
@@ -428,9 +481,19 @@ const sendAppointmentConfirmationEmail = async (email, appointment, infant) => {
  * Verify Resend API connection
  */
 const verifyConnection = async () => {
+  const resendClient = getResendClient();
+
+  if (!resendClient) {
+    const configError = resendInitializationError
+      ? `Resend client initialization failed: ${resendInitializationError.message}`
+      : 'RESEND_API_KEY is not configured';
+    console.error('Resend API connection failed:', configError);
+    return { success: false, error: configError };
+  }
+
   try {
     // Try to send a test email to verify connection
-    await resend.emails.send({
+    await resendClient.emails.send({
       from: EMAIL_FROM,
       to: 'test@example.com',
       subject: 'Test',

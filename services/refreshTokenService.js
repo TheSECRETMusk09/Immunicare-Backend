@@ -4,6 +4,17 @@ const logger = require('../config/logger');
 const db = require('../db');
 const { normalizeRole, CANONICAL_ROLES } = require('../middleware/rbac');
 
+const FATAL_DB_CONFIG_ERROR_CODES = new Set([
+  '28P01',
+  '28000',
+  '3D000',
+  '3F000',
+  '42501',
+]);
+
+const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
+let refreshTokensPersistenceDisabled = false;
+
 const BARANGAY_SCOPE = Object.freeze({
   barangay_code: 'SAN_NICOLAS_PASIG',
   barangay_name: 'Barangay San Nicolas, Pasig City',
@@ -86,6 +97,10 @@ const decodeRefreshToken = (token) => {
  * Store refresh token in database
  */
 const storeRefreshToken = async (userId, refreshToken, userAgent, ipAddress) => {
+  if (refreshTokensPersistenceDisabled) {
+    return null;
+  }
+
   try {
     // Decode token to get expiration
     const decoded = decodeRefreshToken(refreshToken);
@@ -138,6 +153,15 @@ const storeRefreshToken = async (userId, refreshToken, userAgent, ipAddress) => 
     const result = await db.query(query, [userId, refreshToken, userAgent, ipAddress, expiresAt]);
     return result.rows[0].id;
   } catch (error) {
+    if (isFatalDbConfigError(error?.code)) {
+      refreshTokensPersistenceDisabled = true;
+      logger.error('Disabling refresh token persistence due to DB authentication/configuration failure.', {
+        code: error.code,
+        message: error.message,
+      });
+      return null;
+    }
+
     // If duplicate key, just ignore (token already exists)
     if (error.code === '23505') {
       logger.warn('Refresh token already exists, skipping insert');
@@ -171,6 +195,10 @@ const verifyRefreshToken = (token) => {
  * Get refresh token from database
  */
 const getRefreshToken = async (token) => {
+  if (refreshTokensPersistenceDisabled) {
+    return null;
+  }
+
   try {
     // First try exact match
     let query = `
@@ -212,6 +240,15 @@ const getRefreshToken = async (token) => {
 
     return result.rows[0];
   } catch (error) {
+    if (isFatalDbConfigError(error?.code)) {
+      refreshTokensPersistenceDisabled = true;
+      logger.error('Disabling refresh token lookup due to DB authentication/configuration failure.', {
+        code: error.code,
+        message: error.message,
+      });
+      return null;
+    }
+
     logger.error('Error getting refresh token:', error);
     throw error;
   }
@@ -221,6 +258,10 @@ const getRefreshToken = async (token) => {
  * Revoke refresh token
  */
 const revokeRefreshToken = async (token) => {
+  if (refreshTokensPersistenceDisabled) {
+    return false;
+  }
+
   try {
     const query = `
       UPDATE refresh_tokens
@@ -230,6 +271,15 @@ const revokeRefreshToken = async (token) => {
     await db.query(query, [token]);
     return true;
   } catch (error) {
+    if (isFatalDbConfigError(error?.code)) {
+      refreshTokensPersistenceDisabled = true;
+      logger.error('Disabling refresh token revoke due to DB authentication/configuration failure.', {
+        code: error.code,
+        message: error.message,
+      });
+      return false;
+    }
+
     logger.error('Error revoking refresh token:', error);
     throw error;
   }
@@ -239,6 +289,10 @@ const revokeRefreshToken = async (token) => {
  * Revoke all refresh tokens for a user
  */
 const revokeAllUserTokens = async (userId) => {
+  if (refreshTokensPersistenceDisabled) {
+    return 0;
+  }
+
   try {
     const query = `
       UPDATE refresh_tokens
@@ -248,6 +302,15 @@ const revokeAllUserTokens = async (userId) => {
     const result = await db.query(query, [userId]);
     return result.rowCount;
   } catch (error) {
+    if (isFatalDbConfigError(error?.code)) {
+      refreshTokensPersistenceDisabled = true;
+      logger.error('Disabling bulk refresh token revoke due to DB authentication/configuration failure.', {
+        code: error.code,
+        message: error.message,
+      });
+      return 0;
+    }
+
     logger.error('Error revoking all user tokens:', error);
     throw error;
   }
@@ -257,6 +320,10 @@ const revokeAllUserTokens = async (userId) => {
  * Clean up expired refresh tokens
  */
 const cleanupExpiredTokens = async () => {
+  if (refreshTokensPersistenceDisabled) {
+    return 0;
+  }
+
   try {
     const query = `
       DELETE FROM refresh_tokens
@@ -266,6 +333,15 @@ const cleanupExpiredTokens = async () => {
     logger.info(`Cleaned up ${result.rowCount} expired refresh tokens`);
     return result.rowCount;
   } catch (error) {
+    if (isFatalDbConfigError(error?.code)) {
+      refreshTokensPersistenceDisabled = true;
+      logger.error('Disabling refresh token cleanup due to DB authentication/configuration failure.', {
+        code: error.code,
+        message: error.message,
+      });
+      return 0;
+    }
+
     logger.error('Error cleaning up expired tokens:', error);
     throw error;
   }
@@ -275,6 +351,10 @@ const cleanupExpiredTokens = async () => {
  * Refresh access token
  */
 const refreshAccessToken = async (refreshToken, userAgent, ipAddress) => {
+  if (refreshTokensPersistenceDisabled) {
+    throw new Error('Refresh token service unavailable due to database authentication/configuration failure');
+  }
+
   let decoded;
 
   try {
@@ -397,6 +477,10 @@ const refreshAccessToken = async (refreshToken, userAgent, ipAddress) => {
  * Create refresh tokens table if it doesn't exist
  */
 const createRefreshTokensTable = async () => {
+  if (refreshTokensPersistenceDisabled) {
+    return false;
+  }
+
   try {
     const query = `
       CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -441,6 +525,15 @@ const createRefreshTokensTable = async () => {
     logger.info('Refresh tokens table created/verified');
     return true;
   } catch (error) {
+    if (isFatalDbConfigError(error?.code)) {
+      refreshTokensPersistenceDisabled = true;
+      logger.error('Disabling refresh tokens table initialization due to DB authentication/configuration failure.', {
+        code: error.code,
+        message: error.message,
+      });
+      return false;
+    }
+
     logger.error('Error creating refresh tokens table:', error);
     throw error;
   }
