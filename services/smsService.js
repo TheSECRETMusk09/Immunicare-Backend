@@ -11,6 +11,9 @@ const TEXTBEE_API_KEY = process.env.TEXTBEE_API_KEY || '';
 const TEXTBEE_DEVICE_ID = process.env.TEXTBEE_DEVICE_ID || '';
 const TEXTBEE_BASE_URL = 'https://api.textbee.dev/api/v1/gateway/devices';
 
+let smsLogSchemaCache = null;
+let smsLogSchemaPromise = null;
+
 const SMS_CONFIG = {
   provider: SMS_PROVIDER,
   senderName: process.env.TEXTBEE_SENDER_NAME || 'Immunicare',
@@ -105,6 +108,57 @@ function generateResetToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
+function getNormalizedLogMessage(message, messageType, status, error) {
+  const normalizedMessage = String(message ?? '').trim();
+  if (normalizedMessage) {
+    return normalizedMessage;
+  }
+
+  const normalizedType = String(messageType || 'general').trim() || 'general';
+  if (error) {
+    return `SMS ${normalizedType} ${status === 'failed' ? 'failed' : 'event'}: ${error}`;
+  }
+
+  return `SMS ${normalizedType} ${status || 'logged'}`;
+}
+
+async function getSmsLogsSchema() {
+  if (smsLogSchemaCache) {
+    return smsLogSchemaCache;
+  }
+
+  if (!smsLogSchemaPromise) {
+    smsLogSchemaPromise = pool
+      .query(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'sms_logs'`,
+      )
+      .then((result) => {
+        if (result.rows.length === 0) {
+          return null;
+        }
+
+        const schema = {
+          columns: new Set(result.rows.map((row) => row.column_name)),
+        };
+
+        smsLogSchemaCache = schema;
+        return schema;
+      })
+      .catch((error) => {
+        smsLogSchemaCache = null;
+        throw error;
+      })
+      .finally(() => {
+        smsLogSchemaPromise = null;
+      });
+  }
+
+  return smsLogSchemaPromise;
+}
+
 function maskPhone(phoneNumber) {
   const formatted = formatPhoneNumber(phoneNumber);
   if (!formatted) {
@@ -167,34 +221,41 @@ async function logSms({
   error,
 }) {
   try {
-    await pool.query(
-      `INSERT INTO sms_logs
-       (phone_number, message_content, message_type, status, provider, external_message_id, metadata, error_details, sent_at, failed_at)
-       VALUES (
-         $1,
-         $2,
-         $3,
-         $4,
-         $5,
-         $6,
-         $7,
-         $8,
-         CASE WHEN $9 = 'sent' THEN NOW() ELSE NULL END,
-         CASE WHEN $9 = 'failed' THEN NOW() ELSE NULL END
-       )`,
-      [
-        phoneNumber,
-        message,
-        messageType || 'general',
-        status,
-        provider || SMS_PROVIDER,
-        messageId || null,
-        metadata ? JSON.stringify(metadata) : null,
-        error || null,
-        status,
-      ],
-    );
+    const schema = await getSmsLogsSchema();
+    if (!schema) {
+      return;
+    }
+
+    const normalizedMessage = getNormalizedLogMessage(message, messageType, status, error);
+    const columns = ['phone_number'];
+    const values = [phoneNumber];
+    const appendColumn = (columnName, value) => {
+      if (schema.columns.has(columnName)) {
+        columns.push(columnName);
+        values.push(value);
+      }
+    };
+
+    appendColumn('message_content', normalizedMessage);
+    appendColumn('message', normalizedMessage);
+    appendColumn('message_type', messageType || 'general');
+    appendColumn('status', status);
+    appendColumn('provider', provider || SMS_PROVIDER);
+    appendColumn('external_message_id', messageId || null);
+    appendColumn('message_id', messageId || null);
+    appendColumn('metadata', metadata ? JSON.stringify(metadata) : null);
+    appendColumn('error_details', error || null);
+    appendColumn('error_message', error || null);
+    appendColumn('sent_at', status === 'sent' ? new Date() : null);
+    appendColumn('failed_at', status === 'failed' ? new Date() : null);
+
+    const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
+    await pool.query(`INSERT INTO sms_logs (${columns.join(', ')}) VALUES (${placeholders})`, values);
   } catch (logError) {
+    if (logError?.code === '42703' || logError?.code === '42P01') {
+      smsLogSchemaCache = null;
+    }
+
     logger.warn('Failed to write sms_logs entry', {
       message: logError.message,
     });

@@ -14,13 +14,26 @@ const FATAL_DB_CONFIG_ERROR_CODES = new Set([
   '42501',
 ]);
 
+const NON_FATAL_DB_SCHEMA_ERROR_CODES = new Set(['42P01', '42703']);
+
+const DEFAULT_EXPIRY_MONITOR_CONFIG = Object.freeze({
+  expiry_alert_enabled: true,
+  expiry_warning_days: 30,
+  expiry_alert_recipients: [],
+});
+
 const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
+const isMissingDbObjectError = (code) => NON_FATAL_DB_SCHEMA_ERROR_CODES.has(code);
 
 class ExpiryMonitor {
   constructor() {
     this.checkInterval = null;
     this.intervalHours = 24; // Check once daily
     this.dbUnavailable = false;
+    this.systemConfigMissingWarned = false;
+    this.expiryDataSchemaMissingWarned = false;
+    this.expiryDataSchema = null;
+    this.expiryDataSchemaPromise = null;
   }
 
   /**
@@ -50,6 +63,159 @@ class ExpiryMonitor {
     }
   }
 
+  warnOnce(flagName, message) {
+    if (this[flagName]) {
+      return;
+    }
+
+    this[flagName] = true;
+    console.warn(message);
+  }
+
+  async getSystemConfig() {
+    const config = { ...DEFAULT_EXPIRY_MONITOR_CONFIG };
+
+    try {
+      const configResult = await pool.query(
+        `SELECT config_key, config_value::text
+         FROM system_config
+         WHERE config_key IN ('expiry_alert_enabled', 'expiry_warning_days', 'expiry_alert_recipients')`,
+      );
+
+      configResult.rows.forEach((row) => {
+        try {
+          config[row.config_key] = JSON.parse(row.config_value);
+        } catch {
+          config[row.config_key] = row.config_value;
+        }
+      });
+
+      return config;
+    } catch (error) {
+      if (isMissingDbObjectError(error?.code)) {
+        this.warnOnce(
+          'systemConfigMissingWarned',
+          'system_config table is unavailable; using default expiry monitor settings',
+        );
+        return config;
+      }
+
+      throw error;
+    }
+  }
+
+  async resolveExpiryDataSchema() {
+    if (this.expiryDataSchema) {
+      return this.expiryDataSchema;
+    }
+
+    if (!this.expiryDataSchemaPromise) {
+      this.expiryDataSchemaPromise = Promise.all([
+        pool.query(
+          `SELECT column_name
+           FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'vaccine_batches'`,
+        ),
+        pool.query(
+          `SELECT table_name
+           FROM information_schema.tables
+           WHERE table_schema = 'public'
+             AND table_name IN ('clinics', 'healthcare_facilities')`,
+        ),
+      ])
+        .then(([batchColumnsResult, facilityTablesResult]) => {
+          const batchColumns = new Set(batchColumnsResult.rows.map((row) => row.column_name));
+          const facilityTables = new Set(
+            facilityTablesResult.rows.map((row) => row.table_name),
+          );
+
+          const scopeColumn = batchColumns.has('clinic_id')
+            ? 'clinic_id'
+            : batchColumns.has('facility_id')
+              ? 'facility_id'
+              : null;
+
+          const facilityTable =
+            scopeColumn === 'facility_id'
+              ? facilityTables.has('healthcare_facilities')
+                ? 'healthcare_facilities'
+                : facilityTables.has('clinics')
+                  ? 'clinics'
+                  : null
+              : facilityTables.has('clinics')
+                ? 'clinics'
+                : facilityTables.has('healthcare_facilities')
+                  ? 'healthcare_facilities'
+                  : null;
+
+          const resolvedSchema =
+            scopeColumn && facilityTable ? { scopeColumn, facilityTable } : null;
+
+          this.expiryDataSchema = resolvedSchema;
+          return resolvedSchema;
+        })
+        .finally(() => {
+          this.expiryDataSchemaPromise = null;
+        });
+    }
+
+    return this.expiryDataSchemaPromise;
+  }
+
+  async getAlertRecipients(configRecipients = []) {
+    const recipients = [];
+    const addRecipient = (value) => {
+      const normalizedValue = String(value || '').trim();
+      if (normalizedValue && !recipients.includes(normalizedValue)) {
+        recipients.push(normalizedValue);
+      }
+    };
+
+    const adminQueries = [
+      `SELECT contact AS phone
+       FROM users
+       WHERE role_id = (SELECT id FROM roles WHERE name = 'admin')
+         AND is_active = true
+         AND contact IS NOT NULL
+         AND TRIM(contact) <> ''
+       LIMIT 5`,
+      `SELECT contact AS phone
+       FROM admin
+       WHERE is_active = true
+         AND contact IS NOT NULL
+         AND TRIM(contact) <> ''
+       LIMIT 5`,
+    ];
+
+    for (const adminQuery of adminQueries) {
+      try {
+        const adminResult = await pool.query(adminQuery);
+        adminResult.rows.forEach((row) => addRecipient(row.phone));
+
+        if (recipients.length > 0) {
+          break;
+        }
+      } catch (error) {
+        if (isMissingDbObjectError(error?.code)) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    if (Array.isArray(configRecipients)) {
+      configRecipients.forEach((recipient) => addRecipient(recipient));
+    } else if (typeof configRecipients === 'string' && configRecipients.includes(',')) {
+      configRecipients.split(',').forEach((recipient) => addRecipient(recipient));
+    } else {
+      addRecipient(configRecipients);
+    }
+
+    return recipients;
+  }
+
   /**
    * Check for expiring vaccines
    */
@@ -62,22 +228,7 @@ class ExpiryMonitor {
     try {
       console.log('Checking for expiring vaccines...');
 
-      // Get system config for alert settings
-      const configQuery = `
-                SELECT config_key, config_value::text
-                FROM system_config
-                WHERE config_key IN ('expiry_alert_enabled', 'expiry_warning_days', 'expiry_alert_recipients')
-            `;
-      const configResult = await pool.query(configQuery);
-
-      const config = {};
-      configResult.rows.forEach((row) => {
-        try {
-          config[row.config_key] = JSON.parse(row.config_value);
-        } catch {
-          config[row.config_key] = row.config_value;
-        }
-      });
+      const config = await this.getSystemConfig();
 
       // Check if expiry alerts are enabled
       if (config.expiry_alert_enabled === false) {
@@ -85,7 +236,18 @@ class ExpiryMonitor {
         return;
       }
 
-      const warningDays = config.expiry_warning_days || 30;
+      const warningDays = Number.parseInt(config.expiry_warning_days, 10);
+      const normalizedWarningDays = Number.isFinite(warningDays) && warningDays > 0 ? warningDays : 30;
+      const dataSchema = await this.resolveExpiryDataSchema();
+
+      if (!dataSchema) {
+        this.warnOnce(
+          'expiryDataSchemaMissingWarned',
+          'Expiry monitor could not resolve vaccine batch facility schema; skipping expiry alert query',
+        );
+        await this.markExpiredBatches();
+        return;
+      }
 
       // Get vaccines expiring within warning period
       const expiringQuery = `
@@ -97,13 +259,13 @@ class ExpiryMonitor {
                     vb.lot_no,
                     vb.expiry_date,
                     vb.qty_current,
-                    vb.clinic_id,
-                    c.name as clinic_name,
+                    vb.${dataSchema.scopeColumn} as clinic_id,
+                    f.name as clinic_name,
                     (vb.expiry_date - CURRENT_DATE)::integer as days_until_expiry
                 FROM vaccine_batches vb
                 JOIN vaccines v ON vb.vaccine_id = v.id
-                JOIN clinics c ON vb.clinic_id = c.id
-                WHERE vb.expiry_date <= CURRENT_DATE + INTERVAL '${warningDays} days'
+                JOIN ${dataSchema.facilityTable} f ON vb.${dataSchema.scopeColumn} = f.id
+                WHERE vb.expiry_date <= CURRENT_DATE + ($1::integer * INTERVAL '1 day')
                 AND vb.expiry_date > CURRENT_DATE
                 AND vb.qty_current > 0
                 AND vb.status = 'active'
@@ -111,7 +273,7 @@ class ExpiryMonitor {
                 ORDER BY vb.expiry_date ASC
             `;
 
-      const expiringResult = await pool.query(expiringQuery);
+      const expiringResult = await pool.query(expiringQuery, [normalizedWarningDays]);
 
       if (expiringResult.rows.length > 0) {
         console.log(`Found ${expiringResult.rows.length} vaccine batches expiring soon`);
@@ -125,13 +287,13 @@ class ExpiryMonitor {
 
         // Send appropriate alerts
         if (critical.length > 0) {
-          await this.sendExpiryAlert('CRITICAL', critical);
+          await this.sendExpiryAlert('CRITICAL', critical, config);
         }
         if (warning.length > 0) {
-          await this.sendExpiryAlert('WARNING', warning);
+          await this.sendExpiryAlert('WARNING', warning, config);
         }
         if (notice.length > 0) {
-          await this.sendExpiryAlert('NOTICE', notice);
+          await this.sendExpiryAlert('NOTICE', notice, config);
         }
       }
 
@@ -184,49 +346,14 @@ class ExpiryMonitor {
   /**
    * Send expiry alert SMS
    */
-  async sendExpiryAlert(alertType, items) {
+  async sendExpiryAlert(alertType, items, config = null) {
     if (this.dbUnavailable) {
       return;
     }
 
     try {
-      const recipients = [];
-
-      // Get admin recipients
-      const adminQuery = `
-                SELECT contact FROM users
-                WHERE role_id = (SELECT id FROM roles WHERE name = 'admin')
-                AND is_active = true
-                LIMIT 5
-            `;
-      const adminResult = await pool.query(adminQuery);
-
-      adminResult.rows.forEach((row) => {
-        if (row.phone) {
-          recipients.push(row.phone);
-        }
-      });
-
-      // Also get from config
-      const configQuery = `
-                SELECT config_value::text as recipients
-                FROM system_config
-                WHERE config_key = 'expiry_alert_recipients'
-            `;
-      const configResult = await pool.query(configQuery);
-
-      if (configResult.rows.length > 0) {
-        try {
-          const configRecipients = JSON.parse(configResult.rows[0].recipients);
-          configRecipients.forEach((r) => {
-            if (!recipients.includes(r)) {
-              recipients.push(r);
-            }
-          });
-        } catch {
-          // Ignore parse errors for recipients
-        }
-      }
+      const resolvedConfig = config || (await this.getSystemConfig());
+      const recipients = await this.getAlertRecipients(resolvedConfig.expiry_alert_recipients);
 
       if (recipients.length === 0) {
         console.log('No expiry alert recipients configured');

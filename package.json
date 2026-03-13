@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "prestart": "node check-port.js",
-    "start": "node start.js production",
+    "start": "node server.js",
+    "build": "echo 'No build step required'",
     "start:prod": "node start.js production",
     "start:hostinger": "node start.js hostinger",
     "start:safe": "node check-port.js && node start.js production",
@@ -27,7 +28,8 @@
     "deploy:hostinger": "node deploy-hostinger.js",
     "deploy:hostinger:full": "node deploy-hostinger.js --full-deploy",
     "deploy:vps": "node deploy-vps.js",
-    "deploy:vps:full": "node deploy-vps.js --full-deploy"
+    "deploy:vps:full": "node deploy-vps.js --full-deploy",
+    "cleanup:synthetic": "node cleanup_synthetic_data.js"
   },
   "keywords": [],
   "author": "",
