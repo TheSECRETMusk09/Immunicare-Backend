@@ -1,119 +1,68 @@
 const bcrypt = require('bcryptjs');
-const { Pool } = require('pg');
+const pool = require('./db');
 
-// Database configuration
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'immunicare_dev',
-  user: process.env.DB_USER || 'immunicare_dev',
-  password: process.env.DB_PASSWORD || ''
-});
-
-async function setupAdminUser() {
+async function setupAdmin() {
+  const client = await pool.connect();
   try {
     console.log('Setting up admin user...');
 
-    // First, ensure the clinic exists
+    // Create admin role if not exists
     await pool.query(`
-      INSERT INTO clinics (name, region, address, contact) 
+      INSERT INTO roles (name, display_name, is_system_role, hierarchy_level) VALUES
+      ('super_admin', 'Super Administrator', true, 100)
+      ON CONFLICT (name) DO NOTHING;
+    `);
+
+    // Create clinic if not exists
+    await pool.query(`
+      INSERT INTO clinics (name, region, address, contact)
       VALUES ('Main Health Center', 'Region 1', 'Main Health Center Address', 'Contact Number')
       ON CONFLICT DO NOTHING;
     `);
 
     // Generate password hash
-    const password = 'Immunicare2026!';
+    const password = 'Admin2026!';
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Create super admin user
-    const superAdminResult = await pool.query(
+    // Create or update admin user
+    await pool.query(
       `
-      INSERT INTO users (username, password_hash, role_id, clinic_id, contact, last_login) 
-      SELECT 
+      INSERT INTO users (username, password_hash, role_id, clinic_id, last_login)
+      SELECT
         'admin',
         $1,
         r.id,
         c.id,
-        'administrator@immunicare.com',
         NULL
-      FROM roles r, clinics c 
+      FROM roles r, clinics c
       WHERE r.name = 'super_admin' AND c.name = 'Main Health Center'
-      ON CONFLICT (username) DO NOTHING
-      RETURNING id, username;
+      ON CONFLICT (username) DO UPDATE SET
+        password_hash = EXCLUDED.password_hash,
+        role_id = EXCLUDED.role_id,
+        clinic_id = EXCLUDED.clinic_id
     `,
-      [passwordHash]
+      [passwordHash],
     );
 
-    // Create admin user
-    const adminResult = await pool.query(
-      `
-      INSERT INTO users (username, password_hash, role_id, clinic_id, contact, last_login) 
-      SELECT 
-        'administrator',
-        $1,
-        r.id,
-        c.id,
-        'administrator@immunicare.com',
-        NULL
-      FROM roles r, clinics c 
-      WHERE r.name = 'admin' AND c.name = 'Main Health Center'
-      ON CONFLICT (username) DO NOTHING
-      RETURNING id, username;
-    `,
-      [passwordHash]
-    );
-
-    // Grant permissions to super_admin role
-    await pool.query(`
-      INSERT INTO role_permissions (role_id, permission_id, granted_by)
-      SELECT r.id, p.id, 
-        (SELECT u.id FROM users u WHERE u.username = 'admin' LIMIT 1)
-      FROM roles r, permissions p
-      WHERE r.name = 'super_admin' 
-      AND p.name IN (
-        'users.create', 'users.read', 'users.update', 'users.delete',
-        'infants.create', 'infants.read', 'infants.update', 'infants.delete',
-        'vaccinations.create', 'vaccinations.read', 'vaccinations.update',
-        'reports.generate', 'reports.read'
-      )
-      ON CONFLICT DO NOTHING;
+    // Verify setup
+    const adminCheck = await pool.query(`
+      SELECT u.username, r.display_name as role
+      FROM users u
+      JOIN roles r ON u.role_id = r.id
+      WHERE u.username = 'admin'
     `);
-
-    // Grant permissions to admin role
-    await pool.query(`
-      INSERT INTO role_permissions (role_id, permission_id, granted_by)
-      SELECT r.id, p.id,
-        (SELECT u.id FROM users u WHERE u.username = 'admin' LIMIT 1)
-      FROM roles r, permissions p
-      WHERE r.name = 'admin' 
-      AND p.name IN (
-        'users.create', 'users.read', 'users.update', 'users.delete',
-        'infants.create', 'infants.read', 'infants.update', 'infants.delete',
-        'vaccinations.create', 'vaccinations.read', 'vaccinations.update',
-        'reports.generate', 'reports.read'
-      )
-      ON CONFLICT DO NOTHING;
-    `);
-
-    console.log('✅ Admin users created successfully!');
-    console.log('\n📋 Admin Credentials:');
+    console.log('Admin user:', adminCheck.rows);
+    console.log('✅ Admin setup complete!');
     console.log('Username: admin');
-    console.log('Password: Immunicare2026!');
-    console.log('Email: administrator@immunicare.com');
-    console.log('Role: Super Administrator');
-    console.log('');
-    console.log('Username: administrator');
-    console.log('Password: Immunicare2026!');
-    console.log('Email: administrator@immunicare.com');
-    console.log('Role: Administrator');
-    console.log('\n🌐 Access the dashboard at: http://localhost:3000');
+    console.log('Password: Admin2026!');
   } catch (error) {
-    console.error('❌ Error setting up admin user:', error.message);
-    console.error('Stack:', error.stack);
+    console.error('❌ Error:', error.message);
   } finally {
-    await pool.end();
+    if (client) {
+      client.release();
+    }
+    // Don't call pool.end() - let the server continue running
   }
 }
 
-// Run the setup
-setupAdminUser();
+setupAdmin();

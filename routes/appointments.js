@@ -287,11 +287,16 @@ const fetchAppointmentById = async (id) => {
 // Get all appointments
 router.get('/', async (req, res) => {
   try {
-    const { status, date, infant_id, clinic_id } = req.query;
+    const { status, date, infant_id, clinic_id, page = 1, limit = 50 } = req.query;
     const canonicalRole = getCanonicalRole(req);
     const patientFacilityColumn = await getPatientFacilityColumn();
     const appointmentFacilityColumn = await getAppointmentFacilityColumn();
     const appointmentPatientColumn = await getAppointmentPatientColumn();
+
+    // Validate pagination
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.max(1, Math.min(200, parseInt(limit)));
+    const offset = (pageNum - 1) * limitNum;
 
     const params = [];
     let query = `
@@ -339,10 +344,30 @@ router.get('/', async (req, res) => {
       params.push(parseInt(infant_id, 10));
     }
 
-    query += ' ORDER BY a.scheduled_date ASC';
+    // Get total count for pagination metadata
+    const countQuery = `SELECT COUNT(*) as count FROM (${query}) AS subquery`;
+    const countResult = await pool.query(countQuery, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    // Add pagination
+    query += ' ORDER BY a.scheduled_date ASC LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
+    params.push(limitNum, offset);
 
     const result = await pool.query(query, params);
-    res.json(result.rows);
+
+    const totalPages = Math.ceil(total / limitNum);
+
+    res.json({
+      data: result.rows,
+      metadata: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        totalPages: totalPages,
+        hasNext: pageNum < totalPages,
+        hasPrev: pageNum > 1
+      }
+    });
   } catch (error) {
     console.error('List appointments error:', error);
     res.status(500).json({ error: 'Failed to fetch appointments' });
@@ -516,9 +541,10 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
           created_by,
           clinic_id,
           location,
-          control_number
+          control_number,
+          guardian_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *
       `,
       [
@@ -532,6 +558,7 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
         finalClinicId,
         normalizedLocation,
         appointmentControlNumber,
+        infant.guardian_id,
       ],
     );
 

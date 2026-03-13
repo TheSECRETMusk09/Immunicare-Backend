@@ -1,10 +1,12 @@
 const pool = require('../db');
+const { parsePagination, buildPaginationMeta, getPaginationClause } = require('../utils/pagination');
 
 // Get vaccine inventory by clinic
 exports.getVaccineInventoryByClinic = async (req, res) => {
   try {
     const { clinic_id } = req.params;
     const { period_start, period_end } = req.query;
+    const pagination = parsePagination(req.query);
 
     let query = `
       SELECT vi.*, c.name as clinic_name, u.username as created_by_name
@@ -20,10 +22,19 @@ exports.getVaccineInventoryByClinic = async (req, res) => {
       params.push(period_start, period_end);
     }
 
+    // Get total count
+    const countQuery = query.replace(/SELECT vi\.\*/, 'SELECT COUNT(*) as total,');
+    const countResult = await pool.query(countQuery, params);
+    const total = parseInt(countResult.rows[0]?.total || 0, 10);
+
     query += ' ORDER BY vi.vaccine_name';
+    query += getPaginationClause(pagination.limit, pagination.offset);
 
     const result = await pool.query(query, params);
-    res.json(result.rows);
+    res.json({
+      data: result.rows,
+      pagination: buildPaginationMeta(pagination.page, pagination.limit, total),
+    });
   } catch (error) {
     console.error('Error getting vaccine inventory:', error);
     res.status(500).json({ error: error.message });
@@ -44,7 +55,7 @@ exports.createVaccineInventory = async (req, res) => {
       issuance,
       clinic_id,
       period_start,
-      period_end
+      period_end,
     } = req.body;
 
     const result = await pool.query(
@@ -66,8 +77,8 @@ exports.createVaccineInventory = async (req, res) => {
         clinic_id,
         period_start,
         period_end,
-        req.user.id
-      ]
+        req.user.id,
+      ],
     );
 
     res.status(201).json(result.rows[0]);
@@ -91,7 +102,7 @@ exports.updateVaccineInventory = async (req, res) => {
       expired_wasted,
       issuance,
       period_start,
-      period_end
+      period_end,
     } = req.body;
 
     const result = await pool.query(
@@ -122,8 +133,8 @@ exports.updateVaccineInventory = async (req, res) => {
         period_start,
         period_end,
         req.user.id,
-        id
-      ]
+        id,
+      ],
     );
 
     if (result.rows.length === 0) {
@@ -143,7 +154,7 @@ exports.deleteVaccineInventory = async (req, res) => {
     const { id } = req.params;
 
     const result = await pool.query('DELETE FROM vaccine_inventory WHERE id = $1 RETURNING *', [
-      id
+      id,
     ]);
 
     if (result.rows.length === 0) {
@@ -161,18 +172,30 @@ exports.deleteVaccineInventory = async (req, res) => {
 exports.getVaccineInventoryTransactions = async (req, res) => {
   try {
     const { vaccine_inventory_id } = req.params;
+    const pagination = parsePagination(req.query);
 
-    const result = await pool.query(
-      `SELECT vit.*, u.username as performed_by_name, ua.username as approved_by_name
+    let query = `
+      SELECT vit.*, u.username as performed_by_name, ua.username as approved_by_name
       FROM vaccine_inventory_transactions vit
       LEFT JOIN users u ON vit.performed_by = u.id
       LEFT JOIN users ua ON vit.approved_by = ua.id
       WHERE vit.vaccine_inventory_id = $1
-      ORDER BY vit.created_at DESC`,
-      [vaccine_inventory_id]
-    );
+    `;
+    const params = [vaccine_inventory_id];
 
-    res.json(result.rows);
+    // Get total count
+    const countQuery = query.replace(/SELECT vit\.\*/, 'SELECT COUNT(*) as total,');
+    const countResult = await pool.query(countQuery, params);
+    const total = parseInt(countResult.rows[0]?.total || 0, 10);
+
+    query += ' ORDER BY vit.created_at DESC';
+    query += getPaginationClause(pagination.limit, pagination.offset);
+
+    const result = await pool.query(query, params);
+    res.json({
+      data: result.rows,
+      pagination: buildPaginationMeta(pagination.page, pagination.limit, total),
+    });
   } catch (error) {
     console.error('Error getting vaccine inventory transactions:', error);
     res.status(500).json({ error: error.message });
@@ -191,7 +214,7 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
       expiry_date,
       supplier_name,
       reference_number,
-      notes
+      notes,
     } = req.body;
 
     const result = await pool.query(
@@ -210,8 +233,8 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
         supplier_name,
         reference_number,
         notes,
-        req.user.id
-      ]
+        req.user.id,
+      ],
     );
 
     res.status(201).json(result.rows[0]);
@@ -225,9 +248,10 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
 exports.getVaccineStockAlerts = async (req, res) => {
   try {
     const { clinic_id } = req.params;
+    const pagination = parsePagination(req.query);
 
-    const result = await pool.query(
-      `SELECT vsa.*, vi.vaccine_name, c.name as clinic_name,
+    let query = `
+      SELECT vsa.*, vi.vaccine_name, c.name as clinic_name,
               u.username as acknowledged_by_name, ur.username as resolved_by_name
       FROM vaccine_stock_alerts vsa
       JOIN vaccine_inventory vi ON vsa.vaccine_inventory_id = vi.id
@@ -235,11 +259,22 @@ exports.getVaccineStockAlerts = async (req, res) => {
       LEFT JOIN users u ON vsa.acknowledged_by = u.id
       LEFT JOIN users ur ON vsa.resolved_by = ur.id
       WHERE vi.clinic_id = $1 AND vsa.status = 'ACTIVE'
-      ORDER BY vsa.priority DESC, vsa.created_at DESC`,
-      [clinic_id]
-    );
+    `;
+    const params = [clinic_id];
 
-    res.json(result.rows);
+    // Get total count
+    const countQuery = query.replace(/SELECT vsa\.\*/, 'SELECT COUNT(*) as total,');
+    const countResult = await pool.query(countQuery, params);
+    const total = parseInt(countResult.rows[0]?.total || 0, 10);
+
+    query += ' ORDER BY vsa.priority DESC, vsa.created_at DESC';
+    query += getPaginationClause(pagination.limit, pagination.offset);
+
+    const result = await pool.query(query, params);
+    res.json({
+      data: result.rows,
+      pagination: buildPaginationMeta(pagination.page, pagination.limit, total),
+    });
   } catch (error) {
     console.error('Error getting vaccine stock alerts:', error);
     res.status(500).json({ error: error.message });
@@ -259,7 +294,7 @@ exports.acknowledgeVaccineStockAlert = async (req, res) => {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $2
       RETURNING *`,
-      [req.user.id, id]
+      [req.user.id, id],
     );
 
     if (result.rows.length === 0) {
@@ -288,7 +323,7 @@ exports.resolveVaccineStockAlert = async (req, res) => {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $3
       RETURNING *`,
-      [req.user.id, resolution_notes, id]
+      [req.user.id, resolution_notes, id],
     );
 
     if (result.rows.length === 0) {
@@ -309,29 +344,29 @@ exports.getVaccineInventoryStats = async (req, res) => {
 
     const [totalInventory, lowStock, expiringItems, recentTransactions] = await Promise.all([
       pool.query('SELECT COUNT(*) as count FROM vaccine_inventory WHERE clinic_id = $1', [
-        clinic_id
+        clinic_id,
       ]),
       pool.query(
         'SELECT COUNT(*) as count FROM vaccine_inventory WHERE clinic_id = $1 AND stock_on_hand <= 10',
-        [clinic_id]
+        [clinic_id],
       ),
       pool.query(
         'SELECT COUNT(*) as count FROM vaccine_inventory WHERE clinic_id = $1 AND stock_on_hand <= 5',
-        [clinic_id]
+        [clinic_id],
       ),
       pool.query(
         `SELECT COUNT(*) as count FROM vaccine_inventory_transactions vit
                   JOIN vaccine_inventory vi ON vit.vaccine_inventory_id = vi.id
                   WHERE vi.clinic_id = $1 AND vit.created_at >= CURRENT_DATE - INTERVAL '30 days'`,
-        [clinic_id]
-      )
+        [clinic_id],
+      ),
     ]);
 
     res.json({
       totalInventory: parseInt(totalInventory.rows[0].count),
       lowStock: parseInt(lowStock.rows[0].count),
       expiringItems: parseInt(expiringItems.rows[0].count),
-      recentTransactions: parseInt(recentTransactions.rows[0].count)
+      recentTransactions: parseInt(recentTransactions.rows[0].count),
     });
   } catch (error) {
     console.error('Error getting vaccine inventory stats:', error);

@@ -149,7 +149,9 @@ async function testCascadingDelete() {
   } catch (error) {
     console.error('Test error:', error.message);
   } finally {
-    await pool.end();
+    // NOTE: pool.end() is removed to prevent it from closing the connection pool
+    // for the entire application, which would cause the running server to fail.
+    // This script will hang after execution; use Ctrl+C to exit.
   }
 }
 

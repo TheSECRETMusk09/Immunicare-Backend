@@ -5,19 +5,15 @@
  * indexes, and data integrity across the PostgreSQL database
  */
 
-const { Pool } = require('pg');
+const pool = require('../db');
 
-// Database Configuration
+// Database Configuration (derived from shared singleton pool config)
 const DB_CONFIG = {
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'immunicare_dev',
   user: process.env.DB_USER || 'immunicare_dev',
-  password: process.env.DB_PASSWORD || '',
 };
-
-// Database Pool
-const pool = new Pool(DB_CONFIG);
 
 // Expected Tables in the Database
 const EXPECTED_TABLES = [
@@ -833,10 +829,8 @@ describe('Database - Enum Types', () => {
   });
 });
 
-// Cleanup
-afterAll(async () => {
-  await pool.end();
-});
+// NOTE: Do not call pool.end() here.
+// Jest global teardown in backend/jest.setup.js owns closing the shared singleton pool.
 
 // Export test summary
 module.exports = {

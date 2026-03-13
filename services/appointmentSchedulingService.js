@@ -1,5 +1,6 @@
 const pool = require('../db');
 const NotificationService = require('./notificationService');
+const smsService = require('./smsService');
 const {
   generateControlNumber: generateInfantControlNumber,
   resolveOrCreateInfantPatient,
@@ -1126,6 +1127,8 @@ const notifyGuardianVaccineUnavailable = async ({
  */
 const processMissedAppointments = async () => {
   try {
+    const { appointmentsPatient } = await getSchemaColumnMappings();
+
     // Find appointments that were scheduled but not attended
     const query = `
       SELECT
@@ -1133,6 +1136,7 @@ const processMissedAppointments = async () => {
         a.scheduled_date,
         a.type as appointment_type,
         a.status,
+        a.location,
         p.id as infant_id,
         p.first_name as infant_first_name,
         p.last_name as infant_last_name,
@@ -1140,13 +1144,12 @@ const processMissedAppointments = async () => {
         g.name as guardian_name,
         g.phone as guardian_phone
       FROM appointments a
-      JOIN patients p ON a.infant_id = p.id
+      JOIN patients p ON a.${appointmentsPatient} = p.id
       JOIN guardians g ON p.guardian_id = g.id
       WHERE a.scheduled_date < NOW() - INTERVAL '2 hours'
         AND a.status IN ('scheduled', 'no-show')
         AND a.is_active = true
-        AND a.sms_missed_notification_sent IS NULL
-        OR FALSE
+        AND (a.sms_missed_notification_sent IS NULL OR a.sms_missed_notification_sent = FALSE)
     `;
 
     const result = await pool.query(query);
@@ -1156,22 +1159,32 @@ const processMissedAppointments = async () => {
       return { processed: 0, message: 'No missed appointments found' };
     }
 
-    const smsService = require('./smsService');
     let sentCount = 0;
     let failedCount = 0;
 
     for (const appointment of missedAppointments) {
       if (!appointment.guardian_phone) {
+        console.warn(`No guardian phone for missed appointment ${appointment.appointment_id}, skipping SMS`);
+        failedCount++;
+        continue;
+      }
+
+      // Format phone number to E.164 before sending SMS
+      const formattedPhone = smsService.formatPhoneNumber(appointment.guardian_phone);
+      if (!formattedPhone) {
+        console.warn(`Invalid phone number for appointment ${appointment.appointment_id}: ${appointment.guardian_phone}`);
         failedCount++;
         continue;
       }
 
       try {
         const result = await smsService.sendMissedAppointmentNotification({
-          phoneNumber: appointment.guardian_phone,
+          phoneNumber: formattedPhone,
+          guardianName: appointment.guardian_name,
           childName: `${appointment.infant_first_name} ${appointment.infant_last_name}`,
           vaccineType: appointment.appointment_type || 'vaccination',
           scheduledDate: appointment.scheduled_date,
+          location: appointment.location,
         });
 
         if (result.success) {
@@ -1182,6 +1195,9 @@ const processMissedAppointments = async () => {
           );
           sentCount++;
         } else {
+          console.warn(
+            `Missed appointment SMS was not sent for appointment ${appointment.appointment_id}: ${result.error || 'unknown reason'}`,
+          );
           failedCount++;
         }
       } catch (error) {
@@ -1212,6 +1228,7 @@ module.exports = {
   getAppointmentsByGuardian,
   generateControlNumber,
   ensureInfantRecord,
+  getSchemaColumnMappings,
   notifyGuardianVaccineUnavailable,
   processMissedAppointments, // Export missed appointment processor
 };

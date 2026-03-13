@@ -119,7 +119,7 @@ router.get('/patients', auth, async (req, res) => {
     }
 
     if (search) {
-      query += ` AND (p.first_name ILIKE ${paramIndex} OR p.last_name ILIKE ${paramIndex} OR p.mother_name ILIKE ${paramIndex} OR p.cellphone_number ILIKE ${paramIndex})`;
+      query += ` AND (p.first_name ILIKE $${paramIndex} OR p.last_name ILIKE $${paramIndex} OR p.mother_name ILIKE $${paramIndex} OR p.cellphone_number ILIKE $${paramIndex})`;
       params.push(`%${search}%`);
       paramIndex++;
     }
@@ -439,7 +439,7 @@ router.get('/appointments', auth, async (req, res) => {
       SELECT
         a.id,
         a.infant_id,
-        COALESCE(i.first_name, p.first_name) as patient_name,
+        i.first_name as patient_name,
         a.type as vaccine,
         a.scheduled_date as appointment_date,
         a.created_at as appointment_time,
@@ -452,7 +452,6 @@ router.get('/appointments', auth, async (req, res) => {
         a.updated_at
       FROM appointments a
       LEFT JOIN patients i ON a.infant_id = i.id
-      LEFT JOIN patients p ON a.infant_id = p.id
       LEFT JOIN users u ON a.created_by = u.id
       WHERE a.is_active = true
     `;
@@ -478,7 +477,7 @@ router.get('/appointments', auth, async (req, res) => {
       paramIndex++;
     }
 
-    query += ' ORDER BY a.scheduled_date DESC';
+    query += ' ORDER BY a.scheduled_date DESC LIMIT 100';
 
     const result = await db.query(query, params);
 
@@ -624,7 +623,7 @@ router.get('/vaccinations', auth, async (req, res) => {
       SELECT
         ir.id,
         ir.patient_id,
-        COALESCE(p.first_name, p.first_name) as patient_name,
+        p.first_name as patient_name,
         v.name as vaccine,
         ir.dose_no as dose,
         ir.next_due_date as due_date,

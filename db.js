@@ -102,8 +102,8 @@ const maxPoolSize = parseInteger(process.env.DB_POOL_MAX, runtimeEnv === 'produc
 const minPoolSize = parseInteger(process.env.DB_POOL_MIN, runtimeEnv === 'production' ? 2 : 0);
 const idleTimeoutMillis = parseInteger(process.env.DB_IDLE_TIMEOUT, 60000);
 const connectionTimeoutMillis = parseInteger(process.env.DB_CONNECTION_TIMEOUT, 15000);
-const queryTimeoutMillis = parseInteger(process.env.DB_QUERY_TIMEOUT, 30000);
-const statementTimeoutMillis = parseInteger(process.env.DB_STATEMENT_TIMEOUT, 30000);
+const queryTimeoutMillis = parseInteger(process.env.DB_QUERY_TIMEOUT, 60000);
+const statementTimeoutMillis = parseInteger(process.env.DB_STATEMENT_TIMEOUT, 60000);
 const acquireTimeoutMillis = parseInteger(process.env.DB_ACQUIRE_TIMEOUT, 30000);
 
 if (runtimeEnv === 'production') {

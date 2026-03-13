@@ -413,18 +413,26 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       Date.now() + smsService.SMS_CONFIG.otp.expiryMinutes * 60 * 1000,
     );
 
-    // Store pending registration
+    // Format phone number to E.164 for consistent storage and SMS sending
+    const formattedPhone = smsService.formatPhoneNumber(phone);
+    if (!formattedPhone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid phone number format',
+        code: 'INVALID_PHONE_FORMAT',
+      });
+    }
+
+    // Store pending registration with formatted phone number
     await pool.query(
       `INSERT INTO pending_registrations (registration_data, otp, phone_number, expires_at)
        VALUES ($1, $2, $3, $4)`,
-      [JSON.stringify(normalizedRegistrationData), otp, phone, expiresAt],
+      [JSON.stringify(normalizedRegistrationData), otp, formattedPhone, expiresAt],
     );
 
-    // Send OTP via SMS using the same generated code used for verification.
-    // If SMS fails, clean up pending registration so the frontend can retry
-    // without creating unusable stale OTP records.
+    // Send OTP via SMS using the formatted phone number
     try {
-      await smsService.sendVerificationSMS(phone, otp);
+      await smsService.sendVerificationSMS(formattedPhone, otp);
     } catch (smsError) {
       console.error('Failed to send OTP SMS:', smsError);
       await pool.query('DELETE FROM pending_registrations WHERE phone_number = $1', [phone]);
@@ -485,12 +493,21 @@ router.post('/register/guardian/verify', registrationRateLimiter, async (req, re
   try {
     const { phone, otp } = req.body;
 
+    // Format phone number to E.164 for consistent verification
+    const formattedPhone = smsService.formatPhoneNumber(phone);
+    if (!formattedPhone) {
+      return res.status(400).json({
+        error: 'Invalid phone number format',
+        code: 'INVALID_PHONE_FORMAT',
+      });
+    }
+
     // 1. Verify OTP from pending registrations
     const pendingResult = await client.query(
       `SELECT * FROM pending_registrations
        WHERE phone_number = $1 AND otp = $2 AND expires_at > NOW()
        ORDER BY created_at DESC LIMIT 1`,
-      [phone, otp],
+      [formattedPhone, otp],
     );
 
     if (pendingResult.rows.length === 0) {
@@ -510,7 +527,7 @@ router.post('/register/guardian/verify', registrationRateLimiter, async (req, re
       `INSERT INTO guardians (name, phone, email, address, relationship, is_active, is_password_set)
        VALUES ($1, $2, $3, $4, $5, true, true)
        RETURNING id`,
-      [`${firstName} ${lastName}`, phone, email, address, relationship],
+      [`${firstName} ${lastName}`, formattedPhone, email, address, relationship],
     );
     const guardianId = guardianResult.rows[0].id;
 
@@ -541,14 +558,14 @@ router.post('/register/guardian/verify', registrationRateLimiter, async (req, re
       [generatedUsername, email, hashedPassword, roleId, guardianId, clinicId],
     );
 
-    // 4. Cleanup pending registration
-    await client.query('DELETE FROM pending_registrations WHERE phone_number = $1', [phone]);
+    // 4. Cleanup pending registration (use formatted phone for consistency)
+    await client.query('DELETE FROM pending_registrations WHERE phone_number = $1', [formattedPhone]);
 
     await client.query('COMMIT');
 
     // 5. Send Welcome Notifications (Non-blocking)
     emailService.sendWelcomeEmail(email, firstName).catch(e => console.error('Welcome email failed:', e.message));
-    smsService.sendWelcomeSMS(phone, firstName).catch(e => console.error('Welcome SMS failed:', e.message));
+    smsService.sendWelcomeSMS(formattedPhone, firstName).catch(e => console.error('Welcome SMS failed:', e.message));
 
     res.status(201).json({
       message: 'Registration successful. Welcome to Immunicare!',

@@ -308,6 +308,15 @@ async function upsertOtpCode({
 }
 
 async function sendSMS(phoneNumber, message, messageType = 'general', metadata = {}) {
+  if (pool.ended) {
+    const poolEndedError = 'Database pool is closed';
+    logger.error('SMS send aborted because database pool is closed', {
+      messageType,
+      metadata,
+    });
+    throw new Error(poolEndedError);
+  }
+
   const formattedPhone = formatPhoneNumber(phoneNumber);
   if (!formattedPhone) {
     const error = 'Invalid phone number format';
@@ -586,54 +595,86 @@ function createMissedAppointmentMessage(vaccineType, scheduledDate, options = {}
 }
 
 async function sendAppointmentReminder(appointment) {
-  const phoneNumber = appointment?.phoneNumber || appointment?.guardian_phone;
-  const childName =
-    appointment?.childName ||
-    appointment?.babyName ||
-    appointment?.infantName ||
-    appointment?.infant_first_name ||
-    'your child';
+  try {
+    const phoneNumber = appointment?.phoneNumber || appointment?.guardian_phone;
+    const childName =
+      appointment?.childName ||
+      appointment?.babyName ||
+      appointment?.infantName ||
+      appointment?.infant_first_name ||
+      'your child';
 
-  const guardianName = appointment?.guardianName || appointment?.guardian_name || 'Guardian';
+    const guardianName = appointment?.guardianName || appointment?.guardian_name || 'Guardian';
 
-  const vaccineType =
-    appointment?.vaccineName ||
-    appointment?.vaccine_name ||
-    appointment?.type ||
-    appointment?.appointment_type ||
-    appointment?.vaccine ||
-    'vaccination';
+    const vaccineType =
+      appointment?.vaccineName ||
+      appointment?.vaccine_name ||
+      appointment?.type ||
+      appointment?.appointment_type ||
+      appointment?.vaccine ||
+      'vaccination';
 
-  const hoursUntil = appointment?.hoursUntil || appointment?.hours_until || 48;
-  const location = appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
+    const hoursUntil = appointment?.hoursUntil || appointment?.hours_until || 48;
+    const location = appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
 
-  const scheduledDateSource =
-    appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
+    const scheduledDateSource =
+      appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
 
-  const message = createAppointmentReminderMessage(vaccineType, scheduledDateSource, {
-    hoursUntil,
-    childName,
-    guardianName,
-    location,
-  });
+    const message = createAppointmentReminderMessage(vaccineType, scheduledDateSource, {
+      hoursUntil,
+      childName,
+      guardianName,
+      location,
+    });
 
-  const sendResult = await sendSMS(phoneNumber, message, 'appointment_reminder', {
-    appointmentId: appointment?.appointmentId || appointment?.appointment_id,
-    infantName: childName,
-    vaccineType,
-    scheduledDate: scheduledDateSource,
-    hoursUntil,
-  });
+    const sendResult = await sendSMS(phoneNumber, message, 'appointment_reminder', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+      infantName: childName,
+      vaccineType,
+      scheduledDate: scheduledDateSource,
+      hoursUntil,
+    });
 
-  return {
-    success: true,
-    messageId: sendResult.messageId,
-    provider: sendResult.provider,
-  };
+    return {
+      success: true,
+      messageId: sendResult.messageId,
+      provider: sendResult.provider,
+    };
+  } catch (error) {
+    logger.error('Failed to send appointment reminder:', error);
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
 }
 
 async function sendMissedAppointmentNotification(appointment) {
   const phoneNumber = appointment?.phoneNumber || appointment?.guardian_phone;
+
+  // Defensive check for null/undefined phone number
+  if (!phoneNumber) {
+    logger.error('sendMissedAppointmentNotification called with no phone number', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+    });
+    return {
+      success: false,
+      error: 'No phone number provided',
+    };
+  }
+
+  const formattedPhone = formatPhoneNumber(phoneNumber);
+  if (!formattedPhone) {
+    logger.error('sendMissedAppointmentNotification called with invalid phone number', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+      phoneNumber,
+    });
+    return {
+      success: false,
+      error: 'Invalid phone number format',
+    };
+  }
+
   const childName =
     appointment?.childName ||
     appointment?.babyName ||
@@ -659,18 +700,32 @@ async function sendMissedAppointmentNotification(appointment) {
     location,
   });
 
-  const sendResult = await sendSMS(phoneNumber, message, 'missed_appointment', {
-    appointmentId: appointment?.appointmentId || appointment?.appointment_id,
-    infantName: childName,
-    vaccineType,
-    scheduledDate: scheduledDateSource,
-  });
+  try {
+    const sendResult = await sendSMS(phoneNumber, message, 'missed_appointment', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+      infantName: childName,
+      vaccineType,
+      scheduledDate: scheduledDateSource,
+      guardianName: appointment?.guardianName || appointment?.guardian_name || null,
+      location,
+    });
 
-  return {
-    success: true,
-    messageId: sendResult.messageId,
-    provider: sendResult.provider,
-  };
+    return {
+      success: true,
+      messageId: sendResult.messageId,
+      provider: sendResult.provider,
+    };
+  } catch (error) {
+    logger.error('Failed to send missed appointment SMS', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+      phoneNumber,
+      error: error.message,
+    });
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
 }
 
 async function sendAppointmentConfirmation(payload) {
@@ -792,6 +847,9 @@ const smsService = {
 
   validateAndFormatPhoneNumber,
   formatPhoneNumber,
+  maskPhone,
+  buildOtpMessage,
+  formatReminderDateLabel,
   generateVerificationCode,
   generateResetToken,
   createAppointmentReminderMessage,

@@ -157,14 +157,9 @@ async function testCascadingDelete() {
     console.error('Test error:', error.message);
     console.error(error.stack);
   } finally {
-    // Close pool using the exported close function
-    const { close } = require('./db');
-    if (close) {
-      await close();
-    } else {
-      // Pool is the default export
-      await db.end();
-    }
+    // NOTE: db.end() is removed to prevent it from closing the connection pool
+    // for the entire application, which would cause the running server to fail.
+    // This script will hang after execution; use Ctrl+C to exit.
   }
 }
 

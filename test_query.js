@@ -21,7 +21,9 @@ async function testQuery() {
     console.log('Error:', error.message);
     console.log('Detail:', error.detail);
   } finally {
-    process.exit();
+    // NOTE: process.exit() is removed to prevent it from killing the main server process.
+    // This script will hang after execution; use Ctrl+C to exit.
+    // process.exit();
   }
 }
 

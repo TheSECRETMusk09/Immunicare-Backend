@@ -13,6 +13,31 @@ describe('SMS Notification System Tests', () => {
     smsService = require('../services/smsService');
   });
 
+  describe('Missed Appointment Defensive Handling', () => {
+    test('should fail gracefully when missed appointment notification has no phone number', async () => {
+      const result = await smsService.sendMissedAppointmentNotification({
+        appointmentId: 123,
+        childName: 'Test Child',
+        scheduledDate: new Date().toISOString(),
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('No phone number provided');
+    });
+
+    test('should fail gracefully when missed appointment notification phone format is invalid', async () => {
+      const result = await smsService.sendMissedAppointmentNotification({
+        phoneNumber: 'invalid-phone',
+        appointmentId: 456,
+        childName: 'Test Child',
+        scheduledDate: new Date().toISOString(),
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Invalid phone number format');
+    });
+  });
+
   describe('OTP Generation and Message Format', () => {
     test('should generate 6-digit OTP code', () => {
       const code = smsService.generateVerificationCode(6);

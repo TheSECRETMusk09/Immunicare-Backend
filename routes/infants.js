@@ -252,6 +252,9 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
   try {
     console.log('[Infants API] Fetching all infants - User:', req.user?.id, 'Role:', req.user?.role, 'Role Type:', req.user?.role_type);
 
+    const limit = parseInt(req.query.limit, 10) || 100;
+    const offset = parseInt(req.query.offset, 10) || 0;
+
     const result = await pool.query(
       `
         SELECT
@@ -282,15 +285,30 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE p.is_active = true
         ORDER BY p.created_at DESC
+        LIMIT $1 OFFSET $2
       `,
+      [limit, offset],
     );
+
+    const totalResult = await pool.query('SELECT COUNT(*) FROM patients WHERE is_active = true');
+    const total = parseInt(totalResult.rows[0].count, 10);
 
     console.log(`[Infants API] Found ${result.rows.length} infants`);
     if (result.rows.length > 0) {
       console.log('[Infants API] First infant sample:', { id: result.rows[0].id, name: result.rows[0].first_name + ' ' + result.rows[0].last_name });
     }
 
-    res.json({ success: true, data: result.rows || [] });
+    res.json({
+      success: true,
+      data: result.rows || [],
+      pagination: {
+        total,
+        limit,
+        offset,
+        page: Math.floor(offset / limit) + 1,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
     console.error('[Infants API] Error fetching infants:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch infants', data: [] });
@@ -342,6 +360,9 @@ router.get('/stats/overview', requirePermission('patient:view'), async (_req, re
 // Get infants with upcoming vaccinations
 router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (_req, res) => {
   try {
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
+
     const result = await pool.query(
       `
         SELECT DISTINCT
@@ -358,7 +379,9 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (_
           AND vr.next_due_date <= CURRENT_DATE + INTERVAL '30 days'
           AND vr.is_active = true
         ORDER BY vr.next_due_date ASC
+        LIMIT $1 OFFSET $2
       `,
+      [limit, offset],
     );
 
     res.json({ success: true, data: result.rows || [] });
@@ -1188,6 +1211,9 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
 router.get('/search/:query', requirePermission('patient:view'), async (req, res) => {
   try {
     const { query } = req.params;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
+
     const result = await pool.query(
       `
         SELECT
@@ -1218,8 +1244,9 @@ router.get('/search/:query', requirePermission('patient:view'), async (req, res)
             g.name ILIKE $1
           )
         ORDER BY p.created_at DESC
+        LIMIT $2 OFFSET $3
       `,
-      [`%${query}%`],
+      [`%${query}%`, limit, offset],
     );
 
     res.json({ success: true, data: result.rows || [] });

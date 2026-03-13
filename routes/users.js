@@ -867,49 +867,68 @@ router.get('/', requireSystemAdmin, async (req, res) => {
 });
 
 // Get all guardians (including infant count)
+// NOTE: Removed synchronizeGuardianUserAccounts() call as it was causing timeouts
+// The synchronization should be done asynchronously via background job, not on every request
 router.get('/guardians', requireSystemAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    // Parse pagination parameters with safe defaults
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const offset = (page - 1) * limit;
 
-    await synchronizeGuardianUserAccounts(client);
+    // Query guardians with pagination
+    const result = await client.query(
+      `
+        SELECT
+          g.id,
+          COALESCE(linked_user.username, '') as username,
+          g.name, g.phone, g.email, g.address, g.relationship,
+          g.is_password_set, g.must_change_password, g.last_login,
+          g.is_active, g.created_at, g.updated_at,
+          COALESCE(
+            (
+              SELECT COUNT(*)
+              FROM patients i
+              WHERE i.guardian_id = g.id
+                AND i.is_active = true
+            ),
+            0
+          )::int as infant_count
+        FROM guardians g
+        LEFT JOIN LATERAL (
+          SELECT u.username
+          FROM users u
+          WHERE u.guardian_id = g.id
+          ORDER BY u.id DESC
+          LIMIT 1
+        ) linked_user ON true
+        ORDER BY g.created_at DESC
+        LIMIT $1 OFFSET $2
+      `,
+      [limit, offset],
+    );
 
-    const result = await client.query(`
-      SELECT
-        g.id,
-        COALESCE(linked_user.username, '') as username,
-        g.name, g.phone, g.email, g.address, g.relationship,
-        g.is_password_set, g.must_change_password, g.last_login,
-        g.is_active, g.created_at, g.updated_at,
-        COALESCE(
-          (
-            SELECT COUNT(*)
-            FROM patients i
-            WHERE i.guardian_id = g.id
-              AND i.is_active = true
-          ),
-          0
-        )::int as infant_count
-      FROM guardians g
-      LEFT JOIN LATERAL (
-        SELECT u.username
-        FROM users u
-        WHERE u.guardian_id = g.id
-        ORDER BY u.id DESC
-        LIMIT 1
-      ) linked_user ON true
-      ORDER BY g.created_at DESC
-    `);
+    // Get total count for pagination metadata
+    const countResult = await client.query('SELECT COUNT(*)::int as total FROM guardians');
+    const total = parseInt(countResult.rows[0].total, 10);
+    const totalPages = Math.ceil(total / limit);
 
-    await client.query('COMMIT');
-
-    res.json({ success: true, data: result.rows });
+    res.json({
+      success: true,
+      data: result.rows,
+      meta: {
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1,
+        },
+      },
+    });
   } catch (error) {
-    try {
-      await client.query('ROLLBACK');
-    } catch (rollbackError) {
-      console.error('Rollback error while fetching guardians:', rollbackError);
-    }
     console.error('Error fetching guardians:', error);
     res.status(500).json({ success: false, error: error.message, data: [] });
   } finally {
@@ -1311,38 +1330,52 @@ router.post(
 );
 
 // Get all system users (admin, doctor, nurse, staff)
+// NOTE: Removed synchronizeGuardianUserAccounts() call as it was causing timeouts
 router.get('/system-users', requireSystemAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    // Parse pagination parameters with safe defaults
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const offset = (page - 1) * limit;
 
-    await synchronizeGuardianUserAccounts(client);
+    // Query system users with pagination
+    const result = await client.query(
+      `
+        SELECT u.id, u.username, u.contact, u.last_login, u.created_at, u.updated_at, u.is_active,
+               u.guardian_id,
+               u.role_id, r.name as role_name, r.display_name, u.clinic_id, c.name as clinic_name
+        FROM users u
+        JOIN roles r ON u.role_id = r.id
+        LEFT JOIN clinics c ON u.clinic_id = c.id
+        ORDER BY u.created_at DESC
+        LIMIT $1 OFFSET $2
+      `,
+      [limit, offset],
+    );
 
-    const result = await client.query(`
-      SELECT u.id, u.username, u.contact, u.last_login, u.created_at, u.updated_at, u.is_active,
-             u.guardian_id,
-             u.role_id, r.name as role_name, r.display_name, u.clinic_id, c.name as clinic_name
-      FROM users u
-      JOIN roles r ON u.role_id = r.id
-      LEFT JOIN clinics c ON u.clinic_id = c.id
-      ORDER BY u.created_at DESC
-    `);
-
-    await client.query('COMMIT');
+    // Get total count
+    const countResult = await client.query('SELECT COUNT(*)::int as total FROM users');
+    const total = parseInt(countResult.rows[0].total, 10);
+    const totalPages = Math.ceil(total / limit);
 
     return res.json({
       success: true,
       data: result.rows.map(buildSystemUserResponse),
       meta: {
         count: result.rows.length,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1,
+        },
       },
     });
   } catch (error) {
-    try {
-      await client.query('ROLLBACK');
-    } catch (rollbackError) {
-      console.error('Rollback error while fetching system users:', rollbackError);
-    }
+    console.error('Error fetching system users:', error);
     return respondSystemUserError(res, {
       statusCode: 500,
       error: 'Failed to fetch system users',

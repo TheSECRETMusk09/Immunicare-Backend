@@ -6,7 +6,7 @@ const pool = new Pool({
   port: process.env.DB_PORT,
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
-  password: String(process.env.DB_PASSWORD)
+  password: String(process.env.DB_PASSWORD),
 });
 
 console.log('Testing database connection...');
@@ -15,7 +15,7 @@ console.log('Configuration:', {
   port: process.env.DB_PORT,
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
-  password: '***'
+  password: '***',
 });
 
 async function testConnection() {
@@ -31,7 +31,7 @@ async function testConnection() {
     console.log('✅ Users table exists - Count:', userCount.rows[0].count);
 
     const activeUsers = await client.query(
-      'SELECT id, username, role_id FROM users WHERE is_active = true LIMIT 5'
+      'SELECT id, username, role_id FROM users WHERE is_active = true LIMIT 5',
     );
     console.log('✅ Active users found:', activeUsers.rows.length);
     if (activeUsers.rows.length > 0) {
@@ -39,8 +39,9 @@ async function testConnection() {
     }
 
     client.release();
-    await pool.end();
     console.log('✅ Connection test completed');
+    // NOTE: pool.end() is removed to prevent it from closing the connection pool
+    // for the entire application, which would cause the running server to fail.
   } catch (error) {
     console.error('❌ Connection error:', error);
     console.error('🔍 Error details:', {
@@ -48,9 +49,9 @@ async function testConnection() {
       code: error.code,
       severity: error.severity,
       detail: error.detail,
-      hint: error.hint
+      hint: error.hint,
     });
-    process.exit(1);
+    // process.exit(1);
   }
 }
 

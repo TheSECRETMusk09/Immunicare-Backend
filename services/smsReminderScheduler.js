@@ -126,6 +126,11 @@ async function sendAppointmentReminder(appointment) {
   }
 
   const formattedPhone = smsService.formatPhoneNumber(guardian_phone);
+  if (!formattedPhone) {
+    logger.warn(`Invalid guardian phone for appointment ${appointment_id}: ${guardian_phone}`);
+    return { success: false, reason: 'invalid_phone' };
+  }
+
   const childName = `${infant_first_name} ${infant_last_name}`;
 
   const message = smsService.createAppointmentReminderMessage(
@@ -143,7 +148,12 @@ async function sendAppointmentReminder(appointment) {
 
     logger.info(`Appointment reminder sent to ${formattedPhone} for appointment ${appointment_id}`);
 
-    return { success: true, messageId: result.messageId };
+    return {
+      success: true,
+      messageId: result.messageId,
+      provider: result.provider,
+      to: formattedPhone,
+    };
   } catch (error) {
     logger.error('Failed to send appointment reminder:', error.message);
     return { success: false, reason: error.message };
@@ -191,13 +201,28 @@ async function processRemindersForHours(hoursBefore) {
         sentCount++;
         markReminderSent(appointment.appointment_id, hoursBefore);
 
+        // Persist reminder status to appointment record for idempotency across restarts
+        const flagColumn = `reminder_sent_${hoursBefore}h`;
+        try {
+          await pool.query(
+            // Use a dynamic column name safely; hoursBefore is from a controlled array.
+            `UPDATE appointments SET ${flagColumn} = TRUE WHERE id = $1`,
+            [appointment.appointment_id],
+          );
+        } catch (dbError) {
+          // Gracefully handle if column doesn't exist (code 42703 for undefined column)
+          if (dbError.code !== '42703') {
+            logger.warn(`Could not update reminder flag ${flagColumn} for appointment ${appointment.appointment_id}`, { error: dbError.message });
+          }
+        }
+
         // Log to database
         await pool.query(
           `INSERT INTO sms_logs
            (phone_number, message_content, message_type, status, provider, external_message_id, metadata, sent_at)
            VALUES ($1, $2, $3, 'sent', $4, $5, $6, NOW())`,
           [
-            appointment.guardian_phone,
+            result.to || appointment.guardian_phone,
             'Appointment reminder',
             'appointment_reminder',
             result.provider || 'sms',

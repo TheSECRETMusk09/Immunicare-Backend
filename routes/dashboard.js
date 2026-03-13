@@ -691,7 +691,8 @@ router.get('/admin/vaccination-monitoring', authenticateToken, requirePermission
       status: req.query.status || null,
       dateFrom: req.query.date_from || null,
       dateTo: req.query.date_to || null,
-      limit: req.query.limit || 100,
+      limit: req.query.limit || 50,
+      offset: req.query.offset ? parseInt(req.query.offset, 10) : 0,
     });
 
     const summary = data.reduce(

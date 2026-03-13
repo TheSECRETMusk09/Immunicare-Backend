@@ -13,7 +13,7 @@ const path = require('path');
 const testResults = {
   passed: 0,
   failed: 0,
-  tests: []
+  tests: [],
 };
 
 /**
@@ -25,7 +25,7 @@ const logTest = (name, passed, message, details = null) => {
     passed,
     message,
     details,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   };
   testResults.tests.push(result);
 
@@ -52,7 +52,7 @@ const testRefreshTokenService = async () => {
     const testUser = {
       id: 999999,
       email: 'test@example.com',
-      role: 'test'
+      role: 'test',
     };
 
     const refreshToken = refreshTokenService.generateRefreshToken(testUser);
@@ -60,7 +60,7 @@ const testRefreshTokenService = async () => {
       'Generate Refresh Token',
       !!refreshToken && refreshToken.length > 0,
       'Refresh token generated successfully',
-      `Token length: ${refreshToken.length}`
+      `Token length: ${refreshToken.length}`,
     );
 
     // Test 1.2: Verify refresh token
@@ -70,7 +70,7 @@ const testRefreshTokenService = async () => {
         'Verify Refresh Token',
         decoded && decoded.id === testUser.id,
         'Refresh token verified successfully',
-        `Decoded ID: ${decoded.id}`
+        `Decoded ID: ${decoded.id}`,
       );
     } catch (error) {
       logTest('Verify Refresh Token', false, 'Failed to verify refresh token', error.message);
@@ -82,13 +82,13 @@ const testRefreshTokenService = async () => {
         testUser.id,
         refreshToken,
         'Test Agent',
-        '127.0.0.1'
+        '127.0.0.1',
       );
       logTest(
         'Store Refresh Token',
         !!tokenId,
         'Refresh token stored successfully',
-        `Token ID: ${tokenId}`
+        `Token ID: ${tokenId}`,
       );
     } catch (error) {
       logTest('Store Refresh Token', false, 'Failed to store refresh token', error.message);
@@ -101,7 +101,7 @@ const testRefreshTokenService = async () => {
         'Get Refresh Token',
         !!tokenRecord && tokenRecord.user_id === testUser.id,
         'Refresh token retrieved successfully',
-        `User ID: ${tokenRecord.user_id}`
+        `User ID: ${tokenRecord.user_id}`,
       );
     } catch (error) {
       logTest('Get Refresh Token', false, 'Failed to get refresh token', error.message);
@@ -114,7 +114,7 @@ const testRefreshTokenService = async () => {
       logTest(
         'Revoke Refresh Token',
         !revokedToken || revokedToken.is_revoked === true,
-        'Refresh token revoked successfully'
+        'Refresh token revoked successfully',
       );
     } catch (error) {
       logTest('Revoke Refresh Token', false, 'Failed to revoke refresh token', error.message);
@@ -127,19 +127,19 @@ const testRefreshTokenService = async () => {
         testUser.id,
         newRefreshToken,
         'Test Agent',
-        '127.0.0.1'
+        '127.0.0.1',
       );
 
       const refreshResult = await refreshTokenService.refreshAccessToken(
         newRefreshToken,
         'Test Agent',
-        '127.0.0.1'
+        '127.0.0.1',
       );
       logTest(
         'Refresh Access Token',
         !!refreshResult && !!refreshResult.accessToken && !!refreshResult.refreshToken,
         'Access token refreshed successfully with token rotation',
-        `New access token length: ${refreshResult.accessToken.length}`
+        `New access token length: ${refreshResult.accessToken.length}`,
       );
     } catch (error) {
       logTest('Refresh Access Token', false, 'Failed to refresh access token', error.message);
@@ -163,7 +163,7 @@ const testDatabaseEncryption = async () => {
         'pgcrypto Installation',
         pgcryptoCheck.rows[0].installed === true,
         'pgcrypto extension is installed',
-        `Version: ${pgcryptoCheck.rows[0].version || 'N/A'}`
+        `Version: ${pgcryptoCheck.rows[0].version || 'N/A'}`,
       );
     } catch (error) {
       logTest('pgcrypto Installation', false, 'pgcrypto extension check failed', error.message);
@@ -177,7 +177,7 @@ const testDatabaseEncryption = async () => {
         'Generate Encryption Key',
         !!newKey && newKey.length > 0,
         'Encryption key generated successfully',
-        `Key length: ${newKey.length}`
+        `Key length: ${newKey.length}`,
       );
     } catch (error) {
       logTest('Generate Encryption Key', false, 'Failed to generate encryption key', error.message);
@@ -191,7 +191,7 @@ const testDatabaseEncryption = async () => {
         'Encrypt Data',
         !!encryptedData && encryptedData !== testData,
         'Data encrypted successfully',
-        `Encrypted length: ${encryptedData.length}`
+        `Encrypted length: ${encryptedData.length}`,
       );
     } catch (error) {
       logTest('Encrypt Data', false, 'Failed to encrypt data', error.message);
@@ -203,13 +203,13 @@ const testDatabaseEncryption = async () => {
       const encryptedData = await encryptionService.encryptData(testData, 'test_encryption_key');
       const decryptedData = await encryptionService.decryptData(
         encryptedData,
-        'test_encryption_key'
+        'test_encryption_key',
       );
       logTest(
         'Decrypt Data',
         decryptedData === testData,
         'Data decrypted successfully',
-        `Decrypted: ${decryptedData}`
+        `Decrypted: ${decryptedData}`,
       );
     } catch (error) {
       logTest('Decrypt Data', false, 'Failed to decrypt data', error.message);
@@ -222,14 +222,14 @@ const testDatabaseEncryption = async () => {
         'Get Encryption Statistics',
         Array.isArray(stats) && stats.length > 0,
         'Encryption statistics retrieved successfully',
-        `Metrics count: ${stats.length}`
+        `Metrics count: ${stats.length}`,
       );
     } catch (error) {
       logTest(
         'Get Encryption Statistics',
         false,
         'Failed to get encryption statistics',
-        error.message
+        error.message,
       );
     }
 
@@ -240,14 +240,14 @@ const testDatabaseEncryption = async () => {
         'Verify Encryption Integrity',
         Array.isArray(integrity) && integrity.length > 0,
         'Encryption integrity verified successfully',
-        `Tables checked: ${integrity.length}`
+        `Tables checked: ${integrity.length}`,
       );
     } catch (error) {
       logTest(
         'Verify Encryption Integrity',
         false,
         'Failed to verify encryption integrity',
-        error.message
+        error.message,
       );
     }
 
@@ -259,7 +259,7 @@ const testDatabaseEncryption = async () => {
         'Backup Encryption Keys',
         Array.isArray(backupData) && backupData.length > 0,
         'Encryption keys backed up successfully',
-        `Keys backed up: ${backupData.length}`
+        `Keys backed up: ${backupData.length}`,
       );
     } catch (error) {
       logTest('Backup Encryption Keys', false, 'Failed to backup encryption keys', error.message);
@@ -287,7 +287,7 @@ const testSSLConfiguration = () => {
       'SSL Certificate Files',
       keyExists && certExists,
       'SSL certificate files exist',
-      `Key: ${keyExists ? '✓' : '✗'}, Cert: ${certExists ? '✓' : '✗'}`
+      `Key: ${keyExists ? '✓' : '✗'}, Cert: ${certExists ? '✓' : '✗'}`,
     );
 
     // Test 3.2: Check environment variables
@@ -300,7 +300,7 @@ const testSSLConfiguration = () => {
       'SSL Environment Variables',
       !!sslKeyPathEnv && !!sslCertPathEnv && !!httpsPort,
       'SSL environment variables are configured',
-      `ENABLE_HTTPS: ${enableHttps}, HTTPS_PORT: ${httpsPort}`
+      `ENABLE_HTTPS: ${enableHttps}, HTTPS_PORT: ${httpsPort}`,
     );
 
     // Test 3.3: Check server.js HTTPS support
@@ -315,7 +315,7 @@ const testSSLConfiguration = () => {
       'Server HTTPS Support',
       hasHttpsModule && hasHttpsServer && hasSslOptions,
       'Server.js has HTTPS support',
-      `HTTPS module: ${hasHttpsModule}, HTTPS server: ${hasHttpsServer}, SSL options: ${hasSslOptions}`
+      `HTTPS module: ${hasHttpsModule}, HTTPS server: ${hasHttpsServer}, SSL options: ${hasSslOptions}`,
     );
   } catch (error) {
     logTest('SSL/TLS Configuration', false, 'SSL/TLS configuration test failed', error.message);
@@ -340,7 +340,7 @@ const testAuthEndpointEnhancements = () => {
       'Logout Endpoint Revokes Refresh Tokens',
       hasRevokeRefreshToken && hasClearRefreshTokenCookie,
       'Logout endpoint revokes refresh tokens',
-      `Revoke function: ${hasRevokeRefreshToken}, Clear cookie: ${hasClearRefreshTokenCookie}`
+      `Revoke function: ${hasRevokeRefreshToken}, Clear cookie: ${hasClearRefreshTokenCookie}`,
     );
 
     // Test 4.2: Check refresh endpoint uses refresh token service
@@ -351,7 +351,7 @@ const testAuthEndpointEnhancements = () => {
       'Refresh Endpoint Uses Refresh Token Service',
       hasRefreshAccessToken && hasRefreshTokenService,
       'Refresh endpoint uses refresh token service',
-      `Refresh function: ${hasRefreshAccessToken}, Service call: ${hasRefreshTokenService}`
+      `Refresh function: ${hasRefreshAccessToken}, Service call: ${hasRefreshTokenService}`,
     );
 
     // Test 4.3: Check token rotation
@@ -362,14 +362,14 @@ const testAuthEndpointEnhancements = () => {
       'Token Rotation',
       hasTokenRotation,
       'Token rotation is implemented',
-      'Both refresh and access tokens are rotated'
+      'Both refresh and access tokens are rotated',
     );
   } catch (error) {
     logTest(
       'Auth Endpoint Enhancements',
       false,
       'Auth endpoint enhancements test failed',
-      error.message
+      error.message,
     );
   }
 };
@@ -386,7 +386,7 @@ const testSecurityHeaders = () => {
 
     // Test 5.1: Check for secure cookie settings
     const hasSecureCookie = serverJsContent.includes(
-      'secure: process.env.NODE_ENV === \'production\''
+      'secure: process.env.NODE_ENV === \'production\'',
     );
     const hasHttpOnlyCookie = serverJsContent.includes('httpOnly: true');
     const hasSameSiteCookie = serverJsContent.includes('sameSite: \'strict\'');
@@ -395,7 +395,7 @@ const testSecurityHeaders = () => {
       'Secure Cookie Settings',
       hasSecureCookie && hasHttpOnlyCookie && hasSameSiteCookie,
       'Secure cookie settings are configured',
-      `Secure: ${hasSecureCookie}, HttpOnly: ${hasHttpOnlyCookie}, SameSite: ${hasSameSiteCookie}`
+      `Secure: ${hasSecureCookie}, HttpOnly: ${hasHttpOnlyCookie}, SameSite: ${hasSameSiteCookie}`,
     );
 
     // Test 5.2: Check for TLS version enforcement
@@ -405,7 +405,7 @@ const testSecurityHeaders = () => {
       'TLS Version Enforcement',
       hasTLSVersion,
       'TLS 1.2+ is enforced',
-      'Minimum TLS version: 1.2'
+      'Minimum TLS version: 1.2',
     );
 
     // Test 5.3: Check for strong cipher suites
@@ -415,7 +415,7 @@ const testSecurityHeaders = () => {
       'Strong Cipher Suites',
       hasStrongCiphers,
       'Strong cipher suites are configured',
-      'ECDHE cipher suites are used'
+      'ECDHE cipher suites are used',
     );
   } catch (error) {
     logTest('Security Headers', false, 'Security headers test failed', error.message);
@@ -433,7 +433,7 @@ const generateTestReport = () => {
   console.log(`Passed: ${testResults.passed}`);
   console.log(`Failed: ${testResults.failed}`);
   console.log(
-    `Success Rate: ${((testResults.passed / (testResults.passed + testResults.failed)) * 100).toFixed(2)}%`
+    `Success Rate: ${((testResults.passed / (testResults.passed + testResults.failed)) * 100).toFixed(2)}%`,
   );
   console.log();
 
@@ -506,7 +506,9 @@ const runAllTests = async () => {
 
     return false;
   } finally {
-    await pool.end();
+    // NOTE: pool.end() is removed to prevent it from closing the connection pool
+    // for the entire application, which would cause the running server to fail.
+    // This script will hang after execution; use Ctrl+C to exit.
   }
 };
 

@@ -77,8 +77,9 @@ async function test() {
     log(`Error: ${err.message}`);
     log(err.stack);
   } finally {
-    await pool.end();
-
+    // NOTE: pool.end() is removed to prevent it from closing the connection pool
+    // for the entire application, which would cause the running server to fail.
+    // This script will hang after execution; use Ctrl+C to exit.
     // Write to file
     fs.writeFileSync('login_diagnosis_result.txt', output.join('\n'));
     console.log('\nResult written to login_diagnosis_result.txt');

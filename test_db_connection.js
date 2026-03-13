@@ -7,7 +7,7 @@ const pool = new Pool({
   port: process.env.DB_PORT,
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
-  password: String(process.env.DB_PASSWORD)
+  password: String(process.env.DB_PASSWORD),
 });
 
 async function testConnection() {
@@ -38,8 +38,9 @@ async function testConnection() {
     console.error('\n✗ Database connection failed!');
     console.error('Error:', error.message);
     console.error('Code:', error.code);
-    await pool.end().catch(() => {});
-    process.exit(1);
+    // NOTE: pool.end() and process.exit() are removed to prevent side effects
+    // on a running server process. This script will hang; use Ctrl+C to exit.
+    // process.exit(1);
   }
 }
 

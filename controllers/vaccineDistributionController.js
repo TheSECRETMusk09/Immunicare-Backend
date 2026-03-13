@@ -7,6 +7,7 @@
 
 const db = require('../db');
 const ExcelJS = require('exceljs');
+const { parsePagination, buildPaginationMeta, getPaginationClause } = require('../utils/pagination');
 
 // Helper function to generate unique numbers
 const generateRequestNumber = () => {
@@ -87,7 +88,7 @@ exports.createDistributionRequest = async (req, res) => {
       urgencyLevel || 'normal',
       reasonForRequest,
       targetDeliveryDate,
-      userId
+      userId,
     ];
 
     const result = await db.query(query, values);
@@ -95,13 +96,13 @@ exports.createDistributionRequest = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Distribution request created successfully',
-      data: result.rows[0]
+      data: result.rows[0],
     });
   } catch (error) {
     console.error('Create distribution request error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create distribution request'
+      error: 'Failed to create distribution request',
     });
   }
 };
@@ -119,7 +120,7 @@ exports.getDistributionRequests = async (req, res) => {
     // If healthcare worker, only see own requests
     // If admin/city, see all requests
     let query = `
-            SELECT 
+            SELECT
                 dr.*,
                 v.name as vaccine_name,
                 v.code as vaccine_code
@@ -174,13 +175,13 @@ exports.getDistributionRequests = async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows
+      data: result.rows,
     });
   } catch (error) {
     console.error('Get distribution requests error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch distribution requests'
+      error: 'Failed to fetch distribution requests',
     });
   }
 };
@@ -198,13 +199,13 @@ exports.approveDistributionRequest = async (req, res) => {
     if (!['approved', 'rejected', 'partial'].includes(status)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid status. Must be approved, rejected, or partial'
+        error: 'Invalid status. Must be approved, rejected, or partial',
       });
     }
 
     const query = `
             UPDATE vaccine_distribution_requests
-            SET 
+            SET
                 status = $1,
                 approved_by = $2,
                 approved_at = CURRENT_TIMESTAMP,
@@ -221,20 +222,20 @@ exports.approveDistributionRequest = async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Distribution request not found'
+        error: 'Distribution request not found',
       });
     }
 
     res.json({
       success: true,
       message: `Request ${status} successfully`,
-      data: result.rows[0]
+      data: result.rows[0],
     });
   } catch (error) {
     console.error('Approve distribution request error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to process request'
+      error: 'Failed to process request',
     });
   }
 };
@@ -259,7 +260,7 @@ exports.createDistribution = async (req, res) => {
       temperatureDuringTransport,
       vehicleNumber,
       courierName,
-      distributionRequestId
+      distributionRequestId,
     } = req.body;
 
     const sourceClinicId = req.user.clinic_id;
@@ -267,7 +268,7 @@ exports.createDistribution = async (req, res) => {
 
     // Get destination barangay name
     const destResult = await db.query('SELECT name FROM clinics WHERE id = $1', [
-      destinationBarangayId
+      destinationBarangayId,
     ]);
 
     // Get source clinic name
@@ -311,7 +312,7 @@ exports.createDistribution = async (req, res) => {
       vehicleNumber,
       courierName,
       userId,
-      distributionRequestId
+      distributionRequestId,
     ];
 
     const result = await db.query(query, values);
@@ -324,26 +325,26 @@ exports.createDistribution = async (req, res) => {
                 quantity_before, quantity_after, reference_type, reference_id,
                 source_type, destination_type, performed_by
             )
-            SELECT 
+            SELECT
                 'TRANSFER_OUT', $1, $2, -$3,
                 (SELECT COALESCE(SUM(current_stock), 0) FROM vaccine_inventory WHERE clinic_id = $2),
                 (SELECT COALESCE(SUM(current_stock), 0) - $3 FROM vaccine_inventory WHERE clinic_id = $2),
                 'distribution', $4,
                 'city_cho', 'barangay_bhc', $5
         `,
-      [vaccineId, sourceClinicId, quantity, result.rows[0].id, userId]
+      [vaccineId, sourceClinicId, quantity, result.rows[0].id, userId],
     );
 
     res.status(201).json({
       success: true,
       message: 'Distribution created and dispatched successfully',
-      data: result.rows[0]
+      data: result.rows[0],
     });
   } catch (error) {
     console.error('Create distribution error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create distribution'
+      error: 'Failed to create distribution',
     });
   }
 };
@@ -362,13 +363,13 @@ exports.receiveDistribution = async (req, res) => {
     // Get distribution details
     const distResult = await db.query(
       'SELECT * FROM vaccine_distributions WHERE id = $1 AND destination_barangay_id = $2',
-      [id, clinicId]
+      [id, clinicId],
     );
 
     if (distResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Distribution not found or not authorized'
+        error: 'Distribution not found or not authorized',
       });
     }
 
@@ -377,7 +378,7 @@ exports.receiveDistribution = async (req, res) => {
     // Update distribution status
     const query = `
             UPDATE vaccine_distributions
-            SET 
+            SET
                 status = 'received',
                 received_by = $1,
                 received_at = CURRENT_TIMESTAMP,
@@ -413,8 +414,8 @@ exports.receiveDistribution = async (req, res) => {
           distribution.batch_number,
           distribution.expiry_date,
           distribution.quantity_distributed,
-          userId
-        ]
+          userId,
+        ],
       );
     }
 
@@ -426,11 +427,11 @@ exports.receiveDistribution = async (req, res) => {
                 quantity_before, quantity_after, reference_type, reference_id,
                 source_type, destination_type, performed_by
             )
-            SELECT 
+            SELECT
                 'TRANSFER_IN', $1, $2, $3,
-                COALESCE((SELECT current_stock FROM vaccine_inventory_excel 
+                COALESCE((SELECT current_stock FROM vaccine_inventory_excel
                           WHERE clinic_id = $2 AND vaccine_id = $1), 0),
-                COALESCE((SELECT current_stock FROM vaccine_inventory_excel 
+                COALESCE((SELECT current_stock FROM vaccine_inventory_excel
                           WHERE clinic_id = $2 AND vaccine_id = $1), 0) + $3,
                 'distribution', $4,
                 'city_cho', 'barangay_bhc', $5
@@ -440,20 +441,20 @@ exports.receiveDistribution = async (req, res) => {
         clinicId,
         distribution.quantity_distributed,
         distribution.id,
-        userId
-      ]
+        userId,
+      ],
     );
 
     res.json({
       success: true,
       message: 'Distribution received successfully',
-      data: result.rows[0]
+      data: result.rows[0],
     });
   } catch (error) {
     console.error('Receive distribution error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to receive distribution'
+      error: 'Failed to receive distribution',
     });
   }
 };
@@ -469,7 +470,7 @@ exports.getDistributions = async (req, res) => {
     const userRole = req.user.role;
 
     let query = `
-            SELECT 
+            SELECT
                 d.*,
                 v.name as vaccine_name,
                 v.code as vaccine_code,
@@ -514,13 +515,13 @@ exports.getDistributions = async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows
+      data: result.rows,
     });
   } catch (error) {
     console.error('Get distributions error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch distributions'
+      error: 'Failed to fetch distributions',
     });
   }
 };
@@ -577,7 +578,7 @@ exports.recordTemperatureReading = async (req, res) => {
       alertType !== null,
       alertType,
       alertMessage,
-      userId
+      userId,
     ];
 
     const result = await db.query(query, values);
@@ -589,15 +590,15 @@ exports.recordTemperatureReading = async (req, res) => {
         alertType !== null
           ? {
             type: alertType,
-            message: alertMessage
+            message: alertMessage,
           }
-          : null
+          : null,
     });
   } catch (error) {
     console.error('Record temperature error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to record temperature'
+      error: 'Failed to record temperature',
     });
   }
 };
@@ -622,7 +623,7 @@ exports.createPeriodicReport = async (req, res) => {
       coverageRates,
       coldChainStatus,
       challenges,
-      equipmentIssues
+      equipmentIssues,
     } = req.body;
 
     const clinicId = req.user.clinic_id;
@@ -711,7 +712,7 @@ exports.createPeriodicReport = async (req, res) => {
       JSON.stringify(challenges?.stockoutVaccines || []),
       challenges?.challengesEncountered,
       challenges?.recommendations,
-      userId
+      userId,
     ];
 
     const result = await db.query(query, values);
@@ -719,13 +720,13 @@ exports.createPeriodicReport = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Periodic report submitted successfully',
-      data: result.rows[0]
+      data: result.rows[0],
     });
   } catch (error) {
     console.error('Create periodic report error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create periodic report'
+      error: 'Failed to create periodic report',
     });
   }
 };
@@ -741,7 +742,7 @@ exports.getPeriodicReports = async (req, res) => {
     const clinicId = req.user.clinic_id;
 
     let query = `
-            SELECT 
+            SELECT
                 br.*,
                 c.name as barangay_name,
                 u.username as submitted_by_name
@@ -797,13 +798,13 @@ exports.getPeriodicReports = async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows
+      data: result.rows,
     });
   } catch (error) {
     console.error('Get periodic reports error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch reports'
+      error: 'Failed to fetch reports',
     });
   }
 };
@@ -821,13 +822,13 @@ exports.reviewPeriodicReport = async (req, res) => {
     if (!['reviewed', 'approved'].includes(status)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid status. Must be reviewed or approved'
+        error: 'Invalid status. Must be reviewed or approved',
       });
     }
 
     const query = `
             UPDATE bhc_periodic_reports
-            SET 
+            SET
                 status = $1,
                 reviewed_by = $2,
                 reviewed_at = CURRENT_TIMESTAMP,
@@ -845,20 +846,20 @@ exports.reviewPeriodicReport = async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Report not found'
+        error: 'Report not found',
       });
     }
 
     res.json({
       success: true,
       message: 'Report reviewed successfully',
-      data: result.rows[0]
+      data: result.rows[0],
     });
   } catch (error) {
     console.error('Review report error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to review report'
+      error: 'Failed to review report',
     });
   }
 };
@@ -877,7 +878,7 @@ exports.exportInventoryToExcel = async (req, res) => {
     const { periodStart, periodEnd } = req.query;
 
     let query = `
-            SELECT 
+            SELECT
                 vaccine_name,
                 beginning_balance,
                 received_during_period,
@@ -937,7 +938,7 @@ exports.exportInventoryToExcel = async (req, res) => {
       { header: 'STORAGE LOCATION', key: 'storage_location', width: 20 },
       { header: 'SUPPLIER', key: 'supplier_name', width: 25 },
       { header: 'PERIOD START', key: 'period_start', width: 15 },
-      { header: 'PERIOD END', key: 'period_end', width: 15 }
+      { header: 'PERIOD END', key: 'period_end', width: 15 },
     ];
 
     // Add data rows
@@ -950,7 +951,7 @@ exports.exportInventoryToExcel = async (req, res) => {
     worksheet.getRow(1).fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FF4472C4' }
+      fgColor: { argb: 'FF4472C4' },
     };
     worksheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
@@ -963,13 +964,13 @@ exports.exportInventoryToExcel = async (req, res) => {
         stockCell.fill = {
           type: 'pattern',
           pattern: 'solid',
-          fgColor: { argb: 'FFFF0000' }
+          fgColor: { argb: 'FFFF0000' },
         };
       } else if (row.is_low_stock) {
         stockCell.fill = {
           type: 'pattern',
           pattern: 'solid',
-          fgColor: { argb: 'FFFFFF00' }
+          fgColor: { argb: 'FFFFFF00' },
         };
       }
     });
@@ -977,11 +978,11 @@ exports.exportInventoryToExcel = async (req, res) => {
     // Set response headers
     res.setHeader(
       'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename=vaccine_inventory_${Date.now()}.xlsx`
+      `attachment; filename=vaccine_inventory_${Date.now()}.xlsx`,
     );
 
     await workbook.xlsx.write(res);
@@ -990,7 +991,7 @@ exports.exportInventoryToExcel = async (req, res) => {
     console.error('Export inventory error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to export inventory'
+      error: 'Failed to export inventory',
     });
   }
 };
@@ -1008,7 +1009,7 @@ exports.importInventoryFromExcel = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        error: 'No file uploaded'
+        error: 'No file uploaded',
       });
     }
 
@@ -1044,14 +1045,14 @@ exports.importInventoryFromExcel = async (req, res) => {
         // Get vaccine ID
         const vaccineResult = await db.query(
           'SELECT id FROM vaccines WHERE name ILIKE $1 LIMIT 1',
-          [vaccineName]
+          [vaccineName],
         );
 
         if (vaccineResult.rows.length === 0) {
           errors.push({
             row: rowNumber,
             vaccine: vaccineName,
-            error: 'Vaccine not found in database'
+            error: 'Vaccine not found in database',
           });
           return;
         }
@@ -1095,7 +1096,7 @@ exports.importInventoryFromExcel = async (req, res) => {
           supplierName,
           periodStart || new Date(),
           periodEnd || new Date(),
-          userId
+          userId,
         ];
 
         const result = await db.query(query, values);
@@ -1103,12 +1104,12 @@ exports.importInventoryFromExcel = async (req, res) => {
           row: rowNumber,
           vaccine: vaccineName,
           status: 'success',
-          id: result.rows[0]?.id
+          id: result.rows[0]?.id,
         });
       } catch (rowError) {
         errors.push({
           row: rowNumber,
-          error: rowError.message
+          error: rowError.message,
         });
       }
     });
@@ -1117,13 +1118,13 @@ exports.importInventoryFromExcel = async (req, res) => {
       success: true,
       message: `Import completed: ${importedRecords.length} records, ${errors.length} errors`,
       importedRecords,
-      errors
+      errors,
     });
   } catch (error) {
     console.error('Import inventory error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to import inventory'
+      error: 'Failed to import inventory',
     });
   }
 };
@@ -1147,7 +1148,7 @@ exports.generateInfantSchedule = async (req, res) => {
     if (infantResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Infant not found'
+        error: 'Infant not found',
       });
     }
 
@@ -1156,7 +1157,7 @@ exports.generateInfantSchedule = async (req, res) => {
 
     // Get all active schedule templates
     const templates = await db.query(
-      'SELECT * FROM infant_vaccination_schedule_templates WHERE is_active = true ORDER BY target_age_months'
+      'SELECT * FROM infant_vaccination_schedule_templates WHERE is_active = true ORDER BY target_age_months',
     );
 
     const schedules = [];
@@ -1180,7 +1181,7 @@ exports.generateInfantSchedule = async (req, res) => {
         template.dose_number,
         targetDate,
         template.target_age_months,
-        userId
+        userId,
       ];
 
       const result = await db.query(query, values);
@@ -1190,13 +1191,13 @@ exports.generateInfantSchedule = async (req, res) => {
     res.json({
       success: true,
       message: `Generated ${schedules.length} vaccination schedule entries`,
-      schedules
+      schedules,
     });
   } catch (error) {
     console.error('Generate schedule error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to generate schedule'
+      error: 'Failed to generate schedule',
     });
   }
 };
@@ -1210,7 +1211,7 @@ exports.getInfantSchedule = async (req, res) => {
     const { infantId } = req.params;
 
     const query = `
-            SELECT 
+            SELECT
                 iss.*,
                 ist.vaccine_name,
                 ist.vaccine_code,
@@ -1245,14 +1246,14 @@ exports.getInfantSchedule = async (req, res) => {
         totalScheduled: result.rows.length,
         administered: result.rows.filter((s) => s.status === 'administered').length,
         pending: result.rows.filter((s) => ['scheduled', 'due'].includes(s.status)).length,
-        overdue: result.rows.filter((s) => s.status === 'overdue').length
-      }
+        overdue: result.rows.filter((s) => s.status === 'overdue').length,
+      },
     });
   } catch (error) {
     console.error('Get infant schedule error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch schedule'
+      error: 'Failed to fetch schedule',
     });
   }
 };
@@ -1272,19 +1273,19 @@ exports.updateScheduleStatus = async (req, res) => {
       expiryDate,
       administeredBy,
       administrationSite,
-      siteReaction
+      siteReaction,
     } = req.body;
 
     // Get template info for dose number
     const scheduleResult = await db.query(
       'SELECT * FROM infant_vaccination_schedules WHERE id = $1',
-      [id]
+      [id],
     );
 
     if (scheduleResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Schedule not found'
+        error: 'Schedule not found',
       });
     }
 
@@ -1295,7 +1296,7 @@ exports.updateScheduleStatus = async (req, res) => {
     // Get vaccine info
     const templateResult = await db.query(
       'SELECT * FROM infant_vaccination_schedule_templates WHERE id = $1',
-      [templateId]
+      [templateId],
     );
 
     const template = templateResult.rows[0];
@@ -1313,7 +1314,7 @@ exports.updateScheduleStatus = async (req, res) => {
 
     const query = `
             UPDATE infant_vaccination_schedules
-            SET 
+            SET
                 status = $1,
                 administered_date = $2,
                 administered_age_months = $3,
@@ -1338,7 +1339,7 @@ exports.updateScheduleStatus = async (req, res) => {
       administeredBy,
       administrationSite,
       siteReaction,
-      id
+      id,
     ];
 
     const result = await db.query(query, values);
@@ -1359,21 +1360,21 @@ exports.updateScheduleStatus = async (req, res) => {
           template.dose_number,
           administeredDate,
           administeredBy,
-          batchNumber
-        ]
+          batchNumber,
+        ],
       );
     }
 
     res.json({
       success: true,
       message: 'Schedule updated successfully',
-      data: result.rows[0]
+      data: result.rows[0],
     });
   } catch (error) {
     console.error('Update schedule error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to update schedule'
+      error: 'Failed to update schedule',
     });
   }
 };
@@ -1388,7 +1389,7 @@ exports.getOverdueSchedules = async (req, res) => {
     const userRole = req.user.role;
 
     let query = `
-            SELECT 
+            SELECT
                 iss.*,
                 ist.vaccine_name,
                 ist.vaccine_code,
@@ -1420,13 +1421,13 @@ exports.getOverdueSchedules = async (req, res) => {
     res.json({
       success: true,
       count: result.rows.length,
-      data: result.rows
+      data: result.rows,
     });
   } catch (error) {
     console.error('Get overdue schedules error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch overdue schedules'
+      error: 'Failed to fetch overdue schedules',
     });
   }
 };
@@ -1443,13 +1444,13 @@ exports.createScheduleReminder = async (req, res) => {
     // Get schedule info
     const scheduleResult = await db.query(
       'SELECT * FROM infant_vaccination_schedules WHERE id = $1',
-      [id]
+      [id],
     );
 
     if (scheduleResult.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        error: 'Schedule not found'
+        error: 'Schedule not found',
       });
     }
 
@@ -1463,7 +1464,7 @@ exports.createScheduleReminder = async (req, res) => {
 
     // Generate message
     const infantResult = await db.query('SELECT first_name, last_name FROM infants WHERE id = $1', [
-      infantId
+      infantId,
     ]);
 
     const infant = infantResult.rows[0];
@@ -1471,7 +1472,7 @@ exports.createScheduleReminder = async (req, res) => {
       `
             SELECT vaccine_name FROM infant_vaccination_schedule_templates WHERE id = $1
         `,
-      [schedule.schedule_template_id]
+      [schedule.schedule_template_id],
     );
 
     const vaccine = vaccineResult.rows[0];
@@ -1496,7 +1497,7 @@ exports.createScheduleReminder = async (req, res) => {
       daysBeforeDue || 7,
       notificationChannel || 'sms',
       messageSubject,
-      messageBody
+      messageBody,
     ];
 
     const result = await db.query(query, values);
@@ -1504,13 +1505,13 @@ exports.createScheduleReminder = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Reminder created successfully',
-      data: result.rows[0]
+      data: result.rows[0],
     });
   } catch (error) {
     console.error('Create reminder error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create reminder'
+      error: 'Failed to create reminder',
     });
   }
 };

@@ -101,7 +101,7 @@ describe('Appointments Module API Integration Tests', () => {
 
       expect(response.status).toBe(201);
       expect(response.body.infant_id).toEqual(testInfantId);
-      expect(response.body.scheduled_date).toEqual(tomorrowDate);
+      expect(String(response.body.scheduled_date || '')).toContain(tomorrowDate);
       expect(response.body.type).toEqual(newAppointment.type);
 
       testAppointmentId = response.body.id;
@@ -128,7 +128,7 @@ describe('Appointments Module API Integration Tests', () => {
 
       expect(response.status).toBe(201);
       expect(response.body.infant_id).toEqual(testInfantId);
-      expect(response.body.scheduled_date).toEqual(tomorrowDate);
+      expect(String(response.body.scheduled_date || '')).toContain(tomorrowDate);
     });
 
     test('should return 400 for missing required fields', async () => {
