@@ -132,6 +132,26 @@ const validateInfantPayload = (payload = {}) => {
     return normalized.length > 0 ? normalized : null;
   };
 
+  // NEW: Extended validation with allergy_information and health_care_provider
+  const validateInfantPayloadExtended = (payload = {}) => {
+    const baseValidation = validateInfantPayload(payload);
+    if (!baseValidation.isValid) {
+      return baseValidation;
+    }
+
+    const normalized = { ...baseValidation.data };
+
+    // Add new fields
+    normalized.allergy_information = toNullableString(payload.allergy_information);
+    normalized.health_care_provider = toNullableString(payload.health_care_provider);
+
+    return {
+      isValid: true,
+      errors: {},
+      data: normalized,
+    };
+  };
+
   const normalizeNullableNumber = (value, fieldName, { min = null, max = null } = {}) => {
     if (value === undefined || value === null || value === '') {
       return null;
@@ -183,6 +203,8 @@ const validateInfantPayload = (payload = {}) => {
     facility_id: payload.facility_id === undefined || payload.facility_id === null || payload.facility_id === ''
       ? null
       : parseInt(payload.facility_id, 10),
+    allergy_information: toNullableString(payload.allergy_information),
+    health_care_provider: toNullableString(payload.health_care_provider),
   };
 
   if (
@@ -218,6 +240,8 @@ router.get('/guardian/:guardianId', async (req, res) => {
         SELECT
           p.*,
           p.control_number,
+          p.allergy_information,
+          p.health_care_provider,
           (
             SELECT json_agg(
               json_build_object(
@@ -923,7 +947,8 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
       delete updatePayload.control_number;
     }
 
-    const validationResult = validateInfantPayload(updatePayload);
+    // Use extended validation with allergy_information and health_care_provider
+    const validationResult = validateInfantPayloadExtended(updatePayload);
     if (!validationResult.isValid) {
       return respondInfantValidationError(
         res,
@@ -961,9 +986,11 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
             nbs_date = $22,
             cellphone_number = $23,
             facility_id = $24,
+            allergy_information = $25,
+            health_care_provider = $26,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $25
-          AND guardian_id = $26
+        WHERE id = $27
+          AND guardian_id = $28
           AND is_active = true
         RETURNING *
       `,
@@ -992,6 +1019,8 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
         infantData.nbs_date,
         infantData.cellphone_number,
         infantData.facility_id,
+        infantData.allergy_information,
+        infantData.health_care_provider,
         infantId,
         guardianId,
       ],
@@ -1290,3 +1319,4 @@ router.get('/age-range/:minAge/:maxAge', requirePermission('patient:view'), asyn
 });
 
 module.exports = router;
+

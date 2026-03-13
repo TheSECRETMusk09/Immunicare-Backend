@@ -11,21 +11,49 @@ const parseOriginList = (...values) =>
     .map((value) => value.trim())
     .filter(Boolean);
 
+const normalizeOrigin = (value) => {
+  const trimmedValue = String(value || '').trim();
+
+  if (!trimmedValue) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(trimmedValue);
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+  } catch (_error) {
+    return null;
+  }
+};
+
 const getAllowedOrigins = () => {
   const runtimeEnv = process.env.NODE_ENV || 'development';
-  const configuredOrigins = parseOriginList(process.env.CORS_ORIGIN, process.env.FRONTEND_URL);
+  const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
+  const configuredOrigins = parseOriginList(process.env.CORS_ORIGIN, process.env.FRONTEND_URL)
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean);
+  const canonicalProductionOrigins = ['https://immunicareph.site', 'https://www.immunicareph.site']
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean);
   const devOrigins = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'https://localhost:3000',
     'https://127.0.0.1:3000',
-  ];
+  ]
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean);
 
-  if (runtimeEnv === 'production') {
-    return Array.from(new Set(configuredOrigins));
+  const productionOrigins =
+    configuredOrigins.length > 0
+      ? [...canonicalProductionOrigins, ...configuredOrigins]
+      : canonicalProductionOrigins;
+
+  if (isProductionLikeEnv) {
+    return Array.from(new Set(productionOrigins));
   }
 
-  return Array.from(new Set([...configuredOrigins, ...devOrigins]));
+  return Array.from(new Set([...productionOrigins, ...devOrigins]));
 };
 
 class SocketService {
@@ -37,6 +65,7 @@ class SocketService {
 
   initialize(server) {
     const runtimeEnv = process.env.NODE_ENV || 'development';
+    const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
     const allowedOrigins = getAllowedOrigins();
     const socketPath = process.env.SOCKET_PATH || '/socket.io';
     const jwtSecret = process.env.JWT_SECRET;
@@ -54,12 +83,14 @@ class SocketService {
             return callback(null, true);
           }
 
-          if (allowedOrigins.indexOf(origin) !== -1) {
+          const normalizedOrigin = normalizeOrigin(origin);
+
+          if (normalizedOrigin && allowedOrigins.indexOf(normalizedOrigin) !== -1) {
             callback(null, true);
           } else {
             // Allow any localhost origin for development
             if (
-              runtimeEnv !== 'production' &&
+              !isProductionLikeEnv &&
               (origin.includes('localhost') || origin.includes('127.0.0.1'))
             ) {
               return callback(null, true);

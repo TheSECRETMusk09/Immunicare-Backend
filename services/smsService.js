@@ -48,6 +48,7 @@ const APPOINTMENT_MESSAGE_BY_TYPE = {
   nextAppointment24h: 'Immunicare: Hi {guardian_name}, this is a reminder that {baby_name}\'s vaccination appointment is TOMORROW ({scheduledDate}) at {time}. Location: {location}. Please arrive 15 minutes early.',
   nextAppointment48h: 'Immunicare: Hi {guardian_name}, this is a reminder that {baby_name}\'s vaccination appointment is in 2 days ({scheduledDate}) at {time}. Location: {location}. Please arrive 15 minutes early.',
   missedAppointment: 'Immunicare Alert: {baby_name}\'s vaccination appointment on {scheduledDate} was missed. Please contact the health center at your earliest convenience to reschedule. Location: {location}.',
+  scheduleDateChanged: 'Immunicare Alert: {baby_name}\'s vaccination appointment has been rescheduled to {newDate} at {time}. Location: {location}. Please take note of the new schedule.',
 };
 
 function normalizePurpose(purpose) {
@@ -655,6 +656,19 @@ function createMissedAppointmentMessage(vaccineType, scheduledDate, options = {}
     .replace('{location}', location);
 }
 
+function createScheduleDateChangedMessage(scheduledDate, options = {}) {
+  const { childName = 'Your child', location = 'Barangay San Nicolas Health Center', time = '' } = options;
+  const dateObj = scheduledDate ? new Date(scheduledDate) : null;
+  const dateLabel = dateObj ? dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'your scheduled date';
+  const timeLabel = time || (dateObj ? dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '');
+
+  return APPOINTMENT_MESSAGE_BY_TYPE.scheduleDateChanged
+    .replace('{baby_name}', childName)
+    .replace('{newDate}', dateLabel)
+    .replace('{time}', timeLabel)
+    .replace('{location}', location);
+}
+
 async function sendAppointmentReminder(appointment) {
   try {
     const phoneNumber = appointment?.phoneNumber || appointment?.guardian_phone;
@@ -879,6 +893,112 @@ async function sendWelcomeSMS(phoneNumber, name) {
   );
 }
 
+async function sendScheduleDateChangedNotification(appointment) {
+  const phoneNumber = appointment?.phoneNumber || appointment?.guardian_phone;
+
+  if (!phoneNumber) {
+    logger.error('sendScheduleDateChangedNotification called with no phone number', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+    });
+    return {
+      success: false,
+      error: 'No phone number provided',
+    };
+  }
+
+  const formattedPhone = formatPhoneNumber(phoneNumber);
+  if (!formattedPhone) {
+    logger.error('sendScheduleDateChangedNotification called with invalid phone number', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+      phoneNumber,
+    });
+    return {
+      success: false,
+      error: 'Invalid phone number format',
+    };
+  }
+
+  const childName =
+    appointment?.childName ||
+    appointment?.babyName ||
+    appointment?.infantName ||
+    appointment?.infant_first_name ||
+    'your child';
+
+  const scheduledDateSource =
+    appointment?.scheduledDate || appointment?.scheduled_date || appointment?.newScheduledDate;
+
+  const location = appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
+
+  const time = appointment?.time || appointment?.appointmentTime || '';
+
+  const message = createScheduleDateChangedMessage(scheduledDateSource, {
+    childName,
+    location,
+    time,
+  });
+
+  try {
+    const sendResult = await sendSMS(phoneNumber, message, 'schedule_date_changed', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+      infantName: childName,
+      scheduledDate: scheduledDateSource,
+      previousDate: appointment?.previousDate || appointment?.previous_scheduled_date || null,
+      guardianName: appointment?.guardianName || appointment?.guardian_name || null,
+      location,
+    });
+
+    return {
+      success: true,
+      messageId: sendResult.messageId,
+      provider: sendResult.provider,
+    };
+  } catch (error) {
+    logger.error('Failed to send schedule date changed SMS', {
+      appointmentId: appointment?.appointmentId || appointment?.appointment_id,
+      phoneNumber,
+      error: error.message,
+    });
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+}
+
+// Check if a notification was already sent for this appointment + scheduled_date combination
+async function hasNotificationBeenSent(appointmentId, scheduledDate, notificationType) {
+  try {
+    const schema = await getSmsLogsSchema();
+    if (!schema) {
+      return false;
+    }
+
+    const dateStr = scheduledDate instanceof Date
+      ? scheduledDate.toISOString().split('T')[0]
+      : String(scheduledDate).split('T')[0];
+
+    const result = await pool.query(
+      `SELECT id FROM sms_logs
+       WHERE message_type = $1
+         AND metadata->>'appointmentId' = $2
+         AND DATE(sent_at) = $3
+       LIMIT 1`,
+      [notificationType, String(appointmentId), dateStr],
+    );
+
+    return result.rows.length > 0;
+  } catch (error) {
+    logger.warn('Failed to check notification dedupe', {
+      appointmentId,
+      scheduledDate,
+      notificationType,
+      error: error.message,
+    });
+    return false;
+  }
+}
+
 function getSMSConfigStatus() {
   return {
     provider: SMS_PROVIDER,
@@ -915,6 +1035,7 @@ const smsService = {
   generateResetToken,
   createAppointmentReminderMessage,
   createMissedAppointmentMessage,
+  createScheduleDateChangedMessage,
   sendVerificationSMS,
   sendPasswordResetSMS,
   sendAppointmentReminder,
@@ -922,6 +1043,8 @@ const smsService = {
   sendMissedAppointmentSms: sendMissedAppointmentNotification,
   sendAppointmentReminderSms: sendAppointmentReminder,
   sendAppointmentConfirmation,
+  sendScheduleDateChangedNotification,
+  hasNotificationBeenSent,
   sendVaccinationReminder,
   sendWelcomeSMS,
   getSMSConfigStatus,

@@ -12,7 +12,7 @@ const appointmentControlNumberService = require('../services/appointmentControlN
 const {
   notifyAdminsOfGuardianAppointmentEvent,
 } = require('../services/appointmentEventNotificationService');
-const { sendAppointmentConfirmation } = require('../services/smsService');
+const { sendAppointmentConfirmation, sendScheduleDateChangedNotification, hasNotificationBeenSent } = require('../services/smsService');
 const socketService = require('../services/socketService');
 const {
   hasFieldErrors,
@@ -365,8 +365,8 @@ router.get('/', async (req, res) => {
         total: total,
         totalPages: totalPages,
         hasNext: pageNum < totalPages,
-        hasPrev: pageNum > 1
-      }
+        hasPrev: pageNum > 1,
+      },
     });
   } catch (error) {
     console.error('List appointments error:', error);
@@ -1014,6 +1014,38 @@ router.put('/:id(\\d+)', async (req, res) => {
       } catch (smsError) {
         // Log error but don't fail the request - SMS is non-critical
         console.error('SMS sending error:', smsError.message);
+      }
+    }
+
+    // Check if scheduled_date was changed and send notification with dedupe
+    const scheduledDateChanged = hasOwn(normalizedUpdates, 'scheduled_date') &&
+      appointment.scheduled_date !== updatedAppointment.scheduled_date;
+
+    if (scheduledDateChanged) {
+      // Check dedupe: only send if not already sent for this appointment + date
+      const alreadySent = await hasNotificationBeenSent(
+        appointmentId,
+        updatedAppointment.scheduled_date,
+        'schedule_date_changed',
+      );
+
+      if (!alreadySent && updatedAppointment.guardian_phone) {
+        try {
+          await sendScheduleDateChangedNotification({
+            appointmentId: appointmentId,
+            phoneNumber: updatedAppointment.guardian_phone,
+            guardianName: updatedAppointment.guardian_name || 'Guardian',
+            childName: `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'your child',
+            scheduledDate: updatedAppointment.scheduled_date,
+            newScheduledDate: updatedAppointment.scheduled_date,
+            previousDate: appointment.scheduled_date,
+            previous_scheduled_date: appointment.scheduled_date,
+            location: updatedAppointment.location || 'Main Health Center',
+            type: updatedAppointment.type || 'Vaccination',
+          });
+        } catch (notifyError) {
+          console.error('Failed to send schedule date changed notification:', notifyError.message);
+        }
       }
     }
 

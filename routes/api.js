@@ -35,18 +35,4 @@ router.use('/infant-allergies', require('./infantAllergies'));
 router.use('/vaccine-waitlist', require('./vaccineWaitlist'));
 router.use('/incoming', require('./incomingSms'));
 
-// Health check endpoint
-router.get('/health', (req, res) => {
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
-
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    service: 'Immunicare Backend API',
-    version: '1.0.0',
-  });
-});
-
 module.exports = router;

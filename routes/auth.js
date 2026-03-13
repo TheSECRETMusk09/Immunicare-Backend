@@ -998,27 +998,60 @@ router.post('/forgot-password', forgotPasswordRateLimiter, async (req, res) => {
  */
 router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) => {
   try {
-    const { email, method = 'email' } = req.body;
+    const { email, phone, method = 'email' } = req.body;
 
-    if (!email) {
-      return res.status(400).json({
-        error: 'Email is required',
-        code: 'MISSING_EMAIL',
-      });
-    }
-
-    if (!['email', 'sms'].includes(method)) {
+    if (method === 'email') {
+      if (!email) {
+        return res.status(400).json({
+          error: 'Email is required',
+          code: 'MISSING_EMAIL',
+        });
+      }
+    } else if (method === 'sms') {
+      if (!phone) {
+        return res.status(400).json({
+          error: 'Phone number is required',
+          code: 'MISSING_PHONE',
+        });
+      }
+    } else {
       return res.status(400).json({
         error: 'Invalid method. Must be "email" or "sms"',
         code: 'INVALID_METHOD',
       });
     }
 
-    // Find user by email
-    const userResult = await pool.query(
-      'SELECT id, username, email, contact, guardian_id FROM users WHERE email = $1 AND is_active = true',
-      [email],
-    );
+    // Find user based on method
+    let userResult;
+    if (method === 'email') {
+      userResult = await pool.query(
+        'SELECT id, username, email, contact, guardian_id FROM users WHERE email = $1 AND is_active = true',
+        [email],
+      );
+    } else {
+      // For SMS, find user by phone number (check both users.contact and guardians.phone)
+      const formattedPhone = phone.replace(/\D/g, '');
+      // Try to find user by contact phone
+      userResult = await pool.query(
+        'SELECT id, username, email, contact, guardian_id FROM users WHERE REPLACE(contact, \'\\D\', \'\') = $1 AND is_active = true',
+        [formattedPhone],
+      );
+
+      // If not found by contact phone, try to find by guardian phone
+      if (userResult.rows.length === 0) {
+        const guardianResult = await pool.query(
+          'SELECT id FROM guardians WHERE REPLACE(phone, \'\\D\', \'\') = $1',
+          [formattedPhone],
+        );
+
+        if (guardianResult.rows.length > 0) {
+          userResult = await pool.query(
+            'SELECT id, username, email, contact, guardian_id FROM users WHERE guardian_id = $1 AND is_active = true',
+            [guardianResult.rows[0].id],
+          );
+        }
+      }
+    }
 
     if (userResult.rows.length === 0) {
       // Don't reveal that email doesn't exist
@@ -1103,20 +1136,59 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
  */
 router.post('/forgot-password/verify-otp', async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email, phone, otp, method = 'email' } = req.body;
 
-    if (!email || !otp) {
+    if (!otp) {
       return res.status(400).json({
-        error: 'Email and OTP are required',
-        code: 'MISSING_FIELDS',
+        error: 'OTP is required',
+        code: 'MISSING_OTP',
       });
     }
 
-    // Find user
-    const userResult = await pool.query(
-      'SELECT id FROM users WHERE email = $1 AND is_active = true',
-      [email],
-    );
+    // Find user based on method
+    let userResult;
+    if (method === 'email') {
+      if (!email) {
+        return res.status(400).json({
+          error: 'Email is required',
+          code: 'MISSING_EMAIL',
+        });
+      }
+
+      userResult = await pool.query(
+        'SELECT id FROM users WHERE email = $1 AND is_active = true',
+        [email],
+      );
+    } else {
+      if (!phone) {
+        return res.status(400).json({
+          error: 'Phone number is required',
+          code: 'MISSING_PHONE',
+        });
+      }
+
+      const formattedPhone = phone.replace(/\D/g, '');
+      // Try to find user by contact phone
+      userResult = await pool.query(
+        'SELECT id FROM users WHERE REPLACE(contact, \'\\D\', \'\') = $1 AND is_active = true',
+        [formattedPhone],
+      );
+
+      // If not found by contact phone, try to find by guardian phone
+      if (userResult.rows.length === 0) {
+        const guardianResult = await pool.query(
+          'SELECT id FROM guardians WHERE REPLACE(phone, \'\\D\', \'\') = $1',
+          [formattedPhone],
+        );
+
+        if (guardianResult.rows.length > 0) {
+          userResult = await pool.query(
+            'SELECT id FROM users WHERE guardian_id = $1 AND is_active = true',
+            [guardianResult.rows[0].id],
+          );
+        }
+      }
+    }
 
     if (userResult.rows.length === 0) {
       return res.status(400).json({

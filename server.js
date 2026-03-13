@@ -143,23 +143,52 @@ if (socketService.io) {
 }
 
 // CORS configuration - environment-driven allowlist
-const configuredOrigins = [process.env.CORS_ORIGIN, process.env.FRONTEND_URL]
-  .filter(Boolean)
-  .flatMap((value) => value.split(','))
-  .map((value) => value.trim())
-  .filter(Boolean);
+const normalizeOrigin = (value) => {
+  const trimmedValue = String(value || '').trim();
+
+  if (!trimmedValue) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(trimmedValue);
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+  } catch (_error) {
+    return null;
+  }
+};
+
+const parseConfiguredOrigins = (...values) =>
+  values
+    .filter(Boolean)
+    .flatMap((value) => String(value).split(','))
+    .map((value) => normalizeOrigin(value))
+    .filter(Boolean);
+
+const runtimeEnv = process.env.NODE_ENV || 'development';
+const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
+
+const configuredOrigins = parseConfiguredOrigins(process.env.CORS_ORIGIN, process.env.FRONTEND_URL);
+const canonicalProductionOrigins = parseConfiguredOrigins(
+  'https://immunicareph.site',
+  'https://www.immunicareph.site',
+);
 
 const defaultDevOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   'https://localhost:3000',
   'https://127.0.0.1:3000',
-];
+].map((value) => normalizeOrigin(value)).filter(Boolean);
 
-// In production, only allow production domains
-const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? Array.from(new Set(configuredOrigins))
-  : Array.from(new Set([...configuredOrigins, ...defaultDevOrigins]));
+const productionOrigins =
+  configuredOrigins.length > 0
+    ? [...canonicalProductionOrigins, ...configuredOrigins]
+    : canonicalProductionOrigins;
+
+const allowedOrigins = isProductionLikeEnv
+  ? Array.from(new Set(productionOrigins))
+  : Array.from(new Set([...productionOrigins, ...defaultDevOrigins]));
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -168,15 +197,17 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    if (allowedOrigins.includes(origin)) {
+    const normalizedOrigin = normalizeOrigin(origin);
+
+    if (normalizedOrigin && allowedOrigins.includes(normalizedOrigin)) {
       callback(null, true);
     } else if (
-      process.env.NODE_ENV !== 'production' &&
+      !isProductionLikeEnv &&
       /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
     ) {
       callback(null, true);
     } else if (
-      process.env.NODE_ENV !== 'production' &&
+      !isProductionLikeEnv &&
       /^https?:\/\/192\.168\.\d+\.\d+(\:\d+)?$/i.test(origin)
     ) {
       callback(null, true);
@@ -186,8 +217,19 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-csrf-token', 'Cache-Control', 'Pragma'],
+  allowedHeaders: [
+    'Accept',
+    'Content-Type',
+    'Authorization',
+    'x-csrf-token',
+    'Cache-Control',
+    'Pragma',
+    'Origin',
+    'X-Requested-With',
+  ],
   optionsSuccessStatus: 204,
+  maxAge: 86400,
+  preflightContinue: false,
 };
 
 // Apply CORS middleware FIRST (before all other middleware)
@@ -195,6 +237,8 @@ app.use(cors(corsOptions));
 
 // Handle preflight requests explicitly
 app.options('*', cors(corsOptions));
+app.options('/health', cors(corsOptions));
+app.options('/api/health', cors(corsOptions));
 
 // Helmet security headers - provides important security headers
 app.use(
@@ -379,33 +423,32 @@ app.get('/', (req, res) => {
   res.json({ message: 'Immunicare Backend API' });
 });
 
+const buildPublicHealthPayload = () => ({
+  success: true,
+  status: 'ok',
+  service: 'Immunicare Backend API',
+  version: '1.0.0',
+  timestamp: new Date().toISOString(),
+  environment: runtimeEnv,
+});
+
+const sendPublicHealthResponse = (_req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.status(200).json(buildPublicHealthPayload());
+};
+
+// Lightweight public health endpoints - never blocked by auth/middleware
+app.get('/health', sendPublicHealthResponse);
+
 // Serve favicon.ico from frontend public folder
 app.get('/favicon.ico', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/public/favicon.ico'));
 });
 
-// Health check endpoint - enhanced with proper CORS and caching headers
-app.get('/api/health', async (req, res) => {
-  // Set cache control headers to prevent caching
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
-
-  const healthResult = await healthCheck();
-
-  res.status(healthResult.healthy ? 200 : 503).json({
-    status: healthResult.healthy ? 'OK' : 'UNHEALTHY',
-    timestamp: new Date().toISOString(),
-    service: 'Immunicare Backend API',
-    version: '1.0.0',
-    database: {
-      healthy: healthResult.healthy,
-      latency: healthResult.latency,
-      error: healthResult.error,
-    },
-    environment: process.env.NODE_ENV || 'development',
-  });
-});
+// Public API health endpoint - lightweight and always accessible
+app.get('/api/health', sendPublicHealthResponse);
 
 // Prometheus metrics endpoint
 app.get('/metrics', async (req, res) => {

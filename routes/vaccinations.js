@@ -117,13 +117,19 @@ const getProviderSqlFragments = async () => {
 };
 
 const normalizeVaccinationProvider = (record) => {
-  const providerName =
+  // First try user/admin based provider, then fall back to manual health_care_provider text
+  const userProviderName =
     record?.provider_name || record?.administered_by_name || PROVIDER_FALLBACK_LABEL;
+
+  const manualProviderName = record?.health_care_provider || null;
+
+  const finalProviderName = manualProviderName || userProviderName;
 
   return {
     ...record,
-    provider_name: providerName,
-    administered_by_name: record?.administered_by_name || providerName,
+    provider_name: finalProviderName,
+    administered_by_name: finalProviderName,
+    health_care_provider: manualProviderName,
   };
 };
 
@@ -544,6 +550,7 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       dose_no,
       admin_date,
       administered_by,
+      health_care_provider,
       site_of_injection,
       reactions,
       next_due_date,
@@ -593,6 +600,7 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
             dose_no,
             admin_date,
             administered_by,
+            health_care_provider,
             site_of_injection,
             reactions,
             next_due_date,
@@ -601,7 +609,7 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
             batch_id,
             schedule_id
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
           RETURNING *
         `,
         [
@@ -610,6 +618,7 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
           dose_no,
           admin_date,
           administered_by || req.user.id,
+          health_care_provider || null,
           site_of_injection || null,
           reactions || null,
           next_due_date || null,
@@ -665,6 +674,7 @@ router.put('/records/:id', requirePermission('vaccination:update'), async (req, 
       'dose_no',
       'admin_date',
       'administered_by',
+      'health_care_provider',
       'site_of_injection',
       'reactions',
       'next_due_date',
