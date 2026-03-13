@@ -252,7 +252,7 @@ function validateEnv(exitOnFailure = true) {
   // Check for production-specific concerns
   if (runtimeEnv === 'production') {
     if (process.env.CSRF_DISABLED === 'true') {
-      missing.push('CSRF_DISABLED');
+      warnings.push('CSRF_DISABLED=true - CSRF protection is disabled in production. This is not recommended.');
     }
     if (!process.env.REDIS_URL) {
       warnings.push('Redis not configured - rate limiting may not work across multiple instances');

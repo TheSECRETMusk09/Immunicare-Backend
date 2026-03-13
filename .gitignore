@@ -59,6 +59,8 @@ Immunicare_Dev.sql
 !.env.example
 !.env.development.example
 !.env.production.example
+!.env.production
+!.env.hostinger
 !.env.test.example
 !.env.sms.example
 

@@ -4,12 +4,26 @@ const dotenv = require('dotenv');
 
 const ENV_BOOTSTRAP_MARKER = 'IMMUNICARE_ENV_BOOTSTRAPPED';
 
+const appendEnvVariants = (files, envName) => {
+  files.push(`.env.${envName}.local`, `.env.${envName}`);
+};
+
 const getEnvFilesByPriority = (runtimeEnv) => {
   const normalizedEnv = runtimeEnv || 'development';
-  const files = [
-    `.env.${normalizedEnv}.local`,
-    `.env.${normalizedEnv}`,
-  ];
+  const files = [];
+
+  if (normalizedEnv === 'hostinger') {
+    appendEnvVariants(files, 'hostinger');
+    appendEnvVariants(files, 'production');
+  } else {
+    appendEnvVariants(files, normalizedEnv);
+
+    // Allow production deployments to fall back to Hostinger-specific env files
+    // when .env.production is absent on the server.
+    if (normalizedEnv === 'production') {
+      appendEnvVariants(files, 'hostinger');
+    }
+  }
 
   // Keep parity with common dotenv conventions: .env.local is ignored for test.
   if (normalizedEnv !== 'test') {
