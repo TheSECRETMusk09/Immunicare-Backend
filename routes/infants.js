@@ -55,6 +55,14 @@ const respondInfantValidationError = (res, errors = {}, message = 'Please correc
   });
 };
 
+const toNullableString = (value) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
 const validateInfantPayload = (payload = {}) => {
   const errors = {};
 
@@ -124,34 +132,6 @@ const validateInfantPayload = (payload = {}) => {
     }
   }
 
-  const toNullableString = (value) => {
-    if (value === undefined || value === null) {
-      return null;
-    }
-    const normalized = String(value).trim();
-    return normalized.length > 0 ? normalized : null;
-  };
-
-  // NEW: Extended validation with allergy_information and health_care_provider
-  const validateInfantPayloadExtended = (payload = {}) => {
-    const baseValidation = validateInfantPayload(payload);
-    if (!baseValidation.isValid) {
-      return baseValidation;
-    }
-
-    const normalized = { ...baseValidation.data };
-
-    // Add new fields
-    normalized.allergy_information = toNullableString(payload.allergy_information);
-    normalized.health_care_provider = toNullableString(payload.health_care_provider);
-
-    return {
-      isValid: true,
-      errors: {},
-      data: normalized,
-    };
-  };
-
   const normalizeNullableNumber = (value, fieldName, { min = null, max = null } = {}) => {
     if (value === undefined || value === null || value === '') {
       return null;
@@ -219,6 +199,26 @@ const validateInfantPayload = (payload = {}) => {
   return {
     isValid: Object.keys(errors).length === 0,
     errors,
+    data: normalized,
+  };
+};
+
+// Extended validation with allergy_information and health_care_provider
+const validateInfantPayloadExtended = (payload = {}) => {
+  const baseValidation = validateInfantPayload(payload);
+  if (!baseValidation.isValid) {
+    return baseValidation;
+  }
+
+  const normalized = { ...baseValidation.data };
+
+  // Add new fields
+  normalized.allergy_information = toNullableString(payload.allergy_information);
+  normalized.health_care_provider = toNullableString(payload.health_care_provider);
+
+  return {
+    isValid: true,
+    errors: {},
     data: normalized,
   };
 };
@@ -1123,6 +1123,9 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
       nbs_done,
       nbs_date,
       cellphone_number,
+      allergy_information,
+      health_care_provider,
+      facility_id,
     } = updatePayload;
 
     let normalizedSex = sex;
@@ -1159,8 +1162,11 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
             nbs_done = $21,
             nbs_date = $22,
             cellphone_number = $23,
+            allergy_information = $24,
+            health_care_provider = $25,
+            facility_id = $26,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $24
+        WHERE id = $27
           AND is_active = true
         RETURNING *
       `,
@@ -1188,6 +1194,9 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
         nbs_done,
         nbs_date,
         cellphone_number,
+        allergy_information || null,
+        health_care_provider || null,
+        facility_id || null,
         infantId,
       ],
     );
