@@ -551,7 +551,7 @@ async function startServer() {
 
         if (isAuthOrConfigDbError || isScramPasswordTypeError) {
           console.error(
-            'Detected database authentication/configuration error. Check DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD in backend/.env.development.',
+            'Detected database authentication/configuration error. Check DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD in the active production environment file (.env.production, .env.hostinger, or .env).',
           );
 
           if (isScramPasswordTypeError) {
