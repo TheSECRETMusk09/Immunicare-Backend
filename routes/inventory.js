@@ -37,6 +37,50 @@ const VACCINE_INVENTORY_TRANSACTION_TYPES = [
 
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
 
+// Helper function to validate that a vaccine is approved
+const validateVaccineApproved = async (vaccineId, res) => {
+  if (!vaccineId) {
+    return { valid: false, error: 'vaccine_id is required' };
+  }
+
+  // Check if vaccineId is a number (direct ID) or string (name/code lookup)
+  const isNumericId = !isNaN(parseInt(vaccineId, 10)) && isFinite(vaccineId);
+
+  let query;
+  let params;
+
+  if (isNumericId) {
+    // Direct ID lookup
+    query = 'SELECT id, name, is_approved, is_active FROM vaccines WHERE id = $1';
+    params = [parseInt(vaccineId, 10)];
+  } else {
+    // Name/code lookup - case insensitive
+    query = 'SELECT id, name, is_approved, is_active FROM vaccines WHERE LOWER(name) = LOWER($1) OR LOWER(code) = LOWER($1)';
+    params = [String(vaccineId)];
+  }
+
+  const result = await pool.query(query, params);
+
+  if (result.rows.length === 0) {
+    return { valid: false, error: 'Vaccine not found' };
+  }
+
+  const vaccine = result.rows[0];
+
+  if (!vaccine.is_active) {
+    return { valid: false, error: `Vaccine "${vaccine.name}" is inactive` };
+  }
+
+  if (!vaccine.is_approved) {
+    return {
+      valid: false,
+      error: `Vaccine "${vaccine.name}" is not in the approved vaccine list. Only official government vaccines are allowed: BCG, Diluent, Hepa B, Penta Valent, OPV 20-doses, PCV 13, PCV 10, Measles & Rubella (MR), MMR, Diluent 5ml, IPV multi dose.`,
+    };
+  }
+
+  return { valid: true, vaccine };
+};
+
 const sanitizeInventoryTransactionPayload = (payload = {}) => {
   const errors = {};
 
@@ -46,6 +90,11 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
     min: 1,
     integer: true,
   });
+  // If vaccine_inventory_id is not a valid number, keep it for later handling
+  if (vaccineInventoryIdCheck.error && payload.vaccine_inventory_id) {
+    // Store the value anyway for better error message
+    vaccineInventoryIdCheck.value = payload.vaccine_inventory_id;
+  }
   if (vaccineInventoryIdCheck.error) {
     errors.vaccine_inventory_id = vaccineInventoryIdCheck.error;
   }
@@ -56,6 +105,17 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
     min: 1,
     integer: true,
   });
+  // If vaccine_id is not a valid number but is a non-empty string, keep it for later lookup
+  // This allows sending vaccine name/code like "bcg", "hepa_b" for lookup
+  const vaccineIdValue = payload.vaccine_id;
+  const isNonEmptyString = vaccineIdValue !== null && vaccineIdValue !== undefined &&
+    typeof vaccineIdValue === 'string' && vaccineIdValue.trim().length > 0;
+
+  if (vaccineIdCheck.error && isNonEmptyString) {
+    // Allow string vaccine_id for name/code lookup - will be validated later
+    vaccineIdCheck.value = vaccineIdValue.trim();
+    delete vaccineIdCheck.error;
+  }
   if (vaccineIdCheck.error) {
     errors.vaccine_id = vaccineIdCheck.error;
   }
@@ -516,6 +576,12 @@ router.post('/vaccine-batches', async (req, res) => {
     const { vaccine_id, lot_no, expiry_date, qty_received, clinic_id } = req.body;
     const userClinicId = req.user.clinic_id;
 
+    // Validate vaccine is approved
+    const vaccineValidation = await validateVaccineApproved(vaccine_id, res);
+    if (!vaccineValidation.valid) {
+      return res.status(400).json({ error: vaccineValidation.error });
+    }
+
     const result = await pool.query(
       `
       INSERT INTO vaccine_batches (
@@ -924,6 +990,12 @@ router.post('/vaccine-inventory', async (req, res) => {
       return respondValidationError(res, errors);
     }
 
+    // Validate vaccine is approved
+    const vaccineValidation = await validateVaccineApproved(normalized.vaccine_id, res);
+    if (!vaccineValidation.valid) {
+      return res.status(400).json({ error: vaccineValidation.error });
+    }
+
     // Get current user ID from JWT token
     const userId = req.user.id;
 
@@ -1242,6 +1314,15 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
       return respondValidationError(res, errors);
     }
 
+    // Validate vaccine is approved - this also resolves vaccine_id from name/code
+    const vaccineValidation = await validateVaccineApproved(normalized.vaccine_id, res);
+    if (!vaccineValidation.valid) {
+      return res.status(400).json({ error: vaccineValidation.error });
+    }
+
+    // Use the resolved vaccine ID from validation
+    const resolvedVaccineId = vaccineValidation.vaccine.id;
+
     // Get current user ID from JWT token
     const userId = req.user.id;
 
@@ -1258,7 +1339,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
     }
 
     const inventory = inventoryResult.rows[0];
-    if (Number(inventory.vaccine_id) !== Number(normalized.vaccine_id)) {
+    if (Number(inventory.vaccine_id) !== Number(resolvedVaccineId)) {
       return respondValidationError(res, {
         vaccine_id: 'vaccine_id does not match the selected inventory record',
       });
@@ -1306,7 +1387,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
     // Create transaction record
     const facilityId =
       normalized.clinic_id ||
-      inventory[inventoryFacilityColumn] ||
+      (inventory && (inventory.clinic_id || inventory.facility_id)) ||
       req.user.clinic_id ||
       req.user.facility_id ||
       null;
@@ -1325,7 +1406,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
       [
         normalized.vaccine_inventory_id,
-        normalized.vaccine_id,
+        resolvedVaccineId,
         facilityId,
         normalized.transaction_type,
         normalized.quantity,

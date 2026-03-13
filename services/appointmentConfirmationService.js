@@ -6,6 +6,7 @@
 const pool = require('../db');
 const smsService = require('./smsService');
 const logger = require('../config/logger');
+const socketService = require('./socketService');
 
 class AppointmentConfirmationService {
   /**
@@ -68,15 +69,23 @@ class AppointmentConfirmationService {
         return { success: false, message: 'Invalid phone number' };
       }
 
-      // Create confirmation message
+      // Format appointment type for display
+      const appointmentType = appointment.type || 'Vaccination Visit';
+      const appointmentTypeDisplay = appointmentType.charAt(0).toUpperCase() + appointmentType.slice(1).toLowerCase();
+
+      // Create confirmation message with requirements
       const message =
         `Immunicare: Hi ${appointment.guardian_name}, ` +
-        'Your child\'s vaccination appointment is confirmed.\n\n' +
+        `Your child's ${appointmentTypeDisplay} appointment is confirmed.\n\n` +
         `Child: ${appointment.infant_first_name} ${appointment.infant_last_name} (ID: ${appointment.control_number})\n` +
         `Date: ${dateStr}\n` +
         `Time: ${timeStr}\n` +
-        `Clinic: ${appointment.clinic_name}\n\n` +
-        'Reply CONFIRM to confirm or CANCEL to cancel this appointment.';
+        `Type: ${appointmentTypeDisplay}\n\n` +
+        'REQUIREMENTS:\n' +
+        '- Vaccination Card\n' +
+        '- Birth Certificate (original copy)\n' +
+        '- Parent/Guardian ID\n\n' +
+        'Please arrive 15 minutes early. Reply CONFIRM to confirm or CANCEL to cancel.';
 
       // Send SMS
       const smsResult = await smsService.sendSMS(
@@ -109,6 +118,17 @@ class AppointmentConfirmationService {
       );
 
       logger.info(`Confirmation SMS sent to ${formattedPhone} for appointment ${appointmentId}`);
+
+      // Create in-app notification for the guardian
+      await this.createGuardianNotification({
+        guardianId: appointment.guardian_id,
+        guardianName: appointment.guardian_name,
+        infantName: `${appointment.infant_first_name} ${appointment.infant_last_name}`,
+        appointmentId: appointmentId,
+        scheduledDate: appointment.scheduled_date,
+        clinicName: appointment.clinic_name,
+        appointmentType: appointmentTypeDisplay,
+      });
 
       return { success: true, message: 'Confirmation SMS sent', data: smsResult };
     } catch (error) {
@@ -393,6 +413,78 @@ class AppointmentConfirmationService {
     const formattedPhone = smsService.formatPhoneNumber(phoneNumber);
     if (formattedPhone) {
       await smsService.sendSMS(formattedPhone, message, 'no_appointment_reply');
+    }
+  }
+
+  /**
+   * Create in-app notification for guardian after successful SMS delivery
+   */
+  async createGuardianNotification({ guardianId, guardianName, infantName, appointmentId, scheduledDate, clinicName, appointmentType }) {
+    try {
+      const scheduledDateObj = new Date(scheduledDate);
+      const dateStr = scheduledDateObj.toLocaleDateString('en-PH', {
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      const timeStr = scheduledDateObj.toLocaleTimeString('en-PH', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      const title = 'Appointment Confirmation SMS Sent';
+      const message = `Confirmation SMS has been sent to ${guardianName} for ${infantName}'s ${appointmentType} appointment on ${dateStr} at ${timeStr} at ${clinicName}.`;
+
+      // Insert notification into database
+      const notificationResult = await pool.query(
+        `INSERT INTO notifications
+          (user_id, title, message, type, category, is_read, notification_type, target_type, target_id, channel, priority, status, related_entity_type, related_entity_id, guardian_id, target_role, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CURRENT_TIMESTAMP)
+         RETURNING id`,
+        [
+          guardianId,
+          title,
+          message,
+          'appointment',
+          'confirmation',
+          false,
+          'sms_confirmation_sent',
+          'guardian',
+          guardianId,
+          'in_app',
+          'medium',
+          'delivered',
+          'appointment',
+          appointmentId,
+          guardianId,
+          'guardian',
+        ],
+      );
+
+      // Send real-time notification via socket
+      const notification = {
+        id: notificationResult.rows[0]?.id || `notif-${Date.now()}`,
+        title,
+        message,
+        type: 'appointment',
+        category: 'confirmation',
+        isRead: false,
+        relatedEntityType: 'appointment',
+        relatedEntityId: appointmentId,
+        createdAt: new Date().toISOString(),
+      };
+
+      socketService.sendToUser(guardianId, 'notification', {
+        notification,
+        sound: false,
+      });
+
+      logger.info(`In-app notification created for guardian ${guardianId} for appointment ${appointmentId}`);
+      return { success: true, notificationId: notificationResult.rows[0]?.id };
+    } catch (error) {
+      logger.error('Error creating guardian notification:', error);
+      return { success: false, error: error.message };
     }
   }
 

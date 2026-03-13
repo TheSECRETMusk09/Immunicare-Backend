@@ -524,6 +524,15 @@ app.get('/api/ws-health', (req, res) => {
 // Global error handler - using centralized error handling middleware
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
+// Serve frontend
+if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'hostinger') {
+  app.use(express.static(path.join(__dirname, '../frontend/build')));
+
+  app.get('*', (req, res) => {
+    res.sendFile(path.resolve(__dirname, '../frontend/build', 'index.html'));
+  });
+}
+
 // 404 handler for unmatched routes
 app.use(notFoundHandler);
 

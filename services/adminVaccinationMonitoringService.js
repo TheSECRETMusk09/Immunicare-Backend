@@ -14,21 +14,21 @@ const getAdminInfantVaccinationMonitoring = async ({
   const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
 
   const params = [];
-  const whereParts = ['p.is_active = true'];
+  const whereParts = ['ib.is_active = true'];
 
   if (infantId) {
     params.push(infantId);
-    whereParts.push(`p.id = $${params.length}`);
+    whereParts.push(`ib.infant_id = $${params.length}`);
   }
 
   if (guardianId) {
     params.push(guardianId);
-    whereParts.push(`p.guardian_id = $${params.length}`);
+    whereParts.push(`ib.guardian_id = $${params.length}`);
   }
 
   if (clinicId) {
     params.push(clinicId);
-    whereParts.push(`p.clinic_id = $${params.length}`);
+    whereParts.push(`ib.clinic_id = $${params.length}`);
   }
 
   if (dateFrom) {
@@ -73,6 +73,8 @@ const getAdminInfantVaccinationMonitoring = async ({
           p.control_number,
           p.dob,
           p.guardian_id,
+          p.clinic_id,
+          p.is_active,
           g.name AS guardian_name,
           g.phone AS guardian_phone
         FROM patients p

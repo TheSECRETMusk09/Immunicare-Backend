@@ -9,6 +9,7 @@ const {
 } = require('../middleware/rbac');
 const VaccinationReminderService = require('../services/vaccinationReminderService');
 const socketService = require('../services/socketService');
+const { validateApprovedVaccine } = require('../utils/approvedVaccines');
 
 const reminderService = new VaccinationReminderService();
 
@@ -298,8 +299,18 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
 });
 
 // Get vaccines (both roles)
-router.get('/vaccines', requirePermission('dashboard:view'), async (_req, res) => {
+// Only returns approved vaccines by default for security
+router.get('/vaccines', requirePermission('dashboard:view'), async (req, res) => {
   try {
+    const { include_unapproved } = req.query;
+    const showUnapproved = include_unapproved === 'true' &&
+      (req.user?.role === 'super_admin' || req.user?.role === 'system_admin');
+
+    let whereClause = 'WHERE is_active = true';
+    if (!showUnapproved) {
+      whereClause += ' AND COALESCE(is_approved, false) = true';
+    }
+
     const result = await pool.query(
       `
         SELECT
@@ -311,11 +322,13 @@ router.get('/vaccines', requirePermission('dashboard:view'), async (_req, res) =
           doses_required,
           recommended_age,
           is_active,
+          is_approved,
+          display_order,
           created_at,
           updated_at
         FROM vaccines
-        WHERE is_active = true
-        ORDER BY name ASC
+        ${whereClause}
+        ORDER BY COALESCE(display_order, 999) ASC, name ASC
       `,
     );
 
@@ -564,6 +577,12 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       return res.status(400).json({
         error: 'Missing required fields: patient_id, vaccine_id, dose_no, and admin_date are required',
       });
+    }
+
+    // Validate vaccine is approved
+    const vaccineValidation = await validateApprovedVaccine(vaccine_id);
+    if (!vaccineValidation.valid) {
+      return res.status(400).json({ error: vaccineValidation.error });
     }
 
     const client = await pool.connect();

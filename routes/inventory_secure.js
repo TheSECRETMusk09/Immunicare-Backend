@@ -19,7 +19,7 @@ router.use('/vaccine-stock-alerts', requireAdmin);
 // Vaccine Inventory Routes
 router.get(
   '/vaccine-inventory/clinic/:clinic_id',
-  vaccineInventoryController.getVaccineInventoryByClinic
+  vaccineInventoryController.getVaccineInventoryByClinic,
 );
 router.post('/vaccine-inventory', vaccineInventoryController.createVaccineInventory);
 router.put('/vaccine-inventory/:id', vaccineInventoryController.updateVaccineInventory);
@@ -28,38 +28,38 @@ router.delete('/vaccine-inventory/:id', vaccineInventoryController.deleteVaccine
 // Vaccine Inventory Transactions Routes
 router.get(
   '/vaccine-inventory-transactions/:vaccine_inventory_id',
-  vaccineInventoryController.getVaccineInventoryTransactions
+  vaccineInventoryController.getVaccineInventoryTransactions,
 );
 router.post(
   '/vaccine-inventory-transactions',
-  vaccineInventoryController.createVaccineInventoryTransaction
+  vaccineInventoryController.createVaccineInventoryTransaction,
 );
 
 // Vaccine Stock Alerts Routes
 router.get(
   '/vaccine-stock-alerts/clinic/:clinic_id',
-  vaccineInventoryController.getVaccineStockAlerts
+  vaccineInventoryController.getVaccineStockAlerts,
 );
 router.put(
   '/vaccine-stock-alerts/:id/acknowledge',
-  vaccineInventoryController.acknowledgeVaccineStockAlert
+  vaccineInventoryController.acknowledgeVaccineStockAlert,
 );
 router.put(
   '/vaccine-stock-alerts/:id/resolve',
-  vaccineInventoryController.resolveVaccineStockAlert
+  vaccineInventoryController.resolveVaccineStockAlert,
 );
 
 // Vaccine Inventory Statistics
 router.get(
   '/vaccine-inventory/stats/clinic/:clinic_id',
-  vaccineInventoryController.getVaccineInventoryStats
+  vaccineInventoryController.getVaccineInventoryStats,
 );
 
 // Get all items
 router.get('/items', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT i.*, 
+      SELECT i.*,
         COALESCE(SUM(ib.qty_available), 0) as total_available
       FROM items i
       LEFT JOIN item_batches ib ON i.id = ib.item_id AND ib.status = 'active'
@@ -78,7 +78,7 @@ router.get('/items/type/:type', async (req, res) => {
     const { type } = req.params;
     const result = await pool.query(
       `
-      SELECT i.*, 
+      SELECT i.*,
         COALESCE(SUM(ib.qty_available), 0) as total_available
       FROM items i
       LEFT JOIN item_batches ib ON i.id = ib.item_id AND ib.status = 'active'
@@ -86,7 +86,7 @@ router.get('/items/type/:type', async (req, res) => {
       GROUP BY i.id
       ORDER BY i.name
     `,
-      [type]
+      [type],
     );
     res.json(result.rows);
   } catch (error) {
@@ -104,7 +104,7 @@ router.post('/items', async (req, res) => {
       INSERT INTO items (type, name, description, doses_required)
       VALUES ($1, $2, $3, $4) RETURNING *
     `,
-      [type, name, description, doses_required]
+      [type, name, description, doses_required],
     );
 
     res.status(201).json(result.rows[0]);
@@ -121,12 +121,12 @@ router.put('/items/:id', async (req, res) => {
 
     const result = await pool.query(
       `
-      UPDATE items SET 
+      UPDATE items SET
         type = $1, name = $2, description = $3, doses_required = $4,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $5 RETURNING *
     `,
-      [type, name, description, doses_required, id]
+      [type, name, description, doses_required, id],
     );
 
     if (result.rows.length === 0) {
@@ -160,7 +160,7 @@ router.delete('/items/:id', async (req, res) => {
 router.get('/vaccine-batches', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT vb.*, v.name as vaccine_name, v.code as vaccine_code, 
+      SELECT vb.*, v.name as vaccine_name, v.code as vaccine_code,
              c.name as clinic_name
       FROM vaccine_batches vb
       JOIN vaccines v ON vb.vaccine_id = v.id
@@ -184,7 +184,7 @@ router.post('/vaccine-batches', async (req, res) => {
         vaccine_id, lot_no, expiry_date, qty_received, qty_current, clinic_id
       ) VALUES ($1, $2, $3, $4, $4, $5) RETURNING *
     `,
-      [vaccine_id, lot_no, expiry_date, qty_received, clinic_id]
+      [vaccine_id, lot_no, expiry_date, qty_received, clinic_id],
     );
 
     res.status(201).json(result.rows[0]);
@@ -201,12 +201,12 @@ router.put('/vaccine-batches/:id', async (req, res) => {
 
     const result = await pool.query(
       `
-      UPDATE vaccine_batches SET 
+      UPDATE vaccine_batches SET
         lot_no = $1, expiry_date = $2, qty_current = $3,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $4 RETURNING *
     `,
-      [lot_no, expiry_date, qty_current, id]
+      [lot_no, expiry_date, qty_current, id],
     );
 
     if (result.rows.length === 0) {
@@ -256,8 +256,8 @@ router.get('/expiring', async (req, res) => {
 router.get('/suppliers', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT * FROM suppliers 
-      WHERE is_active = true 
+      SELECT * FROM suppliers
+      WHERE is_active = true
       ORDER BY name
     `);
     res.json(result.rows);
@@ -279,7 +279,7 @@ router.post('/suppliers', async (req, res) => {
       city,
       province,
       supplier_type,
-      payment_terms
+      payment_terms,
     } = req.body;
 
     const result = await pool.query(
@@ -299,8 +299,8 @@ router.post('/suppliers', async (req, res) => {
         city,
         province,
         supplier_type,
-        payment_terms
-      ]
+        payment_terms,
+      ],
     );
 
     res.status(201).json(result.rows[0]);
@@ -324,14 +324,14 @@ router.put('/suppliers/:id', async (req, res) => {
       province,
       supplier_type,
       payment_terms,
-      is_active
+      is_active,
     } = req.body;
 
     const result = await pool.query(
       `
-      UPDATE suppliers SET 
+      UPDATE suppliers SET
         name = $1, supplier_code = $2, contact_person = $3, email = $4, phone = $5,
-        address_line_1 = $6, city = $7, province = $8, supplier_type = $9, 
+        address_line_1 = $6, city = $7, province = $8, supplier_type = $9,
         payment_terms = $10, is_active = $11, updated_at = CURRENT_TIMESTAMP
       WHERE id = $12 RETURNING *
     `,
@@ -347,8 +347,8 @@ router.put('/suppliers/:id', async (req, res) => {
         supplier_type,
         payment_terms,
         is_active,
-        id
-      ]
+        id,
+      ],
     );
 
     if (result.rows.length === 0) {
@@ -368,7 +368,7 @@ router.delete('/suppliers/:id', async (req, res) => {
 
     const result = await pool.query(
       'UPDATE suppliers SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
-      [id]
+      [id],
     );
 
     if (result.rows.length === 0) {
@@ -412,7 +412,7 @@ router.post('/transactions', async (req, res) => {
       INSERT INTO inventory_transactions (batch_id, txn_type, qty, user_id, notes)
       VALUES ($1, $2, $3, $4, $5) RETURNING *
     `,
-      [batch_id, txn_type, qty, userId, notes]
+      [batch_id, txn_type, qty, userId, notes],
     );
 
     // Update batch quantity based on transaction type
@@ -428,11 +428,11 @@ router.post('/transactions', async (req, res) => {
     if (stockChange !== 0) {
       await pool.query(
         `
-        UPDATE vaccine_batches 
+        UPDATE vaccine_batches
         SET qty_current = qty_current + $1, updated_at = CURRENT_TIMESTAMP
         WHERE id = $2
       `,
-        [stockChange, batch_id]
+        [stockChange, batch_id],
       );
     }
 
@@ -450,22 +450,22 @@ router.get('/stats', async (req, res) => {
       pool.query('SELECT COUNT(*) as count FROM vaccine_batches WHERE status = \'active\''),
       // Low stock batches
       pool.query(
-        'SELECT COUNT(*) as count FROM vaccine_batches WHERE qty_current < 10 AND status = \'active\''
+        'SELECT COUNT(*) as count FROM vaccine_batches WHERE qty_current < 10 AND status = \'active\'',
       ),
       // Expiring batches (30 days)
       pool.query(`
-        SELECT COUNT(*) as count FROM vaccine_batches 
+        SELECT COUNT(*) as count FROM vaccine_batches
         WHERE expiry_date <= CURRENT_DATE + INTERVAL '30 days' AND status = 'active'
       `),
       // Active suppliers
-      pool.query('SELECT COUNT(*) as count FROM suppliers WHERE is_active = true')
+      pool.query('SELECT COUNT(*) as count FROM suppliers WHERE is_active = true'),
     ]);
 
     res.json({
       totalBatches: parseInt(totalBatches.rows[0].count),
       lowStock: parseInt(lowStock.rows[0].count),
       expiringItems: parseInt(expiringItems.rows[0].count),
-      totalSuppliers: parseInt(totalSuppliers.rows[0].count)
+      totalSuppliers: parseInt(totalSuppliers.rows[0].count),
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -482,7 +482,7 @@ router.get('/vaccine-inventory', async (req, res) => {
     const { clinic_id, period_start, period_end } = req.query;
 
     let query = `
-      SELECT vi.*, v.name as vaccine_name, v.code as vaccine_code, 
+      SELECT vi.*, v.name as vaccine_name, v.code as vaccine_code,
              c.name as clinic_name, u.username as created_by_name
       FROM vaccine_inventory vi
       JOIN vaccines v ON vi.vaccine_id = v.id
@@ -537,7 +537,7 @@ router.post('/vaccine-inventory', async (req, res) => {
       low_stock_threshold,
       critical_stock_threshold,
       period_start,
-      period_end
+      period_end,
     } = req.body;
 
     // Get current user ID from JWT token
@@ -552,9 +552,9 @@ router.post('/vaccine-inventory', async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO vaccine_inventory (
-        vaccine_id, clinic_id, beginning_balance, received_during_period, 
-        lot_batch_number, transferred_in, transferred_out, expired_wasted, 
-        issuance, low_stock_threshold, critical_stock_threshold, 
+        vaccine_id, clinic_id, beginning_balance, received_during_period,
+        lot_batch_number, transferred_in, transferred_out, expired_wasted,
+        issuance, low_stock_threshold, critical_stock_threshold,
         is_low_stock, is_critical_stock, period_start, period_end, created_by
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
       [
@@ -573,8 +573,8 @@ router.post('/vaccine-inventory', async (req, res) => {
         isCriticalStock,
         period_start,
         period_end,
-        userId
-      ]
+        userId,
+      ],
     );
 
     // Create stock alert if needed
@@ -595,8 +595,8 @@ router.post('/vaccine-inventory', async (req, res) => {
           isCriticalStock
             ? `Critical: ${stockOnHand} units remaining`
             : `Low stock: ${stockOnHand} units remaining`,
-          isCriticalStock ? 'URGENT' : 'HIGH'
-        ]
+          isCriticalStock ? 'URGENT' : 'HIGH',
+        ],
       );
     }
 
@@ -621,7 +621,7 @@ router.put('/vaccine-inventory/:id', async (req, res) => {
       low_stock_threshold,
       critical_stock_threshold,
       period_start,
-      period_end
+      period_end,
     } = req.body;
 
     // Get current user ID from JWT token
@@ -635,7 +635,7 @@ router.put('/vaccine-inventory/:id', async (req, res) => {
     const isCriticalStock = stockOnHand <= (critical_stock_threshold || 5);
 
     const result = await pool.query(
-      `UPDATE vaccine_inventory SET 
+      `UPDATE vaccine_inventory SET
         beginning_balance = $1, received_during_period = $2, lot_batch_number = $3,
         transferred_in = $4, transferred_out = $5, expired_wasted = $6, issuance = $7,
         low_stock_threshold = $8, critical_stock_threshold = $9,
@@ -657,8 +657,8 @@ router.put('/vaccine-inventory/:id', async (req, res) => {
         period_start,
         period_end,
         userId,
-        id
-      ]
+        id,
+      ],
     );
 
     if (result.rows.length === 0) {
@@ -731,7 +731,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
       expiry_date,
       supplier_name,
       reference_number,
-      notes
+      notes,
     } = req.body;
 
     // Get current user ID from JWT token
@@ -739,7 +739,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
 
     // Get current inventory record to calculate balance
     const inventoryResult = await pool.query('SELECT * FROM vaccine_inventory WHERE id = $1', [
-      vaccine_inventory_id
+      vaccine_inventory_id,
     ]);
 
     if (inventoryResult.rows.length === 0) {
@@ -747,6 +747,14 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
     }
 
     const inventory = inventoryResult.rows[0];
+
+    // Derive clinic_id from inventory record if not provided in request
+    const effectiveClinicId = clinic_id || inventory.clinic_id || req.user.clinic_id || req.user.facility_id;
+
+    if (!effectiveClinicId) {
+      return res.status(400).json({ error: 'clinic_id is required' });
+    }
+
     const previousBalance = inventory.stock_on_hand;
     let newBalance = previousBalance;
 
@@ -783,7 +791,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
       [
         vaccine_inventory_id,
         vaccine_id,
-        clinic_id,
+        effectiveClinicId,
         transaction_type,
         quantity,
         previousBalance,
@@ -794,16 +802,16 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
         supplier_name,
         reference_number,
         userId,
-        notes
-      ]
+        notes,
+      ],
     );
 
     // Update inventory record
     await pool.query(
-      `UPDATE vaccine_inventory SET 
+      `UPDATE vaccine_inventory SET
         updated_by = $1, updated_at = CURRENT_TIMESTAMP
       WHERE id = $2`,
-      [userId, vaccine_inventory_id]
+      [userId, vaccine_inventory_id],
     );
 
     res.status(201).json(transactionResult.rows[0]);
@@ -850,8 +858,8 @@ router.get('/vaccine-stock-alerts', async (req, res) => {
       paramCount++;
     }
 
-    query += ` ORDER BY 
-      CASE vsa.priority 
+    query += ` ORDER BY
+      CASE vsa.priority
         WHEN 'URGENT' THEN 1
         WHEN 'HIGH' THEN 2
         WHEN 'MEDIUM' THEN 3
@@ -875,11 +883,11 @@ router.put('/vaccine-stock-alerts/:id/acknowledge', async (req, res) => {
     const userId = req.user.id;
 
     const result = await pool.query(
-      `UPDATE vaccine_stock_alerts SET 
+      `UPDATE vaccine_stock_alerts SET
         status = 'ACKNOWLEDGED', acknowledged_by = $1, acknowledged_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $2 RETURNING *`,
-      [userId, id]
+      [userId, id],
     );
 
     if (result.rows.length === 0) {
@@ -902,11 +910,11 @@ router.put('/vaccine-stock-alerts/:id/resolve', async (req, res) => {
     const userId = req.user.id;
 
     const result = await pool.query(
-      `UPDATE vaccine_stock_alerts SET 
+      `UPDATE vaccine_stock_alerts SET
         status = 'RESOLVED', resolved_by = $1, resolved_at = CURRENT_TIMESTAMP,
         resolution_notes = $2, updated_at = CURRENT_TIMESTAMP
       WHERE id = $3 RETURNING *`,
-      [userId, resolution_notes, id]
+      [userId, resolution_notes, id],
     );
 
     if (result.rows.length === 0) {
@@ -939,37 +947,37 @@ router.get('/vaccine-inventory/stats', async (req, res) => {
 
         // Low stock alerts
         pool.query(
-          `SELECT COUNT(*) as count FROM vaccine_stock_alerts 
+          `SELECT COUNT(*) as count FROM vaccine_stock_alerts
            WHERE status = 'ACTIVE' AND alert_type = 'LOW_STOCK' ${
   clinic_id ? 'AND clinic_id = $1' : ''
 }`,
-          params
+          params,
         ),
 
         // Critical stock alerts
         pool.query(
-          `SELECT COUNT(*) as count FROM vaccine_stock_alerts 
+          `SELECT COUNT(*) as count FROM vaccine_stock_alerts
            WHERE status = 'ACTIVE' AND alert_type = 'CRITICAL_STOCK' ${
   clinic_id ? 'AND clinic_id = $1' : ''
 }`,
-          params
+          params,
         ),
 
         // Recent transactions (last 30 days)
         pool.query(
-          `SELECT COUNT(*) as count FROM vaccine_inventory_transactions 
+          `SELECT COUNT(*) as count FROM vaccine_inventory_transactions
            WHERE created_at >= CURRENT_DATE - INTERVAL '30 days' ${
   clinic_id ? 'AND clinic_id = $1' : ''
 }`,
-          params
-        )
+          params,
+        ),
       ]);
 
     res.json({
       totalInventory: parseInt(totalInventory.rows[0].count),
       lowStockAlerts: parseInt(lowStockAlerts.rows[0].count),
       criticalStockAlerts: parseInt(criticalStockAlerts.rows[0].count),
-      recentTransactions: parseInt(recentTransactions.rows[0].count)
+      recentTransactions: parseInt(recentTransactions.rows[0].count),
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
