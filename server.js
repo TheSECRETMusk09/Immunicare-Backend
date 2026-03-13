@@ -343,12 +343,10 @@ console.error = logger.error.bind(logger);
 console.warn = logger.warn.bind(logger);
 console.log('Console replaced with logger successfully');
 
-// CSRF protection middleware - for thesis/demo we allow disabling in development
-// because the current frontend does not bootstrap CSRF tokens.
-const csrfDisabled =
-  process.env.CSRF_DISABLED === 'true' ||
-  process.env.NODE_ENV === 'development' ||
-  process.env.NODE_ENV === 'test';
+// CSRF protection middleware - DEPRECATED: csurf package has been removed due to security vulnerabilities
+// For production CSRF protection, consider using helmet-csrf or @ Mazzard/csurf-sync
+// Currently, CSRF protection is disabled
+const csrfDisabled = true;
 
 if (!csrfDisabled) {
   console.log('Loading CSRF protection...');
@@ -368,7 +366,7 @@ if (!csrfDisabled) {
   });
   console.log('CSRF protection loaded and applied.');
 } else {
-  console.warn('CSRF protection is disabled. This is not recommended for production environments.');
+  console.warn('CSRF protection is disabled. The deprecated csurf package has been removed.');
 }
 
 // Routes
