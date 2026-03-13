@@ -78,14 +78,21 @@ class SocketService {
       path: socketPath,
       cors: {
         origin: (origin, callback) => {
+          // Debug log for Socket.IO CORS
+          console.log('[SocketIO CORS] Checking origin:', origin);
+
           // Allow requests with no origin (like server-to-server or proxy)
           if (!origin) {
+            console.log('[SocketIO CORS] No origin, allowing request');
             return callback(null, true);
           }
 
           const normalizedOrigin = normalizeOrigin(origin);
+          console.log('[SocketIO CORS] Normalized origin:', normalizedOrigin);
+          console.log('[SocketIO CORS] Allowed origins:', allowedOrigins);
 
           if (normalizedOrigin && allowedOrigins.indexOf(normalizedOrigin) !== -1) {
+            console.log('[SocketIO CORS] Origin allowed:', normalizedOrigin);
             callback(null, true);
           } else {
             // Allow any localhost origin for development
@@ -93,8 +100,10 @@ class SocketService {
               !isProductionLikeEnv &&
               (origin.includes('localhost') || origin.includes('127.0.0.1'))
             ) {
+              console.log('[SocketIO CORS] Localhost origin allowed (dev mode)');
               return callback(null, true);
             }
+            console.warn('[SocketIO CORS] Origin NOT allowed:', origin);
             callback(new Error('Not allowed by CORS'));
           }
         },

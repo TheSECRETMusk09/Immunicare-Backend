@@ -192,26 +192,36 @@ const allowedOrigins = isProductionLikeEnv
 
 const corsOptions = {
   origin: function (origin, callback) {
+    // Debug log for CORS issues
+    console.log('[CORS] Checking origin:', origin);
+
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) {
+      console.log('[CORS] No origin, allowing request');
       return callback(null, true);
     }
 
     const normalizedOrigin = normalizeOrigin(origin);
+    console.log('[CORS] Normalized origin:', normalizedOrigin);
+    console.log('[CORS] Allowed origins:', allowedOrigins);
 
     if (normalizedOrigin && allowedOrigins.includes(normalizedOrigin)) {
+      console.log('[CORS] Origin allowed:', normalizedOrigin);
       callback(null, true);
     } else if (
       !isProductionLikeEnv &&
       /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
     ) {
+      console.log('[CORS] Localhost origin allowed (dev mode)');
       callback(null, true);
     } else if (
       !isProductionLikeEnv &&
       /^https?:\/\/192\.168\.\d+\.\d+(\:\d+)?$/i.test(origin)
     ) {
+      console.log('[CORS] Private network origin allowed (dev mode)');
       callback(null, true);
     } else {
+      console.warn('[CORS] Origin NOT allowed:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -235,10 +245,17 @@ const corsOptions = {
 // Apply CORS middleware FIRST (before all other middleware)
 app.use(cors(corsOptions));
 
-// Handle preflight requests explicitly
-app.options('*', cors(corsOptions));
-app.options('/health', cors(corsOptions));
-app.options('/api/health', cors(corsOptions));
+// Handle preflight requests explicitly with fallback
+// This ensures OPTIONS requests always get a response even if CORS validation fails
+app.options('*', (req, res) => {
+  console.log('[CORS] OPTIONS preflight for:', req.path);
+  res.set('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization, x-csrf-token, Cache-Control, Pragma, Origin, X-Requested-With');
+  res.set('Access-Control-Allow-Credentials', 'true');
+  res.set('Access-Control-Max-Age', '86400');
+  res.status(204).end();
+});
 
 // Helmet security headers - provides important security headers
 app.use(

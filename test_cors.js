@@ -35,7 +35,7 @@ function testOptionsRequest(path, origin) {
       Origin: origin,
       'Access-Control-Request-Method': 'GET',
       'Access-Control-Request-Headers': 'Content-Type, Authorization'
-    }
+    },
   };
 
   const req = http.request(options, (res) => {
