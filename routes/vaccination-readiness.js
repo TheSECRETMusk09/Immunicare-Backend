@@ -342,8 +342,10 @@ router.post('/infant/:infantId/batch', requirePermission('vaccination:create'), 
  * GET /api/vaccination-readiness/schedule/:infantId
  */
 router.get('/schedule/:infantId', async (req, res) => {
+  console.log('[DEBUG] Vaccination schedule request for infant:', req.params.infantId);
   try {
     const infantId = parseInt(req.params.infantId, 10);
+    console.log('[DEBUG] Parsed infantId:', infantId);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ error: 'Invalid infant ID' });
     }
@@ -490,7 +492,8 @@ router.get('/schedule/:infantId', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Error fetching vaccination schedule:', error);
+    console.error('[DEBUG] Error fetching vaccination schedule:', error);
+    console.error('[DEBUG] Error stack:', error.stack);
     res.status(500).json({ error: 'Failed to fetch vaccination schedule' });
   }
 });

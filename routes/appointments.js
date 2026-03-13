@@ -429,6 +429,7 @@ router.get('/', async (req, res) => {
 // Create appointment (SYSTEM_ADMIN full, GUARDIAN own request)
 router.post('/', requirePermission('appointment:create:own'), async (req, res) => {
   try {
+    console.log('[DEBUG] Create appointment request:', JSON.stringify(req.body, null, 2));
     const payload = req.body || {};
     const { normalized, errors } = sanitizeAppointmentMutablePayload(payload, {
       allowStatus: true,
@@ -616,6 +617,8 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
       ],
     );
 
+    console.log('[DEBUG] Appointment created:', JSON.stringify(result.rows[0], null, 2));
+
     const appointment = result.rows[0];
     const fullAppointment = (await fetchAppointmentById(appointment.id)) || appointment;
 
@@ -642,7 +645,8 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
     socketService.broadcast('appointment_created', normalizedAppointment);
     res.status(201).json(normalizedAppointment);
   } catch (error) {
-    console.error('Create appointment error:', error);
+    console.error('[DEBUG] Create appointment error:', error);
+    console.error('[DEBUG] Error stack:', error.stack);
     res.status(500).json({ error: 'Failed to create appointment' });
   }
 });
