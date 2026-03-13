@@ -5,9 +5,26 @@
 
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+const requestedEnv =
+  process.env.IMMUNICARE_RUNTIME_ENV ||
+  process.argv[2] ||
+  process.env.NODE_ENV ||
+  'development';
+
+process.env.NODE_ENV = requestedEnv;
+
+const loadBackendEnv = require('./config/loadEnv');
+loadBackendEnv({ baseDir: __dirname });
 
 const { Pool } = require('pg');
+
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  return String(value).trim().toLowerCase() === 'true';
+};
 
 async function setupSMSSchema() {
   // Create connection pool
@@ -17,6 +34,11 @@ async function setupSMSSchema() {
     database: process.env.DB_NAME || 'immunicare_dev',
     user: process.env.DB_USER || 'immunicare_dev',
     password: process.env.DB_PASSWORD || '',
+    ssl: parseBoolean(process.env.DB_SSL)
+      ? {
+        rejectUnauthorized: parseBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED),
+      }
+      : false,
   });
 
   const tables = [

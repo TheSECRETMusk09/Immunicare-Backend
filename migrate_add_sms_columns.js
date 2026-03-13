@@ -4,9 +4,26 @@
  * Check and add missing SMS tracking columns to appointments table
  */
 
-require('dotenv').config({ path: '.env.development' });
+const requestedEnv =
+  process.env.IMMUNICARE_RUNTIME_ENV ||
+  process.argv[2] ||
+  process.env.NODE_ENV ||
+  'development';
+
+process.env.NODE_ENV = requestedEnv;
+
+const loadBackendEnv = require('./config/loadEnv');
+loadBackendEnv();
 
 const { Pool } = require('pg');
+
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  return String(value).trim().toLowerCase() === 'true';
+};
 
 console.log('=== Database Migration Script ===');
 console.log('Environment:', process.env.NODE_ENV || 'development');
@@ -19,7 +36,11 @@ const pool = new Pool({
   database: process.env.DB_NAME || 'immunicare_dev',
   user: process.env.DB_USER || 'immunicare_dev',
   password: process.env.DB_PASSWORD,
-  ssl: process.env.DB_SSL === 'true',
+  ssl: parseBoolean(process.env.DB_SSL)
+    ? {
+      rejectUnauthorized: parseBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED),
+    }
+    : false,
 });
 
 async function migrate() {
