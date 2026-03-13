@@ -84,6 +84,11 @@ const normalizeVaccineType = (input) => {
   return mappings[compact] || null;
 };
 
+const normalizeVaccinationStatus = (input) => {
+  const normalized = String(input || 'all').trim().toLowerCase().replace(/-/g, '_');
+  return normalized || 'all';
+};
+
 const resolveDateRange = ({ period, startDateInput, endDateInput }) => {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
@@ -161,9 +166,9 @@ const validateAndNormalizeAnalyticsQuery = (query = {}, user = {}) => {
   });
 
   const vaccineType = normalizeVaccineType(query.vaccineType || query.vaccine_type || 'ALL');
-  const vaccinationStatus = String(query.vaccinationStatus || query.vaccination_status || 'all')
-    .trim()
-    .toLowerCase();
+  const vaccinationStatus = normalizeVaccinationStatus(
+    query.vaccinationStatus || query.vaccination_status || 'all',
+  );
 
   const { facilityId, error: facilityError } = normalizeFacilityId(query, user);
 
@@ -217,4 +222,3 @@ module.exports = {
   VACCINATION_STATUS_OPTIONS,
   validateAndNormalizeAnalyticsQuery,
 };
-

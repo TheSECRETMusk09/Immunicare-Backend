@@ -7,9 +7,47 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const { authenticateToken, requireRole } = require('../middleware/auth');
+const { getCanonicalRole, CANONICAL_ROLES } = require('../middleware/rbac');
 
 // Apply authentication to all routes
 router.use(authenticateToken);
+
+const isGuardianRequest = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
+
+const getResolvedGuardianId = (req) => {
+  const guardianId = Number.parseInt(req.user?.guardian_id || req.user?.id, 10);
+  return Number.isFinite(guardianId) && guardianId > 0 ? guardianId : null;
+};
+
+const assertGuardianScope = (req, requestedGuardianId) => {
+  if (!isGuardianRequest(req)) {
+    return null;
+  }
+
+  const currentGuardianId = getResolvedGuardianId(req);
+  if (!currentGuardianId || currentGuardianId !== Number.parseInt(requestedGuardianId, 10)) {
+    return {
+      success: false,
+      message: 'You can only access your own waitlist entries',
+    };
+  }
+
+  return null;
+};
+
+const getWaitlistEntryById = async (id) => {
+  const result = await pool.query(
+    `
+      SELECT id, guardian_id, infant_id, vaccine_id, clinic_id, status
+      FROM vaccine_waitlist
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [id],
+  );
+
+  return result.rows[0] || null;
+};
 
 /**
  * GET /api/vaccine-waitlist/check/:vaccineId/:clinicId
@@ -152,6 +190,11 @@ router.get('/', requireRole(['admin', 'healthcare_worker']), async (req, res) =>
 router.get('/guardian/:guardianId', async (req, res) => {
   try {
     const { guardianId } = req.params;
+    const scopeError = assertGuardianScope(req, guardianId);
+
+    if (scopeError) {
+      return res.status(403).json(scopeError);
+    }
 
     const query = `
             SELECT
@@ -219,6 +262,17 @@ router.post('/', async (req, res) => {
 
     const guardian_id = guardianResult.rows[0].guardian_id;
 
+    if (isGuardianRequest(req)) {
+      const currentGuardianId = getResolvedGuardianId(req);
+
+      if (!currentGuardianId || currentGuardianId !== Number.parseInt(guardian_id, 10)) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only add your own child to the vaccine waitlist',
+        });
+      }
+    }
+
     // Check if already on waitlist
     const checkQuery = `
             SELECT id FROM vaccine_waitlist
@@ -264,6 +318,25 @@ router.post('/', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const waitlistEntry = await getWaitlistEntryById(id);
+
+    if (!waitlistEntry) {
+      return res.status(404).json({
+        success: false,
+        message: 'Waitlist entry not found',
+      });
+    }
+
+    if (isGuardianRequest(req)) {
+      const currentGuardianId = getResolvedGuardianId(req);
+
+      if (!currentGuardianId || currentGuardianId !== Number.parseInt(waitlistEntry.guardian_id, 10)) {
+        return res.status(403).json({
+          success: false,
+          message: 'You can only remove your own waitlist entries',
+        });
+      }
+    }
 
     const query = `
             UPDATE vaccine_waitlist
@@ -273,13 +346,6 @@ router.delete('/:id', async (req, res) => {
         `;
 
     const result = await pool.query(query, [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Waitlist entry not found',
-      });
-    }
 
     res.json({
       success: true,
@@ -370,62 +436,5 @@ router.post('/:id/notify', requireRole(['admin', 'healthcare_worker']), async (r
     });
   }
 });
-
-/**
- * GET /api/vaccine-waitlist/check/:vaccineId/:clinicId
- * Check if vaccine is available and notify waitlist
- */
-router.get(
-  '/check/:vaccineId/:clinicId',
-  requireRole(['admin', 'healthcare_worker']),
-  async (req, res) => {
-    try {
-      const { vaccineId, clinicId } = req.params;
-
-      // Check current stock
-      const stockQuery = `
-            SELECT
-                COALESCE(SUM(qty_current), 0) as total_stock
-            FROM vaccine_batches
-            WHERE vaccine_id = $1
-            AND clinic_id = $2
-            AND expiry_date > CURRENT_DATE
-            AND status = 'active'
-        `;
-
-      const stockResult = await pool.query(stockQuery, [vaccineId, clinicId]);
-      const currentStock = parseInt(stockResult.rows[0].total_stock);
-
-      // Get waitlist count
-      const waitlistQuery = `
-            SELECT COUNT(*) as count
-            FROM vaccine_waitlist
-            WHERE vaccine_id = $1
-            AND clinic_id = $2
-            AND status = 'waiting'
-        `;
-
-      const waitlistResult = await pool.query(waitlistQuery, [vaccineId, clinicId]);
-      const waitlistCount = parseInt(waitlistResult.rows[0].count);
-
-      res.json({
-        success: true,
-        data: {
-          vaccine_id: parseInt(vaccineId),
-          clinic_id: parseInt(clinicId),
-          current_stock: currentStock,
-          waitlist_count: waitlistCount,
-          is_available: currentStock > 0,
-        },
-      });
-    } catch (error) {
-      console.error('Error checking vaccine availability:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to check availability',
-      });
-    }
-  },
-);
 
 module.exports = router;

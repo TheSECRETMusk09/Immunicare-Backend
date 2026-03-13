@@ -9,9 +9,9 @@ const APPOINTMENT_STATUS_MAP = Object.freeze({
   attended: ['attended'],
   pending: ['scheduled', 'confirmed', 'rescheduled'],
   scheduled: ['scheduled', 'confirmed', 'rescheduled'],
-  overdue: ['scheduled', 'confirmed', 'rescheduled', 'no-show'],
+  overdue: ['scheduled', 'confirmed', 'rescheduled', 'no-show', 'no_show'],
   cancelled: ['cancelled'],
-  no_show: ['no-show'],
+  no_show: ['no-show', 'no_show'],
   all: null,
 });
 
@@ -22,7 +22,7 @@ const IMMUNIZATION_STATUS_MAP = Object.freeze({
   scheduled: ['scheduled', 'pending'],
   overdue: ['scheduled', 'pending'],
   cancelled: ['cancelled'],
-  no_show: ['no-show'],
+  no_show: ['no-show', 'no_show'],
   all: null,
 });
 

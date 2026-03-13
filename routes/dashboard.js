@@ -288,7 +288,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
         FROM immunization_records ir
         LEFT JOIN patients p ON p.id = ir.patient_id
         WHERE ${guardianScopeFilterSql} = $1
-          AND ir.status = 'scheduled'
+          AND ir.status IN ('scheduled', 'pending')
           AND ir.is_active = true
       `,
       [guardianId],
@@ -318,7 +318,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
         LEFT JOIN patients p ON p.id = a.infant_id
         WHERE ${guardianScopeFilterSql} = $1
           AND a.scheduled_date >= CURRENT_DATE
-          AND a.status IN ('scheduled', 'confirmed')
+          AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
           AND a.is_active = true
         ORDER BY a.scheduled_date ASC
         LIMIT 1
@@ -399,9 +399,9 @@ router.get('/guardian/:guardianId/children', authenticateToken, async (req, res,
       `
         SELECT
           p.*,
-          (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND status = 'completed' AND is_active = true) as completed_vaccinations,
-          (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND status IN ('scheduled', 'pending') AND is_active = true) as pending_vaccinations,
-          (SELECT COUNT(*) FROM appointments WHERE infant_id = p.id AND scheduled_date >= CURRENT_DATE AND status IN ('scheduled', 'confirmed') AND is_active = true) as upcoming_appointments
+           (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND status = 'completed' AND is_active = true) as completed_vaccinations,
+           (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND status IN ('scheduled', 'pending') AND is_active = true) as pending_vaccinations,
+           (SELECT COUNT(*) FROM appointments WHERE infant_id = p.id AND scheduled_date >= CURRENT_DATE AND LOWER(REPLACE(COALESCE(status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled') AND is_active = true) as upcoming_appointments
         FROM patients p
         WHERE p.guardian_id = $1
           AND p.is_active = true
@@ -656,9 +656,10 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
             p.control_number,
             a.type as detail,
             CASE
-              WHEN a.status = 'scheduled' THEN 'Appointment scheduled'
-              WHEN a.status = 'completed' THEN 'Appointment completed'
-              WHEN a.status = 'cancelled' THEN 'Appointment cancelled'
+              WHEN LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled') THEN 'Appointment scheduled'
+              WHEN LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('completed', 'attended') THEN 'Appointment completed'
+              WHEN LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) = 'cancelled' THEN 'Appointment cancelled'
+              WHEN LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('no_show', 'no-show') THEN 'Appointment marked no-show'
               ELSE 'Appointment updated'
             END as action
           FROM appointments a

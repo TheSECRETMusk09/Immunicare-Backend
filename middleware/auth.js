@@ -29,6 +29,29 @@ const resolveJwtSecret = () => {
   return process.env.JWT_SECRET || null;
 };
 
+const getBearerTokenFromHeader = (authorizationHeader) => {
+  if (!authorizationHeader || typeof authorizationHeader !== 'string') {
+    return null;
+  }
+
+  return authorizationHeader.startsWith('Bearer ')
+    ? authorizationHeader.slice(7).trim() || null
+    : null;
+};
+
+const getAccessTokenFromRequest = (req) => {
+  return req.cookies?.token || getBearerTokenFromHeader(req.headers?.authorization) || null;
+};
+
+const getRefreshTokenFromRequest = (req) => {
+  return (
+    req.cookies?.refreshToken ||
+    req.body?.refreshToken ||
+    getBearerTokenFromHeader(req.headers?.authorization) ||
+    null
+  );
+};
+
 const authenticateToken = (req, res, next) => {
   try {
     const jwtSecret = resolveJwtSecret();
@@ -41,11 +64,7 @@ const authenticateToken = (req, res, next) => {
     }
 
     // Check for token in cookies first, then fallback to Authorization header
-    let token = req.cookies?.token;
-    if (!token) {
-      const authHeader = req.headers['authorization'];
-      token = authHeader && authHeader.split(' ')[1];
-    }
+    const token = getAccessTokenFromRequest(req);
 
     if (!token) {
       return res.status(401).json({
@@ -130,11 +149,7 @@ const optionalAuth = (req, res, next) => {
       return next();
     }
 
-    let token = req.cookies?.token;
-    if (!token) {
-      const authHeader = req.headers['authorization'];
-      token = authHeader && authHeader.split(' ')[1];
-    }
+    const token = getAccessTokenFromRequest(req);
 
     if (!token) {
       // No token provided, continue without user
@@ -200,7 +215,7 @@ const requireClinicAccess = (req, res, next) => {
  */
 const handleTokenRefresh = async (req, res, next) => {
   try {
-    const refreshToken = req.cookies?.refreshToken;
+    const refreshToken = getRefreshTokenFromRequest(req);
 
     if (!refreshToken) {
       return res.status(401).json({
@@ -288,6 +303,9 @@ module.exports = {
   optionalAuth,
   handleTokenRefresh,
   preventGuardianAccess,
+  getAccessTokenFromRequest,
+  getRefreshTokenFromRequest,
+  getBearerTokenFromHeader,
   requireRole,
   requireAdmin,
   requireSuperAdmin,

@@ -19,6 +19,10 @@ const bruteForceProtectionModule = require('../middleware/bruteForceProtection')
 const bruteForceProtection = bruteForceProtectionModule.bruteForceProtection;
 const { checkBruteForce } = bruteForceProtectionModule;
 const { normalizeRole, CANONICAL_ROLES, getRolePermissions } = require('../middleware/rbac');
+const {
+  getAccessTokenFromRequest,
+  getRefreshTokenFromRequest,
+} = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -119,6 +123,11 @@ const resolveUniqueGuardianUsername = async (
 };
 
 const normalizeLoginIdentifier = (rawIdentifier = '') => String(rawIdentifier || '').trim();
+
+const normalizePhoneDigits = (value) => String(value || '').replace(/\D/g, '');
+
+const USER_CONTACT_DIGITS_SQL = 'REGEXP_REPLACE(COALESCE(contact, \'\'), \'[^0-9]\', \'\', \'g\')';
+const GUARDIAN_PHONE_DIGITS_SQL = 'REGEXP_REPLACE(COALESCE(phone, \'\'), \'[^0-9]\', \'\', \'g\')';
 
 const parseGuardianControlNumber = (identifier) => {
   const normalized = normalizeLoginIdentifier(identifier);
@@ -1030,17 +1039,17 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
       );
     } else {
       // For SMS, find user by phone number (check both users.contact and guardians.phone)
-      const formattedPhone = phone.replace(/\D/g, '');
+      const formattedPhone = normalizePhoneDigits(phone);
       // Try to find user by contact phone
       userResult = await pool.query(
-        'SELECT id, username, email, contact, guardian_id FROM users WHERE REPLACE(contact, \'\\D\', \'\') = $1 AND is_active = true',
+        `SELECT id, username, email, contact, guardian_id FROM users WHERE ${USER_CONTACT_DIGITS_SQL} = $1 AND is_active = true`,
         [formattedPhone],
       );
 
       // If not found by contact phone, try to find by guardian phone
       if (userResult.rows.length === 0) {
         const guardianResult = await pool.query(
-          'SELECT id FROM guardians WHERE REPLACE(phone, \'\\D\', \'\') = $1',
+          `SELECT id FROM guardians WHERE ${GUARDIAN_PHONE_DIGITS_SQL} = $1`,
           [formattedPhone],
         );
 
@@ -1167,17 +1176,17 @@ router.post('/forgot-password/verify-otp', async (req, res) => {
         });
       }
 
-      const formattedPhone = phone.replace(/\D/g, '');
+      const formattedPhone = normalizePhoneDigits(phone);
       // Try to find user by contact phone
       userResult = await pool.query(
-        'SELECT id FROM users WHERE REPLACE(contact, \'\\D\', \'\') = $1 AND is_active = true',
+        `SELECT id FROM users WHERE ${USER_CONTACT_DIGITS_SQL} = $1 AND is_active = true`,
         [formattedPhone],
       );
 
       // If not found by contact phone, try to find by guardian phone
       if (userResult.rows.length === 0) {
         const guardianResult = await pool.query(
-          'SELECT id FROM guardians WHERE REPLACE(phone, \'\\D\', \'\') = $1',
+          `SELECT id FROM guardians WHERE ${GUARDIAN_PHONE_DIGITS_SQL} = $1`,
           [formattedPhone],
         );
 
@@ -1481,7 +1490,7 @@ router.post('/reset-password', async (req, res) => {
 router.post('/change-password', async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const token = req.cookies?.token || req.headers.authorization?.replace('Bearer ', '');
+    const token = getAccessTokenFromRequest(req);
 
     if (!token || !currentPassword || !newPassword) {
       return res.status(400).json({
@@ -1609,9 +1618,20 @@ router.post('/change-password', async (req, res) => {
       // Suppress email errors in development mode (SMTP not configured)
     }
 
+    const cookieOptions = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+      path: '/',
+    };
+
+    res.clearCookie('token', cookieOptions);
+    res.clearCookie('refreshToken', cookieOptions);
+
     res.json({
       message: 'Password changed successfully. Please login again.',
       code: 'PASSWORD_CHANGED',
+      requiresRelogin: true,
     });
   } catch (error) {
     console.error('Change password error:', error);
@@ -1632,7 +1652,16 @@ router.post('/change-password', async (req, res) => {
 
 router.post('/logout', async (req, res) => {
   try {
-    const refreshToken = req.cookies?.refreshToken;
+    const refreshToken = getRefreshTokenFromRequest(req);
+    const accessToken = getAccessTokenFromRequest(req);
+
+    if (accessToken) {
+      try {
+        await sessionService.endSession(accessToken, 'logout');
+      } catch (error) {
+        console.error('Error ending active session during logout:', error);
+      }
+    }
 
     // Revoke refresh token
     if (refreshToken) {
@@ -1671,19 +1700,7 @@ router.post('/logout', async (req, res) => {
 
 router.post('/refresh', async (req, res) => {
   try {
-    // Try to get refresh token from cookies first, then from body, then from Authorization header
-    let refreshToken = req.cookies?.refreshToken;
-
-    if (!refreshToken) {
-      refreshToken = req.body?.refreshToken;
-    }
-
-    if (!refreshToken) {
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        refreshToken = authHeader.substring(7);
-      }
-    }
+    const refreshToken = getRefreshTokenFromRequest(req);
 
     if (!refreshToken) {
       return res.status(401).json({
@@ -1771,6 +1788,7 @@ router.post('/refresh', async (req, res) => {
       sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
       path: '/',
     };
+    res.clearCookie('token', cookieOptions);
     res.clearCookie('refreshToken', cookieOptions);
 
     if (error.name === 'TokenExpiredError' || error.message.includes('expired')) {
@@ -1796,7 +1814,7 @@ router.get('/verify', async (req, res) => {
   res.set('Expires', '0');
 
   try {
-    const token = req.cookies?.token || req.headers.authorization?.replace('Bearer ', '');
+    const token = getAccessTokenFromRequest(req);
 
     if (!token) {
       return res.status(401).json({
@@ -1891,7 +1909,7 @@ router.get('/verify', async (req, res) => {
 
 router.get('/sessions', async (req, res) => {
   try {
-    const token = req.cookies?.token || req.headers.authorization?.replace('Bearer ', '');
+    const token = getAccessTokenFromRequest(req);
     if (!token) {
       return res.status(401).json({
         error: 'Authentication required',
@@ -1942,7 +1960,7 @@ router.get('/sessions', async (req, res) => {
 
 router.delete('/sessions/:id', async (req, res) => {
   try {
-    const token = req.cookies?.token || req.headers.authorization?.replace('Bearer ', '');
+    const token = getAccessTokenFromRequest(req);
     if (!token) {
       return res.status(401).json({
         error: 'Authentication required',
@@ -1978,7 +1996,7 @@ router.delete('/sessions/:id', async (req, res) => {
 
 router.delete('/sessions', async (req, res) => {
   try {
-    const token = req.cookies?.token || req.headers.authorization?.replace('Bearer ', '');
+    const token = getAccessTokenFromRequest(req);
     if (!token) {
       return res.status(401).json({
         error: 'Authentication required',

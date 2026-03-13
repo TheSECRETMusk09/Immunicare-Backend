@@ -17,6 +17,16 @@ const requiredEnvVars = [
 
 const recommendedEnvVars = ['DB_PORT', 'PORT', 'FRONTEND_URL', 'NODE_ENV'];
 
+const productionRequiredPresenceEnvVars = [
+  'PORT',
+  'FRONTEND_URL',
+  'CLIENT_URL',
+  'SESSION_SECRET',
+  'SOCKET_CORS_ORIGIN',
+  'ENABLE_METRICS',
+  'DB_SSL',
+];
+
 const optionalSecurityVars = [
   'REDIS_URL',
   'SMS_PROVIDER',
@@ -25,6 +35,14 @@ const optionalSecurityVars = [
   'SMTP_HOST',
   'SMTP_USER',
 ];
+
+const hasNonEmptyEnv = (name) => {
+  if (!(name in process.env)) {
+    return false;
+  }
+
+  return String(process.env[name] || '').trim().length > 0;
+};
 
 const WEAK_SECRET_PATTERNS = [
   /^your[-_]?secret[-_]?key$/i,
@@ -142,11 +160,27 @@ const validateProductionProviderConfig = (missing, warnings) => {
     missing.push('FRONTEND_URL');
   }
 
-  const corsOrigins = parseOrigins(process.env.CORS_ORIGIN, process.env.FRONTEND_URL);
+  if (!process.env.CLIENT_URL || !isValidHttpUrl(process.env.CLIENT_URL)) {
+    missing.push('CLIENT_URL');
+  }
+
+  const corsOrigins = parseOrigins(
+    process.env.CORS_ALLOWED_ORIGINS,
+    process.env.CORS_ORIGIN,
+    process.env.FRONTEND_URL,
+    process.env.CLIENT_URL,
+  );
   if (corsOrigins.length === 0) {
-    missing.push('CORS_ORIGIN');
+    missing.push('CORS_ALLOWED_ORIGINS');
   } else if (corsOrigins.some((origin) => !isValidHttpUrl(origin))) {
-    missing.push('CORS_ORIGIN');
+    missing.push('CORS_ALLOWED_ORIGINS');
+  }
+
+  const socketCorsOrigins = parseOrigins(process.env.SOCKET_CORS_ORIGIN);
+  if (socketCorsOrigins.length === 0) {
+    missing.push('SOCKET_CORS_ORIGIN');
+  } else if (socketCorsOrigins.some((origin) => !isValidHttpUrl(origin))) {
+    missing.push('SOCKET_CORS_ORIGIN');
   }
 
   const enableHttps = parseBoolean(process.env.ENABLE_HTTPS, false);
@@ -251,6 +285,12 @@ function validateEnv(exitOnFailure = true) {
 
   // Check for production-specific concerns
   if (runtimeEnv === 'production') {
+    productionRequiredPresenceEnvVars.forEach((varName) => {
+      if (!hasNonEmptyEnv(varName)) {
+        missing.push(varName);
+      }
+    });
+
     if (process.env.CSRF_DISABLED === 'true') {
       warnings.push('CSRF_DISABLED=true - CSRF protection is disabled in production. This is not recommended.');
     }
@@ -355,6 +395,7 @@ module.exports = {
   isProduction,
   isDevelopment,
   isTest,
+  productionRequiredPresenceEnvVars,
   requiredEnvVars,
   recommendedEnvVars,
   optionalSecurityVars,

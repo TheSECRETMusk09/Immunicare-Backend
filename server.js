@@ -168,7 +168,13 @@ const parseConfiguredOrigins = (...values) =>
 const runtimeEnv = process.env.NODE_ENV || 'development';
 const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
 
-const configuredOrigins = parseConfiguredOrigins(process.env.CORS_ORIGIN, process.env.FRONTEND_URL);
+const configuredOrigins = parseConfiguredOrigins(
+  process.env.CORS_ORIGIN,
+  process.env.CORS_ALLOWED_ORIGINS,
+  process.env.FRONTEND_URL,
+  process.env.CLIENT_URL,
+  process.env.SOCKET_CORS_ORIGIN,
+);
 const canonicalProductionOrigins = parseConfiguredOrigins(
   'https://immunicareph.site',
   'https://www.immunicareph.site',
@@ -245,16 +251,20 @@ const corsOptions = {
 // Apply CORS middleware FIRST (before all other middleware)
 app.use(cors(corsOptions));
 
-// Handle preflight requests explicitly with fallback
-// This ensures OPTIONS requests always get a response even if CORS validation fails
-app.options('*', (req, res) => {
-  console.log('[CORS] OPTIONS preflight for:', req.path);
-  res.set('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization, x-csrf-token, Cache-Control, Pragma, Origin, X-Requested-With');
-  res.set('Access-Control-Allow-Credentials', 'true');
-  res.set('Access-Control-Max-Age', '86400');
-  res.status(204).end();
+// Handle preflight requests using the same allowlist logic as standard requests.
+app.options('*', cors(corsOptions));
+
+// Provide an explicit response for blocked origins instead of falling through as a generic 500.
+app.use((err, req, res, next) => {
+  if (err && err.message === 'Not allowed by CORS') {
+    return res.status(403).json({
+      success: false,
+      error: 'Origin not allowed by CORS policy',
+      code: 'CORS_ORIGIN_DENIED',
+    });
+  }
+
+  return next(err);
 });
 
 // Helmet security headers - provides important security headers

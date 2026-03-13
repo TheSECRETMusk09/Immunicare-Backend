@@ -2,6 +2,7 @@ const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const logger = require('../config/logger');
 const loadBackendEnv = require('../config/loadEnv');
+const { normalizeRole, CANONICAL_ROLES } = require('../middleware/rbac');
 loadBackendEnv();
 
 const parseOriginList = (...values) =>
@@ -29,7 +30,13 @@ const normalizeOrigin = (value) => {
 const getAllowedOrigins = () => {
   const runtimeEnv = process.env.NODE_ENV || 'development';
   const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
-  const configuredOrigins = parseOriginList(process.env.CORS_ORIGIN, process.env.FRONTEND_URL)
+  const configuredOrigins = parseOriginList(
+    process.env.CORS_ALLOWED_ORIGINS,
+    process.env.CORS_ORIGIN,
+    process.env.FRONTEND_URL,
+    process.env.CLIENT_URL,
+    process.env.SOCKET_CORS_ORIGIN,
+  )
     .map((value) => normalizeOrigin(value))
     .filter(Boolean);
   const canonicalProductionOrigins = ['https://immunicareph.site', 'https://www.immunicareph.site']
@@ -54,6 +61,20 @@ const getAllowedOrigins = () => {
   }
 
   return Array.from(new Set([...productionOrigins, ...devOrigins]));
+};
+
+const getRoleRoomNames = (role) => {
+  const canonicalRole = normalizeRole(role);
+
+  if (canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN) {
+    return ['SYSTEM_ADMIN', 'system_admin', 'admin'];
+  }
+
+  if (canonicalRole === CANONICAL_ROLES.GUARDIAN) {
+    return ['GUARDIAN', 'guardian'];
+  }
+
+  return role ? [String(role)] : [];
 };
 
 class SocketService {
@@ -130,8 +151,9 @@ class SocketService {
 
         const decoded = jwt.verify(token, jwtSecret);
         socket.userId = decoded.userId || decoded.id;
-        socket.userRole = decoded.role;
-        socket.clinicId = decoded.clinicId;
+        socket.userRole = normalizeRole(decoded.runtime_role || decoded.role_type || decoded.role) || decoded.role || null;
+        socket.guardianId = decoded.guardian_id || decoded.guardianId || null;
+        socket.clinicId = decoded.clinic_id || decoded.clinicId || decoded.facility_id || decoded.facilityId || null;
 
         next();
       } catch (error) {
@@ -161,12 +183,18 @@ class SocketService {
 
       // Join role-based rooms
       if (socket.userRole) {
-        socket.join(`role:${socket.userRole}`);
+        getRoleRoomNames(socket.userRole).forEach((roleName) => {
+          socket.join(`role:${roleName}`);
+        });
       }
 
       // Join clinic-based rooms
       if (socket.clinicId) {
         socket.join(`clinic:${socket.clinicId}`);
+      }
+
+      if (socket.guardianId) {
+        socket.join(`guardian:${socket.guardianId}`);
       }
 
       // Handle join custom rooms
@@ -309,7 +337,19 @@ class SocketService {
       return false;
     }
 
-    this.io.to(`role:${role}`).emit(event, {
+    const roleRooms = getRoleRoomNames(role);
+    if (roleRooms.length === 0) {
+      logger.warn(`No resolved role rooms found for role ${role}`);
+      return false;
+    }
+
+    let broadcaster = this.io;
+
+    roleRooms.forEach((roleRoom) => {
+      broadcaster = broadcaster.to(`role:${roleRoom}`);
+    });
+
+    broadcaster.emit(event, {
       ...data,
       timestamp: new Date().toISOString(),
     });
@@ -461,18 +501,7 @@ class SocketService {
 
   // Send notification to all guardians
   sendToAllGuardians(event, data) {
-    if (!this.io) {
-      logger.warn('Socket.io not initialized');
-      return false;
-    }
-
-    this.io.to('role:guardian').emit(event, {
-      ...data,
-      timestamp: new Date().toISOString(),
-    });
-
-    logger.info(`Notification sent to all guardians: ${event}`);
-    return true;
+    return this.sendToRole(CANONICAL_ROLES.GUARDIAN, event, data);
   }
 
   // Get server statistics

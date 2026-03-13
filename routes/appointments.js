@@ -96,6 +96,50 @@ const APPOINTMENT_EDIT_LOCKED_STATUSES = [
   'no_show',
 ];
 
+const normalizeAppointmentStatus = (value) => {
+  const normalized = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized === 'completed') {
+    return 'attended';
+  }
+
+  if (normalized === 'confirmed' || normalized === 'rescheduled') {
+    return 'scheduled';
+  }
+
+  return normalized;
+};
+
+const APPOINTMENT_STATUS_FILTER_VALUES = Object.freeze({
+  pending: ['pending'],
+  scheduled: ['scheduled', 'confirmed', 'rescheduled'],
+  attended: ['attended', 'completed'],
+  cancelled: ['cancelled'],
+  no_show: ['no_show', 'no-show'],
+});
+
+const getAppointmentStatusFilterValues = (status) => {
+  const normalizedStatus = normalizeAppointmentStatus(status);
+  return APPOINTMENT_STATUS_FILTER_VALUES[normalizedStatus] || [];
+};
+
+const normalizeAppointmentRecord = (appointment) => {
+  if (!appointment || typeof appointment !== 'object') {
+    return appointment;
+  }
+
+  const normalizedStatus = normalizeAppointmentStatus(appointment.status);
+  return {
+    ...appointment,
+    raw_status: appointment.status,
+    status: normalizedStatus || appointment.status,
+  };
+};
+
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
 
 const sanitizeAppointmentMutablePayload = (payload = {}, { allowStatus = true } = {}) => {
@@ -330,8 +374,16 @@ router.get('/', async (req, res) => {
     }
 
     if (status) {
-      query += ` AND a.status = $${params.length + 1}`;
-      params.push(status);
+      const statusFilterValues = getAppointmentStatusFilterValues(status);
+      if (statusFilterValues.length === 0) {
+        return res.status(400).json({
+          error: `status must be one of: ${APPOINTMENT_STATUS_VALUES.join(', ')}`,
+          code: 'INVALID_STATUS',
+        });
+      }
+
+      query += ` AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) = ANY($${params.length + 1}::text[])`;
+      params.push(statusFilterValues);
     }
 
     if (date) {
@@ -358,7 +410,7 @@ router.get('/', async (req, res) => {
     const totalPages = Math.ceil(total / limitNum);
 
     res.json({
-      data: result.rows,
+      data: result.rows.map(normalizeAppointmentRecord),
       metadata: {
         page: pageNum,
         limit: limitNum,
@@ -489,6 +541,8 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
 
     const finalStatus = guardianFlow ? 'scheduled' : normalized.status || 'scheduled';
     const finalClinicId = clinicIdCheck.value || infant.clinic_id || req.user.clinic_id || null;
+    const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
 
     // Generate appointment control number
     let appointmentControlNumber = null;
@@ -532,14 +586,14 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
     const result = await pool.query(
       `
         INSERT INTO appointments (
-          infant_id,
+          ${appointmentPatientColumn},
           scheduled_date,
           type,
           duration_minutes,
           notes,
           status,
           created_by,
-          clinic_id,
+          ${appointmentFacilityColumn},
           location,
           control_number,
           guardian_id
@@ -583,8 +637,10 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
       }
     }
 
-    socketService.broadcast('appointment_created', fullAppointment);
-    res.status(201).json(fullAppointment);
+    const normalizedAppointment = normalizeAppointmentRecord(fullAppointment);
+
+    socketService.broadcast('appointment_created', normalizedAppointment);
+    res.status(201).json(normalizedAppointment);
   } catch (error) {
     console.error('Create appointment error:', error);
     res.status(500).json({ error: 'Failed to create appointment' });
@@ -895,7 +951,7 @@ router.put('/:id(\\d+)', async (req, res) => {
         return res.status(403).json({ error: 'You can only edit your own appointment requests' });
       }
 
-      if (APPOINTMENT_EDIT_LOCKED_STATUSES.includes(String(appointment.status || '').toLowerCase())) {
+      if (APPOINTMENT_EDIT_LOCKED_STATUSES.includes(normalizeAppointmentStatus(appointment.status))) {
         return res.status(400).json({ error: 'This appointment can no longer be edited' });
       }
     } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
@@ -993,7 +1049,7 @@ router.put('/:id(\\d+)', async (req, res) => {
     // Send SMS confirmation when admin confirms an appointment (status changed to 'scheduled')
     if (!guardianFlow &&
         normalizedUpdates.status === 'scheduled' &&
-        appointment.status !== 'scheduled' &&
+        normalizeAppointmentStatus(appointment.status) !== 'scheduled' &&
         updatedAppointment.guardian_phone) {
       try {
         const smsResult = await sendAppointmentConfirmation({
@@ -1060,8 +1116,10 @@ router.put('/:id(\\d+)', async (req, res) => {
       });
     }
 
-    socketService.broadcast('appointment_updated', updatedAppointment);
-    res.json(updatedAppointment);
+    const normalizedAppointment = normalizeAppointmentRecord(updatedAppointment);
+
+    socketService.broadcast('appointment_updated', normalizedAppointment);
+    res.json(normalizedAppointment);
   } catch (error) {
     console.error('Update appointment error:', error);
     res.status(500).json({ error: 'Failed to update appointment' });
@@ -1129,8 +1187,10 @@ router.put('/:id(\\d+)/cancel', async (req, res) => {
       });
     }
 
-    socketService.broadcast('appointment_updated', cancelledAppointment);
-    res.json(cancelledAppointment);
+    const normalizedAppointment = normalizeAppointmentRecord(cancelledAppointment);
+
+    socketService.broadcast('appointment_updated', normalizedAppointment);
+    res.json(normalizedAppointment);
   } catch (error) {
     console.error('Cancel appointment error:', error);
     res.status(500).json({ error: 'Failed to cancel appointment' });
@@ -1171,8 +1231,11 @@ router.put('/:id(\\d+)/complete', requirePermission('appointment:update'), async
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
-    socketService.broadcast('appointment_updated', result.rows[0]);
-    res.json(result.rows[0]);
+    const completedAppointment = (await fetchAppointmentById(appointmentId)) || result.rows[0];
+    const normalizedAppointment = normalizeAppointmentRecord(completedAppointment);
+
+    socketService.broadcast('appointment_updated', normalizedAppointment);
+    res.json(normalizedAppointment);
   } catch (error) {
     console.error('Complete appointment error:', error);
     res.status(500).json({ error: 'Failed to complete appointment' });
@@ -1233,12 +1296,14 @@ router.put('/bulk-update', requirePermission('appointment:update'), async (req, 
     );
 
     // Broadcast updates for all modified appointments
-    result.rows.forEach(appointment => {
+    const normalizedAppointments = result.rows.map(normalizeAppointmentRecord);
+
+    normalizedAppointments.forEach((appointment) => {
       socketService.broadcast('appointment_updated', appointment);
     });
     res.json({
-      updated: result.rows.length,
-      appointments: result.rows,
+      updated: normalizedAppointments.length,
+      appointments: normalizedAppointments,
     });
   } catch (error) {
     console.error('Bulk update appointments error:', error);
