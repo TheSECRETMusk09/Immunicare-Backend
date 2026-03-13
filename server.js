@@ -201,9 +201,30 @@ const corsOptions = {
     // Debug log for CORS issues
     console.log('[CORS] Checking origin:', origin);
 
-    // Allow requests with no origin (like mobile apps or curl requests)
+    // In production, require a valid origin - no origin allowed (blocks curl, mobile apps without origin)
+    if (isProductionLikeEnv) {
+      if (!origin) {
+        console.warn('[CORS] No origin rejected in production');
+        return callback(new Error('Not allowed by CORS: Origin header required in production'));
+      }
+
+      const normalizedOrigin = normalizeOrigin(origin);
+      console.log('[CORS] Normalized origin:', normalizedOrigin);
+      console.log('[CORS] Allowed origins:', allowedOrigins);
+
+      if (normalizedOrigin && allowedOrigins.includes(normalizedOrigin)) {
+        console.log('[CORS] Origin allowed:', normalizedOrigin);
+        callback(null, true);
+      } else {
+        console.warn('[CORS] Origin NOT allowed:', origin);
+        callback(new Error('Not allowed by CORS'));
+      }
+      return;
+    }
+
+    // Development mode: allow requests with no origin
     if (!origin) {
-      console.log('[CORS] No origin, allowing request');
+      console.log('[CORS] No origin, allowing request (development mode)');
       return callback(null, true);
     }
 
@@ -215,13 +236,11 @@ const corsOptions = {
       console.log('[CORS] Origin allowed:', normalizedOrigin);
       callback(null, true);
     } else if (
-      !isProductionLikeEnv &&
       /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
     ) {
       console.log('[CORS] Localhost origin allowed (dev mode)');
       callback(null, true);
     } else if (
-      !isProductionLikeEnv &&
       /^https?:\/\/192\.168\.\d+\.\d+(\:\d+)?$/i.test(origin)
     ) {
       console.log('[CORS] Private network origin allowed (dev mode)');

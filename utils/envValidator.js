@@ -251,6 +251,27 @@ function validateEnv(exitOnFailure = true) {
     }
   }
 
+  // Validate SESSION_SECRET strength in production
+  if (process.env.SESSION_SECRET) {
+    const sessionSecret = process.env.SESSION_SECRET;
+    if (!hasSufficientSecretEntropy(sessionSecret) || isWeakSecret(sessionSecret)) {
+      if (runtimeEnv === 'production') {
+        missing.push('SESSION_SECRET');
+      } else {
+        warnings.push('SESSION_SECRET is weak. Use a high-entropy secret (>=32 chars)');
+      }
+    }
+  }
+
+  // Validate rate limit configuration
+  const authRateLimitMax = parseInteger(process.env.AUTH_RATE_LIMIT_MAX, 0);
+  if (authRateLimitMax > 0 && authRateLimitMax < 5 && runtimeEnv === 'production') {
+    warnings.push('AUTH_RATE_LIMIT_MAX is very low (<5) for production. Consider increasing to prevent legitimate users from being rate-limited.');
+  }
+  if (authRateLimitMax > 1000) {
+    warnings.push('AUTH_RATE_LIMIT_MAX is very high (>1000). This may not provide adequate protection against brute force attacks.');
+  }
+
   const dbPassword = process.env.DB_PASSWORD;
   if (dbPassword && isLikelyWeakDbPassword(dbPassword)) {
     if (runtimeEnv === 'production') {
