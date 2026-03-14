@@ -73,7 +73,7 @@ const getAdminInfantVaccinationMonitoring = async ({
           p.control_number,
           p.dob,
           p.guardian_id,
-          p.clinic_id,
+          g.clinic_id,
           p.is_active,
           g.name AS guardian_name,
           g.phone AS guardian_phone

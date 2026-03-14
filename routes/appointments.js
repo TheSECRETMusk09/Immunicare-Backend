@@ -288,9 +288,10 @@ const CONTROL_NUMBER_FORMAT_ERROR = 'control_number must match INF-YYYY-######';
 const fetchInfantOwnership = async (infantId) => {
   const result = await pool.query(
     `
-      SELECT id, guardian_id, clinic_id
-      FROM patients
-      WHERE id = $1 AND is_active = true
+      SELECT p.id, p.guardian_id, g.clinic_id
+      FROM patients p
+      LEFT JOIN guardians g ON g.id = p.guardian_id
+      WHERE p.id = $1 AND p.is_active = true
       LIMIT 1
     `,
     [infantId],
