@@ -53,6 +53,14 @@ const createIpKeyGenerator = () => {
 // Create the key generator
 const customIpKeyGenerator = createIpKeyGenerator();
 
+const getNormalizedRequestPhone = (req) =>
+  String(
+    req.body?.phone || req.body?.phoneNumber || req.body?.phone_number || '',
+  ).replace(/\D+/g, '');
+
+const getNormalizedRequestEmail = (req) =>
+  String(req.body?.email || '').trim().toLowerCase();
+
 // Redis client configuration - lazy loaded
 let redisClient = null;
 let RedisStore = null;
@@ -293,7 +301,13 @@ const createRegistrationRateLimiter = () => {
     },
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: customIpKeyGenerator,
+    keyGenerator: (req) => {
+      const ipKey = customIpKeyGenerator(req);
+      const email = getNormalizedRequestEmail(req);
+      const phone = getNormalizedRequestPhone(req);
+      const identity = [email, phone].filter(Boolean).join('_') || 'unknown';
+      return `${ipKey}_register_${identity}`;
+    },
     skip: (req) => {
       if (req.path === '/api/health' || req.path === '/metrics') {
         return true;
@@ -398,7 +412,7 @@ const createSMSRateLimiter = () => {
     legacyHeaders: false,
     keyGenerator: (req) => {
       const ipKey = customIpKeyGenerator(req);
-      const phone = req.body?.phoneNumber || req.body?.phone_number || 'unknown';
+      const phone = getNormalizedRequestPhone(req) || 'unknown';
       return `${ipKey}_${phone}`;
     },
     skip: (req) => {
@@ -438,7 +452,7 @@ const createSMSVerificationRateLimiter = () => {
     legacyHeaders: false,
     keyGenerator: (req) => {
       const ipKey = customIpKeyGenerator(req);
-      const phone = req.body?.phoneNumber || req.body?.phone_number || 'unknown';
+      const phone = getNormalizedRequestPhone(req) || 'unknown';
       return `${ipKey}_verify_${phone}`;
     },
     skip: (req) => {

@@ -197,6 +197,96 @@ router.options('*', (req, res) => {
 const loginRateLimiter = rateLimiter.createLoginRateLimiter();
 const forgotPasswordRateLimiter = rateLimiter.createForgotPasswordRateLimiter();
 const registrationRateLimiter = rateLimiter.createRegistrationRateLimiter();
+const registrationResendRateLimiter = rateLimiter.createSMSRateLimiter();
+const registrationVerificationRateLimiter = rateLimiter.createSMSVerificationRateLimiter();
+
+const PENDING_REGISTRATION_RESEND_COOLDOWN_SECONDS = Math.max(
+  30,
+  Number.parseInt(smsService.SMS_CONFIG?.otp?.resendCooldownSeconds || '60', 10) || 60,
+);
+
+const parsePendingRegistrationData = (value) => {
+  if (!value) {
+    return {};
+  }
+
+  if (typeof value === 'object') {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+};
+
+const getPendingRegistrationExpirySeconds = (pendingRegistration) => {
+  const expiresAt = pendingRegistration?.expires_at
+    ? new Date(pendingRegistration.expires_at).getTime()
+    : Number.NaN;
+
+  if (!Number.isFinite(expiresAt)) {
+    return smsService.SMS_CONFIG.otp.expiryMinutes * 60;
+  }
+
+  return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+};
+
+const getPendingRegistrationResendAvailableInSeconds = (pendingRegistration) => {
+  const createdAt = pendingRegistration?.created_at
+    ? new Date(pendingRegistration.created_at).getTime()
+    : Number.NaN;
+
+  if (!Number.isFinite(createdAt)) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    PENDING_REGISTRATION_RESEND_COOLDOWN_SECONDS -
+      Math.floor((Date.now() - createdAt) / 1000),
+  );
+};
+
+const buildPendingRegistrationPayload = (pendingRegistration, formattedPhone) => ({
+  phone: formattedPhone || pendingRegistration?.phone_number || null,
+  expiresInSeconds: getPendingRegistrationExpirySeconds(pendingRegistration),
+  resendAvailableInSeconds: getPendingRegistrationResendAvailableInSeconds(
+    pendingRegistration,
+  ),
+});
+
+const findLatestPendingRegistration = async (db, { formattedPhone, email } = {}) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const conditions = [];
+  const params = [];
+
+  if (formattedPhone) {
+    conditions.push(`phone_number = $${params.length + 1}`);
+    params.push(formattedPhone);
+  }
+
+  if (normalizedEmail) {
+    conditions.push(`LOWER(COALESCE(registration_data::jsonb ->> 'email', '')) = $${params.length + 1}`);
+    params.push(normalizedEmail);
+  }
+
+  if (conditions.length === 0) {
+    return null;
+  }
+
+  const result = await db.query(
+    `SELECT *
+     FROM pending_registrations
+     WHERE ${conditions.join(' OR ')}
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    params,
+  );
+
+  return result.rows[0] || null;
+};
 
 /**
  * @swagger
@@ -432,6 +522,45 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       });
     }
 
+    const latestPendingRegistration = await findLatestPendingRegistration(pool, {
+      formattedPhone,
+      email,
+    });
+    const latestPendingData = parsePendingRegistrationData(
+      latestPendingRegistration?.registration_data,
+    );
+    const latestPendingPhone = smsService.formatPhoneNumber(
+      latestPendingData.phone || latestPendingRegistration?.phone_number,
+    );
+    const latestPendingExpiresAt = latestPendingRegistration?.expires_at
+      ? new Date(latestPendingRegistration.expires_at).getTime()
+      : 0;
+    const hasActiveMatchingPendingRegistration =
+      latestPendingRegistration &&
+      latestPendingExpiresAt > Date.now() &&
+      String(latestPendingData.email || '').trim().toLowerCase() === email &&
+      latestPendingPhone === formattedPhone;
+
+    if (hasActiveMatchingPendingRegistration) {
+      return res.status(200).json({
+        success: true,
+        message:
+          'Registration is still pending verification. Please use the OTP already sent to your phone.',
+        code: 'REGISTRATION_PENDING',
+        data: buildPendingRegistrationPayload(
+          latestPendingRegistration,
+          formattedPhone,
+        ),
+      });
+    }
+
+    await pool.query(
+      `DELETE FROM pending_registrations
+       WHERE phone_number = $1
+          OR LOWER(COALESCE(registration_data::jsonb ->> 'email', '')) = $2`,
+      [formattedPhone, email],
+    );
+
     // Store pending registration with formatted phone number
     await pool.query(
       `INSERT INTO pending_registrations (registration_data, otp, phone_number, expires_at)
@@ -444,7 +573,12 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       await smsService.sendVerificationSMS(formattedPhone, otp);
     } catch (smsError) {
       console.error('Failed to send OTP SMS:', smsError);
-      await pool.query('DELETE FROM pending_registrations WHERE phone_number = $1', [phone]);
+      await pool.query(
+        `DELETE FROM pending_registrations
+         WHERE phone_number = $1
+            OR LOWER(COALESCE(registration_data::jsonb ->> 'email', '')) = $2`,
+        [formattedPhone, email],
+      );
       return res.status(503).json({
         success: false,
         error: 'Unable to send verification code at this time. Please try again.',
@@ -457,8 +591,9 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       message: 'OTP sent successfully. Please verify to complete registration.',
       code: 'OTP_SENT',
       data: {
-        phone,
+        phone: formattedPhone,
         expiresInSeconds: smsService.SMS_CONFIG.otp.expiryMinutes * 60,
+        resendAvailableInSeconds: PENDING_REGISTRATION_RESEND_COOLDOWN_SECONDS,
       },
     });
   } catch (error) {
@@ -470,6 +605,133 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
     });
   }
 });
+
+router.post(
+  '/register/guardian/resend-otp',
+  registrationResendRateLimiter,
+  async (req, res) => {
+    try {
+      const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
+      const formattedPhone = smsService.formatPhoneNumber(req.body?.phone);
+
+      if (!formattedPhone) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid phone number format',
+          code: 'INVALID_PHONE_FORMAT',
+        });
+      }
+
+      const pendingRegistration = await findLatestPendingRegistration(pool, {
+        formattedPhone,
+        email: normalizedEmail,
+      });
+
+      if (!pendingRegistration) {
+        return res.status(400).json({
+          success: false,
+          error:
+            'No pending registration was found for this phone number. Please register again.',
+          code: 'REGISTRATION_NOT_FOUND',
+        });
+      }
+
+      if (getPendingRegistrationExpirySeconds(pendingRegistration) <= 0) {
+        await pool.query('DELETE FROM pending_registrations WHERE id = $1', [
+          pendingRegistration.id,
+        ]);
+
+        return res.status(400).json({
+          success: false,
+          error:
+            'Your registration session has expired. Please submit the registration form again.',
+          code: 'REGISTRATION_EXPIRED',
+        });
+      }
+
+      const resendAvailableInSeconds =
+        getPendingRegistrationResendAvailableInSeconds(pendingRegistration);
+
+      if (resendAvailableInSeconds > 0) {
+        res.setHeader('Retry-After', String(resendAvailableInSeconds));
+        return res.status(429).json({
+          success: false,
+          error:
+            'A verification code was recently sent. Please wait before requesting another code.',
+          code: 'OTP_RESEND_COOLDOWN',
+          retryAfter: resendAvailableInSeconds,
+        });
+      }
+
+      const otp = smsService.generateVerificationCode();
+      const expiresAt = new Date(
+        Date.now() + smsService.SMS_CONFIG.otp.expiryMinutes * 60 * 1000,
+      );
+
+      await pool.query(
+        `UPDATE pending_registrations
+         SET otp = $1,
+             phone_number = $2,
+             expires_at = $3,
+             created_at = CURRENT_TIMESTAMP
+         WHERE id = $4`,
+        [otp, formattedPhone, expiresAt, pendingRegistration.id],
+      );
+
+      try {
+        await smsService.sendVerificationSMS(formattedPhone, otp);
+      } catch (smsError) {
+        console.error('Failed to resend OTP SMS:', smsError);
+        await pool.query(
+          `UPDATE pending_registrations
+           SET otp = $1,
+               phone_number = $2,
+               expires_at = $3,
+               created_at = $4
+           WHERE id = $5`,
+          [
+            pendingRegistration.otp,
+            pendingRegistration.phone_number,
+            pendingRegistration.expires_at,
+            pendingRegistration.created_at,
+            pendingRegistration.id,
+          ],
+        );
+
+        return res.status(503).json({
+          success: false,
+          error: 'Unable to resend verification code at this time. Please try again.',
+          code: 'OTP_RESEND_FAILED',
+        });
+      }
+
+      const refreshedPendingRegistration = {
+        ...pendingRegistration,
+        otp,
+        phone_number: formattedPhone,
+        expires_at: expiresAt,
+        created_at: new Date(),
+      };
+
+      return res.status(200).json({
+        success: true,
+        message: 'A new verification code has been sent.',
+        code: 'OTP_RESENT',
+        data: buildPendingRegistrationPayload(
+          refreshedPendingRegistration,
+          formattedPhone,
+        ),
+      });
+    } catch (error) {
+      console.error('Guardian registration resend error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to resend verification code',
+        code: 'OTP_RESEND_ERROR',
+      });
+    }
+  },
+);
 
 /**
  * @swagger
@@ -497,98 +759,102 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
  *       400:
  *         description: Invalid OTP or expired
  */
-router.post('/register/guardian/verify', registrationRateLimiter, async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { phone, otp } = req.body;
+router.post(
+  '/register/guardian/verify',
+  registrationVerificationRateLimiter,
+  async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const { phone, otp } = req.body;
 
-    // Format phone number to E.164 for consistent verification
-    const formattedPhone = smsService.formatPhoneNumber(phone);
-    if (!formattedPhone) {
-      return res.status(400).json({
-        error: 'Invalid phone number format',
-        code: 'INVALID_PHONE_FORMAT',
-      });
-    }
+      // Format phone number to E.164 for consistent verification
+      const formattedPhone = smsService.formatPhoneNumber(phone);
+      if (!formattedPhone) {
+        return res.status(400).json({
+          error: 'Invalid phone number format',
+          code: 'INVALID_PHONE_FORMAT',
+        });
+      }
 
-    // 1. Verify OTP from pending registrations
-    const pendingResult = await client.query(
-      `SELECT * FROM pending_registrations
+      // 1. Verify OTP from pending registrations
+      const pendingResult = await client.query(
+        `SELECT * FROM pending_registrations
        WHERE phone_number = $1 AND otp = $2 AND expires_at > NOW()
        ORDER BY created_at DESC LIMIT 1`,
-      [formattedPhone, otp],
-    );
+        [formattedPhone, otp],
+      );
 
-    if (pendingResult.rows.length === 0) {
-      return res.status(400).json({
-        error: 'Invalid or expired OTP',
-        code: 'INVALID_OTP',
-      });
-    }
+      if (pendingResult.rows.length === 0) {
+        return res.status(400).json({
+          error: 'Invalid or expired OTP',
+          code: 'INVALID_OTP',
+        });
+      }
 
-    const registrationData = pendingResult.rows[0].registration_data;
-    const { email, password, firstName, lastName, address, relationship } = registrationData;
+      const registrationData = pendingResult.rows[0].registration_data;
+      const { email, password, firstName, lastName, address, relationship } = registrationData;
 
-    await client.query('BEGIN');
+      await client.query('BEGIN');
 
-    // 2. Create Guardian
-    const guardianResult = await client.query(
-      `INSERT INTO guardians (name, phone, email, address, relationship, is_active, is_password_set)
+      // 2. Create Guardian
+      const guardianResult = await client.query(
+        `INSERT INTO guardians (name, phone, email, address, relationship, is_active, is_password_set)
        VALUES ($1, $2, $3, $4, $5, true, true)
        RETURNING id`,
-      [`${firstName} ${lastName}`, formattedPhone, email, address, relationship],
-    );
-    const guardianId = guardianResult.rows[0].id;
+        [`${firstName} ${lastName}`, formattedPhone, email, address, relationship],
+      );
+      const guardianId = guardianResult.rows[0].id;
 
-    const generatedUsername = await resolveUniqueGuardianUsername(client, {
-      firstName,
-      lastName,
-    });
+      const generatedUsername = await resolveUniqueGuardianUsername(client, {
+        firstName,
+        lastName,
+      });
 
-    // 3. Create User
-    const hashedPassword = await bcrypt.hash(password, 10);
-    // Get guardian role ID
-    const roleResult = await client.query('SELECT id FROM roles WHERE name = \'guardian\'');
-    const roleId = roleResult.rows[0]?.id;
+      // 3. Create User
+      const hashedPassword = await bcrypt.hash(password, 10);
+      // Get guardian role ID
+      const roleResult = await client.query('SELECT id FROM roles WHERE name = \'guardian\'');
+      const roleId = roleResult.rows[0]?.id;
 
-    // Get or create default clinic for guardians
-    let clinicId = null;
-    const clinicRes = await client.query('SELECT id FROM clinics WHERE name = \'Guardian Portal\' LIMIT 1');
-    if (clinicRes.rows.length > 0) {
-      clinicId = clinicRes.rows[0].id;
-    } else {
-      const newClinic = await client.query('INSERT INTO clinics (name, region, address, contact) VALUES (\'Guardian Portal\', \'Virtual\', \'Online\', \'N/A\') RETURNING id');
-      clinicId = newClinic.rows[0].id;
-    }
+      // Get or create default clinic for guardians
+      let clinicId = null;
+      const clinicRes = await client.query('SELECT id FROM clinics WHERE name = \'Guardian Portal\' LIMIT 1');
+      if (clinicRes.rows.length > 0) {
+        clinicId = clinicRes.rows[0].id;
+      } else {
+        const newClinic = await client.query('INSERT INTO clinics (name, region, address, contact) VALUES (\'Guardian Portal\', \'Virtual\', \'Online\', \'N/A\') RETURNING id');
+        clinicId = newClinic.rows[0].id;
+      }
 
-    await client.query(
-      `INSERT INTO users (username, email, password_hash, role_id, guardian_id, clinic_id, is_active)
+      await client.query(
+        `INSERT INTO users (username, email, password_hash, role_id, guardian_id, clinic_id, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, true)`,
-      [generatedUsername, email, hashedPassword, roleId, guardianId, clinicId],
-    );
+        [generatedUsername, email, hashedPassword, roleId, guardianId, clinicId],
+      );
 
-    // 4. Cleanup pending registration (use formatted phone for consistency)
-    await client.query('DELETE FROM pending_registrations WHERE phone_number = $1', [formattedPhone]);
+      // 4. Cleanup pending registration (use formatted phone for consistency)
+      await client.query('DELETE FROM pending_registrations WHERE phone_number = $1', [formattedPhone]);
 
-    await client.query('COMMIT');
+      await client.query('COMMIT');
 
-    // 5. Send Welcome Notifications (Non-blocking)
-    emailService.sendWelcomeEmail(email, firstName).catch(e => console.error('Welcome email failed:', e.message));
-    smsService.sendWelcomeSMS(formattedPhone, firstName).catch(e => console.error('Welcome SMS failed:', e.message));
+      // 5. Send Welcome Notifications (Non-blocking)
+      emailService.sendWelcomeEmail(email, firstName).catch(e => console.error('Welcome email failed:', e.message));
+      smsService.sendWelcomeSMS(formattedPhone, firstName).catch(e => console.error('Welcome SMS failed:', e.message));
 
-    res.status(201).json({
-      message: 'Registration successful. Welcome to Immunicare!',
-      code: 'REGISTRATION_COMPLETE',
-    });
+      res.status(201).json({
+        message: 'Registration successful. Welcome to Immunicare!',
+        code: 'REGISTRATION_COMPLETE',
+      });
 
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Registration verification error:', error);
-    res.status(500).json({ error: 'Registration failed', code: 'SERVER_ERROR' });
-  } finally {
-    client.release();
-  }
-});
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Registration verification error:', error);
+      res.status(500).json({ error: 'Registration failed', code: 'SERVER_ERROR' });
+    } finally {
+      client.release();
+    }
+  },
+);
 
 /**
  * @swagger

@@ -207,6 +207,8 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
   try {
     const {
       vaccine_inventory_id,
+      vaccine_id,
+      clinic_id,
       transaction_type,
       quantity,
       lot_number,
@@ -217,14 +219,93 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
       notes,
     } = req.body;
 
+    // Log incoming request data for debugging
+    console.log('Creating vaccine inventory transaction:', {
+      vaccine_inventory_id,
+      vaccine_id,
+      clinic_id,
+      transaction_type,
+      quantity,
+      lot_number,
+      batch_number,
+      expiry_date,
+      supplier_name,
+      reference_number,
+      notes,
+      userId: req.user?.id,
+    });
+
+    // Validate required fields
+    if (!vaccine_inventory_id) {
+      return res.status(400).json({ error: 'Vaccine inventory ID is required' });
+    }
+    if (!vaccine_id) {
+      return res.status(400).json({ error: 'Vaccine ID is required' });
+    }
+    if (!transaction_type) {
+      return res.status(400).json({ error: 'Transaction type is required' });
+    }
+    if (!quantity || quantity <= 0) {
+      return res.status(400).json({ error: 'Valid quantity is required' });
+    }
+
+    // Fetch the inventory record to get current stock and verify vaccine_id and clinic_id
+    const inventoryResult = await pool.query(
+      'SELECT * FROM vaccine_inventory WHERE id = $1',
+      [vaccine_inventory_id],
+    );
+
+    if (inventoryResult.rows.length === 0) {
+      console.error(`Vaccine inventory record not found: ${vaccine_inventory_id}`);
+      return res.status(404).json({ error: 'Vaccine inventory record not found' });
+    }
+
+    const inventory = inventoryResult.rows[0];
+
+    // Verify that the provided vaccine_id and clinic_id match the inventory record (if provided)
+    if (vaccine_id !== undefined && vaccine_id !== null && vaccine_id !== inventory.vaccine_id) {
+      console.error(`Vaccine ID mismatch: provided ${vaccine_id}, inventory has ${inventory.vaccine_id}`);
+      return res.status(400).json({ error: 'Vaccine ID does not match inventory record' });
+    }
+    if (clinic_id !== undefined && clinic_id !== null && clinic_id !== inventory.clinic_id) {
+      console.error(`Clinic ID mismatch: provided ${clinic_id}, inventory has ${inventory.clinic_id}`);
+      return res.status(400).json({ error: 'Clinic ID does not match inventory record' });
+    }
+
+    // Use the inventory record's vaccine_id and clinic_id for consistency
+    const finalVaccineId = inventory.vaccine_id;
+    const finalClinicId = inventory.clinic_id;
+
+    // Calculate previous and new balances
+    const previousBalance = inventory.stock_on_hand !== null ? inventory.stock_on_hand : 0;
+    let newBalance;
+    if (transaction_type === 'ISSUE') {
+      newBalance = previousBalance - quantity;
+    } else if (transaction_type === 'RECEIPT' || transaction_type === 'ADJUSTMENT') {
+      newBalance = previousBalance + quantity;
+    } else {
+      // For other transaction types, assume no change in stock (or handle as needed)
+      newBalance = previousBalance;
+    }
+
+    // Ensure newBalance is not negative
+    if (newBalance < 0) {
+      console.error(`Insufficient stock: previousBalance=${previousBalance}, quantity=${quantity}`);
+      return res.status(400).json({ error: 'Insufficient stock for ISSUE transaction' });
+    }
+
+    console.log(`Processing transaction: vaccineId=${finalVaccineId}, clinicId=${finalClinicId}, previousBalance=${previousBalance}, quantity=${quantity}, newBalance=${newBalance}`);
+
     const result = await pool.query(
       `INSERT INTO vaccine_inventory_transactions (
-        vaccine_inventory_id, transaction_type, quantity, lot_number, batch_number,
-        expiry_date, supplier_name, reference_number, notes, performed_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        vaccine_inventory_id, vaccine_id, clinic_id, transaction_type, quantity, lot_number, batch_number,
+        expiry_date, supplier_name, reference_number, notes, performed_by, previous_balance, new_balance
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *`,
       [
         vaccine_inventory_id,
+        finalVaccineId,
+        finalClinicId,
         transaction_type,
         quantity,
         lot_number,
@@ -234,12 +315,18 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
         reference_number,
         notes,
         req.user.id,
+        previousBalance,
+        newBalance,
       ],
     );
 
+    console.log(`Successfully created vaccine inventory transaction: ${result.rows[0].id}`);
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Error creating vaccine inventory transaction:', error);
+    // Log additional context for debugging
+    console.error('Request body:', req.body);
+    console.error('User:', req.user);
     res.status(500).json({ error: error.message });
   }
 };
