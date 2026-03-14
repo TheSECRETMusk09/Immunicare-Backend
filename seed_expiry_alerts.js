@@ -12,6 +12,7 @@ const { sendExpiryAlert, sendOutOfStockAlert, sendAdminNotification, NOTIFICATIO
 
 const ADMIN_SMS_RECIPIENT = '09936997484';
 const DEFAULT_CLINIC_ID = 1; // San Nicolas Health Center
+const DEFAULT_USER_ID = 1; // Assuming user ID 1 exists
 
 async function seedNearExpiryVaccines() {
   console.log('=== Seeding Near-Expiry Vaccine Records ===\n');
@@ -70,13 +71,43 @@ async function seedNearExpiryVaccines() {
       const lotNumber = lotNumbers[i];
       const daysUntilExpiry = Math.ceil((expiryDate - Date.now()) / (24 * 60 * 60 * 1000));
 
-      // Insert vaccine inventory record with clinic_id
+      // Calculate period dates (use current month)
+      const now = new Date();
+      const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+      // Insert vaccine inventory record with all required fields
       const result = await db.query(
         `INSERT INTO vaccine_inventory
-         (vaccine_id, clinic_id, lot_batch_number, stock_on_hand, expiry_date, is_active)
-         VALUES ($1, $2, $3, $4, $5, true)
+         (vaccine_id, clinic_id, beginning_balance, received_during_period,
+          transferred_in, transferred_out, expired_wasted, issuance,
+          low_stock_threshold, critical_stock_threshold, is_low_stock, is_critical_stock,
+          lot_batch_number, stock_on_hand, expiry_date, period_start, period_end,
+          created_by, updated_by, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
          RETURNING id`,
-        [vaccine.id, DEFAULT_CLINIC_ID, lotNumber, 50, expiryDate],
+        [
+          vaccine.id,                    // vaccine_id
+          DEFAULT_CLINIC_ID,             // clinic_id
+          100,                           // beginning_balance
+          50,                            // received_during_period
+          0,                             // transferred_in
+          0,                             // transferred_out
+          0,                             // expired_wasted
+          0,                             // issuance
+          10,                            // low_stock_threshold
+          5,                             // critical_stock_threshold
+          false,                         // is_low_stock
+          false,                         // is_critical_stock
+          lotNumber,                     // lot_batch_number
+          50,                            // stock_on_hand
+          expiryDate,                    // expiry_date
+          periodStart,                   // period_start
+          periodEnd,                     // period_end
+          DEFAULT_USER_ID,               // created_by
+          DEFAULT_USER_ID,               // updated_by
+          true,                           // is_active
+        ],
       );
 
       console.log(`Created inventory: ${vaccine.name} [${vaccine.code}]`);

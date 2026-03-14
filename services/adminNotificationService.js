@@ -10,7 +10,8 @@
  */
 
 const pool = require('../db');
-const notificationService = require('./notificationService');
+const NotificationService = require('./notificationService');
+const notificationService = new NotificationService();
 const socketService = require('./socketService');
 const smsService = require('./smsService');
 
@@ -156,61 +157,93 @@ const sendAdminNotification = async ({
   sendSms = null, // null means auto-determine based on priority
   smsRecipient = null,
 }) => {
-  const results = {
-    persisted: false,
-    socketEmitted: false,
-    smsSent: false,
-    smsLogged: false,
-    dedupSkipped: false,
-  };
+  // Handle deduplication at the alert level (not per user)
+  let dedupSkipped = false;
+  if (!skipDedup && targetId && alertType) {
+    const dedupKey = generateDedupKey(category, targetId, alertType);
+    if (!shouldSendAlert(dedupKey)) {
+      dedupSkipped = true;
+      console.log(`[AdminNotification] Deduplication skipped for: ${dedupKey}`);
+      // Still return success since we intentionally skipped
+      return {
+        success: true,
+        results: {
+          persisted: false,
+          socketEmitted: false,
+          smsSent: false,
+          smsLogged: false,
+          dedupSkipped: true,
+        },
+      };
+    }
+  }
 
   try {
-    // Handle deduplication
-    if (!skipDedup && targetId && alertType) {
-      const dedupKey = generateDedupKey(category, targetId, alertType);
-      if (!shouldSendAlert(dedupKey)) {
-        results.dedupSkipped = true;
-        console.log(`[AdminNotification] Deduplication skipped for: ${dedupKey}`);
-        return {
-          success: false,
-          reason: 'deduplicated',
-          results,
-        };
-      }
-    }
-
     // Auto-determine SMS sending based on priority
     if (sendSms === null) {
       sendSms = priority === 'urgent' || priority === 'high';
     }
 
-    // 1. Persist notification to database
-    try {
-      const notificationResult = await notificationService.sendNotification({
-        notification_type: category,
-        event_type: category,
-        target_type: 'role',
-        target_id: targetRole,
-        channel: sendSms ? 'both' : 'push',
-        priority: PRIORITY_MAP[priority] || 3,
-        subject: title,
-        message: message,
-        category: category,
-        target_role: targetRole,
-        metadata: {
-          ...metadata,
-          alertType,
-          targetId,
-        },
-        skipImmediateProcessing: false,
-      });
+    // Get admin recipients
+    const admins = await getAdminRecipients(targetRole);
 
-      results.persisted = notificationResult.success;
-    } catch (persistError) {
-      console.error('[AdminNotification] Failed to persist notification:', persistError.message);
+    if (admins.length === 0) {
+      console.warn(`[AdminNotification] No admins found for role: ${targetRole}`);
+      return {
+        success: false,
+        error: 'No admins found',
+        results: {
+          persisted: false,
+          socketEmitted: false,
+          smsSent: false,
+          smsLogged: false,
+          dedupSkipped: false,
+        },
+      };
     }
 
-    // 2. Emit realtime socket notification to admins
+    // Send individual notifications to each admin
+    let overallSuccess = true;
+    const results = {
+      persisted: false,
+      socketEmitted: false,
+      smsSent: false,
+      smsLogged: false,
+      dedupSkipped: dedupSkipped,
+    };
+
+    // 1. Persist notifications to database (one per admin)
+    try {
+      const notificationPromises = admins.map(admin =>
+        notificationService.sendNotification({
+          notification_type: category,
+          event_type: category,
+          target_type: 'user',
+          target_id: admin.id,
+          channel: sendSms ? 'both' : 'push',
+          priority: PRIORITY_MAP[priority] || 3,
+          subject: title,
+          message: message,
+          category: category,
+          target_role: targetRole,
+          metadata: {
+            ...metadata,
+            alertType,
+            targetId,
+            adminId: admin.id,
+          },
+          skipImmediateProcessing: false,
+        }),
+      );
+
+      const notificationResults = await Promise.all(notificationPromises);
+      results.persisted = notificationResults.some(result => result.success);
+    } catch (persistError) {
+      console.error('[AdminNotification] Failed to persist notifications:', persistError.message);
+      overallSuccess = false;
+    }
+
+    // 2. Emit realtime socket notification to admins (role-based)
     try {
       socketService.sendToRole(targetRole, 'admin-notification', {
         id: Date.now(), // Temporary ID if not persisted
@@ -224,6 +257,7 @@ const sendAdminNotification = async ({
       results.socketEmitted = true;
     } catch (socketError) {
       console.error('[AdminNotification] Failed to emit socket notification:', socketError.message);
+      overallSuccess = false;
     }
 
     // 3. Send SMS if required
@@ -238,7 +272,6 @@ const sendAdminNotification = async ({
         }
       } else {
         // Get admin phone numbers
-        const admins = await getAdminRecipients(targetRole);
         for (const admin of admins) {
           if (admin.phone) {
             const formatted = formatPhoneNumber(admin.phone);
@@ -250,7 +283,7 @@ const sendAdminNotification = async ({
       }
 
       // Send SMS to each recipient
-      for (const recipient of smsRecipients) {
+      const smsPromises = smsRecipients.map(async (recipient) => {
         try {
           // Truncate message for SMS if too long
           const smsMessage = message.length > 160
@@ -262,24 +295,33 @@ const sendAdminNotification = async ({
             `[Immunicare] ${title}: ${smsMessage}`,
             'admin_alert',
           );
-          results.smsSent = true;
           console.log(`[AdminNotification] SMS sent to ${recipient.phone}`);
+          return { success: true, phone: recipient.phone };
         } catch (smsError) {
           console.error(`[AdminNotification] SMS send failed to ${recipient.phone}:`, smsError.message);
 
           // Fallback: log to sms_logs if available
           try {
             await logSmsFallback(recipient.phone, title, message, category);
-            results.smsLogged = true;
+            return { success: true, phone: recipient.phone, logged: true };
           } catch (logError) {
             console.error('[AdminNotification] SMS fallback logging failed:', logError.message);
+            return { success: false, phone: recipient.phone };
           }
         }
+      });
+
+      const smsResults = await Promise.all(smsPromises);
+      results.smsSent = smsResults.some(result => result.success);
+      results.smsLogged = smsResults.some(result => result.logged);
+
+      if (!results.smsSent && !results.smsLogged) {
+        overallSuccess = false;
       }
     }
 
     return {
-      success: true,
+      success: overallSuccess,
       results,
     };
   } catch (error) {
@@ -287,7 +329,13 @@ const sendAdminNotification = async ({
     return {
       success: false,
       error: error.message,
-      results,
+      results: {
+        persisted: false,
+        socketEmitted: false,
+        smsSent: false,
+        smsLogged: false,
+        dedupSkipped: dedupSkipped,
+      },
     };
   }
 };
