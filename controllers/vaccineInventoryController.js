@@ -294,31 +294,104 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
       return res.status(400).json({ error: 'Insufficient stock for ISSUE transaction' });
     }
 
-    console.log(`Processing transaction: vaccineId=${finalVaccineId}, clinicId=${finalClinicId}, previousBalance=${previousBalance}, quantity=${quantity}, newBalance=${newBalance}`);
+    // Check if this transaction results in out of stock
+    const isOutOfStock = newBalance === 0;
 
-    const result = await pool.query(
-      `INSERT INTO vaccine_inventory_transactions (
-        vaccine_inventory_id, vaccine_id, clinic_id, transaction_type, quantity, lot_number, batch_number,
-        expiry_date, supplier_name, reference_number, notes, performed_by, previous_balance, new_balance
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-      RETURNING *`,
-      [
-        vaccine_inventory_id,
-        finalVaccineId,
-        finalClinicId,
-        transaction_type,
-        quantity,
-        lot_number,
-        batch_number,
-        expiry_date,
-        supplier_name,
-        reference_number,
-        notes,
-        req.user.id,
-        previousBalance,
-        newBalance,
-      ],
-    );
+    console.log(`Processing transaction: vaccineId=${finalVaccineId}, clinicId=${finalClinicId}, previousBalance=${previousBalance}, quantity=${quantity}, newBalance=${newBalance}, isOutOfStock=${isOutOfStock}`);
+
+    // Start transaction to ensure consistency
+    await pool.query('BEGIN');
+
+    try {
+      const result = await pool.query(
+        `INSERT INTO vaccine_inventory_transactions (
+           vaccine_inventory_id, vaccine_id, clinic_id, transaction_type, quantity, lot_number, batch_number,
+           expiry_date, supplier_name, reference_number, notes, performed_by, previous_balance, new_balance
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         RETURNING *`,
+        [
+          vaccine_inventory_id,
+          finalVaccineId,
+          finalClinicId,
+          transaction_type,
+          quantity,
+          lot_number,
+          batch_number,
+          expiry_date,
+          supplier_name,
+          reference_number,
+          notes,
+          req.user.id,
+          previousBalance,
+          newBalance,
+        ],
+      );
+
+      // Update vaccine inventory stock_on_hand
+      await pool.query(
+        'UPDATE vaccine_inventory SET stock_on_hand = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        [newBalance, vaccine_inventory_id],
+      );
+
+      // Handle out of stock alert
+      if (isOutOfStock) {
+        // Update vaccine_inventory to mark as out of stock (we'll add this column later if needed)
+        // For now, we'll create an alert
+
+        // Get vaccine and clinic details for the alert
+        const inventoryDetails = await pool.query(
+          `SELECT vi.stock_on_hand, v.name as vaccine_name, c.name as clinic_name
+            FROM vaccine_inventory vi
+            JOIN vaccines v ON vi.vaccine_id = v.id
+            JOIN clinics c ON vi.clinic_id = c.id
+            WHERE vi.id = $1`,
+          [vaccine_inventory_id],
+        );
+
+        const { vaccine_name, clinic_name } = inventoryDetails.rows[0];
+
+        // Check if there's already an active out-of-stock alert for this inventory item to prevent duplicates
+        const existingAlert = await pool.query(
+          `SELECT id FROM vaccine_stock_alerts
+            WHERE vaccine_inventory_id = $1 AND alert_type = 'OUT_OF_STOCK' AND status = 'ACTIVE'`,
+          [vaccine_inventory_id],
+        );
+
+        if (existingAlert.rows.length === 0) {
+          // Create new out-of-stock alert
+          await pool.query(
+            `INSERT INTO vaccine_stock_alerts (
+               vaccine_inventory_id, vaccine_id, facility_id, alert_type, current_stock, threshold_value,
+               status, message, priority
+             ) VALUES ($1, $2, $3, 'OUT_OF_STOCK', $4, $5, 'ACTIVE', $6, 'URGENT')`,
+            [
+              vaccine_inventory_id,
+              finalVaccineId,
+              finalClinicId,
+              newBalance, // current_stock = 0
+              0, // threshold_value = 0 for out of stock
+              `${vaccine_name} at ${clinic_name} is OUT OF STOCK: 0 remaining.`,
+            ],
+          );
+
+           // Send notifications using admin notification service
+           const adminNotificationService = require('../services/adminNotificationService');
+           await adminNotificationService.sendOutOfStockAlert(
+             vaccine_name,
+             finalVaccineId,
+             lot_number || 'UNKNOWN'
+           );
+        }
+      }
+
+      await pool.query('COMMIT');
+
+      console.log(`Successfully created vaccine inventory transaction: ${result.rows[0].id}`);
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      await pool.query('ROLLBACK');
+      throw error;
+    }
 
     console.log(`Successfully created vaccine inventory transaction: ${result.rows[0].id}`);
     res.status(201).json(result.rows[0]);

@@ -573,14 +573,20 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       schedule_id,
     } = req.body;
 
+    console.log('[VACCINATION CREATE] Received payload:', JSON.stringify(req.body));
+    console.log('[VACCINATION CREATE] Parsed values - patient_id:', patient_id, 'vaccine_id:', vaccine_id, 'dose_no:', dose_no);
+
     if (!patient_id || !vaccine_id || !dose_no || !admin_date) {
+      console.log('[VACCINATION CREATE] Missing required fields');
       return res.status(400).json({
         error: 'Missing required fields: patient_id, vaccine_id, dose_no, and admin_date are required',
       });
     }
 
     // Validate vaccine is approved
+    console.log('[VACCINATION CREATE] Validating vaccine_id:', vaccine_id);
     const vaccineValidation = await validateApprovedVaccine(vaccine_id);
+    console.log('[VACCINATION CREATE] Vaccine validation result:', JSON.stringify(vaccineValidation));
     if (!vaccineValidation.valid) {
       return res.status(400).json({ error: vaccineValidation.error });
     }
@@ -676,7 +682,9 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       client.release();
     }
   } catch (error) {
-    console.error('Error creating vaccination record:', error);
+    console.error('[VACCINATION CREATE] Full error:', error);
+    console.error('[VACCINATION CREATE] Error message:', error.message);
+    console.error('[VACCINATION CREATE] Error stack:', error.stack);
     res.status(500).json({ error: 'Failed to create vaccination record' });
   }
 });
