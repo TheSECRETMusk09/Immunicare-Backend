@@ -94,7 +94,7 @@ router.post('/:infantId', uploadInfantDoc.single('file'), async (req, res) => {
 
     // Check if infant exists and user has access
     const infantResult = await pool.query(
-      'SELECT guardian_id, clinic_id FROM patients WHERE id = $1',
+      'SELECT guardian_id FROM infants WHERE id = $1',
       [infantIdNum],
     );
 
@@ -112,14 +112,6 @@ router.post('/:infantId', uploadInfantDoc.single('file'), async (req, res) => {
       return res.status(403).json({
         success: false,
         message: 'Access denied - not the guardian of this infant',
-      });
-    }
-
-    if ((role === 'healthcare_worker' || role === 'clinic_manager') &&
-        infant.clinic_id !== req.user.clinic_id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied - infant not in your clinic',
       });
     }
 
@@ -200,7 +192,7 @@ router.get('/:infantId', async (req, res) => {
 
     // Check if infant exists and user has access
     const infantResult = await pool.query(
-      'SELECT guardian_id, clinic_id FROM patients WHERE id = $1',
+      'SELECT guardian_id FROM infants WHERE id = $1',
       [infantIdNum],
     );
 
@@ -221,31 +213,23 @@ router.get('/:infantId', async (req, res) => {
       });
     }
 
-    if ((role === 'healthcare_worker' || role === 'clinic_manager') &&
-        infant.clinic_id !== req.user.clinic_id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied - infant not in your clinic',
-      });
-    }
-
     // Build query
     let query = `
-      SELECT id.*, u.first_name as uploaded_by_first, u.last_name as uploaded_by_last
-      FROM infant_documents id
-      LEFT JOIN users u ON id.uploaded_by = u.id
-      WHERE id.infant_id = $1 AND id.is_active = true
+      SELECT doc.*, u.first_name as uploaded_by_first, u.last_name as uploaded_by_last
+      FROM infant_documents doc
+      LEFT JOIN users u ON doc.uploaded_by = u.id
+      WHERE doc.infant_id = $1 AND doc.is_active = true
     `;
     const params = [infantIdNum];
     let paramIndex = 2;
 
     if (documentType) {
-      query += ` AND id.document_type = $${paramIndex}`;
+      query += ` AND doc.document_type = $${paramIndex}`;
       params.push(documentType);
       paramIndex++;
     }
 
-    query += ` ORDER BY id.uploaded_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    query += ` ORDER BY doc.uploaded_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(parseInt(limit), parseInt(offset));
 
     const result = await pool.query(query, params);
@@ -319,7 +303,7 @@ router.get('/file/:documentId', async (req, res) => {
 
     // Check if infant exists and user has access
     const infantResult = await pool.query(
-      'SELECT guardian_id, clinic_id FROM patients WHERE id = $1',
+      'SELECT guardian_id FROM infants WHERE id = $1',
       [doc.infant_id],
     );
 
@@ -334,14 +318,6 @@ router.get('/file/:documentId', async (req, res) => {
 
     // Check permissions
     if (role === 'guardian' && infant.guardian_id !== (guardian_id || userId)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied',
-      });
-    }
-
-    if ((role === 'healthcare_worker' || role === 'clinic_manager') &&
-        infant.clinic_id !== req.user.clinic_id) {
       return res.status(403).json({
         success: false,
         message: 'Access denied',
@@ -392,10 +368,10 @@ router.get('/info/:documentId', async (req, res) => {
 
     // Get document info
     const docResult = await pool.query(
-      `SELECT id.*, u.first_name as uploaded_by_first, u.last_name as uploaded_by_last
-       FROM infant_documents id
-       LEFT JOIN users u ON id.uploaded_by = u.id
-       WHERE id.id = $1 AND id.is_active = true`,
+      `SELECT doc.*, u.first_name as uploaded_by_first, u.last_name as uploaded_by_last
+       FROM infant_documents doc
+       LEFT JOIN users u ON doc.uploaded_by = u.id
+       WHERE doc.id = $1 AND doc.is_active = true`,
       [documentIdNum],
     );
 
@@ -410,7 +386,7 @@ router.get('/info/:documentId', async (req, res) => {
 
     // Check if infant exists and user has access
     const infantResult = await pool.query(
-      'SELECT guardian_id, clinic_id FROM patients WHERE id = $1',
+      'SELECT guardian_id FROM infants WHERE id = $1',
       [doc.infant_id],
     );
 
@@ -425,14 +401,6 @@ router.get('/info/:documentId', async (req, res) => {
 
     // Check permissions
     if (role === 'guardian' && infant.guardian_id !== (guardian_id || userId)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied',
-      });
-    }
-
-    if ((role === 'healthcare_worker' || role === 'clinic_manager') &&
-        infant.clinic_id !== req.user.clinic_id) {
       return res.status(403).json({
         success: false,
         message: 'Access denied',
@@ -485,7 +453,7 @@ router.put('/:documentId', async (req, res) => {
 
     // Check if infant exists and user has access
     const infantResult = await pool.query(
-      'SELECT guardian_id, clinic_id FROM patients WHERE id = $1',
+      'SELECT guardian_id FROM infants WHERE id = $1',
       [doc.infant_id],
     );
 
@@ -500,12 +468,9 @@ router.put('/:documentId', async (req, res) => {
 
     // Check permissions - allow update if guardian or healthcare worker
     let hasPermission = false;
-    if (role === 'super_admin' || role === 'admin') {
+    if (role === 'super_admin' || role === 'admin' || role === 'healthcare_worker' || role === 'clinic_manager') {
       hasPermission = true;
     } else if (role === 'guardian' && infant.guardian_id === (guardian_id || userId)) {
-      hasPermission = true;
-    } else if ((role === 'healthcare_worker' || role === 'clinic_manager') &&
-               infant.clinic_id === req.user.clinic_id) {
       hasPermission = true;
     }
 
@@ -581,7 +546,7 @@ router.delete('/:documentId', async (req, res) => {
 
     // Check if infant exists and user has access
     const infantResult = await pool.query(
-      'SELECT guardian_id, clinic_id FROM patients WHERE id = $1',
+      'SELECT guardian_id FROM infants WHERE id = $1',
       [doc.infant_id],
     );
 
@@ -596,12 +561,9 @@ router.delete('/:documentId', async (req, res) => {
 
     // Check permissions - allow delete if guardian, healthcare worker, or uploader
     let hasPermission = false;
-    if (role === 'super_admin' || role === 'admin') {
+    if (role === 'super_admin' || role === 'admin' || role === 'healthcare_worker' || role === 'clinic_manager') {
       hasPermission = true;
     } else if (role === 'guardian' && infant.guardian_id === (guardian_id || userId)) {
-      hasPermission = true;
-    } else if ((role === 'healthcare_worker' || role === 'clinic_manager') &&
-               infant.clinic_id === req.user.clinic_id) {
       hasPermission = true;
     } else if (doc.uploaded_by === userId) {
       hasPermission = true;

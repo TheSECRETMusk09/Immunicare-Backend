@@ -9,7 +9,7 @@
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'patient_growth' AND column_name = 'age_in_days'
     ) THEN
         ALTER TABLE patient_growth ADD COLUMN age_in_days INTEGER NOT NULL DEFAULT 0;
@@ -25,7 +25,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'patient_growth' AND column_name = 'is_active'
     ) THEN
         ALTER TABLE patient_growth ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
@@ -42,7 +42,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'vaccine_inventory' AND column_name = 'is_active'
     ) THEN
         ALTER TABLE vaccine_inventory ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
@@ -58,7 +58,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'notifications' AND column_name = 'guardian_id'
     ) THEN
         ALTER TABLE notifications ADD COLUMN guardian_id INTEGER REFERENCES guardians(id) ON DELETE CASCADE;
@@ -74,7 +74,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'notifications' AND column_name = 'target_role'
     ) THEN
         ALTER TABLE notifications ADD COLUMN target_role VARCHAR(50) DEFAULT 'all';
@@ -90,7 +90,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'notifications' AND column_name = 'is_read'
     ) THEN
         ALTER TABLE notifications ADD COLUMN is_read BOOLEAN DEFAULT FALSE;
@@ -106,7 +106,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'notifications' AND column_name = 'priority'
     ) THEN
         ALTER TABLE notifications ADD COLUMN priority VARCHAR(20) DEFAULT 'normal';
@@ -122,7 +122,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'appointments' AND column_name = 'clinic_id'
     ) THEN
         ALTER TABLE appointments ADD COLUMN clinic_id INTEGER REFERENCES healthcare_facilities(id) ON DELETE SET NULL;
@@ -137,7 +137,7 @@ END $$;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'vaccine_inventory' AND column_name = 'stock_on_hand'
     ) THEN
         ALTER TABLE vaccine_inventory ADD COLUMN stock_on_hand INTEGER DEFAULT 0;
@@ -153,10 +153,10 @@ DO $$
 BEGIN
     -- Check if appointments has infant_id or patient_id
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'appointments' AND column_name = 'infant_id'
     ) AND NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'appointments' AND column_name = 'patient_id'
     ) THEN
         ALTER TABLE appointments ADD COLUMN infant_id INTEGER REFERENCES patients(id) ON DELETE CASCADE;
@@ -166,35 +166,65 @@ BEGIN
     END IF;
 END $$;
 
+-- 11. Add clinic_id column to infant_documents/documents if missing
+-- This fixes the error: "column clinic_id does not exist" in infant documents
+-- ============================================================================
+DO $$
+BEGIN
+    -- Check for infant_documents table
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'infant_documents') THEN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'infant_documents' AND column_name = 'clinic_id') THEN
+            ALTER TABLE infant_documents ADD COLUMN clinic_id INTEGER REFERENCES clinics(id) ON DELETE SET NULL;
+            RAISE NOTICE 'Added clinic_id column to infant_documents table';
+        END IF;
+    END IF;
+
+    -- Check for documents table (alternative naming)
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'documents') THEN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'documents' AND column_name = 'clinic_id') THEN
+            ALTER TABLE documents ADD COLUMN clinic_id INTEGER REFERENCES clinics(id) ON DELETE SET NULL;
+            RAISE NOTICE 'Added clinic_id column to documents table';
+        END IF;
+    END IF;
+END $$;
+
 -- ============================================================================
 -- Verification of tables
 -- ============================================================================
 SELECT 'Schema migrations completed' as status;
 
 -- Check specific columns
-SELECT 
+SELECT
     'patient_growth' as table_name,
     CASE WHEN EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'patient_growth' AND column_name = 'age_in_days'
     ) THEN 'OK' ELSE 'MISSING age_in_days' END as age_in_days_status,
     CASE WHEN EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'patient_growth' AND column_name = 'is_active'
     ) THEN 'OK' ELSE 'MISSING is_active' END as is_active_status
 UNION ALL
-SELECT 
+SELECT
     'vaccine_inventory',
     'N/A' as age_in_days_status,
     CASE WHEN EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'vaccine_inventory' AND column_name = 'is_active'
     ) THEN 'OK' ELSE 'MISSING is_active' END
 UNION ALL
-SELECT 
+SELECT
     'notifications',
     'N/A' as age_in_days_status,
     CASE WHEN EXISTS (
-        SELECT 1 FROM information_schema.columns 
+        SELECT 1 FROM information_schema.columns
         WHERE table_name = 'notifications' AND column_name = 'guardian_id'
-    ) THEN 'OK' ELSE 'MISSING guardian_id' END;
+    ) THEN 'OK' ELSE 'MISSING guardian_id' END
+UNION ALL
+SELECT
+    'infant_documents',
+    'N/A' as age_in_days_status,
+    CASE WHEN EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'infant_documents' AND column_name = 'clinic_id'
+    ) THEN 'OK' ELSE 'MISSING clinic_id' END;
