@@ -14,16 +14,22 @@ class ImmunizationScheduleService {
    * @returns {Promise<Date|null>} - Date of birth or null if not found
    */
   async getInfantDOB(infantId) {
-    const result = await pool.query(
-      'SELECT dob FROM patients WHERE id = $1 AND is_active = true LIMIT 1',
-      [infantId],
-    );
+    try {
+      const result = await pool.query(
+        'SELECT dob FROM patients WHERE id = $1 LIMIT 1',
+        [infantId],
+      );
 
-    if (result.rows.length === 0) {
+      if (result.rows.length === 0 || !result.rows[0].dob) {
+        return null;
+      }
+
+      const dob = new Date(result.rows[0].dob);
+      return isNaN(dob.getTime()) ? null : dob;
+    } catch (error) {
+      console.error('Error getting infant DOB:', error);
       return null;
     }
-
-    return new Date(result.rows[0].dob);
   }
 
   /**
@@ -32,23 +38,36 @@ class ImmunizationScheduleService {
    * @returns {Promise<Object|null>} - Infant info or null
    */
   async getInfantInfo(infantId) {
-    const result = await pool.query(
-      `
-        SELECT
-          p.id, p.control_number, p.first_name, p.last_name, p.dob, p.gender,
-          p.weight_at_birth, p.height_at_birth, p.place_of_birth,
-          g.name as guardian_name, g.phone as guardian_phone, g.email as guardian_email,
-          c.name as health_center_name
-        FROM patients p
-        LEFT JOIN guardians g ON g.id = p.guardian_id
-        LEFT JOIN clinics c ON c.id = p.clinic_id
-        WHERE p.id = $1 AND p.is_active = true
-        LIMIT 1
-      `,
-      [infantId],
-    );
+    try {
+      // First, get basic patient info to avoid schema issues with optional fields
+      const result = await pool.query(
+        `
+          SELECT
+            p.id, p.control_number, p.first_name, p.last_name, p.dob, p.sex,
+            g.name as guardian_name, g.phone as guardian_phone, g.email as guardian_email
+          FROM patients p
+          LEFT JOIN guardians g ON g.id = p.guardian_id
+          WHERE p.id = $1 AND COALESCE(p.is_active, true) = true
+          LIMIT 1
+        `,
+        [infantId],
+      );
 
-    return result.rows.length > 0 ? result.rows[0] : null;
+      return result.rows.length > 0 ? result.rows[0] : null;
+    } catch (err) {
+      console.error('Error fetching infant info:', err);
+      // Fallback minimal query
+      try {
+        const fallbackResult = await pool.query(
+          'SELECT id, control_number, first_name, last_name, dob FROM patients WHERE id = $1 LIMIT 1',
+          [infantId],
+        );
+        return fallbackResult.rows.length > 0 ? fallbackResult.rows[0] : null;
+      } catch (innerErr) {
+        console.error('Fatal error fetching infant info:', innerErr);
+        return null;
+      }
+    }
   }
 
   /**
@@ -56,21 +75,43 @@ class ImmunizationScheduleService {
    * @returns {Promise<Array>} - Array of vaccination schedules
    */
   async getAllSchedules() {
-    const result = await pool.query(
-      `
-        SELECT
-          vs.id, vs.vaccine_id, vs.vaccine_name, vs.dose_number, vs.dose_name,
-          vs.total_doses, vs.age_months, vs.age_description, vs.description,
-          vs.minimum_age_days, vs.grace_period_days, vs.is_active,
-          v.code as vaccine_code, v.name as vaccine_full_name
-        FROM vaccination_schedules vs
-        LEFT JOIN vaccines v ON v.id = vs.vaccine_id
-        WHERE vs.is_active = true
-        ORDER BY vs.age_months ASC, vs.vaccine_name ASC, vs.dose_number ASC
-      `,
-    );
-
-    return result.rows;
+    try {
+      const result = await pool.query(
+        `
+          SELECT
+            vs.id, vs.vaccine_id, vs.vaccine_name, vs.dose_number, vs.dose_name,
+            vs.total_doses, vs.age_months, vs.age_description, vs.description,
+            vs.minimum_age_days, vs.grace_period_days,
+            v.code as vaccine_code, v.name as vaccine_full_name
+          FROM vaccination_schedules vs
+          LEFT JOIN vaccines v ON v.id = vs.vaccine_id
+          WHERE COALESCE(vs.is_active, true) = true
+          ORDER BY vs.age_months ASC, vs.vaccine_name ASC, vs.dose_number ASC
+        `,
+      );
+      return result.rows;
+    } catch (error) {
+      console.error('Error in getAllSchedules:', error);
+      // Fallback if is_active column doesn't exist
+      try {
+        const result = await pool.query(
+          `
+            SELECT
+              vs.id, vs.vaccine_id, vs.vaccine_name, vs.dose_number, vs.dose_name,
+              vs.total_doses, vs.age_months, vs.age_description, vs.description,
+              vs.minimum_age_days, vs.grace_period_days,
+              v.code as vaccine_code, v.name as vaccine_full_name
+            FROM vaccination_schedules vs
+            LEFT JOIN vaccines v ON v.id = vs.vaccine_id
+            ORDER BY vs.age_months ASC, vs.vaccine_name ASC, vs.dose_number ASC
+          `,
+        );
+        return result.rows;
+      } catch (innerError) {
+        console.error('Fatal error in getAllSchedules:', innerError);
+        return [];
+      }
+    }
   }
 
   /**
@@ -79,20 +120,41 @@ class ImmunizationScheduleService {
    * @returns {Promise<Object>} - Map of vaccine_id -> max dose administered
    */
   async getAdministeredVaccines(infantId) {
-    const result = await pool.query(
-      `
-        SELECT vaccine_id, dose_no, admin_date, status
-        FROM immunization_records
-        WHERE patient_id = $1 AND is_active = true
-        ORDER BY admin_date ASC
-      `,
-      [infantId],
-    );
+    let rows = [];
+    try {
+      const result = await pool.query(
+        `
+          SELECT vaccine_id, dose_no, admin_date, status
+          FROM immunization_records
+          WHERE patient_id = $1 AND COALESCE(is_active, true) = true
+          ORDER BY admin_date ASC
+        `,
+        [infantId],
+      );
+      rows = result.rows;
+    } catch (err) {
+      // Fallback if status or is_active doesn't exist
+      try {
+        const result = await pool.query(
+          `
+            SELECT vaccine_id, dose_no, admin_date
+            FROM immunization_records
+            WHERE patient_id = $1
+            ORDER BY admin_date ASC
+          `,
+          [infantId],
+        );
+        rows = result.rows.map(r => ({ ...r, status: r.admin_date ? 'completed' : 'pending' }));
+      } catch (innerErr) {
+        console.error('Error fetching administered vaccines:', innerErr);
+        rows = [];
+      }
+    }
 
     const administered = {};
     const recordsByVaccine = {};
 
-    result.rows.forEach(record => {
+    rows.forEach(record => {
       if (!recordsByVaccine[record.vaccine_id]) {
         recordsByVaccine[record.vaccine_id] = [];
       }
@@ -115,7 +177,14 @@ class ImmunizationScheduleService {
    */
   calculateDueDate(dob, targetAgeMonths) {
     const dueDate = new Date(dob);
-    dueDate.setMonth(dueDate.getMonth() + targetAgeMonths);
+    const months = parseFloat(targetAgeMonths) || 0;
+    const wholeMonths = Math.floor(months);
+    const fractionalMonths = months - wholeMonths;
+
+    dueDate.setMonth(dueDate.getMonth() + wholeMonths);
+    if (fractionalMonths > 0) {
+      dueDate.setDate(dueDate.getDate() + Math.round(fractionalMonths * 30.44));
+    }
     return dueDate;
   }
 
@@ -127,7 +196,7 @@ class ImmunizationScheduleService {
    */
   calculateDueDateFromDays(dob, minimumAgeDays) {
     const dueDate = new Date(dob);
-    dueDate.setDate(dueDate.getDate() + minimumAgeDays);
+    dueDate.setDate(dueDate.getDate() + parseInt(minimumAgeDays || 0, 10));
     return dueDate;
   }
 
@@ -141,6 +210,17 @@ class ImmunizationScheduleService {
    * @returns {Object} - Status object with status, adminDate, daysOverdue, etc.
    */
   determineDoseStatus(dueDate, dosesCompleted, totalDoses, records = [], facilityContext = null) {
+    if (!(dueDate instanceof Date) || isNaN(dueDate.getTime())) {
+      return {
+        status: 'future',
+        statusLabel: 'Not Yet Due',
+        adminDate: null,
+        dueDate: null,
+        daysOverdue: 0,
+        isComplete: false,
+      };
+    }
+
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const due = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
@@ -212,125 +292,131 @@ class ImmunizationScheduleService {
    * @returns {Promise<Object>} - Full schedule with status
    */
   async getInfantSchedule(infantId, facilityContext = null) {
-    const dob = await this.getInfantDOB(infantId);
-    if (!dob) {
-      return { error: 'Infant not found', schedules: [] };
-    }
+    try {
+      const dob = await this.getInfantDOB(infantId);
+      if (!dob) {
+        return { error: 'Infant not found or invalid DOB', schedules: [] };
+      }
 
-    const infantInfo = await this.getInfantInfo(infantId);
-    const schedules = await this.getAllSchedules();
-    const { administered, recordsByVaccine } = await this.getAdministeredVaccines(infantId);
+      const infantInfo = await this.getInfantInfo(infantId);
+      const schedules = await this.getAllSchedules();
+      const { administered, recordsByVaccine } = await this.getAdministeredVaccines(infantId);
 
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const infantDOB = new Date(dob.getFullYear(), dob.getMonth(), dob.getDate());
+      const now = new Date();
 
-    // Calculate infant's current age in months
-    const ageInMonths = (now.getFullYear() - dob.getFullYear()) * 12 +
-                        (now.getMonth() - dob.getMonth());
-    const ageInDays = Math.ceil((now - dob) / (1000 * 60 * 60 * 24));
+      // Calculate infant's current age in months
+      const ageInMonths = (now.getFullYear() - dob.getFullYear()) * 12 +
+                          (now.getMonth() - dob.getMonth());
+      const ageInDays = Math.ceil((now - dob) / (1000 * 60 * 60 * 24));
 
-    // Build schedule items with status
-    const scheduleItems = schedules.map(schedule => {
-      const dosesCompleted = administered[schedule.vaccine_id] || 0;
-      const isComplete = dosesCompleted >= schedule.total_doses;
+      // Build schedule items with status
+      const scheduleItems = schedules.map(schedule => {
+        const dosesCompleted = administered[schedule.vaccine_id] || 0;
+        const isComplete = dosesCompleted >= schedule.total_doses;
 
-      // Use minimum_age_days if available, otherwise use age_months * 30
-      const dueDate = schedule.minimum_age_days
-        ? this.calculateDueDateFromDays(dob, schedule.minimum_age_days)
-        : this.calculateDueDate(dob, schedule.age_months);
+        // Use minimum_age_days if available, otherwise use age_months * 30
+        const dueDate = schedule.minimum_age_days
+          ? this.calculateDueDateFromDays(dob, schedule.minimum_age_days)
+          : this.calculateDueDate(dob, schedule.age_months);
 
-      const records = recordsByVaccine[schedule.vaccine_id] || [];
-      const doseStatus = this.determineDoseStatus(
-        dueDate,
-        dosesCompleted,
-        schedule.total_doses,
-        records,
-        facilityContext, // Pass facility context for facility-aware status determination
-      );
+        const records = recordsByVaccine[schedule.vaccine_id] || [];
+        const doseStatus = this.determineDoseStatus(
+          dueDate,
+          dosesCompleted,
+          schedule.total_doses,
+          records,
+          facilityContext, // Pass facility context for facility-aware status determination
+        );
+
+        return {
+          id: schedule.id,
+          vaccineId: schedule.vaccine_id,
+          vaccineCode: schedule.vaccine_code,
+          vaccineName: schedule.vaccine_name,
+          vaccineFullName: schedule.vaccine_full_name,
+          doseNumber: schedule.dose_number,
+          doseName: schedule.dose_name,
+          totalDoses: schedule.total_doses,
+          dosesCompleted,
+          isComplete,
+          ageMonths: schedule.age_months,
+          ageDescription: schedule.age_description,
+          description: schedule.description,
+          dueDate: doseStatus.dueDate,
+          adminDate: doseStatus.adminDate,
+          status: doseStatus.status,
+          statusLabel: doseStatus.statusLabel,
+          daysOverdue: doseStatus.daysOverdue,
+          isOverdue: doseStatus.status === 'overdue',
+          isUpcoming: doseStatus.status === 'upcoming',
+          isFuture: doseStatus.status === 'future',
+          isCompleted: doseStatus.status === 'completed',
+        };
+      });
+
+      // Sort by due date (most urgent first)
+      scheduleItems.sort((a, b) => {
+        // Completed items go to the end
+        if (a.isComplete && !b.isComplete) {
+          return 1;
+        }
+        if (!a.isComplete && b.isComplete) {
+          return -1;
+        }
+
+        if (!a.dueDate || !b.dueDate) {
+          return 0;
+        }
+
+        // Sort by due date
+        return new Date(a.dueDate) - new Date(b.dueDate);
+      });
+
+      // Calculate summary statistics
+      const totalScheduled = scheduleItems.length;
+      const completedCount = scheduleItems.filter(s => s.isComplete).length;
+      const overdueCount = scheduleItems.filter(s => s.isOverdue).length;
+      const upcomingCount = scheduleItems.filter(s => s.isUpcoming).length;
+      const futureCount = scheduleItems.filter(s => s.isFuture).length;
+
+      // Determine overall status
+      let overallStatus = 'on_track';
+      if (overdueCount > 0) {
+        overallStatus = 'behind';
+      } else if (completedCount === totalScheduled && totalScheduled > 0) {
+        overallStatus = 'up_to_date';
+      }
 
       return {
-        id: schedule.id,
-        vaccineId: schedule.vaccine_id,
-        vaccineCode: schedule.vaccine_code,
-        vaccineName: schedule.vaccine_name,
-        vaccineFullName: schedule.vaccine_full_name,
-        doseNumber: schedule.dose_number,
-        doseName: schedule.dose_name,
-        totalDoses: schedule.total_doses,
-        dosesCompleted,
-        isComplete,
-        ageMonths: schedule.age_months,
-        ageDescription: schedule.age_description,
-        description: schedule.description,
-        dueDate: doseStatus.dueDate,
-        adminDate: doseStatus.adminDate,
-        status: doseStatus.status,
-        statusLabel: doseStatus.statusLabel,
-        daysOverdue: doseStatus.daysOverdue,
-        isOverdue: doseStatus.status === 'overdue',
-        isUpcoming: doseStatus.status === 'upcoming',
-        isFuture: doseStatus.status === 'future',
-        isCompleted: doseStatus.status === 'completed',
+        infantId,
+        infantInfo: {
+          id: infantInfo?.id,
+          controlNumber: infantInfo?.control_number,
+          firstName: infantInfo?.first_name,
+          lastName: infantInfo?.last_name,
+          dateOfBirth: dob,
+          guardianName: infantInfo?.guardian_name,
+          guardianPhone: infantInfo?.guardian_phone,
+          guardianEmail: infantInfo?.guardian_email,
+        },
+        currentAge: {
+          months: ageInMonths,
+          days: ageInDays,
+        },
+        summary: {
+          totalScheduled,
+          completedCount,
+          overdueCount,
+          upcomingCount,
+          futureCount,
+          overallStatus,
+        },
+        schedules: scheduleItems,
       };
-    });
-
-    // Sort by due date (most urgent first)
-    scheduleItems.sort((a, b) => {
-      // Completed items go to the end
-      if (a.isComplete && !b.isComplete) {
-        return 1;
-      }
-      if (!a.isComplete && b.isComplete) {
-        return -1;
-      }
-
-      // Sort by due date
-      return new Date(a.dueDate) - new Date(b.dueDate);
-    });
-
-    // Calculate summary statistics
-    const totalScheduled = scheduleItems.length;
-    const completedCount = scheduleItems.filter(s => s.isComplete).length;
-    const overdueCount = scheduleItems.filter(s => s.isOverdue).length;
-    const upcomingCount = scheduleItems.filter(s => s.isUpcoming).length;
-    const futureCount = scheduleItems.filter(s => s.isFuture).length;
-
-    // Determine overall status
-    let overallStatus = 'on_track';
-    if (overdueCount > 0) {
-      overallStatus = 'behind';
-    } else if (completedCount === totalScheduled) {
-      overallStatus = 'up_to_date';
+    } catch (error) {
+      console.error('Error getting infant schedule:', error);
+      return { error: 'Failed to fetch dynamic schedule', schedules: [] };
     }
-
-    return {
-      infantId,
-      infantInfo: {
-        id: infantInfo?.id,
-        controlNumber: infantInfo?.control_number,
-        firstName: infantInfo?.first_name,
-        lastName: infantInfo?.last_name,
-        dateOfBirth: dob,
-        guardianName: infantInfo?.guardian_name,
-        guardianPhone: infantInfo?.guardian_phone,
-        guardianEmail: infantInfo?.guardian_email,
-        healthCenterName: infantInfo?.health_center_name,
-      },
-      currentAge: {
-        months: ageInMonths,
-        days: ageInDays,
-      },
-      summary: {
-        totalScheduled,
-        completedCount,
-        overdueCount,
-        upcomingCount,
-        futureCount,
-        overallStatus,
-      },
-      schedules: scheduleItems,
-    };
   }
 
   /**
@@ -341,41 +427,57 @@ class ImmunizationScheduleService {
    * @returns {Promise<Object>} - Due date information
    */
   async calculateDueDateForDose(infantId, vaccineId, doseNumber) {
-    const dob = await this.getInfantDOB(infantId);
-    if (!dob) {
-      return { error: 'Infant not found' };
+    try {
+      const dob = await this.getInfantDOB(infantId);
+      if (!dob) {
+        return { error: 'Infant not found or invalid DOB' };
+      }
+
+      let result;
+      try {
+        result = await pool.query(
+          `SELECT age_months, minimum_age_days, age_description
+           FROM vaccination_schedules
+           WHERE vaccine_id = $1 AND dose_number = $2 AND COALESCE(is_active, true) = true
+           LIMIT 1`,
+          [vaccineId, doseNumber],
+        );
+      } catch (err) {
+        result = await pool.query(
+          `SELECT age_months, minimum_age_days, age_description
+           FROM vaccination_schedules
+           WHERE vaccine_id = $1 AND dose_number = $2
+           LIMIT 1`,
+          [vaccineId, doseNumber],
+        );
+      }
+
+      if (result.rows.length === 0) {
+        return { error: 'Schedule not found for this vaccine and dose' };
+      }
+
+      const schedule = result.rows[0];
+      const dueDate = schedule.minimum_age_days
+        ? this.calculateDueDateFromDays(dob, schedule.minimum_age_days)
+        : this.calculateDueDate(dob, schedule.age_months);
+
+      // Get doses already completed
+      const { administered } = await this.getAdministeredVaccines(infantId);
+      const dosesCompleted = administered[vaccineId] || 0;
+
+      return {
+        infantId,
+        vaccineId,
+        doseNumber,
+        dueDate,
+        ageDescription: schedule.age_description,
+        canAdminister: doseNumber === dosesCompleted + 1,
+        isNextDose: doseNumber === dosesCompleted + 1,
+      };
+    } catch (error) {
+      console.error('Error calculating due date for dose:', error);
+      return { error: 'Failed to calculate due date' };
     }
-
-    const result = await pool.query(
-      `SELECT age_months, minimum_age_days, age_description
-       FROM vaccination_schedules
-       WHERE vaccine_id = $1 AND dose_number = $2 AND is_active = true
-       LIMIT 1`,
-      [vaccineId, doseNumber],
-    );
-
-    if (result.rows.length === 0) {
-      return { error: 'Schedule not found for this vaccine and dose' };
-    }
-
-    const schedule = result.rows[0];
-    const dueDate = schedule.minimum_age_days
-      ? this.calculateDueDateFromDays(dob, schedule.minimum_age_days)
-      : this.calculateDueDate(dob, schedule.age_months);
-
-    // Get doses already completed
-    const { administered } = await this.getAdministeredVaccines(infantId);
-    const dosesCompleted = administered[vaccineId] || 0;
-
-    return {
-      infantId,
-      vaccineId,
-      doseNumber,
-      dueDate,
-      ageDescription: schedule.age_description,
-      canAdminister: doseNumber === dosesCompleted + 1,
-      isNextDose: doseNumber === dosesCompleted + 1,
-    };
   }
 
   /**
@@ -438,7 +540,7 @@ class ImmunizationScheduleService {
     futureDate.setDate(futureDate.getDate() + days);
 
     return schedule.schedules.filter(s => {
-      if (s.isComplete) {
+      if (s.isComplete || !s.dueDate) {
         return false;
       }
       const dueDate = new Date(s.dueDate);
