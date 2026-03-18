@@ -170,13 +170,24 @@ const deleteBlockedDate = async (id) => {
  */
 const getBlockedDatesForCalendar = async ({ month, clinicId = null }) => {
   try {
+    if (!month) {
+      return {};
+    }
+
     // Parse month to get start and end dates
     const [year, monthNum] = month.split('-');
     const startDate = new Date(parseInt(year), parseInt(monthNum) - 1, 1);
     const endDate = new Date(parseInt(year), parseInt(monthNum), 0);
 
-    const startDateStr = startDate.toISOString().split('T')[0];
-    const endDateStr = endDate.toISOString().split('T')[0];
+    const formatLocal = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    const startDateStr = formatLocal(startDate);
+    const endDateStr = formatLocal(endDate);
 
     const blockedDates = await getBlockedDates({
       startDate: startDateStr,

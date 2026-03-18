@@ -188,6 +188,30 @@ BEGIN
     END IF;
 END $$;
 
+-- 12. Create blocked_dates table if missing
+-- This fixes the "Error getting blocked dates" backend issue
+-- ============================================================================
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'blocked_dates') THEN
+        CREATE TABLE blocked_dates (
+            id SERIAL PRIMARY KEY,
+            blocked_date DATE NOT NULL UNIQUE,
+            is_blocked BOOLEAN NOT NULL DEFAULT TRUE,
+            reason TEXT,
+            blocked_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            clinic_id INTEGER,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX idx_blocked_dates_date ON blocked_dates(blocked_date);
+        CREATE INDEX idx_blocked_dates_clinic ON blocked_dates(clinic_id);
+        RAISE NOTICE 'Created blocked_dates table';
+    ELSE
+        RAISE NOTICE 'blocked_dates table already exists';
+    END IF;
+END $$;
+
 -- ============================================================================
 -- Verification of tables
 -- ============================================================================
@@ -227,4 +251,11 @@ SELECT
     CASE WHEN EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'infant_documents' AND column_name = 'clinic_id'
-    ) THEN 'OK' ELSE 'MISSING clinic_id' END;
+    ) THEN 'OK' ELSE 'MISSING clinic_id' END
+UNION ALL
+SELECT
+    'blocked_dates',
+    'N/A' as age_in_days_status,
+    CASE WHEN EXISTS (
+        SELECT 1 FROM information_schema.tables WHERE table_name = 'blocked_dates'
+    ) THEN 'OK' ELSE 'MISSING table' END;
