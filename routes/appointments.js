@@ -9,6 +9,8 @@ const {
 const appointmentConfirmationService = require('../services/appointmentConfirmationService');
 const appointmentSchedulingService = require('../services/appointmentSchedulingService');
 const appointmentControlNumberService = require('../services/appointmentControlNumberService');
+const appointmentSuggestionService = require('../services/appointmentSuggestionService');
+const blockedDatesService = require('../services/blockedDatesService');
 const {
   notifyAdminsOfGuardianAppointmentEvent,
 } = require('../services/appointmentEventNotificationService');
@@ -155,11 +157,10 @@ const sanitizeAppointmentMutablePayload = (payload = {}, { allowStatus = true } 
       if (Number.isNaN(parsedDate.getTime())) {
         errors.scheduled_date = 'scheduled_date must be a valid date';
       } else {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        parsedDate.setHours(0, 0, 0, 0);
+        const todayManila = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(new Date());
+        const parsedManila = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(parsedDate);
 
-        if (parsedDate < today) {
+        if (parsedManila < todayManila) {
           errors.scheduled_date =
             'Cannot schedule appointments in the past. Please select today or a future date.';
         } else {
@@ -676,6 +677,189 @@ router.get('/availability/check', async (req, res) => {
   }
 });
 
+// Check vaccine stock for specific date/time (for appointment suggestions)
+router.post('/check-stock', async (req, res) => {
+  try {
+    const { date, time, vaccine_id, clinic_id } = req.body;
+
+    if (!date || !time || !vaccine_id) {
+      return res.status(400).json({
+        error: 'Date, time, and vaccine ID are required',
+        code: 'MISSING_PARAMETERS',
+      });
+    }
+
+    const stockCheck = await appointmentSchedulingService.checkVaccineStockForDateTime({
+      date,
+      time,
+      vaccineId: sanitizeNullableInt(vaccine_id),
+      clinicId: sanitizeNullableInt(clinic_id || req.user.clinic_id),
+    });
+
+    res.json(stockCheck);
+  } catch (error) {
+    console.error('Check vaccine stock error:', error);
+    res.status(500).json({ error: 'Failed to check vaccine stock availability' });
+  }
+});
+
+// Reschedule an appointment (SYSTEM_ADMIN)
+router.put('/:id(\\d+)/reschedule', async (req, res) => {
+  try {
+    const appointmentId = parseInt(req.params.id, 10);
+    if (Number.isNaN(appointmentId)) {
+      return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    const appointment = await fetchAppointmentById(appointmentId);
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    // Use infantId for validation: verify infant still exists and is active
+    const infantId = appointment.infant_id;
+    const infantValidation = await pool.query(
+      'SELECT id, is_active FROM patients WHERE id = $1',
+      [infantId],
+    );
+    if (infantValidation.rowCount === 0 || !infantValidation.rows[0].is_active) {
+      return res.status(400).json({ error: 'Invalid infant record for this appointment' });
+    }
+
+    const guardianFlow = isGuardian(req);
+    const canonicalRole = getCanonicalRole(req);
+
+    if (guardianFlow) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      if (!guardianId || guardianId !== parseInt(appointment.owner_guardian_id, 10)) {
+        return res.status(403).json({ error: 'You can only reschedule your own appointment requests' });
+      }
+    } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const { scheduled_date, vaccine_id, clinic_id, notes } = req.body;
+
+    // Validate required fields
+    if (!scheduled_date) {
+      return res.status(400).json({ error: 'scheduled_date is required' });
+    }
+
+    // Validate vaccine_id if provided
+    let finalVaccineId = appointment.vaccine_id; // Keep existing vaccine by default
+    if (vaccine_id !== undefined && vaccine_id !== null && vaccine_id !== '') {
+      const vaccineIdCheck = validateNumberRange(vaccine_id, {
+        label: 'vaccine_id',
+        required: true,
+        min: 1,
+        integer: true,
+      });
+      if (vaccineIdCheck.error) {
+        return res.status(400).json({ error: vaccineIdCheck.error });
+      }
+      finalVaccineId = parseInt(vaccine_id, 10);
+    }
+
+    // Validate clinic_id if provided
+    let finalClinicId = appointment.resolved_clinic_id; // Keep existing clinic by default
+    if (clinic_id !== undefined && clinic_id !== null && clinic_id !== '') {
+      const clinicIdCheck = validateNumberRange(clinic_id, {
+        label: 'clinic_id',
+        required: false,
+        min: 1,
+        integer: true,
+      });
+      if (clinicIdCheck.error) {
+        return res.status(400).json({ error: clinicIdCheck.error });
+      }
+      finalClinicId = parseInt(clinic_id, 10);
+    }
+
+    // Check booking availability for the new date
+    const availability = await appointmentSchedulingService.checkBookingAvailability({
+      scheduledDate: scheduled_date,
+      vaccineId: finalVaccineId,
+      clinicId: finalClinicId,
+    });
+
+    if (!availability.available) {
+      if (availability.code === 'SELECTED_VACCINE_OUT_OF_STOCK') {
+        try {
+          await appointmentSchedulingService.notifyGuardianVaccineUnavailable({
+            guardianId: appointment.owner_guardian_id,
+            infantId: appointment.infant_id,
+            vaccineId: finalVaccineId,
+            scheduledDate: scheduled_date,
+            clinicId: finalClinicId,
+          });
+        } catch (notifyError) {
+          console.error('Failed to send vaccine unavailable notification:', notifyError.message);
+        }
+      }
+
+      return res.status(400).json({
+        error: availability.message,
+        code: availability.code,
+        availability,
+      });
+    }
+
+    // Update the appointment using schema-aware column names
+    const { appointmentsScope } = await appointmentSchedulingService.getSchemaColumnMappings();
+
+    const result = await pool.query(
+      `
+        UPDATE appointments
+        SET scheduled_date = $1,
+            vaccine_id = $2,
+            ${appointmentsScope} = $3,
+            notes = $4,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $5
+        RETURNING *
+      `,
+      [
+        scheduled_date,
+        finalVaccineId,
+        finalClinicId,
+        notes || null,
+        appointmentId,
+      ],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const updatedAppointment = (await fetchAppointmentById(appointmentId)) || result.rows[0];
+    const normalizedAppointment = normalizeAppointmentRecord(updatedAppointment);
+
+    // Send rescheduling notification
+    if (updatedAppointment.guardian_phone) {
+      try {
+        await smsService.sendAppointmentRescheduledNotification({
+          phoneNumber: updatedAppointment.guardian_phone,
+          guardianName: updatedAppointment.guardian_name || 'Guardian',
+          childName: `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim(),
+          vaccineName: updatedAppointment.type || 'Vaccination',
+          oldScheduledDate: appointment.scheduled_date,
+          newScheduledDate: updatedAppointment.scheduled_date,
+          location: updatedAppointment.location || 'Main Health Center',
+        });
+      } catch (notificationError) {
+        console.error('Failed to send rescheduling notification:', notificationError.message);
+        // Don't fail the rescheduling if notification fails
+      }
+    }
+
+    socketService.broadcast('appointment_updated', normalizedAppointment);
+    res.json(normalizedAppointment);
+  } catch (error) {
+    console.error('Reschedule appointment error:', error);
+    res.status(500).json({ error: 'Failed to reschedule appointment' });
+  }
+});
+
 // Available time slots for a selected date
 router.get('/availability/slots', async (req, res) => {
   try {
@@ -821,7 +1005,7 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
       [date],
     );
 
-    res.json(result.rows);
+    res.json({ data: result.rows });
   } catch (error) {
     console.error('Appointments by date error:', error);
     res.status(500).json({ error: 'Failed to fetch appointments by date' });
@@ -853,10 +1037,45 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
       [limit],
     );
 
-    res.json(result.rows);
+    res.json({ data: result.rows });
   } catch (error) {
     console.error('Upcoming appointments error:', error);
     res.status(500).json({ error: 'Failed to fetch upcoming appointments' });
+  }
+});
+
+// Generate appointment suggestions based on vaccine due dates
+router.get('/suggestions/:infantId', async (req, res) => {
+  try {
+    const { infantId } = req.params;
+    const { guardianId, clinicId } = req.query;
+
+    // Validate infantId
+    const infantIdNum = parseInt(infantId, 10);
+    if (Number.isNaN(infantIdNum) || infantIdNum <= 0) {
+      return res.status(400).json({
+        error: 'Invalid infant ID',
+        code: 'INVALID_INFANT_ID',
+      });
+    }
+
+    // Generate suggestions
+    const suggestions = await appointmentSuggestionService.generateAppointmentSuggestions({
+      infantId: infantIdNum,
+      guardianId: guardianId ? parseInt(guardianId, 10) : null,
+      clinicId: clinicId ? parseInt(clinicId, 10) : null,
+    });
+
+    res.json({
+      success: true,
+      data: suggestions,
+    });
+  } catch (error) {
+    console.error('Generate appointment suggestions error:', error);
+    res.status(500).json({
+      error: 'Failed to generate appointment suggestions',
+      code: 'SUGGESTION_GENERATION_FAILED',
+    });
   }
 });
 
@@ -898,7 +1117,7 @@ router.get('/types', requirePermission('appointment:view'), async (req, res) => 
       `,
     );
 
-    res.json(result.rows.map((row) => row.type));
+    res.json({ data: result.rows.map((row) => row.type) });
   } catch (error) {
     console.error('Appointment types error:', error);
     res.status(500).json({ error: 'Failed to fetch appointment types' });
@@ -1335,6 +1554,166 @@ router.delete('/:id(\\d+)', requirePermission('appointment:delete'), async (req,
   } catch (error) {
     console.error('Delete appointment error:', error);
     res.status(500).json({ error: 'Failed to delete appointment' });
+  }
+});
+
+// ============ BLOCKED DATES MANAGEMENT (ADMIN ONLY) ============
+
+// Get all blocked dates for a month
+router.get('/blocked-dates', requirePermission('appointment:view'), async (req, res) => {
+  try {
+    const { month, clinic_id } = req.query;
+
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({
+        error: 'Invalid month format. Expected YYYY-MM',
+        code: 'INVALID_MONTH_FORMAT',
+      });
+    }
+
+    const clinicId = sanitizeNullableInt(clinic_id) || req.user.clinic_id || null;
+    const blockedDates = await blockedDatesService.getBlockedDatesForCalendar({ month, clinicId });
+
+    res.json({
+      month,
+      blockedDates,
+    });
+  } catch (error) {
+    console.error('Get blocked dates error:', error);
+    res.status(500).json({ error: 'Failed to fetch blocked dates' });
+  }
+});
+
+// Toggle blocked status of a specific date (admin can click to block/unblock)
+router.post('/blocked-dates/toggle', requirePermission('appointment:create'), async (req, res) => {
+  try {
+    const { date, reason, clinic_id } = req.body;
+
+    if (!date || Number.isNaN(Date.parse(date))) {
+      return res.status(400).json({
+        error: 'Invalid date format. Expected YYYY-MM-DD',
+        code: 'INVALID_DATE_FORMAT',
+      });
+    }
+
+    const clinicId = sanitizeNullableInt(clinic_id) || req.user.clinic_id || null;
+    const result = await blockedDatesService.toggleDateBlocked({
+      date,
+      reason: reason || null,
+      blockedBy: req.user.id,
+      clinicId,
+    });
+
+    if (!result.success) {
+      return res.status(500).json({ error: result.error || 'Failed to toggle blocked date' });
+    }
+
+    res.json({
+      success: true,
+      action: result.action,
+      blockedDate: result.blockedDate,
+      message: result.blockedDate.is_blocked
+        ? `Date ${date} has been blocked`
+        : `Date ${date} has been unblocked`,
+    });
+  } catch (error) {
+    console.error('Toggle blocked date error:', error);
+    res.status(500).json({ error: 'Failed to toggle blocked date' });
+  }
+});
+
+// Set blocked status of a specific date (admin can explicitly block/unblock)
+router.post('/blocked-dates/set', requirePermission('appointment:create'), async (req, res) => {
+  try {
+    const { date, is_blocked, reason, clinic_id } = req.body;
+
+    if (!date || Number.isNaN(Date.parse(date))) {
+      return res.status(400).json({
+        error: 'Invalid date format. Expected YYYY-MM-DD',
+        code: 'INVALID_DATE_FORMAT',
+      });
+    }
+
+    if (is_blocked === undefined || typeof is_blocked !== 'boolean') {
+      return res.status(400).json({
+        error: 'is_blocked is required and must be a boolean',
+        code: 'MISSING_IS_BLOCKED',
+      });
+    }
+
+    const clinicId = sanitizeNullableInt(clinic_id) || req.user.clinic_id || null;
+    const result = await blockedDatesService.setDateBlocked({
+      date,
+      isBlocked: is_blocked,
+      reason: reason || null,
+      blockedBy: req.user.id,
+      clinicId,
+    });
+
+    if (!result.success) {
+      return res.status(500).json({ error: result.error || 'Failed to set blocked date' });
+    }
+
+    res.json({
+      success: true,
+      action: result.action,
+      blockedDate: result.blockedDate,
+      message: is_blocked
+        ? `Date ${date} has been blocked`
+        : `Date ${date} has been unblocked`,
+    });
+  } catch (error) {
+    console.error('Set blocked date error:', error);
+    res.status(500).json({ error: 'Failed to set blocked date' });
+  }
+});
+
+// Delete a blocked date record
+router.delete('/blocked-dates/:id', requirePermission('appointment:delete'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const blockedDateId = parseInt(id, 10);
+
+    if (Number.isNaN(blockedDateId)) {
+      return res.status(400).json({ error: 'Invalid blocked date ID' });
+    }
+
+    const success = await blockedDatesService.deleteBlockedDate(blockedDateId);
+
+    if (!success) {
+      return res.status(500).json({ error: 'Failed to delete blocked date' });
+    }
+
+    res.json({ message: 'Blocked date deleted successfully' });
+  } catch (error) {
+    console.error('Delete blocked date error:', error);
+    res.status(500).json({ error: 'Failed to delete blocked date' });
+  }
+});
+
+// Check if a specific date is blocked (for guardians)
+router.get('/blocked-dates/check', async (req, res) => {
+  try {
+    const { date, clinic_id } = req.query;
+
+    if (!date || Number.isNaN(Date.parse(date))) {
+      return res.status(400).json({
+        error: 'Invalid date format. Expected YYYY-MM-DD',
+        code: 'INVALID_DATE_FORMAT',
+      });
+    }
+
+    const clinicId = sanitizeNullableInt(clinic_id) || null;
+    const blockedRecord = await blockedDatesService.isDateBlocked({ date, clinicId });
+
+    res.json({
+      date,
+      isBlocked: !!blockedRecord,
+      reason: blockedRecord?.reason || null,
+    });
+  } catch (error) {
+    console.error('Check blocked date error:', error);
+    res.status(500).json({ error: 'Failed to check blocked date' });
   }
 });
 

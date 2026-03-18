@@ -152,5 +152,12 @@
     "type": "sql",
     "deprecated": false,
     "description": "Add notification orchestration foundation fields and indexes for event contract, idempotency, callback, and channel-status tracking"
+  },
+  {
+    "id": "transfer_in_cases_20260315",
+    "file": "20260315_transfer_in_cases.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Create transfer_in_cases table for managing vaccine transfers from other health centers"
   }
 ]

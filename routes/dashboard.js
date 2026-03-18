@@ -238,7 +238,7 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
       [limit],
     );
 
-    res.json(result.rows);
+    res.json({ data: result.rows });
   } catch (error) {
     console.error('Dashboard appointments error:', error);
     next(error);
@@ -374,7 +374,7 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
       [guardianId, limit],
     );
 
-    res.json(result.rows || []);
+    res.json({ data: result.rows || [] });
   } catch (error) {
     console.error('Guardian appointments error:', error);
     next(error);
@@ -410,7 +410,7 @@ router.get('/guardian/:guardianId/children', authenticateToken, async (req, res,
       [guardianId],
     );
 
-    res.json(infantsResult.rows);
+    res.json({ data: infantsResult.rows });
   } catch (error) {
     console.error('Guardian children error:', error);
     next(error);
@@ -456,7 +456,7 @@ router.get('/guardian/:guardianId/vaccinations', authenticateToken, async (req, 
       [guardianId, limit],
     );
 
-    res.json(result.rows.map(normalizeVaccinationProvider));
+    res.json({ data: result.rows.map(normalizeVaccinationProvider) });
   } catch (error) {
     console.error('Guardian vaccinations error:', error);
     next(error);
@@ -555,11 +555,11 @@ router.get('/guardian/:guardianId/notifications', authenticateToken, async (req,
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
     if (Number.isNaN(guardianId)) {
-      return res.status(400).json([]);
+      return res.status(400).json({ data: [] });
     }
 
     if (!canAccessGuardian(req, guardianId)) {
-      return res.status(403).json([]);
+      return res.status(403).json({ data: [] });
     }
 
     const limit = sanitizeLimit(req.query.limit, 20, 100);
@@ -580,10 +580,10 @@ router.get('/guardian/:guardianId/notifications', authenticateToken, async (req,
     // Note: guardians table doesn't have user_id column, so we skip that lookup
     if (result.rows.length === 0) {
       // Return empty result - no fallback to user_id since column doesn't exist
-      return res.json([]);
+      return res.json({ data: [] });
     }
 
-    res.json(result.rows || []);
+    res.json({ data: result.rows || [] });
   } catch (error) {
     console.error('Guardian notifications error:', error);
     next(error);
@@ -594,7 +594,7 @@ router.get('/guardian/:guardianId/notifications', authenticateToken, async (req,
 router.get('/guardians', authenticateToken, requirePermission('user:view'), async (_req, res, next) => {
   try {
     const result = await db.query('SELECT * FROM guardians ORDER BY created_at DESC LIMIT 100');
-    res.json(result.rows);
+    res.json({ data: result.rows });
   } catch (error) {
     console.error('Dashboard guardians error:', error);
     next(error);
@@ -614,7 +614,7 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
         LIMIT 100
       `,
     );
-    res.json(result.rows);
+    res.json({ data: result.rows });
   } catch (error) {
     console.error('Dashboard infants error:', error);
     next(error);
@@ -673,7 +673,7 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
     appointments.rows.forEach((item) => activity.push(item));
 
     activity.sort((a, b) => new Date(b.time) - new Date(a.time));
-    res.json(activity.slice(0, 50));
+    res.json({ data: activity.slice(0, 50) });
   } catch (error) {
     console.error('Dashboard activity error:', error);
     next(error);
@@ -748,11 +748,11 @@ router.get('/guardian/:guardianId/vaccinations/:infantId', authenticateToken, as
     const infantId = parseInt(req.params.infantId, 10);
 
     if (Number.isNaN(guardianId) || Number.isNaN(infantId)) {
-      return res.status(400).json([]);
+      return res.status(400).json({ data: [] });
     }
 
     if (!canAccessGuardian(req, guardianId)) {
-      return res.status(403).json([]);
+      return res.status(403).json({ data: [] });
     }
 
     noCache(res);
@@ -792,7 +792,7 @@ router.get('/guardian/:guardianId/vaccinations/:infantId', authenticateToken, as
       [infantId],
     );
 
-    res.json(result.rows.map(normalizeVaccinationProvider));
+    res.json({ data: result.rows.map(normalizeVaccinationProvider) });
   } catch (error) {
     console.error('Guardian infant vaccinations error:', error);
     next(error);
@@ -806,11 +806,11 @@ router.get('/guardian/:guardianId/growth/:infantId', authenticateToken, async (r
     const infantId = parseInt(req.params.infantId, 10);
 
     if (Number.isNaN(guardianId) || Number.isNaN(infantId)) {
-      return res.status(400).json([]);
+      return res.status(400).json({ data: [] });
     }
 
     if (!canAccessGuardian(req, guardianId)) {
-      return res.status(403).json([]);
+      return res.status(403).json({ data: [] });
     }
 
     noCache(res);
@@ -841,7 +841,7 @@ router.get('/guardian/:guardianId/growth/:infantId', authenticateToken, async (r
       [infantId],
     );
 
-    res.json(result.rows);
+    res.json({ data: result.rows });
   } catch (error) {
     console.error('Guardian infant growth error:', error);
     next(error);

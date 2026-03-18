@@ -33,7 +33,11 @@ router.use('/admin', require('./admin'));
 router.use('/guardian/notifications', require('./guardianNotifications'));
 router.use('/sms', require('./sms'));
 router.use('/infant-allergies', require('./infantAllergies'));
+router.use('/infant-ages', require('./infant-ages'));
 router.use('/vaccine-waitlist', require('./vaccineWaitlist'));
 router.use('/incoming', require('./incomingSms'));
+router.use('/transfer-in-cases', require('./transfer-in-cases'));
+router.use('/vaccination-transfer', require('./vaccinationTransfer'));
+router.use('/infant-documents', require('./infantDocuments'));
 
 module.exports = router;

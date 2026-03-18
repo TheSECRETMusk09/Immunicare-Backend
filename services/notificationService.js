@@ -129,7 +129,103 @@ class NotificationService {
         template_data,
         language = 'en',
         scheduled_for,
+        user_id,
+        guardian_id,
       } = notificationData;
+
+      // Check user notification preferences before sending
+      const effectiveUserId = user_id || guardian_id;
+      if (effectiveUserId && notification_type) {
+        // Check debounce settings and skip if recently notified
+        const debounceSettings = await this.getDebounceSettings(effectiveUserId);
+        if (debounceSettings && debounceSettings.enabled) {
+          const debounceResult = await this.checkAndRecordDebounce(
+            effectiveUserId,
+            notification_type,
+            debounceSettings.debounce_minutes || 10
+          );
+          if (debounceResult.debounced) {
+            logger.info(`Notification ${notification_type} debounced for user ${effectiveUserId}`);
+            return { success: false, reason: 'debounced', skipped: true };
+          }
+        }
+
+        // First check guardian-specific preferences (for guardian users)
+        if (guardian_id) {
+          const isChannelEnabled = await this.isGuardianChannelEnabled(guardian_id, notification_type, channel);
+          if (!isChannelEnabled) {
+            logger.info(`Notification ${notification_type} skipped - channel ${channel} disabled by guardian preference for guardian ${guardian_id}`);
+            return { success: false, reason: 'channel_disabled_by_guardian', skipped: true };
+          }
+
+          // Check guardian preferred time
+          const guardianPref = await this.getGuardianNotificationPreferenceByType(guardian_id, notification_type);
+          if (guardianPref && guardianPref.preferred_time) {
+            const now = new Date();
+            const currentHour = now.getHours();
+            const currentMinute = now.getMinutes();
+            const [prefHour, prefMinute] = guardianPref.preferred_time.split(':').map(Number);
+
+            // Only send if current time is within 2 hours of preferred time
+            const currentTotalMinutes = currentHour * 60 + currentMinute;
+            const prefTotalMinutes = prefHour * 60 + prefMinute;
+            const diffMinutes = Math.abs(currentTotalMinutes - prefTotalMinutes);
+
+            if (diffMinutes > 120) { // More than 2 hours away from preferred time
+              logger.info(`Notification ${notification_type} rescheduled to preferred time ${guardianPref.preferred_time} for guardian ${guardian_id}`);
+              // Reschedule to preferred time
+              const scheduleDate = new Date(now);
+              scheduleDate.setHours(prefHour, prefMinute, 0, 0);
+              if (scheduleDate <= now) {
+                scheduleDate.setDate(scheduleDate.getDate() + 1);
+              }
+              scheduled_for = scheduled_for || scheduleDate.toISOString();
+            }
+          }
+        } else {
+          // Check admin preferences (for admin users)
+          const preference = await this.getNotificationPreferenceByType(effectiveUserId, notification_type);
+          if (preference) {
+            // Check if this notification type is disabled
+            if (!preference.enabled) {
+              logger.info(`Notification ${notification_type} skipped - disabled by admin preference for user ${effectiveUserId}`);
+              return { success: false, reason: 'disabled_by_user', skipped: true };
+            }
+
+            // Check quiet hours
+            if (preference.quiet_hours_start && preference.quiet_hours_end) {
+              const now = new Date();
+              const currentTime = now.toTimeString().slice(0, 8); // HH:MM:SS
+
+              // Simple quiet hours check
+              if (currentTime >= preference.quiet_hours_start && currentTime <= preference.quiet_hours_end) {
+                logger.info(`Notification ${notification_type} rescheduled due to quiet hours (${preference.quiet_hours_start}-${preference.quiet_hours_end}) for user ${effectiveUserId}`);
+                // Reschedule for end of quiet hours
+                const scheduleDate = new Date(now);
+                const [hours, minutes, seconds] = preference.quiet_hours_end.split(':');
+                scheduleDate.setHours(parseInt(hours), parseInt(minutes), parseInt(seconds));
+                if (scheduleDate <= now) {
+                  // Next day
+                  scheduleDate.setDate(scheduleDate.getDate() + 1);
+                }
+                scheduled_for = scheduled_for || scheduleDate.toISOString();
+              }
+            }
+
+            // Check channel preference
+            if (preference.channel && channel) {
+              const allowedChannels = preference.channel === 'both'
+                ? ['sms', 'email', 'push']
+                : [preference.channel];
+
+              if (!allowedChannels.includes(channel)) {
+                logger.info(`Notification ${notification_type} skipped - channel ${channel} not preferred by user for user ${effectiveUserId}`);
+                return { success: false, reason: 'channel_not_preferred', skipped: true };
+              }
+            }
+          }
+        }
+      }
 
       // Create notification record (adapt to schema columns)
       const columns = await getNotificationColumns();
@@ -250,8 +346,9 @@ class NotificationService {
         throw new Error('Notification not found');
       }
 
-      // Update status to sending
+      // Update status to sending and increment delivery attempts
       await this.updateNotificationStatus(notificationId, 'sending');
+      await this.incrementDeliveryAttempts(notificationId);
 
       let success = false;
       let errorMessage = null;
@@ -285,10 +382,11 @@ class NotificationService {
         success = false;
       }
 
-      // Update notification status
+      // Update notification status and delivery tracking
       if (success) {
         await this.updateNotificationStatus(notificationId, 'sent');
         await this.updateNotificationSentAt(notificationId);
+        await this.updateNotificationDeliveredAt(notificationId);
       } else {
         await this.updateNotificationStatus(notificationId, 'failed');
         await this.updateNotificationFailureReason(
@@ -508,6 +606,269 @@ class NotificationService {
       'UPDATE notifications SET failure_reason = $1 WHERE id = $2',
       [reason, id],
     );
+  }
+
+  async incrementDeliveryAttempts(id) {
+    await pool.query(
+      'UPDATE notifications SET delivery_attempts = delivery_attempts + 1, last_attempt_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [id],
+    );
+  }
+
+  async updateNotificationDeliveredAt(id) {
+    await pool.query(
+      'UPDATE notifications SET delivered_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [id],
+    );
+  }
+
+  // Notification Preferences Methods - for Admin notifications
+  async getNotificationPreferences(adminId) {
+    const result = await pool.query(
+      'SELECT * FROM notification_preferences WHERE admin_id = $1',
+      [adminId],
+    );
+    return result.rows;
+  }
+
+  async getNotificationPreferenceByType(adminId, notificationType) {
+    const result = await pool.query(
+      'SELECT * FROM notification_preferences WHERE admin_id = $1 AND notification_type = $2',
+      [adminId, notificationType],
+    );
+    return result.rows[0] || null;
+  }
+
+  async updateNotificationPreference(adminId, notificationType, channel, isEnabled) {
+    const result = await pool.query(
+      `INSERT INTO notification_preferences (
+         admin_id, notification_type, channel, enabled
+       ) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (admin_id, notification_type, channel)
+       DO UPDATE SET
+         enabled = EXCLUDED.enabled,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [adminId, notificationType, channel, isEnabled],
+    );
+    return result.rows[0];
+  }
+
+  async deleteNotificationPreference(adminId, notificationType, channel) {
+    await pool.query(
+      'DELETE FROM notification_preferences WHERE admin_id = $1 AND notification_type = $2 AND channel = $3',
+      [adminId, notificationType, channel],
+    );
+    return { success: true };
+  }
+
+  // Guardian Notification Preferences - uses guardian_id
+  // Table schema: guardian_id, notification_type, email_enabled, sms_enabled, push_enabled, preferred_time
+  async getGuardianNotificationPreferences(guardianId) {
+    const result = await pool.query(
+      'SELECT * FROM guardian_notification_preferences WHERE guardian_id = $1',
+      [guardianId],
+    );
+    return result.rows;
+  }
+
+  async getGuardianNotificationPreferenceByType(guardianId, notificationType) {
+    const result = await pool.query(
+      'SELECT * FROM guardian_notification_preferences WHERE guardian_id = $1 AND notification_type = $2',
+      [guardianId, notificationType],
+    );
+    return result.rows[0] || null;
+  }
+
+  async updateGuardianNotificationPreference(guardianId, notificationType, emailEnabled = true, smsEnabled = true, pushEnabled = true, preferredTime = '08:00:00') {
+    const result = await pool.query(
+      `INSERT INTO guardian_notification_preferences (
+         guardian_id, notification_type, email_enabled, sms_enabled, push_enabled, preferred_time
+       ) VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (guardian_id, notification_type)
+       DO UPDATE SET
+         email_enabled = EXCLUDED.email_enabled,
+         sms_enabled = EXCLUDED.sms_enabled,
+         push_enabled = EXCLUDED.push_enabled,
+         preferred_time = EXCLUDED.preferred_time,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [guardianId, notificationType, emailEnabled, smsEnabled, pushEnabled, preferredTime],
+    );
+    return result.rows[0];
+  }
+
+  async deleteGuardianNotificationPreference(guardianId, notificationType) {
+    await pool.query(
+      'DELETE FROM guardian_notification_preferences WHERE guardian_id = $1 AND notification_type = $2',
+      [guardianId, notificationType],
+    );
+    return { success: true };
+  }
+
+  // Check if guardian wants notifications via specific channel
+  async isGuardianChannelEnabled(guardianId, notificationType, channel) {
+    const pref = await this.getGuardianNotificationPreferenceByType(guardianId, notificationType);
+    if (!pref) {
+      // Default: all channels enabled if no preference set
+      return true;
+    }
+
+    switch (channel) {
+    case 'sms':
+      return pref.sms_enabled !== false;
+    case 'email':
+      return pref.email_enabled !== false;
+    case 'push':
+      return pref.push_enabled !== false;
+    default:
+      return true;
+    }
+  }
+
+  // Notification grouping/batching for reducing notification fatigue
+  async addToNotificationBatch(batchId, notificationData) {
+    try {
+      const result = await pool.query(
+        `INSERT INTO notification_batches (batch_id, notification_data, status)
+         VALUES ($1, $2, 'pending')
+         ON CONFLICT DO NOTHING
+         RETURNING *`,
+        [batchId, JSON.stringify(notificationData)],
+      );
+      return result.rows[0];
+    } catch (error) {
+      logger.error('Error adding to notification batch:', error);
+      return null;
+    }
+  }
+
+  async processNotificationBatch(batchId, channel) {
+    try {
+      // Get all pending notifications in the batch
+      const batchResult = await pool.query(
+        'SELECT * FROM notification_batches WHERE batch_id = $1 AND status = \'pending\' ORDER BY created_at',
+        [batchId],
+      );
+
+      if (batchResult.rows.length === 0) {
+        return { success: true, processed: 0 };
+      }
+
+      // Group notifications by recipient
+      const groupedByRecipient = {};
+      for (const row of batchResult.rows) {
+        const data = row.notification_data;
+        const key = `${data.recipient_phone || data.recipient_email || data.recipient_guardian_id || 'unknown'}`;
+        if (!groupedByRecipient[key]) {
+          groupedByRecipient[key] = [];
+        }
+        groupedByRecipient[key].push(data);
+      }
+
+      // Send grouped notifications
+      let processedCount = 0;
+      for (const [recipient, notifications] of Object.entries(groupedByRecipient)) {
+        // Combine messages into a single batched notification
+        const combinedMessage = this.combineNotificationMessages(notifications);
+
+        // Send the combined notification
+        await this.sendNotification({
+          ...notifications[0],
+          message: combinedMessage,
+          is_batched: true,
+          batch_size: notifications.length,
+        });
+
+        // Mark all notifications in group as processed
+        for (const notification of notifications) {
+          await pool.query(
+            'UPDATE notification_batches SET status = \'sent\', processed_at = CURRENT_TIMESTAMP WHERE batch_id = $1 AND notification_data @> $2',
+            [batchId, JSON.stringify(notification)],
+          );
+        }
+        processedCount += notifications.length;
+      }
+
+      return { success: true, processed: processedCount };
+    } catch (error) {
+      logger.error('Error processing notification batch:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  combineNotificationMessages(notifications) {
+    if (notifications.length === 1) {
+      return notifications[0].message;
+    }
+
+    const lines = notifications.map((n, i) => `${i + 1}. ${n.message}`);
+    return `You have ${notifications.length} updates:\n${lines.join('\n')}`;
+  }
+
+  async getNotificationBatchingSettings(userId) {
+    const result = await pool.query(
+      'SELECT * FROM notification_batching_settings WHERE user_id = $1',
+      [userId],
+    );
+    return result.rows[0] || { enabled: false, batch_interval_minutes: 60 };
+  }
+
+  async updateNotificationBatchingSettings(userId, enabled, batchIntervalMinutes = 60) {
+    const result = await pool.query(
+      `INSERT INTO notification_batching_settings (user_id, enabled, batch_interval_minutes)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id)
+       DO UPDATE SET enabled = EXCLUDED.enabled, batch_interval_minutes = EXCLUDED.batch_interval_minutes, updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [userId, enabled, batchIntervalMinutes],
+    );
+    return result.rows[0];
+  }
+
+  // Debouncing - prevent spam from duplicate notifications
+  async checkAndRecordDebounce(userId, notificationType, debounceMinutes = 10) {
+    const cutoffTime = new Date(Date.now() - debounceMinutes * 60 * 1000);
+
+    // Check if similar notification was sent recently
+    const result = await pool.query(
+      `SELECT id FROM notifications
+       WHERE recipient_guardian_id = $1
+         AND notification_type = $2
+         AND created_at > $3
+         AND status NOT IN ('failed', 'cancelled')
+       LIMIT 1`,
+      [userId, notificationType, cutoffTime],
+    );
+
+    if (result.rows.length > 0) {
+      logger.info(`Notification ${notificationType} debounced for user ${userId} - similar notification sent within ${debounceMinutes} minutes`);
+      return { debounced: true, existingNotificationId: result.rows[0].id };
+    }
+
+    return { debounced: false };
+  }
+
+  // Get debounce settings for a user
+  async getDebounceSettings(userId) {
+    const result = await pool.query(
+      'SELECT * FROM notification_debounce_settings WHERE user_id = $1',
+      [userId],
+    );
+    return result.rows[0] || { enabled: true, debounce_minutes: 10 };
+  }
+
+  // Update debounce settings
+  async updateDebounceSettings(userId, enabled, debounceMinutes = 10) {
+    const result = await pool.query(
+      `INSERT INTO notification_debounce_settings (user_id, enabled, debounce_minutes)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id)
+       DO UPDATE SET enabled = EXCLUDED.enabled, debounce_minutes = EXCLUDED.debounce_minutes, updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [userId, enabled, debounceMinutes],
+    );
+    return result.rows[0];
   }
 
   async getNotificationStats() {

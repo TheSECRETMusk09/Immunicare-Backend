@@ -11,6 +11,8 @@ const {
   INFANT_CONTROL_NUMBER_PATTERN,
 } = require('../services/infantControlNumberService');
 const socketService = require('../services/socketService');
+const adminNotificationService = require('../services/adminNotificationService');
+const { calculateAgeInMonths } = require('../utils/ageCalculation');
 
 const router = express.Router();
 
@@ -228,11 +230,11 @@ router.get('/guardian/:guardianId', async (req, res) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
     if (Number.isNaN(guardianId)) {
-      return res.status(400).json({ success: false, error: 'Invalid guardian ID', data: [] });
+      return res.status(400).json({ error: 'Invalid guardian ID' });
     }
 
     if (isGuardian(req) && parseInt(req.user.guardian_id, 10) !== guardianId) {
-      return res.status(403).json({ success: false, error: 'Access denied', data: [] });
+      return res.status(403).json({ error: 'Access denied' });
     }
 
     const result = await pool.query(
@@ -264,10 +266,10 @@ router.get('/guardian/:guardianId', async (req, res) => {
       [guardianId],
     );
 
-    res.json({ success: true, data: result.rows || [] });
+    res.json({ data: result.rows || [] });
   } catch (error) {
     console.error('Error fetching infants by guardian:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch infants', data: [] });
+    res.status(500).json({ error: 'Failed to fetch infants' });
   }
 });
 
@@ -279,10 +281,16 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 100;
     const offset = parseInt(req.query.offset, 10) || 0;
 
+    // Ensure age_months column exists and update ages
+    await pool.query(`
+      ALTER TABLE patients ADD COLUMN IF NOT EXISTS age_months INTEGER
+    `);
+
     const result = await pool.query(
       `
         SELECT
           p.*,
+          p.age_months,
           g.name as guardian_name,
           g.phone as guardian_phone,
           g.email as guardian_email,
@@ -292,6 +300,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
           p.control_number,
           COALESCE(p.mother_name, p.father_name, g.name) as primary_parent_name,
           COALESCE(p.cellphone_number, g.phone) as primary_contact,
+          EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.dob)) * 12 + EXTRACT(MONTH FROM AGE(CURRENT_DATE, p.dob)) as calculated_age_months,
           (
             SELECT json_agg(
               json_build_object(
@@ -323,7 +332,6 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
     }
 
     res.json({
-      success: true,
       data: result.rows || [],
       pagination: {
         total,
@@ -335,7 +343,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
     });
   } catch (error) {
     console.error('[Infants API] Error fetching infants:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch infants', data: [] });
+    res.status(500).json({ error: 'Failed to fetch infants' });
   }
 });
 
@@ -368,7 +376,6 @@ router.get('/stats/overview', requirePermission('patient:view'), async (_req, re
     });
 
     res.json({
-      success: true,
       data: {
         totalInfants: parseInt(totalInfants.rows[0].count, 10),
         thisMonth: parseInt(thisMonth.rows[0].count, 10),
@@ -377,7 +384,7 @@ router.get('/stats/overview', requirePermission('patient:view'), async (_req, re
     });
   } catch (error) {
     console.error('Error fetching infant stats:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch infant stats' });
+    res.status(500).json({ error: 'Failed to fetch infant stats' });
   }
 });
 
@@ -408,10 +415,10 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (_
       [limit, offset],
     );
 
-    res.json({ success: true, data: result.rows || [] });
+    res.json({ data: result.rows || [] });
   } catch (error) {
     console.error('Error fetching upcoming vaccinations:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch upcoming vaccinations' });
+    res.status(500).json({ error: 'Failed to fetch upcoming vaccinations' });
   }
 });
 
@@ -515,10 +522,11 @@ router.get('/:id(\\d+)', async (req, res) => {
       `
         SELECT
           p.*,
-          p.control_number,
+          p.age_months,
           g.name as guardian_name,
           g.phone as guardian_phone,
           g.email as guardian_email,
+          EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.dob)) * 12 + EXTRACT(MONTH FROM AGE(CURRENT_DATE, p.dob)) as calculated_age_months,
           (
             SELECT json_agg(
               json_build_object(
@@ -624,6 +632,9 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid date of birth' });
     }
 
+    // Calculate age in months for the new infant
+    const ageMonths = calculateAgeInMonths(dob);
+
     const maxDob = new Date();
     maxDob.setFullYear(maxDob.getFullYear() - 20);
     if (dobDate < maxDob) {
@@ -663,6 +674,7 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       nbs_date: nbs_date || null,
       cellphone_number: cellphone_number || null,
       facility_id: facility_id || null,
+      age_months: ageMonths, // Auto-calculated age in months
     };
 
     let resolved;
@@ -1038,8 +1050,9 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
   }
 });
 
-// Delete infant (GUARDIAN own soft delete)
+// Delete infant (GUARDIAN own soft delete with cascading deletion and admin notification)
 router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), async (req, res) => {
+  const client = await pool.connect();
   try {
     if (!isGuardian(req)) {
       return res.status(403).json({
@@ -1061,28 +1074,100 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
       return res.status(400).json({ success: false, error: 'Invalid child ID' });
     }
 
-    const result = await pool.query(
-      `
-        UPDATE patients
-        SET is_active = false,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-          AND guardian_id = $2
-          AND is_active = true
-        RETURNING id
-      `,
+    // Start transaction for cascading deletion
+    await client.query('BEGIN');
+
+    // Get infant details before deletion
+    const infantResult = await client.query(
+      'SELECT id, first_name, last_name, control_number, dob FROM patients WHERE id = $1 AND guardian_id = $2 AND is_active = true',
       [infantId, guardianId],
     );
 
-    if (result.rows.length === 0) {
+    if (infantResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ success: false, error: 'Child not found' });
     }
 
-    socketService.broadcast('infant_deleted', { id: infantId });
-    return res.json({ success: true, message: 'Child removed successfully' });
+    const infant = infantResult.rows[0];
+
+    // Get guardian details for notification
+    const guardianResult = await client.query(
+      'SELECT id, name, email, phone FROM guardians WHERE id = $1',
+      [guardianId],
+    );
+    const guardian = guardianResult.rows[0];
+
+    // Get count of appointments to be deleted
+    const appointmentCountResult = await client.query(
+      'SELECT COUNT(*) as count FROM appointments WHERE infant_id = $1',
+      [infantId],
+    );
+    const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
+
+    // Permanently delete all associated appointments
+    await client.query('DELETE FROM appointments WHERE infant_id = $1', [infantId]);
+
+    // Soft delete the infant (set is_active = false)
+    const deleteResult = await client.query(
+      'UPDATE patients SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND guardian_id = $2 AND is_active = true RETURNING id',
+      [infantId, guardianId],
+    );
+
+    if (deleteResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, error: 'Child not found' });
+    }
+
+    await client.query('COMMIT');
+
+    // Send admin notification about the deletion
+    const deletionTimestamp = new Date().toISOString();
+    const adminNotificationTitle = 'Child Profile Deleted by Guardian';
+    const adminNotificationMessage = `Guardian "${guardian.name}" (ID: ${guardian.id}) has deleted a child profile. Child: ${infant.first_name} ${infant.last_name} (Control Number: ${infant.control_number || 'N/A'}). ${appointmentCount} associated appointment record(s) have been permanently removed. Deletion timestamp: ${deletionTimestamp}. Guardian contact: ${guardian.phone || 'N/A'}, ${guardian.email || 'N/A'}`;
+
+    // Send notification to admins
+    try {
+      await adminNotificationService.sendAdminNotification({
+        title: adminNotificationTitle,
+        message: adminNotificationMessage,
+        type: 'child_deletion',
+        priority: 'high',
+        targetRole: 'system_admin',
+        channel: 'both',
+      });
+    } catch (notificationError) {
+      console.error('Failed to send admin notification for child deletion:', notificationError);
+    }
+
+    // Also broadcast via socket for real-time admin updates
+    socketService.broadcast('infant_deleted', {
+      id: infantId,
+      deletedBy: 'guardian',
+      guardianId: guardianId,
+      guardianName: guardian.name,
+      deletedAt: deletionTimestamp,
+      appointmentsRemoved: appointmentCount,
+    });
+
+    return res.json({
+      success: true,
+      message: 'Child removed successfully. All associated appointments have been deleted.',
+      deletedInfant: {
+        id: infant.id,
+        name: `${infant.first_name} ${infant.last_name}`,
+        controlNumber: infant.control_number,
+        deletedByGuardian: guardian.id,
+        guardianName: guardian.name,
+        deletedAt: deletionTimestamp,
+        appointmentsPermanentlyRemoved: appointmentCount,
+      },
+    });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Error deleting infant for guardian:', error);
     return res.status(500).json({ success: false, error: 'Failed to remove child record' });
+  } finally {
+    client.release();
   }
 });
 
@@ -1213,35 +1298,113 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
   }
 });
 
-// Delete infant (SYSTEM_ADMIN soft delete)
+// Delete infant (SYSTEM_ADMIN soft delete with cascading deletion and admin notification)
 router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const infantId = parseInt(req.params.id, 10);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
     }
 
-    const result = await pool.query(
-      `
-        UPDATE patients
-        SET is_active = false,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-          AND is_active = true
-        RETURNING id
-      `,
+    // Start transaction for cascading deletion
+    await client.query('BEGIN');
+
+    // Get infant details before deletion
+    const infantResult = await client.query(
+      'SELECT id, first_name, last_name, control_number, dob, guardian_id FROM patients WHERE id = $1 AND is_active = true',
       [infantId],
     );
 
-    if (result.rows.length === 0) {
+    if (infantResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ success: false, error: 'Infant not found' });
     }
 
-    socketService.broadcast('infant_deleted', { id: infantId });
-    res.json({ success: true, message: 'Infant deactivated successfully' });
+    const infant = infantResult.rows[0];
+
+    // Get guardian details for notification
+    let guardian = null;
+    if (infant.guardian_id) {
+      const guardianResult = await client.query(
+        'SELECT id, name, email, phone FROM guardians WHERE id = $1',
+        [infant.guardian_id],
+      );
+      guardian = guardianResult.rows[0];
+    }
+
+    // Get count of appointments to be deleted
+    const appointmentCountResult = await client.query(
+      'SELECT COUNT(*) as count FROM appointments WHERE infant_id = $1',
+      [infantId],
+    );
+    const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
+
+    // Permanently delete all associated appointments
+    await client.query('DELETE FROM appointments WHERE infant_id = $1', [infantId]);
+
+    // Soft delete the infant (set is_active = false)
+    const deleteResult = await client.query(
+      'UPDATE patients SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND is_active = true RETURNING id',
+      [infantId],
+    );
+
+    if (deleteResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, error: 'Infant not found' });
+    }
+
+    await client.query('COMMIT');
+
+    // Send admin notification about the deletion
+    const deletionTimestamp = new Date().toISOString();
+    const adminNotificationTitle = 'Child Profile Deleted by System Admin';
+    const adminNotificationMessage = `System Admin has deleted a child profile. Child: ${infant.first_name} ${infant.last_name} (Control Number: ${infant.control_number || 'N/A'}). ${appointmentCount} associated appointment record(s) have been permanently removed. Deletion timestamp: ${deletionTimestamp}. ${guardian ? `Guardian: ${guardian.name} (ID: ${guardian.id}), Contact: ${guardian.phone || 'N/A'}, ${guardian.email || 'N/A'}` : 'No guardian information available'}`;
+
+    // Send notification to admins
+    try {
+      await adminNotificationService.sendAdminNotification({
+        title: adminNotificationTitle,
+        message: adminNotificationMessage,
+        type: 'child_deletion',
+        priority: 'high',
+        targetRole: 'system_admin',
+        channel: 'both',
+      });
+    } catch (notificationError) {
+      console.error('Failed to send admin notification for child deletion:', notificationError);
+    }
+
+    // Also broadcast via socket for real-time admin updates
+    socketService.broadcast('infant_deleted', {
+      id: infantId,
+      deletedBy: 'system_admin',
+      guardianId: infant.guardian_id,
+      guardianName: guardian?.name,
+      deletedAt: deletionTimestamp,
+      appointmentsRemoved: appointmentCount,
+    });
+
+    res.json({
+      success: true,
+      message: 'Infant deactivated successfully. All associated appointments have been deleted.',
+      deletedInfant: {
+        id: infant.id,
+        name: `${infant.first_name} ${infant.last_name}`,
+        controlNumber: infant.control_number,
+        deletedBy: 'system_admin',
+        guardianId: infant.guardian_id,
+        guardianName: guardian?.name,
+        deletedAt: deletionTimestamp,
+        appointmentsPermanentlyRemoved: appointmentCount,
+      },
+    });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Error deleting infant:', error);
     res.status(500).json({ success: false, error: 'Failed to delete infant' });
+  } finally {
+    client.release();
   }
 });
 

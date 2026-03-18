@@ -506,6 +506,104 @@ router.get('/category/:category', auth, async (req, res) => {
   }
 });
 
+// Get notification templates
+router.get('/templates', auth, async (req, res) => {
+  try {
+    const notificationTemplates = require('../utils/notificationTemplates');
+    const templates = notificationTemplates.getNotificationTemplates();
+    res.json(templates);
+  } catch (error) {
+    console.error('Error fetching notification templates:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get notification preferences for current user
+router.get('/preferences', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const notificationService = require('../services/notificationService');
+    const preferences = await notificationService.getNotificationPreferences(userId);
+    res.json(preferences);
+  } catch (error) {
+    console.error('Error fetching notification preferences:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get notification preference by type for current user
+router.get('/preferences/:notificationType', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { notificationType } = req.params;
+    const notificationService = require('../services/notificationService');
+    const preference = await notificationService.getNotificationPreferenceByType(userId, notificationType);
+    if (!preference) {
+      return res.status(404).json({ message: 'Notification preference not found' });
+    }
+    res.json(preference);
+  } catch (error) {
+    console.error('Error fetching notification preference:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Update notification preference for current user
+router.put('/preferences', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { notificationType, channel, isEnabled } = req.body;
+
+    if (!notificationType || !channel) {
+      return res.status(400).json({ message: 'Notification type and channel are required' });
+    }
+
+    const notificationService = require('../services/notificationService');
+    const preference = await notificationService.updateNotificationPreference(
+      userId,
+      notificationType,
+      channel,
+      isEnabled !== undefined ? isEnabled : true,
+    );
+    res.json(preference);
+  } catch (error) {
+    console.error('Error updating notification preference:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Delete notification preference for current user
+router.delete('/preferences/:notificationType/:channel', auth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { notificationType, channel } = req.params;
+    const notificationService = require('../services/notificationService');
+    await notificationService.deleteNotificationPreference(userId, notificationType, channel);
+    res.json({ success: true, message: 'Notification preference deleted' });
+  } catch (error) {
+    console.error('Error deleting notification preference:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Render a notification template
+router.post('/templates/render', auth, async (req, res) => {
+  try {
+    const { templateKey, variables } = req.body;
+
+    if (!templateKey) {
+      return res.status(400).json({ message: 'Template key is required' });
+    }
+
+    const notificationTemplates = require('../utils/notificationTemplates');
+    const renderedNotification = notificationTemplates.renderNotification(templateKey, variables || {});
+    res.json(renderedNotification);
+  } catch (error) {
+    console.error('Error rendering notification template:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Manual cleanup trigger for testing
 router.post('/cleanup', auth, async (req, res) => {
   try {

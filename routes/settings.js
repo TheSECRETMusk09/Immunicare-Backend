@@ -88,21 +88,36 @@ router.get('/facility', async (req, res) => {
 
     if (clinicId) {
       const facilityResult = await pool.query(
-        'SELECT id, name, facility_type, facility_subtype, address, barangay, city, province, region, contact_number, email FROM healthcare_facilities WHERE id = $1',
+        'SELECT id, name, address, contact, region FROM clinics WHERE id = $1',
         [clinicId],
       );
 
       if (facilityResult.rows.length > 0) {
-        facilityInfo = facilityResult.rows[0];
+        const clinic = facilityResult.rows[0];
+        facilityInfo = {
+          id: clinic.id,
+          name: clinic.name,
+          address: clinic.address,
+          contact: clinic.contact,
+          region: clinic.region,
+          barangay: 'BARANGAY SAN NICOLAS', // Default values since clinics table doesn't have these fields
+          city: 'PASIG CITY',
+          province: 'NCR',
+          facility_type: 'health_center',
+          facility_subtype: null,
+          region: clinic.region,
+          contact_number: clinic.contact,
+          email: null,
+        };
       }
     }
 
     if (!facilityInfo) {
       facilityInfo = {
-        name: 'IMMUNICARE HEALTH CENTER',
-        barangay: 'BARANGAY',
-        city: 'CITY/MUNICIPALITY',
-        province: 'PROVINCE',
+        name: 'San Nicolas Health Center Pasig City',
+        barangay: 'BARANGAY SAN NICOLAS',
+        city: 'PASIG CITY',
+        province: 'NCR',
       };
     }
 
@@ -115,10 +130,10 @@ router.get('/facility', async (req, res) => {
     res.json({
       success: true,
       data: {
-        name: 'IMMUNICARE HEALTH CENTER',
-        barangay: 'BARANGAY',
-        city: 'CITY/MUNICIPALITY',
-        province: 'PROVINCE',
+        name: 'San Nicolas Health Center Pasig City',
+        barangay: 'BARANGAY SAN NICOLAS',
+        city: 'PASIG CITY',
+        province: 'NCR',
       },
     });
   }

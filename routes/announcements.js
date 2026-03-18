@@ -261,9 +261,9 @@ const buildNotificationInsertPayload = ({ announcement, recipient, actorUserId }
     type: 'info',
     category: 'general',
     is_read: false,
-    notification_type: 'announcement_published',
+    notification_type: 'system_announcement',
     target_type: isGuardianRecipient ? 'guardian' : 'user',
-    target_id: recipient.user_id,
+    target_id: isGuardianRecipient ? recipient.recipient_guardian_id : recipient.user_id,
     recipient_name: recipientLabel,
     recipient_email: recipient.recipient_email,
     recipient_phone: recipient.recipient_phone,
@@ -273,10 +273,11 @@ const buildNotificationInsertPayload = ({ announcement, recipient, actorUserId }
     related_entity_type: 'announcement',
     related_entity_id: announcement.id,
     action_required: false,
-    action_url: '/announcements',
+    action_url: isGuardianRecipient ? '/guardian/notifications' : '/announcements',
     guardian_id: recipient.recipient_guardian_id,
     target_role: isGuardianRecipient ? 'guardian' : 'staff',
     created_by: actorUserId || null,
+    priority: announcement.priority === 'medium' ? 'normal' : (announcement.priority || 'normal'),
     metadata: JSON.stringify({
       announcement_id: announcement.id,
       target_audience: announcement.target_audience,
@@ -304,6 +305,7 @@ const insertNotificationForRecipient = async (client, payload) => {
   const values = keys.map((key) => payload[key]);
 
   try {
+    await client.query('SAVEPOINT notify_insert');
     const result = await client.query(
       `
         INSERT INTO notifications (${keys.join(', ')})
@@ -312,8 +314,15 @@ const insertNotificationForRecipient = async (client, payload) => {
       `,
       values,
     );
+    await client.query('RELEASE SAVEPOINT notify_insert');
     return result.rows[0]?.id || null;
-  } catch (_error) {
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT notify_insert');
+    } catch (rollbackError) {
+      console.error('Error rolling back notify_insert savepoint:', rollbackError.message);
+    }
+    console.error('Error inserting announcement notification:', error instanceof Error ? error.message : String(error));
     return null;
   }
 };
@@ -335,42 +344,53 @@ const insertDeliveryRecord = async (
     metadata = {},
   },
 ) => {
-  await client.query(
-    `
-      INSERT INTO announcement_recipient_deliveries (
-        announcement_id,
-        recipient_user_id,
-        recipient_guardian_id,
-        notification_id,
-        resolved_target_audience,
-        delivery_channel,
-        delivery_status,
-        delivery_attempts,
-        queued_at,
-        sent_at,
-        delivered_at,
-        failed_at,
-        failure_reason,
-        metadata
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
-    `,
-    [
-      announcementId,
-      recipient.user_id,
-      recipient.recipient_guardian_id,
-      notificationId,
-      resolvedTargetAudience,
-      'in_app',
-      deliveryStatus,
-      deliveryAttempts,
-      queuedAt,
-      sentAt,
-      deliveredAt,
-      failedAt,
-      failureReason,
-      JSON.stringify(metadata || {}),
-    ],
-  );
+  try {
+    await client.query('SAVEPOINT delivery_insert');
+    await client.query(
+      `
+        INSERT INTO announcement_recipient_deliveries (
+          announcement_id,
+          recipient_user_id,
+          recipient_guardian_id,
+          notification_id,
+          resolved_target_audience,
+          delivery_channel,
+          delivery_status,
+          delivery_attempts,
+          queued_at,
+          sent_at,
+          delivered_at,
+          failed_at,
+          failure_reason,
+          metadata
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+      `,
+      [
+        announcementId,
+        recipient.user_id,
+        recipient.recipient_guardian_id,
+        notificationId,
+        resolvedTargetAudience,
+        'in_app',
+        deliveryStatus,
+        deliveryAttempts,
+        queuedAt,
+        sentAt,
+        deliveredAt,
+        failedAt,
+        failureReason,
+        JSON.stringify(metadata || {}),
+      ],
+    );
+    await client.query('RELEASE SAVEPOINT delivery_insert');
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT delivery_insert');
+    } catch (rollbackError) {
+      console.error('Error rolling back delivery_insert savepoint:', rollbackError.message);
+    }
+    console.error('Error inserting delivery record:', error instanceof Error ? error.message : String(error));
+  }
 };
 
 const baseDeliverySummary = (announcementId) => ({
@@ -711,10 +731,12 @@ router.put('/bulk-update', requireManagementRole, async (req, res) => {
       announcements: result.rows,
     });
   } catch (error) {
-    res.status(500).json({
-      error: 'An error occurred while updating announcements',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: 'An error occurred while updating announcements',
+        message: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
   }
 });
 
@@ -812,7 +834,9 @@ router.post('/', requireManagementRole, async (req, res) => {
     socketService.broadcast('announcement_created', result.rows[0]);
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
@@ -954,9 +978,10 @@ router.put('/:id/publish', requireManagementRole, async (req, res) => {
     return res.status(400).json({ error: 'Announcement ID must be a positive integer' });
   }
 
-  const client = await pool.connect();
+  let client;
 
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
 
     const result = await client.query(
@@ -985,23 +1010,45 @@ router.put('/:id/publish', requireManagementRole, async (req, res) => {
       total_recipients: recipients.length,
     };
 
+    const notificationsToEmit = [];
+    const now = new Date();
+
     if (deliveryTableExists) {
       await client.query('DELETE FROM announcement_recipient_deliveries WHERE announcement_id = $1', [
         announcement.id,
       ]);
+    }
 
-      const now = new Date();
+    for (const recipient of recipients) {
+      const notificationPayload = buildNotificationInsertPayload({
+        announcement,
+        recipient,
+        actorUserId: req.user.id,
+      });
 
-      for (const recipient of recipients) {
-        const notificationPayload = buildNotificationInsertPayload({
-          announcement,
-          recipient,
-          actorUserId: req.user.id,
+      const notificationId = await insertNotificationForRecipient(client, notificationPayload);
+      const isDelivered = Boolean(notificationId);
+
+      if (isDelivered) {
+        notificationsToEmit.push({
+          userId: recipient.user_id,
+          notification: {
+            id: notificationId,
+            title: announcement.title,
+            message: announcement.content,
+            type: 'info',
+            notification_type: 'system_announcement',
+            category: 'general',
+            is_read: false,
+            created_at: now.toISOString(),
+            action_url: Boolean(recipient.recipient_guardian_id) ? '/guardian/notifications' : '/announcements',
+            related_entity_type: 'announcement',
+            related_entity_id: announcement.id,
+          },
         });
+      }
 
-        const notificationId = await insertNotificationForRecipient(client, notificationPayload);
-        const isDelivered = Boolean(notificationId);
-
+      if (deliveryTableExists) {
         await insertDeliveryRecord(client, {
           announcementId: announcement.id,
           recipient,
@@ -1019,7 +1066,9 @@ router.put('/:id/publish', requireManagementRole, async (req, res) => {
           },
         });
       }
+    }
 
+    if (deliveryTableExists) {
       deliverySummary = await fetchDeliverySummary(client, announcement.id);
     }
 
@@ -1043,16 +1092,28 @@ router.put('/:id/publish', requireManagementRole, async (req, res) => {
       });
     });
 
+    notificationsToEmit.forEach(({ userId, notification }) => {
+      socketService.sendToUser(userId, 'notification', { notification });
+    });
+
     res.json({
       ...announcement,
       recipient_count: recipients.length,
       delivery_summary: deliverySummary,
     });
   } catch (error) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: error.message });
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (_e) { /* ignore */ }
+    }
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 });
 
@@ -1063,8 +1124,9 @@ router.put('/:id/archive', requireManagementRole, async (req, res) => {
     return res.status(400).json({ error: 'Announcement ID must be a positive integer' });
   }
 
-  const client = await pool.connect();
+  let client;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
 
     const result = await client.query(
@@ -1117,10 +1179,18 @@ router.put('/:id/archive', requireManagementRole, async (req, res) => {
       delivery_summary: deliverySummary,
     });
   } catch (error) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: error.message });
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (e) {}
+    }
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 });
 
@@ -1225,7 +1295,9 @@ router.put('/:id', requireManagementRole, async (req, res) => {
     socketService.broadcast('announcement_updated', result.rows[0]);
     res.json(result.rows[0]);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
@@ -1246,7 +1318,9 @@ router.delete('/:id', requireManagementRole, async (req, res) => {
     socketService.broadcast('announcement_deleted', { id: announcementId });
     res.json({ message: 'Announcement deleted successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 

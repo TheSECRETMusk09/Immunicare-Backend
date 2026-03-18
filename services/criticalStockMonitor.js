@@ -66,6 +66,51 @@ class CriticalStockMonitor {
     return config;
   }
 
+  // Helper to determine the correct facility column name for vaccine_stock_alerts table
+  async getStockAlertsFacilityColumn() {
+    const resolveFirstExistingColumn = async (tableName, candidateColumns, fallback = candidateColumns[0]) => {
+      const cacheKey = `${tableName}:${candidateColumns.join(',')}`;
+      // Simple cache implementation for this service
+      if (global.stockAlertsColumnCache && global.stockAlertsColumnCache.has(cacheKey)) {
+        return global.stockAlertsColumnCache.get(cacheKey);
+      }
+
+      try {
+        const result = await pool.query(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = $1
+              AND column_name = ANY($2::text[])
+          `,
+          [tableName, candidateColumns],
+        );
+
+        const availableColumns = new Set(result.rows.map((row) => row.column_name));
+        const resolvedColumn =
+          candidateColumns.find((columnName) => availableColumns.has(columnName)) ||
+          fallback;
+
+        // Initialize cache if needed
+        if (!global.stockAlertsColumnCache) {
+          global.stockAlertsColumnCache = new Map();
+        }
+        global.stockAlertsColumnCache.set(cacheKey, resolvedColumn);
+        return resolvedColumn;
+      } catch (_error) {
+        // Initialize cache if needed
+        if (!global.stockAlertsColumnCache) {
+          global.stockAlertsColumnCache = new Map();
+        }
+        global.stockAlertsColumnCache.set(cacheKey, fallback);
+        return fallback;
+      }
+    };
+
+    return resolveFirstExistingColumn('vaccine_stock_alerts', ['clinic_id', 'facility_id'], 'clinic_id');
+  }
+
   async synchronizeStockFlagsAndAlerts() {
     await pool.query('BEGIN');
 
@@ -94,6 +139,7 @@ class CriticalStockMonitor {
         `,
       );
 
+      const stockAlertsFacilityColumn = await this.getStockAlertsFacilityColumn();
       const criticalItems = [];
       const lowItems = [];
 
@@ -148,7 +194,7 @@ class CriticalStockMonitor {
                 INSERT INTO vaccine_stock_alerts (
                   vaccine_inventory_id,
                   vaccine_id,
-                  facility_id,
+                  ${stockAlertsFacilityColumn},
                   alert_type,
                   current_stock,
                   threshold_value,
@@ -160,7 +206,7 @@ class CriticalStockMonitor {
               [
                 row.id,
                 row.vaccine_id,
-                row.facility_id,
+                row.clinic_id,
                 alertType,
                 stockOnHand,
                 thresholdValue,

@@ -10,6 +10,8 @@ const {
 const VaccinationReminderService = require('../services/vaccinationReminderService');
 const socketService = require('../services/socketService');
 const { validateApprovedVaccine } = require('../utils/approvedVaccines');
+const vaccineEligibilityService = require('../services/vaccineEligibilityService');
+const immunizationScheduleService = require('../services/immunizationScheduleService');
 
 const reminderService = new VaccinationReminderService();
 
@@ -592,21 +594,20 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
     }
 
     const client = await pool.connect();
-
     try {
       await client.query('BEGIN');
 
       const duplicateCheck = await client.query(
         `
-          SELECT id
-          FROM immunization_records
-          WHERE patient_id = $1
-            AND vaccine_id = $2
-            AND dose_no = $3
-            AND COALESCE(schedule_id, 0) = COALESCE($4, 0)
-            AND is_active = true
-          LIMIT 1
-        `,
+           SELECT id
+           FROM immunization_records
+           WHERE patient_id = $1
+             AND vaccine_id = $2
+             AND dose_no = $3
+             AND COALESCE(schedule_id, 0) = COALESCE($4, 0)
+             AND is_active = true
+           LIMIT 1
+         `,
         [patient_id, vaccine_id, dose_no, schedule_id || null],
       );
 
@@ -619,24 +620,24 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
 
       const insertResult = await client.query(
         `
-          INSERT INTO immunization_records (
-            patient_id,
-            vaccine_id,
-            dose_no,
-            admin_date,
-            administered_by,
-            health_care_provider,
-            site_of_injection,
-            reactions,
-            next_due_date,
-            notes,
-            status,
-            batch_id,
-            schedule_id
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-          RETURNING *
-        `,
+           INSERT INTO immunization_records (
+             patient_id,
+             vaccine_id,
+             dose_no,
+             admin_date,
+             administered_by,
+             health_care_provider,
+             site_of_injection,
+             reactions,
+             next_due_date,
+             notes,
+             status,
+             batch_id,
+             schedule_id
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           RETURNING *
+         `,
         [
           patient_id,
           vaccine_id,
@@ -657,10 +658,10 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       if (batch_id) {
         await client.query(
           `
-            UPDATE vaccine_batches
-            SET qty_current = qty_current - 1
-            WHERE id = $1
-          `,
+             UPDATE vaccine_batches
+             SET qty_current = qty_current - 1
+             WHERE id = $1
+           `,
           [batch_id],
         );
       }
@@ -675,9 +676,9 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
 
       socketService.broadcast('vaccination_created', insertResult.rows[0]);
       res.status(201).json(insertResult.rows[0]);
-    } catch (e) {
+    } catch (error) {
       await client.query('ROLLBACK');
-      throw e;
+      throw error;
     } finally {
       client.release();
     }
@@ -685,7 +686,19 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
     console.error('[VACCINATION CREATE] Full error:', error);
     console.error('[VACCINATION CREATE] Error message:', error.message);
     console.error('[VACCINATION CREATE] Error stack:', error.stack);
-    res.status(500).json({ error: 'Failed to create vaccination record' });
+    console.error('[VACCINATION CREATE] Error name:', error.name);
+
+    // Provide more specific error messages based on error type
+    let errorMessage = 'Failed to create vaccination record';
+    if (error.code === '23505') {
+      errorMessage = 'A vaccination record with these details already exists';
+    } else if (error.code === '23503') {
+      errorMessage = 'Foreign key constraint failed - invalid patient_id or vaccine_id';
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
+
+    res.status(500).json({ error: errorMessage, details: error.message });
   }
 });
 
@@ -1038,6 +1051,294 @@ router.get('/patient/:patientId/schedule', async (req, res) => {
   } catch (error) {
     console.error('Error fetching vaccination schedule:', error);
     res.status(500).json({ error: 'Failed to fetch vaccination schedule' });
+  }
+});
+
+// Get eligible vaccines for an infant
+router.get('/eligible/:infantId', requirePermission('dashboard:view'), async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    // Check guardian ownership if guardian
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const result = await vaccineEligibilityService.getEligibleVaccines(infantId);
+
+    if (result.error) {
+      return res.status(404).json({ error: result.error });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching eligible vaccines:', error);
+    res.status(500).json({ error: 'Failed to fetch eligible vaccines' });
+  }
+});
+
+// Get next dose info for a specific vaccine
+router.get('/next-dose/:infantId/:vaccineId', requirePermission('dashboard:view'), async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    const vaccineId = parseInt(req.params.vaccineId, 10);
+
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (Number.isNaN(vaccineId)) {
+      return res.status(400).json({ error: 'Invalid vaccine ID' });
+    }
+
+    // Check guardian ownership if guardian
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const result = await vaccineEligibilityService.getNextDoseInfo(infantId, vaccineId);
+
+    if (result.error) {
+      return res.status(404).json({ error: result.error });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching next dose info:', error);
+    res.status(500).json({ error: 'Failed to fetch next dose info' });
+  }
+});
+
+// Get vaccine readiness for a specific vaccine
+router.get('/readiness/:infantId/:vaccineId', requirePermission('dashboard:view'), async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    const vaccineId = parseInt(req.params.vaccineId, 10);
+
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (Number.isNaN(vaccineId)) {
+      return res.status(400).json({ error: 'Invalid vaccine ID' });
+    }
+
+    // Check guardian ownership if guardian
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const result = await vaccineEligibilityService.getVaccineReadiness(infantId, vaccineId);
+
+    if (result.error) {
+      return res.status(404).json({ error: result.error });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching vaccine readiness:', error);
+    res.status(500).json({ error: 'Failed to fetch vaccine readiness' });
+  }
+});
+
+// Check contraindications for a vaccine
+router.get('/contraindications/:infantId/:vaccineId', requirePermission('dashboard:view'), async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    const vaccineId = parseInt(req.params.vaccineId, 10);
+
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (Number.isNaN(vaccineId)) {
+      return res.status(400).json({ error: 'Invalid vaccine ID' });
+    }
+
+    const result = await vaccineEligibilityService.checkContraindications(infantId, vaccineId);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error checking contraindications:', error);
+    res.status(500).json({ error: 'Failed to check contraindications' });
+  }
+});
+
+// ============================================
+// DYNAMIC IMMUNIZATION SCHEDULE ENDPOINTS
+// ============================================
+
+// Get dynamic schedule for infant
+router.get('/schedule/:infantId', async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const result = await immunizationScheduleService.getInfantSchedule(infantId);
+
+    if (result.error) {
+      return res.status(404).json({ error: result.error });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching dynamic schedule:', error);
+    res.status(500).json({ error: 'Failed to fetch dynamic schedule' });
+  }
+});
+
+// Get overdue vaccines for infant
+router.get('/overdue/:infantId', async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const result = await immunizationScheduleService.getOverdueVaccines(infantId);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching overdue vaccines:', error);
+    res.status(500).json({ error: 'Failed to fetch overdue vaccines' });
+  }
+});
+
+// Get upcoming vaccines for infant
+router.get('/upcoming/:infantId', async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const days = req.query.days ? parseInt(req.query.days, 10) : 14;
+    const result = await immunizationScheduleService.getUpcomingVaccines(infantId, days);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching upcoming vaccines:', error);
+    res.status(500).json({ error: 'Failed to fetch upcoming vaccines' });
+  }
+});
+
+// Get catch-up schedule for behind infants
+router.get('/catchup/:infantId', async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const result = await immunizationScheduleService.getCatchUpSchedule(infantId);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching catch-up schedule:', error);
+    res.status(500).json({ error: 'Failed to fetch catch-up schedule' });
+  }
+});
+
+// Get schedule status
+router.get('/status/:infantId', async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const result = await immunizationScheduleService.getScheduleStatus(infantId);
+
+    if (result.error) {
+      return res.status(404).json({ error: result.error });
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching schedule status:', error);
+    res.status(500).json({ error: 'Failed to fetch schedule status' });
+  }
+});
+
+// Get extended schedule (beyond 12 months)
+router.get('/extended/:infantId', async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.infantId, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ error: 'Invalid infant ID' });
+    }
+
+    if (isGuardian(req)) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
+    const result = await immunizationScheduleService.getExtendedSchedule(infantId);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching extended schedule:', error);
+    res.status(500).json({ error: 'Failed to fetch extended schedule' });
   }
 });
 

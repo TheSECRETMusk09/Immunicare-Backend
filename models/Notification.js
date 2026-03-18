@@ -21,13 +21,22 @@ class Notification {
       notificationData?.action_required !== undefined ? notificationData.action_required : false;
     this.actionUrl = notificationData?.action_url || notificationData?.actionUrl;
     this.channel = notificationData?.channel;
+    // Delivery tracking fields
+    this.status = notificationData?.status || 'pending';
+    this.deliveryAttempts = notificationData?.delivery_attempts || 0;
+    this.firstAttemptAt = notificationData?.first_attempt_at || null;
+    this.lastAttemptAt = notificationData?.last_attempt_at || null;
+    this.deliveredAt = notificationData?.delivered_at || null;
+    this.failureReason = notificationData?.failure_reason || null;
+    this.channelMessageId = notificationData?.channel_message_id || null;
+    this.channelStatus = notificationData?.channel_status || null;
   }
 
   static async findAll(limit = 100) {
     try {
       const result = await pool.query(
         'SELECT * FROM notifications ORDER BY created_at DESC LIMIT $1',
-        [limit]
+        [limit],
       );
       return result.rows.map((row) => new Notification(row));
     } catch (error) {
@@ -49,7 +58,7 @@ class Notification {
   static async findByUserId(userId, limit = 100, filters = {}) {
     try {
       let query = `
-        SELECT * FROM notifications 
+        SELECT * FROM notifications
         WHERE (user_id = $1 OR user_id IS NULL)
       `;
       const params = [userId];
@@ -71,12 +80,12 @@ class Notification {
       }
 
       // Priority sorting - handle ENUM priority type
-      query += ` ORDER BY 
-        CASE priority 
-          WHEN 'urgent' THEN 1 
-          WHEN 'high' THEN 2 
-          WHEN 'normal' THEN 3 
-          ELSE 4 
+      query += ` ORDER BY
+        CASE priority
+          WHEN 'urgent' THEN 1
+          WHEN 'high' THEN 2
+          WHEN 'normal' THEN 3
+          ELSE 4
         END, created_at DESC LIMIT $${params.length + 1}`;
       params.push(limit);
 
@@ -90,10 +99,10 @@ class Notification {
 
   static async findUnreadByUserId(userId) {
     const result = await pool.query(
-      `SELECT * FROM notifications 
+      `SELECT * FROM notifications
        WHERE (user_id = $1 OR user_id IS NULL) AND is_read = FALSE
        ORDER BY created_at DESC`,
-      [userId]
+      [userId],
     );
     return result.rows.map((row) => new Notification(row));
   }
@@ -103,8 +112,10 @@ class Notification {
       `INSERT INTO notifications (
         user_id, title, message, type, category, priority,
         related_entity_type, related_entity_id, expires_at,
-        action_required, action_url, channel
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        action_required, action_url, channel,
+        status, delivery_attempts, first_attempt_at, last_attempt_at,
+        delivered_at, failure_reason, channel_message_id, channel_status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
       RETURNING *`,
       [
         notificationData.userId,
@@ -118,8 +129,16 @@ class Notification {
         notificationData.expiresAt,
         notificationData.actionRequired || false,
         notificationData.actionUrl,
-        notificationData.channel
-      ]
+        notificationData.channel,
+        notificationData.status || 'pending',
+        notificationData.deliveryAttempts || 0,
+        notificationData.firstAttemptAt || null,
+        notificationData.lastAttemptAt || null,
+        notificationData.deliveredAt || null,
+        notificationData.failureReason || null,
+        notificationData.channelMessageId || null,
+        notificationData.channelStatus || null,
+      ],
     );
     return new Notification(result.rows[0]);
   }
@@ -129,10 +148,29 @@ class Notification {
       // Update existing notification
       const result = await pool.query(
         `UPDATE notifications SET
-          is_read = $1,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2 RETURNING *`,
-        [this.isRead, this.id]
+           is_read = $1,
+           updated_at = CURRENT_TIMESTAMP,
+           status = $2,
+           delivery_attempts = $3,
+           first_attempt_at = $4,
+           last_attempt_at = $5,
+           delivered_at = $6,
+           failure_reason = $7,
+           channel_message_id = $8,
+           channel_status = $9
+         WHERE id = $10 RETURNING *`,
+        [
+          this.isRead,
+          this.status,
+          this.deliveryAttempts,
+          this.firstAttemptAt,
+          this.lastAttemptAt,
+          this.deliveredAt,
+          this.failureReason,
+          this.channelMessageId,
+          this.channelStatus,
+          this.id,
+        ],
       );
       return new Notification(result.rows[0]);
     } else {
@@ -143,12 +181,14 @@ class Notification {
 
   async markAsRead() {
     this.isRead = true;
+    this.status = 'read';
     const result = await pool.query(
       `UPDATE notifications SET
-        is_read = TRUE,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1 RETURNING *`,
-      [this.id]
+         is_read = $1,
+         updated_at = CURRENT_TIMESTAMP,
+         status = $2
+       WHERE id = $3 RETURNING *`,
+      [this.isRead, this.status, this.id],
     );
     return new Notification(result.rows[0]);
   }
@@ -160,7 +200,7 @@ class Notification {
         updated_at = CURRENT_TIMESTAMP
       WHERE (user_id = $1 OR user_id IS NULL) AND is_read = FALSE
       RETURNING *`,
-      [userId]
+      [userId],
     );
     return result.rows.map((row) => new Notification(row));
   }
@@ -176,16 +216,16 @@ class Notification {
         SUM(CASE WHEN priority = 'low' THEN 1 ELSE 0 END) as low_priority_count
       FROM notifications
       WHERE user_id = $1 OR user_id IS NULL`,
-      [userId]
+      [userId],
     );
     return result.rows[0];
   }
 
   static async deleteExpired() {
     const result = await pool.query(
-      `DELETE FROM notifications 
+      `DELETE FROM notifications
        WHERE expires_at IS NOT NULL AND expires_at < CURRENT_TIMESTAMP
-       RETURNING *`
+       RETURNING *`,
     );
     return result.rows.map((row) => new Notification(row));
   }
@@ -195,7 +235,7 @@ class Notification {
       `SELECT * FROM notifications
        WHERE related_entity_type = $1 AND related_entity_id = $2
        ORDER BY created_at DESC`,
-      [relatedEntityType, relatedEntityId]
+      [relatedEntityType, relatedEntityId],
     );
     return result.rows.map((row) => new Notification(row));
   }
@@ -222,7 +262,7 @@ class Alert {
 
   static async findAll(limit = 100) {
     const result = await pool.query('SELECT * FROM alerts ORDER BY created_at DESC LIMIT $1', [
-      limit
+      limit,
     ]);
     return result.rows.map((row) => new Alert(row));
   }
@@ -234,16 +274,16 @@ class Alert {
 
   static async findActive() {
     const result = await pool.query(
-      `SELECT * FROM alerts 
+      `SELECT * FROM alerts
        WHERE is_active = TRUE AND is_acknowledged = FALSE
-       ORDER BY 
-         CASE severity 
+       ORDER BY
+         CASE severity
            WHEN 'critical' THEN 1
            WHEN 'high' THEN 2
            WHEN 'medium' THEN 3
            WHEN 'low' THEN 4
            ELSE 5
-         END, created_at DESC`
+         END, created_at DESC`,
     );
     return result.rows.map((row) => new Alert(row));
   }
@@ -263,8 +303,8 @@ class Alert {
         alertData.expiresAt,
         alertData.thresholdValue,
         alertData.currentValue,
-        alertData.triggerCondition
-      ]
+        alertData.triggerCondition,
+      ],
     );
     return new Alert(result.rows[0]);
   }
@@ -280,7 +320,7 @@ class Alert {
         acknowledged_by = $1,
         acknowledged_at = CURRENT_TIMESTAMP
       WHERE id = $2 RETURNING *`,
-      [userId, this.id]
+      [userId, this.id],
     );
     return new Alert(result.rows[0]);
   }
@@ -292,7 +332,7 @@ class Alert {
         resolution_notes = $1,
         resolved_at = CURRENT_TIMESTAMP
       WHERE id = $2 RETURNING *`,
-      [resolutionNotes, this.id]
+      [resolutionNotes, this.id],
     );
     return new Alert(result.rows[0]);
   }
@@ -311,16 +351,16 @@ class NotificationPreference {
 
   static async findByUserId(userId) {
     const result = await pool.query('SELECT * FROM notification_preferences WHERE user_id = $1', [
-      userId
+      userId,
     ]);
     return result.rows.map((row) => new NotificationPreference(row));
   }
 
   static async findByUserAndType(userId, notificationType) {
     const result = await pool.query(
-      `SELECT * FROM notification_preferences 
+      `SELECT * FROM notification_preferences
        WHERE user_id = $1 AND notification_type = $2`,
-      [userId, notificationType]
+      [userId, notificationType],
     );
     return result.rows.map((row) => new NotificationPreference(row));
   }
@@ -339,8 +379,8 @@ class NotificationPreference {
         preferenceData.userId,
         preferenceData.notificationType,
         preferenceData.channel,
-        preferenceData.isEnabled
-      ]
+        preferenceData.isEnabled,
+      ],
     );
     return new NotificationPreference(result.rows[0]);
   }
@@ -349,5 +389,5 @@ class NotificationPreference {
 module.exports = {
   Notification,
   Alert,
-  NotificationPreference
+  NotificationPreference,
 };

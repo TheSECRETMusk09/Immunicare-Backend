@@ -1,6 +1,7 @@
 const pool = require('../db');
 const NotificationService = require('./notificationService');
 const smsService = require('./smsService');
+const blockedDatesService = require('./blockedDatesService');
 const {
   generateControlNumber: generateInfantControlNumber,
   resolveOrCreateInfantPatient,
@@ -313,7 +314,105 @@ const getVaccineStockSummary = async (clinicId = null) => {
   }
 };
 
-const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clinicId = null }) => {
+/**
+ * Check vaccine stock availability for a specific date, time, and vaccine
+ * @param {string} date - Date in YYYY-MM-DD format
+ * @param {string} time - Time in HH:MM format
+ * @param {number} vaccineId - Vaccine ID
+ * @param {number} clinicId - Clinic ID
+ * @returns {Object} Availability information
+ */
+const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId }) => {
+  try {
+    // Validate inputs
+    if (!date || !time || !vaccineId) {
+      return {
+        available: false,
+        code: 'MISSING_PARAMETERS',
+        message: 'Date, time, and vaccine ID are required',
+      };
+    }
+
+    // Parse the date and time
+    const appointmentDateTime = new Date(`${date}T${time}:00`);
+    if (isNaN(appointmentDateTime.getTime())) {
+      return {
+        available: false,
+        code: 'INVALID_DATE_TIME',
+        message: 'Invalid date or time format',
+      };
+    }
+
+    // Get vaccine stock summary
+    const stockSummary = await getVaccineStockSummary(clinicId);
+    const vaccineStock = stockSummary.vaccines.find(
+      v => parseInt(v.vaccine_id, 10) === parseInt(vaccineId, 10),
+    );
+
+    if (!vaccineStock) {
+      return {
+        available: false,
+        code: 'VACCINE_NOT_FOUND',
+        message: 'Vaccine not found or not active',
+      };
+    }
+
+    const totalStock = parseInt(vaccineStock.available_stock || 0, 10);
+
+    // Block booking when stock drops to critical level (10 or below)
+    if (totalStock <= 10) {
+      return {
+        available: false,
+        code: 'SELECTED_VACCINE_OUT_OF_STOCK',
+        message: 'No vaccines available for the selected vaccine. Please choose another vaccine.',
+        stock: totalStock,
+      };
+    }
+
+    // Check how many appointments are already scheduled for this vaccine at this date/time
+    const { appointmentsPatient, appointmentsScope } = await getSchemaColumnMappings();
+
+    const appointmentCountResult = await pool.query(
+      `
+        SELECT COUNT(*) as count
+        FROM appointments a
+        LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
+        WHERE DATE(a.scheduled_date) = $1
+          AND TIME(a.scheduled_date) = $2
+          AND a.vaccine_id = $3
+          AND a.is_active = true
+          AND a.status NOT IN ('cancelled', 'completed')
+          ${clinicId ? `AND COALESCE(p.${appointmentsScope}, a.${appointmentsScope}) = $4` : ''}
+      `,
+      clinicId
+        ? [date, time, vaccineId, clinicId]
+        : [date, time, vaccineId],
+    );
+
+    const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
+    const availableSlots = totalStock - appointmentCount;
+
+    return {
+      available: availableSlots > 0,
+      code: availableSlots > 0 ? 'STOCK_AVAILABLE' : 'NO_STOCK_AVAILABLE',
+      message: availableSlots > 0
+        ? `${availableSlots} dose(s) available for ${vaccineStock.vaccine_name} at ${date} ${time}`
+        : `No stock available for ${vaccineStock.vaccine_name} at ${date} ${time}. ${appointmentCount} appointment(s) already scheduled.`,
+      stock: totalStock,
+      booked: appointmentCount,
+      available: availableSlots,
+    };
+  } catch (error) {
+    console.error('Error in checkVaccineStockForDateTime:', error);
+    return {
+      available: false,
+      code: 'STOCK_CHECK_FAILED',
+      message: 'Failed to check vaccine stock availability',
+    };
+  }
+};
+
+const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clinicId = null, time = null }) => {
   try {
     const dateOnly = parseDate(scheduledDate);
     if (!dateOnly) {
@@ -324,10 +423,10 @@ const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clini
       };
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const todayManila = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(new Date());
+    const scheduledManila = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(dateOnly);
 
-    if (dateOnly < today) {
+    if (scheduledManila < todayManila) {
       return {
         available: false,
         code: 'DATE_IN_PAST',
@@ -350,6 +449,47 @@ const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clini
         code: 'HOLIDAY_RESTRICTED',
         message: `${holiday.name} is not available for booking`,
         holiday,
+      };
+    }
+
+    // Check if date is blocked by admin
+    try {
+      const blockedDate = await blockedDatesService.isDateBlocked({
+        date: toDateKey(dateOnly),
+        clinicId,
+      });
+
+      if (blockedDate) {
+        return {
+          available: false,
+          code: 'ADMIN_BLOCKED',
+          message: blockedDate.reason
+            ? `This date is not available for booking: ${blockedDate.reason}`
+            : 'This date has been blocked by the administrator',
+          blockedDate,
+        };
+      }
+    } catch (blockError) {
+      console.error('Error checking blocked date:', blockError.message);
+      // Continue with availability check if blocked date check fails
+    }
+
+    // If time is provided, use stock-aware checking for specific date/time
+    if (time && vaccineId) {
+      const stockCheck = await checkVaccineStockForDateTime({
+        date: scheduledDate,
+        time,
+        vaccineId,
+        clinicId,
+      });
+
+      return {
+        available: stockCheck.available,
+        code: stockCheck.code,
+        message: stockCheck.message,
+        stock: stockCheck.stock,
+        booked: stockCheck.booked,
+        availableSlots: stockCheck.available,
       };
     }
 
@@ -468,6 +608,17 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
     const days = [];
     const cursor = new Date(start);
 
+    // Get admin-blocked dates for the month
+    let adminBlockedDates = {};
+    try {
+      adminBlockedDates = await blockedDatesService.getBlockedDatesForCalendar({
+        month: toMonthKey(start),
+        clinicId,
+      });
+    } catch (blockError) {
+      console.error('Error getting blocked dates:', blockError.message);
+    }
+
     while (cursor <= end) {
       const dateKey = toDateKey(cursor);
       const weekend = isWeekend(cursor);
@@ -475,12 +626,16 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
       const noVaccineAvailability = stock.totalAvailableStock <= 10;
 
       let blockedReason = null;
+      const adminBlocked = adminBlockedDates[dateKey];
+
       if (weekend) {
         blockedReason = 'weekend';
       } else if (holiday) {
         blockedReason = 'holiday';
       } else if (noVaccineAvailability) {
         blockedReason = 'no_vaccine_available';
+      } else if (adminBlocked && adminBlocked.is_blocked) {
+        blockedReason = 'admin_blocked';
       }
 
       days.push({
@@ -491,6 +646,8 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
         holidayName: holiday?.name || null,
         noVaccineAvailability,
         hasVaccineAvailability: stock.totalAvailableStock > 0,
+        isAdminBlocked: adminBlocked ? adminBlocked.is_blocked : false,
+        adminBlockReason: adminBlocked?.reason || null,
         blocked: Boolean(blockedReason),
         blockedReason,
       });
@@ -1161,6 +1318,7 @@ const processMissedAppointments = async () => {
 
     let sentCount = 0;
     let failedCount = 0;
+    let rescheduledCount = 0;
 
     for (const appointment of missedAppointments) {
       if (!appointment.guardian_phone) {
@@ -1194,6 +1352,19 @@ const processMissedAppointments = async () => {
             [appointment.appointment_id],
           );
           sentCount++;
+
+          // Attempt to auto-reschedule the missed appointment
+          try {
+            const rescheduleResult = await autoRescheduleMissedAppointment(appointment.appointment_id);
+            if (rescheduleResult.success) {
+              rescheduledCount++;
+              console.log(`Auto-rescheduled missed appointment ${appointment.appointment_id}`);
+            } else {
+              console.warn(`Failed to auto-reschedule missed appointment ${appointment.appointment_id}: ${rescheduleResult.error}`);
+            }
+          } catch (rescheduleError) {
+            console.error(`Error auto-rescheduling missed appointment ${appointment.appointment_id}:`, rescheduleError.message);
+          }
         } else {
           console.warn(
             `Missed appointment SMS was not sent for appointment ${appointment.appointment_id}: ${result.error || 'unknown reason'}`,
@@ -1210,10 +1381,269 @@ const processMissedAppointments = async () => {
       processed: missedAppointments.length,
       sent: sentCount,
       failed: failedCount,
+      rescheduled: rescheduledCount,
     };
   } catch (error) {
     console.error('Error processing missed appointments:', error);
     return { error: error.message };
+  }
+};
+
+/**
+ * Automatically reschedule a missed appointment to the next available slot
+ * @param {number} appointmentId - The ID of the missed appointment
+ * @returns {Object} Result of the rescheduling attempt
+ */
+const autoRescheduleMissedAppointment = async (appointmentId) => {
+  try {
+    // Get the missed appointment details
+    const appointment = await fetchAppointmentById(appointmentId);
+    if (!appointment) {
+      return {
+        success: false,
+        error: 'Appointment not found',
+      };
+    }
+
+    // Check if appointment is actually missed (scheduled in past and not attended)
+    const appointmentDate = new Date(appointment.scheduled_date);
+    const now = new Date();
+    if (appointmentDate >= now || !['scheduled', 'no-show'].includes(appointment.status)) {
+      return {
+        success: false,
+        error: 'Appointment is not eligible for auto-rescheduling',
+      };
+    }
+
+    // Get infant and vaccine details
+    const infantResult = await pool.query(
+      'SELECT id, first_name, last_name, dob, guardian_id FROM patients WHERE id = $1',
+      [appointment.infant_id],
+    );
+
+    if (infantResult.rows.length === 0) {
+      return {
+        success: false,
+        error: 'Infant not found',
+      };
+    }
+
+    const infant = infantResult.rows[0];
+
+    // Get vaccination history to determine next due vaccine
+    const vaccinationsResult = await pool.query(
+      `SELECT vr.vaccine_id, vr.dose_no, vr.administered_at, v.name as vaccine_name
+       FROM vaccination_records vr
+       JOIN vaccines v ON vr.vaccine_id = v.id
+       WHERE vr.infant_id = $1
+       ORDER BY vr.administered_at`,
+      [infant.id],
+    );
+
+    const vaccinationHistory = vaccinationsResult.rows.map(record => ({
+      vaccine: record.vaccine_name,
+      dose_no: record.dose_no,
+      date_administered: record.administered_at,
+    }));
+
+    // Calculate next valid dose
+    const nextDoseInfo = calculateNextValidDose(infant.dob, vaccinationHistory);
+
+    if (!nextDoseInfo) {
+      return {
+        success: false,
+        error: 'No upcoming vaccines due for this child',
+      };
+    }
+
+    // Find earliest valid date for the vaccine
+    const earliestValidDate = findEarliestValidDate(new Date().toISOString().split('T')[0], appointment.resolved_clinic_id);
+
+    if (!earliestValidDate) {
+      return {
+        success: false,
+        error: 'No valid appointment dates available in the next 3 months',
+      };
+    }
+
+    // Get available time slots for that date and vaccine
+    const availabilityResult = await getAvailableTimeSlots({
+      scheduledDate: earliestValidDate,
+      vaccineId: appointment.vaccine_id,
+      clinicId: appointment.resolved_clinic_id,
+    });
+
+    if (!availabilityResult.available || !availabilityResult.slots || availabilityResult.slots.length === 0) {
+      return {
+        success: false,
+        error: 'No time slots available on the earliest valid date',
+      };
+    }
+
+    // Use the first available slot
+    const newTime = availabilityResult.slots[0];
+    const newDateTime = `${earliestValidDate} ${newTime}:00`;
+
+    // Update the appointment with new date/time
+    const { _appointmentsScope } = await getSchemaColumnMappings();
+
+    const updateResult = await pool.query(
+      `
+        UPDATE appointments
+        SET scheduled_date = $1,
+            status = 'scheduled',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        RETURNING *
+      `,
+      [newDateTime, appointmentId],
+    );
+
+    if (updateResult.rows.length === 0) {
+      return {
+        success: false,
+        error: 'Failed to update appointment',
+      };
+    }
+
+    const updatedAppointment = updateResult.rows[0];
+
+    // Send rescheduling notification
+    if (updatedAppointment.guardian_phone) {
+      try {
+        await smsService.sendAppointmentRescheduledNotification({
+          phoneNumber: updatedAppointment.guardian_phone,
+          guardianName: updatedAppointment.guardian_name || 'Guardian',
+          childName: `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim(),
+          vaccineName: updatedAppointment.type || 'Vaccination',
+          oldScheduledDate: appointment.scheduled_date,
+          newScheduledDate: updatedAppointment.scheduled_date,
+          location: updatedAppointment.location || 'Main Health Center',
+        });
+      } catch (notificationError) {
+        console.warn(`Failed to send rescheduling notification: ${notificationError.message}`);
+        // Don't fail the rescheduling if notification fails
+      }
+    }
+
+    return {
+      success: true,
+      appointment: updatedAppointment,
+      message: `Appointment rescheduled to ${earliestValidDate} at ${newTime}`,
+    };
+  } catch (error) {
+    console.error('Error in autoRescheduleMissedAppointment:', error);
+    return {
+      success: false,
+      error: 'Failed to auto-reschedule missed appointment',
+    };
+  }
+};
+
+/**
+ * Auto-approve appointment if all validation rules pass
+ * @param {Object} appointmentData - The appointment data
+ * @returns {Object} Result with autoApproval status and reason
+ */
+const checkAutoApprovalEligibility = async (appointmentData) => {
+  const { infant_id, scheduled_date, vaccine_id, clinic_id } = appointmentData;
+
+  try {
+    // Step 1: Check if infant exists and is active
+    const infantResult = await pool.query(
+      'SELECT id, first_name, last_name, dob, guardian_id FROM patients WHERE id = $1 AND is_active = true',
+      [infant_id],
+    );
+
+    if (infantResult.rows.length === 0) {
+      return {
+        eligible: false,
+        autoApproved: false,
+        reason: 'Infant not found or inactive',
+      };
+    }
+
+    // Step 2: Check for duplicate/pending appointments
+    const existingAppointmentResult = await pool.query(
+      `SELECT id FROM appointments
+       WHERE infant_id = $1 AND is_active = true
+       AND status IN ('scheduled', 'pending')
+       AND DATE(scheduled_date) = DATE($2)`,
+      [infant_id, scheduled_date],
+    );
+
+    if (existingAppointmentResult.rows.length > 0) {
+      return {
+        eligible: false,
+        autoApproved: false,
+        reason: 'Child already has a pending appointment on this date',
+      };
+    }
+
+    // Step 3: Check vaccine stock availability
+    const stockCheck = await checkVaccineStockForDateTime({
+      date: new Date(scheduled_date).toISOString().split('T')[0],
+      time: new Date(scheduled_date).toTimeString().slice(0, 5),
+      vaccineId: vaccine_id,
+      clinicId: clinic_id,
+    });
+
+    if (!stockCheck.available) {
+      return {
+        eligible: false,
+        autoApproved: false,
+        reason: stockCheck.message || 'Vaccine stock unavailable',
+      };
+    }
+
+    // Step 4: Check if child is ready for this vaccine
+    const { calculateVaccineReadiness } = require('./vaccineRulesEngine');
+    const readinessResult = await calculateVaccineReadiness(infant_id);
+
+    if (!readinessResult.success) {
+      return {
+        eligible: false,
+        autoApproved: false,
+        reason: 'Unable to verify vaccine readiness',
+      };
+    }
+
+    const readiness = readinessResult.data;
+
+    // If there are due or overdue vaccines, auto-approve
+    if (readiness.readinessStatus === 'READY' || readiness.readinessStatus === 'OVERDUE') {
+      return {
+        eligible: true,
+        autoApproved: true,
+        reason: 'All validation rules passed - appointment auto-approved',
+        readinessStatus: readiness.readinessStatus,
+      };
+    }
+
+    // If no vaccines are due yet, still allow booking but mark for confirmation
+    if (readiness.readinessStatus === 'UPCOMING') {
+      return {
+        eligible: true,
+        autoApproved: false,
+        reason: 'Vaccine not yet due - requires admin confirmation',
+        readinessStatus: readiness.readinessStatus,
+      };
+    }
+
+    // Default: require manual review
+    return {
+      eligible: true,
+      autoApproved: false,
+      reason: 'Requires admin review',
+      readinessStatus: readiness.readinessStatus,
+    };
+  } catch (error) {
+    console.error('Error in checkAutoApprovalEligibility:', error);
+    return {
+      eligible: false,
+      autoApproved: false,
+      reason: 'Error validating appointment eligibility',
+    };
   }
 };
 
@@ -1231,4 +1661,5 @@ module.exports = {
   getSchemaColumnMappings,
   notifyGuardianVaccineUnavailable,
   processMissedAppointments, // Export missed appointment processor
+  checkAutoApprovalEligibility, // Export auto-approval checker
 };

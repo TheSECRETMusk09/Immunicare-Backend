@@ -839,7 +839,7 @@ router.get('/all-users', requireSystemAdmin, async (req, res) => {
       (a, b) => new Date(b.created_at) - new Date(a.created_at),
     );
 
-    res.json(allUsers);
+    res.json({ data: allUsers });
   } catch (error) {
     try {
       await client.query('ROLLBACK');
@@ -859,7 +859,7 @@ router.get('/', requireSystemAdmin, async (req, res) => {
     const result = await pool.query(
       'SELECT id, username, contact, created_at FROM users ORDER BY created_at DESC LIMIT 100',
     );
-    res.json(result.rows);
+    res.json({ data: result.rows });
   } catch (error) {
     console.error('Error fetching users:', error);
     res.status(500).json({ error: error.message });

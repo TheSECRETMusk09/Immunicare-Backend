@@ -4,6 +4,7 @@ const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 const socketService = require('../services/socketService');
+const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
 
 // Middleware to authenticate all routes
 router.use(authenticateToken);
@@ -334,6 +335,34 @@ router.post('/infant/:infantId/batch', requirePermission('vaccination:create'), 
   } catch (error) {
     console.error('Error batch setting infant vaccine readiness:', error);
     res.status(500).json({ error: 'Failed to batch set infant vaccine readiness' });
+  }
+});
+
+/**
+ * Get simplified vaccine readiness snapshot
+ * GET /api/vaccination-readiness/:childId
+ */
+router.get('/:childId', async (req, res) => {
+  try {
+    const infantId = parseInt(req.params.childId, 10);
+    if (Number.isNaN(infantId)) {
+      return res.status(400).json({ success: false, error: 'Invalid infant ID' });
+    }
+
+    // Use the vaccine rules engine to calculate readiness
+    const readinessResult = await calculateVaccineReadiness(infantId);
+
+    if (!readinessResult.success) {
+      return res.status(500).json(readinessResult);
+    }
+
+    res.json({
+      success: true,
+      data: readinessResult.data,
+    });
+  } catch (error) {
+    console.error('Error fetching vaccine readiness:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch vaccine readiness' });
   }
 });
 
