@@ -8,6 +8,7 @@
 const db = require('../db');
 const ExcelJS = require('exceljs');
 const { parsePagination, buildPaginationMeta, getPaginationClause } = require('../utils/pagination');
+const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 
 // Helper function to generate unique numbers
 const generateRequestNumber = () => {
@@ -1019,48 +1020,63 @@ exports.importInventoryFromExcel = async (req, res) => {
     const worksheet = workbook.getWorksheet(1);
     const importedRecords = [];
     const errors = [];
+    const rowTasks = [];
 
     // Process each row (skip header)
-    worksheet.eachRow({ includeEmpty: false }, async (row, rowNumber) => {
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
       if (rowNumber === 1) {
         return;
       } // Skip header
 
-      const values = row.values;
+      rowTasks.push((async () => {
+        const values = row.values;
 
-      try {
-        // Map Excel columns to database fields
-        const vaccineName = values[1];
-        const beginningBalance = parseInt(values[2]) || 0;
-        const receivedDuringPeriod = parseInt(values[3]) || 0;
-        const lotBatchNumber = values[4];
-        const expiryDate = values[5];
-        const transferredIn = parseInt(values[6]) || 0;
-        const transferredOut = parseInt(values[7]) || 0;
-        const expiredWasted = parseInt(values[8]) || 0;
-        const issuance = parseInt(values[10]) || 0;
-        const storageLocation = values[15];
-        const supplierName = values[16];
+        try {
+          // Map Excel columns to database fields
+          const vaccineName = values[1];
+          const beginningBalance = parseInt(values[2]) || 0;
+          const receivedDuringPeriod = parseInt(values[3]) || 0;
+          const lotBatchNumber = values[4];
+          const expiryDate = values[5];
+          const transferredIn = parseInt(values[6]) || 0;
+          const transferredOut = parseInt(values[7]) || 0;
+          const expiredWasted = parseInt(values[8]) || 0;
+          const issuance = parseInt(values[10]) || 0;
+          const storageLocation = values[15];
+          const supplierName = values[16];
 
-        // Get vaccine ID
-        const vaccineResult = await db.query(
-          'SELECT id FROM vaccines WHERE name ILIKE $1 LIMIT 1',
-          [vaccineName],
-        );
-
-        if (vaccineResult.rows.length === 0) {
-          errors.push({
-            row: rowNumber,
-            vaccine: vaccineName,
-            error: 'Vaccine not found in database',
+          const vaccineNameValidation = validateApprovedVaccineName(vaccineName, {
+            fieldName: `row ${rowNumber} vaccine_name`,
           });
-          return;
-        }
 
-        const vaccineId = vaccineResult.rows[0].id;
+          if (!vaccineNameValidation.valid) {
+            errors.push({
+              row: rowNumber,
+              vaccine: vaccineName,
+              error: vaccineNameValidation.error,
+            });
+            return;
+          }
 
-        // Insert or update inventory record
-        const query = `
+          // Get vaccine ID
+          const vaccineResult = await db.query(
+            'SELECT id FROM vaccines WHERE name = $1 LIMIT 1',
+            [vaccineNameValidation.vaccineName],
+          );
+
+          if (vaccineResult.rows.length === 0) {
+            errors.push({
+              row: rowNumber,
+              vaccine: vaccineNameValidation.vaccineName,
+              error: 'Approved vaccine was not found in the database',
+            });
+            return;
+          }
+
+          const vaccineId = vaccineResult.rows[0].id;
+
+          // Insert or update inventory record
+          const query = `
                     INSERT INTO vaccine_inventory_excel (
                         clinic_id, vaccine_id, vaccine_name, beginning_balance,
                         received_during_period, lot_batch_number, expiry_date,
@@ -1080,39 +1096,42 @@ exports.importInventoryFromExcel = async (req, res) => {
                     RETURNING id
                 `;
 
-        const values = [
-          clinicId,
-          vaccineId,
-          vaccineName,
-          beginningBalance,
-          receivedDuringPeriod,
-          lotBatchNumber,
-          expiryDate ? new Date(expiryDate) : null,
-          transferredIn,
-          transferredOut,
-          expiredWasted,
-          issuance,
-          storageLocation,
-          supplierName,
-          periodStart || new Date(),
-          periodEnd || new Date(),
-          userId,
-        ];
+          const queryValues = [
+            clinicId,
+            vaccineId,
+            vaccineNameValidation.vaccineName,
+            beginningBalance,
+            receivedDuringPeriod,
+            lotBatchNumber,
+            expiryDate ? new Date(expiryDate) : null,
+            transferredIn,
+            transferredOut,
+            expiredWasted,
+            issuance,
+            storageLocation,
+            supplierName,
+            periodStart || new Date(),
+            periodEnd || new Date(),
+            userId,
+          ];
 
-        const result = await db.query(query, values);
-        importedRecords.push({
-          row: rowNumber,
-          vaccine: vaccineName,
-          status: 'success',
-          id: result.rows[0]?.id,
-        });
-      } catch (rowError) {
-        errors.push({
-          row: rowNumber,
-          error: rowError.message,
-        });
-      }
+          const result = await db.query(query, queryValues);
+          importedRecords.push({
+            row: rowNumber,
+            vaccine: vaccineNameValidation.vaccineName,
+            status: 'success',
+            id: result.rows[0]?.id,
+          });
+        } catch (rowError) {
+          errors.push({
+            row: rowNumber,
+            error: rowError.message,
+          });
+        }
+      })());
     });
+
+    await Promise.all(rowTasks);
 
     res.json({
       success: true,

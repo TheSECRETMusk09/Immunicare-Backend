@@ -13,6 +13,10 @@ const {
 const socketService = require('../services/socketService');
 const adminNotificationService = require('../services/adminNotificationService');
 const { calculateAgeInMonths } = require('../utils/ageCalculation');
+const {
+  isValidPurok,
+  isValidStreetColorForPurok,
+} = require('../utils/purokOptions');
 
 const router = express.Router();
 
@@ -65,7 +69,70 @@ const toNullableString = (value) => {
   return normalized.length > 0 ? normalized : null;
 };
 
-const validateInfantPayload = (payload = {}) => {
+let ensurePatientLocationColumnsPromise = null;
+
+const ensurePatientLocationColumnsExist = async () => {
+  if (!ensurePatientLocationColumnsPromise) {
+    ensurePatientLocationColumnsPromise = (async () => {
+      await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS purok VARCHAR(50)');
+      await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS street_color VARCHAR(255)');
+    })().catch((error) => {
+      ensurePatientLocationColumnsPromise = null;
+      throw error;
+    });
+  }
+
+  return ensurePatientLocationColumnsPromise;
+};
+
+const buildBackfillAssignments = (columnValues = {}) => {
+  const updates = [];
+  const values = [];
+  let nextParamIndex = 1;
+
+  Object.entries(columnValues).forEach(([columnName, value]) => {
+    if (value !== null && value !== undefined && value !== '') {
+      updates.push(`${columnName} = COALESCE(${columnName}, $${nextParamIndex})`);
+      values.push(value);
+      nextParamIndex += 1;
+    }
+  });
+
+  return {
+    updates,
+    values,
+    nextParamIndex,
+  };
+};
+
+const validatePurokSelection = (
+  { purok, street_color },
+  errors,
+  { requireSelection = false } = {},
+) => {
+  if (requireSelection && !purok) {
+    errors.purok = 'Purok is required';
+  }
+
+  if (requireSelection && !street_color) {
+    errors.street_color = 'Purok-Street-Color is required';
+  }
+
+  if (purok && !isValidPurok(purok)) {
+    errors.purok = 'Please select a valid Purok';
+  }
+
+  if (street_color && !purok) {
+    errors.street_color = 'Select a Purok before choosing Purok-Street-Color';
+  }
+
+  if (purok && street_color && !isValidStreetColorForPurok(purok, street_color)) {
+    errors.street_color = 'Selected Purok-Street-Color does not match the selected Purok';
+  }
+};
+
+const validateInfantPayload = (payload = {}, options = {}) => {
+  const { requirePurokFields = false } = options;
   const errors = {};
 
   const firstName = String(payload.first_name || '').trim();
@@ -175,6 +242,8 @@ const validateInfantPayload = (payload = {}) => {
     place_of_birth: toNullableString(payload.place_of_birth),
     barangay: toNullableString(payload.barangay),
     health_center: toNullableString(payload.health_center),
+    purok: toNullableString(payload.purok),
+    street_color: toNullableString(payload.street_color),
     family_no: toNullableString(payload.family_no),
     time_of_delivery: toNullableString(payload.time_of_delivery),
     type_of_delivery: toNullableString(payload.type_of_delivery),
@@ -198,6 +267,10 @@ const validateInfantPayload = (payload = {}) => {
     errors.facility_id = 'facility_id must be a valid positive integer';
   }
 
+  validatePurokSelection(normalized, errors, {
+    requireSelection: requirePurokFields,
+  });
+
   return {
     isValid: Object.keys(errors).length === 0,
     errors,
@@ -206,8 +279,8 @@ const validateInfantPayload = (payload = {}) => {
 };
 
 // Extended validation with allergy_information and health_care_provider
-const validateInfantPayloadExtended = (payload = {}) => {
-  const baseValidation = validateInfantPayload(payload);
+const validateInfantPayloadExtended = (payload = {}, options = {}) => {
+  const baseValidation = validateInfantPayload(payload, options);
   if (!baseValidation.isValid) {
     return baseValidation;
   }
@@ -228,6 +301,8 @@ const validateInfantPayloadExtended = (payload = {}) => {
 // Get infants by guardian
 router.get('/guardian/:guardianId', async (req, res) => {
   try {
+    await ensurePatientLocationColumnsExist();
+
     const guardianId = parseInt(req.params.guardianId, 10);
     if (Number.isNaN(guardianId)) {
       return res.status(400).json({ error: 'Invalid guardian ID' });
@@ -276,6 +351,8 @@ router.get('/guardian/:guardianId', async (req, res) => {
 // Get all infants
 router.get('/', requirePermission('patient:view'), async (req, res) => {
   try {
+    await ensurePatientLocationColumnsExist();
+
     console.log('[Infants API] Fetching all infants - User:', req.user?.id, 'Role:', req.user?.role, 'Role Type:', req.user?.role_type);
 
     const limit = parseInt(req.query.limit, 10) || 100;
@@ -425,6 +502,8 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (_
 // Get infant by control number
 router.get('/control-number/:controlNumber', async (req, res) => {
   try {
+    await ensurePatientLocationColumnsExist();
+
     const canonicalRole = getCanonicalRole(req);
     if (
       canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
@@ -506,6 +585,8 @@ router.get('/control-number/:controlNumber', async (req, res) => {
 // Get infant by ID
 router.get('/:id(\\d+)', async (req, res) => {
   try {
+    await ensurePatientLocationColumnsExist();
+
     const infantId = parseInt(req.params.id, 10);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
@@ -563,6 +644,8 @@ router.get('/:id(\\d+)', async (req, res) => {
 // Create infant (SYSTEM_ADMIN)
 router.post('/', requirePermission('patient:create'), async (req, res) => {
   try {
+    await ensurePatientLocationColumnsExist();
+
     const {
       first_name,
       last_name,
@@ -589,6 +672,8 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       nbs_date,
       cellphone_number,
       facility_id,
+      purok,
+      street_color,
     } = req.body;
 
     if (!first_name || !last_name || !dob || !sex) {
@@ -653,6 +738,21 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid sex value' });
     }
 
+    const normalizedPurok = toNullableString(purok);
+    const normalizedStreetColor = toNullableString(street_color);
+    const purokErrors = {};
+    validatePurokSelection(
+      {
+        purok: normalizedPurok,
+        street_color: normalizedStreetColor,
+      },
+      purokErrors,
+    );
+
+    if (Object.keys(purokErrors).length > 0) {
+      return respondInfantValidationError(res, purokErrors);
+    }
+
     const optionalFields = {
       middle_name: middle_name || null,
       national_id: national_id || null,
@@ -666,6 +766,8 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       place_of_birth: place_of_birth || null,
       barangay: barangay || null,
       health_center: health_center || null,
+      purok: normalizedPurok,
+      street_color: normalizedStreetColor,
       family_no: family_no || null,
       time_of_delivery: time_of_delivery || null,
       type_of_delivery: type_of_delivery || null,
@@ -707,19 +809,11 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
     let result;
 
     if (resolved.existed) {
-      const backfillUpdates = [];
-      const backfillValues = [];
-      let backfillParamIndex = 1;
-
-      Object.entries(optionalFields).forEach(([columnName, value]) => {
-        if (value !== null && value !== undefined && value !== '') {
-          backfillUpdates.push(`${columnName} = COALESCE(${columnName}, $${backfillParamIndex})`);
-          backfillValues.push(value);
-          backfillParamIndex += 1;
-        }
-      });
-
-      backfillValues.push(resolved.id);
+      const {
+        updates: backfillUpdates,
+        values: backfillValues,
+        nextParamIndex: backfillParamIndex,
+      } = buildBackfillAssignments(optionalFields);
 
       if (backfillUpdates.length > 0) {
         result = await pool.query(
@@ -730,7 +824,7 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
             WHERE id = $${backfillParamIndex}
             RETURNING *
           `,
-          backfillValues,
+          [...backfillValues, resolved.id],
         );
       } else {
         result = await pool.query(
@@ -777,6 +871,8 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
 // Create infant (GUARDIAN own)
 router.post('/guardian', requirePermission('patient:create:own'), async (req, res) => {
   try {
+    await ensurePatientLocationColumnsExist();
+
     if (!isGuardian(req)) {
       return res.status(403).json({
         success: false,
@@ -807,7 +903,7 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
       });
     }
 
-    const validationResult = validateInfantPayload(payload);
+    const validationResult = validateInfantPayload(payload, { requirePurokFields: true });
     if (!validationResult.isValid) {
       return respondInfantValidationError(res, validationResult.errors);
     }
@@ -837,6 +933,8 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
             place_of_birth: infantData.place_of_birth,
             barangay: infantData.barangay,
             health_center: infantData.health_center,
+            purok: infantData.purok,
+            street_color: infantData.street_color,
             family_no: infantData.family_no,
             time_of_delivery: infantData.time_of_delivery,
             type_of_delivery: infantData.type_of_delivery,
@@ -890,7 +988,50 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
         });
       }
 
-      result = existingResult;
+      const {
+        updates: backfillUpdates,
+        values: backfillValues,
+        nextParamIndex: backfillParamIndex,
+      } = buildBackfillAssignments({
+        middle_name: infantData.middle_name,
+        national_id: infantData.national_id,
+        address: infantData.address,
+        contact: infantData.contact,
+        photo_url: infantData.photo_url,
+        mother_name: infantData.mother_name,
+        father_name: infantData.father_name,
+        birth_weight: infantData.birth_weight,
+        birth_height: infantData.birth_height,
+        place_of_birth: infantData.place_of_birth,
+        barangay: infantData.barangay,
+        health_center: infantData.health_center,
+        purok: infantData.purok,
+        street_color: infantData.street_color,
+        family_no: infantData.family_no,
+        time_of_delivery: infantData.time_of_delivery,
+        type_of_delivery: infantData.type_of_delivery,
+        doctor_midwife_nurse: infantData.doctor_midwife_nurse,
+        nbs_done: infantData.nbs_done,
+        nbs_date: infantData.nbs_date,
+        cellphone_number: infantData.cellphone_number,
+        facility_id: infantData.facility_id,
+      });
+
+      if (backfillUpdates.length > 0) {
+        result = await pool.query(
+          `
+            UPDATE patients
+            SET ${backfillUpdates.join(', ')},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $${backfillParamIndex}
+              AND guardian_id = $${backfillParamIndex + 1}
+            RETURNING *
+          `,
+          [...backfillValues, resolved.id, guardianId],
+        );
+      } else {
+        result = existingResult;
+      }
     } else {
       result = await pool.query(
         `
@@ -926,6 +1067,8 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
 // Update infant (GUARDIAN own)
 router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async (req, res) => {
   try {
+    await ensurePatientLocationColumnsExist();
+
     if (!isGuardian(req)) {
       return res.status(403).json({
         success: false,
@@ -1000,9 +1143,11 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
             facility_id = $24,
             allergy_information = $25,
             health_care_provider = $26,
+            purok = COALESCE($27, purok),
+            street_color = COALESCE($28, street_color),
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $27
-          AND guardian_id = $28
+        WHERE id = $29
+          AND guardian_id = $30
           AND is_active = true
         RETURNING *
       `,
@@ -1033,6 +1178,8 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
         infantData.facility_id,
         infantData.allergy_information,
         infantData.health_care_provider,
+        infantData.purok,
+        infantData.street_color,
         infantId,
         guardianId,
       ],
@@ -1174,6 +1321,8 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
 // Update infant (SYSTEM_ADMIN)
 router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) => {
   try {
+    await ensurePatientLocationColumnsExist();
+
     const infantId = parseInt(req.params.id, 10);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
@@ -1211,7 +1360,28 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
       allergy_information,
       health_care_provider,
       facility_id,
+      purok,
+      street_color,
     } = updatePayload;
+
+    const normalizedPurok = toNullableString(purok);
+    const normalizedStreetColor = toNullableString(street_color);
+    const purokErrors = {};
+    validatePurokSelection(
+      {
+        purok: normalizedPurok,
+        street_color: normalizedStreetColor,
+      },
+      purokErrors,
+    );
+
+    if (Object.keys(purokErrors).length > 0) {
+      return respondInfantValidationError(
+        res,
+        purokErrors,
+        'Please correct the highlighted infant update fields.',
+      );
+    }
 
     let normalizedSex = sex;
     if (sex === 'M') {
@@ -1250,8 +1420,10 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
             allergy_information = $24,
             health_care_provider = $25,
             facility_id = $26,
+            purok = COALESCE($27, purok),
+            street_color = COALESCE($28, street_color),
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $27
+        WHERE id = $29
           AND is_active = true
         RETURNING *
       `,
@@ -1282,6 +1454,8 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
         allergy_information || null,
         health_care_provider || null,
         facility_id || null,
+        normalizedPurok,
+        normalizedStreetColor,
         infantId,
       ],
     );
@@ -1491,4 +1665,3 @@ router.get('/age-range/:minAge/:maxAge', requirePermission('patient:view'), asyn
 });
 
 module.exports = router;
-

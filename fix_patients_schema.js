@@ -14,7 +14,7 @@ async function fixPatientsSchema() {
 
     // Check existing columns
     const existingColumns = await client.query(`
-      SELECT column_name FROM information_schema.columns 
+      SELECT column_name FROM information_schema.columns
       WHERE table_name = 'patients'
     `);
     const columnNames = existingColumns.rows.map((r) => r.column_name);
@@ -37,6 +37,8 @@ async function fixPatientsSchema() {
       { name: 'place_of_birth', type: 'VARCHAR(255)' },
       { name: 'barangay', type: 'VARCHAR(100)' },
       { name: 'health_center', type: 'VARCHAR(255)' },
+      { name: 'purok', type: 'VARCHAR(50)' },
+      { name: 'street_color', type: 'VARCHAR(255)' },
       { name: 'family_no', type: 'VARCHAR(50)' },
       { name: 'time_of_delivery', type: 'TIME' },
       { name: 'type_of_delivery', type: 'VARCHAR(100)' },
@@ -46,7 +48,7 @@ async function fixPatientsSchema() {
       { name: 'cellphone_number', type: 'VARCHAR(50)' },
       { name: 'facility_id', type: 'INTEGER' },
       { name: 'control_number', type: 'VARCHAR(20) UNIQUE' },
-      { name: 'is_active', type: 'BOOLEAN DEFAULT true' }
+      { name: 'is_active', type: 'BOOLEAN DEFAULT true' },
     ];
 
     for (const col of columnsToAdd) {
@@ -71,15 +73,15 @@ async function fixPatientsSchema() {
 
       // Update first_name and last_name from name column
       await client.query(`
-        UPDATE patients 
-        SET 
-          first_name = CASE 
-            WHEN name IS NOT NULL AND first_name IS NULL 
+        UPDATE patients
+        SET
+          first_name = CASE
+            WHEN name IS NOT NULL AND first_name IS NULL
             THEN SPLIT_PART(name, ' ', 1)
             ELSE first_name
           END,
-          last_name = CASE 
-            WHEN name IS NOT NULL AND last_name IS NULL 
+          last_name = CASE
+            WHEN name IS NOT NULL AND last_name IS NULL
             THEN SUBSTRING(name FROM POSITION(' ' IN name) + 1)
             ELSE last_name
           END
@@ -93,7 +95,7 @@ async function fixPatientsSchema() {
     if (hasDateOfBirth) {
       console.log('Migrating date_of_birth to dob...');
       await client.query(`
-        UPDATE patients 
+        UPDATE patients
         SET dob = date_of_birth
         WHERE date_of_birth IS NOT NULL AND dob IS NULL
       `);
@@ -105,8 +107,8 @@ async function fixPatientsSchema() {
     if (hasGender) {
       console.log('Migrating gender to sex...');
       await client.query(`
-        UPDATE patients 
-        SET sex = CASE 
+        UPDATE patients
+        SET sex = CASE
           WHEN gender IN ('M', 'Male', 'male') THEN 'male'
           WHEN gender IN ('F', 'Female', 'female') THEN 'female'
           ELSE 'other'
@@ -132,7 +134,7 @@ async function fixPatientsSchema() {
       const controlNumber = `${year}-${String(i + 1).padStart(6, '0')}`;
       await client.query('UPDATE patients SET control_number = $1 WHERE id = $2', [
         controlNumber,
-        patient.id
+        patient.id,
       ]);
     }
     console.log(`  ✓ Generated control numbers for ${patientsWithoutControl.rows.length} patients`);
@@ -142,15 +144,15 @@ async function fixPatientsSchema() {
 
     // Show final schema
     const finalColumns = await client.query(`
-      SELECT column_name, data_type, is_nullable 
-      FROM information_schema.columns 
-      WHERE table_name = 'patients' 
+      SELECT column_name, data_type, is_nullable
+      FROM information_schema.columns
+      WHERE table_name = 'patients'
       ORDER BY ordinal_position
     `);
     console.log('\nFinal patients table schema:');
     finalColumns.rows.forEach((col) => {
       console.log(
-        `  ${col.column_name}: ${col.data_type} (${col.is_nullable === 'YES' ? 'nullable' : 'not null'})`
+        `  ${col.column_name}: ${col.data_type} (${col.is_nullable === 'YES' ? 'nullable' : 'not null'})`,
       );
     });
   } catch (error) {

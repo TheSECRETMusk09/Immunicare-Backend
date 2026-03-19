@@ -1,5 +1,9 @@
 const pool = require('../db');
 const { parsePagination, buildPaginationMeta, getPaginationClause } = require('../utils/pagination');
+const {
+  validateApprovedVaccine,
+  validateApprovedVaccineName,
+} = require('../utils/approvedVaccines');
 
 // Get vaccine inventory by clinic
 exports.getVaccineInventoryByClinic = async (req, res) => {
@@ -58,6 +62,11 @@ exports.createVaccineInventory = async (req, res) => {
       period_end,
     } = req.body;
 
+    const vaccineNameValidation = validateApprovedVaccineName(vaccine_name);
+    if (!vaccineNameValidation.valid) {
+      return res.status(400).json({ error: vaccineNameValidation.error });
+    }
+
     const result = await pool.query(
       `INSERT INTO vaccine_inventory (
         vaccine_name, beginning_balance, received_during_period, lot_batch_number,
@@ -66,7 +75,7 @@ exports.createVaccineInventory = async (req, res) => {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *`,
       [
-        vaccine_name,
+        vaccineNameValidation.vaccineName,
         beginning_balance,
         received_during_period,
         lot_batch_number,
@@ -105,6 +114,11 @@ exports.updateVaccineInventory = async (req, res) => {
       period_end,
     } = req.body;
 
+    const vaccineNameValidation = validateApprovedVaccineName(vaccine_name);
+    if (!vaccineNameValidation.valid) {
+      return res.status(400).json({ error: vaccineNameValidation.error });
+    }
+
     const result = await pool.query(
       `UPDATE vaccine_inventory SET
         vaccine_name = $1,
@@ -122,7 +136,7 @@ exports.updateVaccineInventory = async (req, res) => {
       WHERE id = $12
       RETURNING *`,
       [
-        vaccine_name,
+        vaccineNameValidation.vaccineName,
         beginning_balance,
         received_during_period,
         lot_batch_number,
@@ -249,6 +263,13 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
       return res.status(400).json({ error: 'Valid quantity is required' });
     }
 
+    const vaccineValidation = await validateApprovedVaccine(vaccine_id, {
+      fieldName: 'vaccine_id',
+    });
+    if (!vaccineValidation.valid) {
+      return res.status(400).json({ error: vaccineValidation.error });
+    }
+
     // Fetch the inventory record to get current stock and verify vaccine_id and clinic_id
     const inventoryResult = await pool.query(
       'SELECT * FROM vaccine_inventory WHERE id = $1',
@@ -263,7 +284,11 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
     const inventory = inventoryResult.rows[0];
 
     // Verify that the provided vaccine_id and clinic_id match the inventory record (if provided)
-    if (vaccine_id !== undefined && vaccine_id !== null && vaccine_id !== inventory.vaccine_id) {
+    if (
+      vaccine_id !== undefined &&
+      vaccine_id !== null &&
+      Number(vaccineValidation.vaccine.id) !== Number(inventory.vaccine_id)
+    ) {
       console.error(`Vaccine ID mismatch: provided ${vaccine_id}, inventory has ${inventory.vaccine_id}`);
       return res.status(400).json({ error: 'Vaccine ID does not match inventory record' });
     }
@@ -374,13 +399,13 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
             ],
           );
 
-           // Send notifications using admin notification service
-           const adminNotificationService = require('../services/adminNotificationService');
-           await adminNotificationService.sendOutOfStockAlert(
-             vaccine_name,
-             finalVaccineId,
-             lot_number || 'UNKNOWN'
-           );
+          // Send notifications using admin notification service
+          const adminNotificationService = require('../services/adminNotificationService');
+          await adminNotificationService.sendOutOfStockAlert(
+            vaccine_name,
+            finalVaccineId,
+            lot_number || 'UNKNOWN',
+          );
         }
       }
 

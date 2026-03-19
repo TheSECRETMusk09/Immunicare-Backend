@@ -287,6 +287,8 @@ CREATE TABLE IF NOT EXISTS patients (
     father_name VARCHAR(255),
     barangay VARCHAR(255),
     health_center VARCHAR(255),
+    purok VARCHAR(50),
+    street_color VARCHAR(255),
     family_no VARCHAR(50),
     place_of_birth VARCHAR(255),
     time_of_delivery TIME,

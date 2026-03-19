@@ -8,6 +8,11 @@ const {
   requirePermission,
 } = require('../middleware/rbac');
 const socketService = require('../services/socketService');
+const {
+  getApprovedVaccines,
+  validateApprovedVaccine,
+  validateApprovedVaccineName,
+} = require('../utils/approvedVaccines');
 
 router.use(authenticateToken);
 
@@ -26,11 +31,16 @@ const VALIDATION_RESULT = {
 
 // Map vaccine names to vaccine IDs (using getVaccineIdByName for consistency)
 const getVaccineIdByName = async (vaccineName) => {
-  const result = await pool.query(
-    'SELECT id FROM vaccines WHERE LOWER(name) = LOWER($1) AND is_active = true LIMIT 1',
-    [vaccineName],
-  );
-  return result.rows.length > 0 ? result.rows[0].id : null;
+  const vaccineValidation = await validateApprovedVaccine(vaccineName, {
+    fieldName: 'vaccineName',
+  });
+
+  return vaccineValidation.valid ? vaccineValidation.vaccine.id : null;
+};
+
+const parsePositiveDoseNumber = (value) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
 // Transfer permissions - require appropriate permission for transferring vaccinations
@@ -43,15 +53,10 @@ const TRANSFER_PERMISSIONS = {
 // Get all vaccines for dropdown
 router.get('/vaccines', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT id, name, code, doses_required, recommended_age
-       FROM vaccines
-       WHERE is_active = true
-       ORDER BY name ASC`,
-    );
+    const vaccines = await getApprovedVaccines(true);
     res.json({
       success: true,
-      data: result.rows,
+      data: vaccines,
     });
   } catch (error) {
     console.error('Error fetching vaccines:', error);
@@ -112,15 +117,38 @@ router.post('/validate', requirePermission(TRANSFER_PERMISSIONS.VALIDATE), async
         message: '',
       };
 
-      // Check if vaccine exists in database using getVaccineIdByName for validation
-      const vaccineId = await getVaccineIdByName(vaccine.vaccineName);
-      if (!vaccineId) {
+      const vaccineNameValidation = validateApprovedVaccineName(vaccine.vaccineName, {
+        fieldName: 'vaccineName',
+      });
+      if (!vaccineNameValidation.valid) {
         result.status = VALIDATION_RESULT.UNKNOWN_VACCINE;
-        result.message = `Vaccine "${vaccine.vaccineName}" not found in the system`;
+        result.message = vaccineNameValidation.error;
         validationResults.push(result);
         continue;
       }
-      result.vaccineId = vaccineId;
+
+      const parsedDoseNumber = parsePositiveDoseNumber(vaccine.doseNumber);
+      if (!parsedDoseNumber) {
+        result.status = VALIDATION_RESULT.INVALID_DOSE;
+        result.message = 'Dose number must be a positive integer';
+        validationResults.push(result);
+        continue;
+      }
+
+      result.vaccineName = vaccineNameValidation.vaccineName;
+      result.doseNumber = parsedDoseNumber;
+
+      // Check if vaccine exists in database using strict exact-name validation
+      const vaccineLookup = await validateApprovedVaccine(vaccineNameValidation.vaccineName, {
+        fieldName: 'vaccineName',
+      });
+      if (!vaccineLookup.valid) {
+        result.status = VALIDATION_RESULT.UNKNOWN_VACCINE;
+        result.message = vaccineLookup.error;
+        validationResults.push(result);
+        continue;
+      }
+      result.vaccineId = vaccineLookup.vaccine.id;
 
       // Parse date
       const adminDate = new Date(vaccine.dateAdministered);
@@ -152,7 +180,7 @@ router.post('/validate', requirePermission(TRANSFER_PERMISSIONS.VALIDATE), async
         `SELECT id FROM immunization_records
          WHERE patient_id = $1 AND vaccine_id = $2 AND dose_no = $3
          AND DATE(admin_date) = DATE($4) AND is_active = true LIMIT 1`,
-        [infantId, vaccineId, vaccine.doseNumber, vaccine.dateAdministered],
+        [infantId, vaccineLookup.vaccine.id, parsedDoseNumber, vaccine.dateAdministered],
       );
 
       if (duplicateCheck.rows.length > 0) {
@@ -257,11 +285,34 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
           recordId: null,
         };
 
-        // Get vaccine ID using getVaccineIdByName for vaccine name to ID mapping
-        const vaccineId = await getVaccineIdByName(vaccine.vaccineName);
-        if (!vaccineId) {
+        const vaccineNameValidation = validateApprovedVaccineName(vaccine.vaccineName, {
+          fieldName: 'vaccineName',
+        });
+        if (!vaccineNameValidation.valid) {
           result.status = 'failed';
-          result.message = 'Vaccine not found in the system';
+          result.message = vaccineNameValidation.error;
+          importResults.push(result);
+          continue;
+        }
+
+        const parsedDoseNumber = parsePositiveDoseNumber(vaccine.doseNumber);
+        if (!parsedDoseNumber) {
+          result.status = 'failed';
+          result.message = 'Dose number must be a positive integer';
+          importResults.push(result);
+          continue;
+        }
+
+        result.vaccineName = vaccineNameValidation.vaccineName;
+        result.doseNumber = parsedDoseNumber;
+
+        // Get vaccine ID using strict exact-name validation
+        const vaccineLookup = await validateApprovedVaccine(vaccineNameValidation.vaccineName, {
+          fieldName: 'vaccineName',
+        });
+        if (!vaccineLookup.valid) {
+          result.status = 'failed';
+          result.message = vaccineLookup.error;
           importResults.push(result);
           continue;
         }
@@ -295,7 +346,7 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
           `SELECT id FROM immunization_records
            WHERE patient_id = $1 AND vaccine_id = $2 AND dose_no = $3
            AND DATE(admin_date) = DATE($4) AND is_active = true LIMIT 1`,
-          [infantId, vaccineId, vaccine.doseNumber, vaccine.dateAdministered],
+          [infantId, vaccineLookup.vaccine.id, parsedDoseNumber, vaccine.dateAdministered],
         );
 
         if (duplicateCheck.rows.length > 0) {
@@ -322,8 +373,8 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
           RETURNING id`,
           [
             infantId,
-            vaccineId,
-            vaccine.doseNumber,
+            vaccineLookup.vaccine.id,
+            parsedDoseNumber,
             vaccine.dateAdministered,
             'completed',
             true,

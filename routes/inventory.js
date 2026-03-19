@@ -12,6 +12,7 @@ const {
   validateDateRange,
   validateNumberRange,
 } = require('../utils/adminValidation');
+const { validateApprovedVaccine: validateApprovedInventoryVaccine } = require('../utils/approvedVaccines');
 
 const router = express.Router();
 
@@ -39,46 +40,7 @@ const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload ||
 
 // Helper function to validate that a vaccine is approved
 const validateVaccineApproved = async (vaccineId, res) => {
-  if (!vaccineId) {
-    return { valid: false, error: 'vaccine_id is required' };
-  }
-
-  // Check if vaccineId is a number (direct ID) or string (name/code lookup)
-  const isNumericId = !isNaN(parseInt(vaccineId, 10)) && isFinite(vaccineId);
-
-  let query;
-  let params;
-
-  if (isNumericId) {
-    // Direct ID lookup
-    query = 'SELECT id, name, is_approved, is_active FROM vaccines WHERE id = $1';
-    params = [parseInt(vaccineId, 10)];
-  } else {
-    // Name/code lookup - case insensitive
-    query = 'SELECT id, name, is_approved, is_active FROM vaccines WHERE LOWER(name) = LOWER($1) OR LOWER(code) = LOWER($1)';
-    params = [String(vaccineId)];
-  }
-
-  const result = await pool.query(query, params);
-
-  if (result.rows.length === 0) {
-    return { valid: false, error: 'Vaccine not found' };
-  }
-
-  const vaccine = result.rows[0];
-
-  if (!vaccine.is_active) {
-    return { valid: false, error: `Vaccine "${vaccine.name}" is inactive` };
-  }
-
-  if (!vaccine.is_approved) {
-    return {
-      valid: false,
-      error: `Vaccine "${vaccine.name}" is not in the approved vaccine list. Only official government vaccines are allowed: BCG, Diluent, Hepa B, Penta Valent, OPV 20-doses, PCV 13, PCV 10, Measles & Rubella (MR), MMR, Diluent 5ml, IPV multi dose.`,
-    };
-  }
-
-  return { valid: true, vaccine };
+  return validateApprovedInventoryVaccine(vaccineId, { fieldName: 'vaccine_id' });
 };
 
 const sanitizeInventoryTransactionPayload = (payload = {}) => {
@@ -109,11 +71,11 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
   // This allows sending vaccine name/code like "bcg", "hepa_b" for lookup
   const vaccineIdValue = payload.vaccine_id;
   const isNonEmptyString = vaccineIdValue !== null && vaccineIdValue !== undefined &&
-    typeof vaccineIdValue === 'string' && vaccineIdValue.trim().length > 0;
+    typeof vaccineIdValue === 'string' && vaccineIdValue.length > 0;
 
   if (vaccineIdCheck.error && isNonEmptyString) {
-    // Allow string vaccine_id for name/code lookup - will be validated later
-    vaccineIdCheck.value = vaccineIdValue.trim();
+    // Allow exact vaccine name lookups without trimming or alias normalization.
+    vaccineIdCheck.value = vaccineIdValue;
     delete vaccineIdCheck.error;
   }
   if (vaccineIdCheck.error) {

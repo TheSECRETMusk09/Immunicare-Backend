@@ -168,6 +168,8 @@ const buildInsertPayload = ({
     'place_of_birth',
     'barangay',
     'health_center',
+    'purok',
+    'street_color',
     'family_no',
     'time_of_delivery',
     'type_of_delivery',

@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { authenticateToken: auth } = require('../middleware/auth');
 const smsService = require('../services/smsService');
+const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 
 // Root route - return API info
 router.get('/', (req, res) => {
@@ -349,6 +350,16 @@ router.post('/inventory', auth, async (req, res) => {
 
     const clinicId = req.user.clinic_id;
 
+    const vaccineNameValidation = validateApprovedVaccineName(vaccineName, {
+      fieldName: 'vaccineName',
+    });
+    if (!vaccineNameValidation.valid) {
+      return res.status(400).json({
+        error: vaccineNameValidation.error,
+        success: false,
+      });
+    }
+
     const query = `
       INSERT INTO inventory (
         vaccine_name, batch_number, quantity, expiry_date, supplier,
@@ -358,7 +369,7 @@ router.post('/inventory', auth, async (req, res) => {
     `;
 
     const values = [
-      vaccineName,
+      vaccineNameValidation.vaccineName,
       batchNumber,
       quantity,
       expiryDate,
@@ -391,7 +402,29 @@ router.post('/inventory', auth, async (req, res) => {
 router.put('/inventory/:id', auth, async (req, res) => {
   try {
     const itemId = req.params.id;
-    const updates = req.body;
+    const updates = { ...req.body };
+
+    const vaccineNameCandidate =
+      Object.prototype.hasOwnProperty.call(updates, 'vaccine_name')
+        ? updates.vaccine_name
+        : Object.prototype.hasOwnProperty.call(updates, 'vaccineName')
+          ? updates.vaccineName
+          : undefined;
+
+    if (vaccineNameCandidate !== undefined) {
+      const vaccineNameValidation = validateApprovedVaccineName(vaccineNameCandidate, {
+        fieldName: 'vaccine_name',
+      });
+      if (!vaccineNameValidation.valid) {
+        return res.status(400).json({
+          error: vaccineNameValidation.error,
+          success: false,
+        });
+      }
+
+      delete updates.vaccineName;
+      updates.vaccine_name = vaccineNameValidation.vaccineName;
+    }
 
     const setClause = Object.keys(updates)
       .map((key, index) => `${key} = $${index + 2}`)
@@ -511,6 +544,16 @@ router.post('/appointments', auth, async (req, res) => {
 
     const clinicId = req.user.clinic_id;
 
+    const vaccineValidation = validateApprovedVaccineName(vaccine, {
+      fieldName: 'vaccine',
+    });
+    if (!vaccineValidation.valid) {
+      return res.status(400).json({
+        error: vaccineValidation.error,
+        success: false,
+      });
+    }
+
     const query = `
       INSERT INTO appointments (
         patient_id, vaccine, appointment_date, appointment_time,
@@ -521,7 +564,7 @@ router.post('/appointments', auth, async (req, res) => {
 
     const values = [
       patientId,
-      vaccine,
+      vaccineValidation.vaccineName,
       appointmentDate,
       appointmentTime,
       location,
@@ -696,6 +739,16 @@ router.post('/vaccinations', auth, async (req, res) => {
 
     const clinicId = req.user.clinic_id;
 
+    const vaccineValidation = validateApprovedVaccineName(vaccine, {
+      fieldName: 'vaccine',
+    });
+    if (!vaccineValidation.valid) {
+      return res.status(400).json({
+        error: vaccineValidation.error,
+        success: false,
+      });
+    }
+
     const query = `
       INSERT INTO vaccinations (
         patient_id, vaccine, dose, schedule, due_date, date_given,
@@ -706,7 +759,7 @@ router.post('/vaccinations', auth, async (req, res) => {
 
     const values = [
       patientId,
-      vaccine,
+      vaccineValidation.vaccineName,
       dose,
       schedule,
       dueDate,
@@ -742,6 +795,21 @@ router.get('/reports/coverage', auth, async (req, res) => {
   try {
     const { vaccineType } = req.query;
 
+    let normalizedVaccineType = null;
+    if (vaccineType) {
+      const vaccineValidation = validateApprovedVaccineName(vaccineType, {
+        fieldName: 'vaccineType',
+      });
+      if (!vaccineValidation.valid) {
+        return res.status(400).json({
+          error: vaccineValidation.error,
+          success: false,
+        });
+      }
+
+      normalizedVaccineType = vaccineValidation.vaccineName;
+    }
+
     // Get coverage by vaccine type
     const coverageQuery = `
       SELECT
@@ -760,7 +828,7 @@ router.get('/reports/coverage', auth, async (req, res) => {
       ORDER BY coverage_rate DESC
     `;
 
-    const coverageParams = vaccineType ? [vaccineType] : [];
+    const coverageParams = normalizedVaccineType ? [normalizedVaccineType] : [];
     const result = await db.query(coverageQuery, coverageParams);
 
     res.json({

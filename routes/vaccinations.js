@@ -9,7 +9,12 @@ const {
 } = require('../middleware/rbac');
 const VaccinationReminderService = require('../services/vaccinationReminderService');
 const socketService = require('../services/socketService');
-const { validateApprovedVaccine } = require('../utils/approvedVaccines');
+const {
+  APPROVED_VACCINE_NAMES,
+  getApprovedVaccines,
+  validateApprovedVaccine,
+  validateApprovedVaccineBrand,
+} = require('../utils/approvedVaccines');
 const vaccineEligibilityService = require('../services/vaccineEligibilityService');
 const immunizationScheduleService = require('../services/immunizationScheduleService');
 
@@ -304,37 +309,8 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
 // Only returns approved vaccines by default for security
 router.get('/vaccines', requirePermission('dashboard:view'), async (req, res) => {
   try {
-    const { include_unapproved } = req.query;
-    const showUnapproved = include_unapproved === 'true' &&
-      (req.user?.role === 'super_admin' || req.user?.role === 'system_admin');
-
-    let whereClause = 'WHERE is_active = true';
-    if (!showUnapproved) {
-      whereClause += ' AND COALESCE(is_approved, false) = true';
-    }
-
-    const result = await pool.query(
-      `
-        SELECT
-          id,
-          name,
-          code,
-          description,
-          manufacturer,
-          doses_required,
-          recommended_age,
-          is_active,
-          is_approved,
-          display_order,
-          created_at,
-          updated_at
-        FROM vaccines
-        ${whereClause}
-        ORDER BY COALESCE(display_order, 999) ASC, name ASC
-      `,
-    );
-
-    res.json(result.rows);
+    const vaccines = await getApprovedVaccines(true);
+    res.json(vaccines);
   } catch (error) {
     console.error('Error fetching vaccines:', error);
     res.status(500).json({ error: 'Failed to fetch vaccines' });
@@ -359,8 +335,10 @@ router.get('/schedules', requirePermission('dashboard:view'), async (_req, res) 
           updated_at
         FROM vaccination_schedules
         WHERE is_active = true
+          AND vaccine_name = ANY($1::text[])
         ORDER BY age_in_months ASC, vaccine_name ASC
       `,
+      [APPROVED_VACCINE_NAMES],
     );
 
     res.json(result.rows);
@@ -389,8 +367,10 @@ router.get('/batches', requirePermission('inventory:view'), async (_req, res) =>
         JOIN vaccines v ON v.id = vb.vaccine_id
         LEFT JOIN suppliers s ON s.id = vb.supplier_id
         WHERE vb.is_active = true
+          AND v.name = ANY($1::text[])
         ORDER BY vb.expiry_date ASC
       `,
+      [APPROVED_VACCINE_NAMES],
     );
 
     res.json(result.rows);
@@ -447,10 +427,11 @@ router.get('/inventory/valid', requirePermission('vaccination:create'), async (r
         AND vb.qty_current > 0
         AND vb.expiry_date > CURRENT_DATE
         AND vb.clinic_id = $1
+        AND v.name = ANY($2::text[])
     `;
 
-    const params = [effectiveClinicId];
-    let paramCount = 2;
+    const params = [effectiveClinicId, APPROVED_VACCINE_NAMES];
+    let paramCount = 3;
 
     // Filter by specific vaccine if provided
     if (vaccine_id !== undefined) {
@@ -459,8 +440,15 @@ router.get('/inventory/valid', requirePermission('vaccination:create'), async (r
         return res.status(400).json({ error: 'vaccine_id must be a valid integer' });
       }
 
+      const vaccineValidation = await validateApprovedVaccine(parsedVaccineId, {
+        fieldName: 'vaccine_id',
+      });
+      if (!vaccineValidation.valid) {
+        return res.status(400).json({ error: vaccineValidation.error });
+      }
+
       query += ` AND vb.vaccine_id = $${paramCount}`;
-      params.push(parsedVaccineId);
+      params.push(vaccineValidation.vaccine.id);
       paramCount += 1;
     }
 
@@ -524,7 +512,12 @@ router.get('/schedules/infant/:infantId', async (req, res) => {
     });
 
     const scheduleResult = await pool.query(
-      'SELECT * FROM vaccination_schedules WHERE is_active = true ORDER BY age_in_months ASC',
+      `SELECT *
+       FROM vaccination_schedules
+       WHERE is_active = true
+         AND vaccine_name = ANY($1::text[])
+       ORDER BY age_in_months ASC`,
+      [APPROVED_VACCINE_NAMES],
     );
 
     const schedules = scheduleResult.rows.map((schedule) => {
@@ -573,6 +566,8 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       status,
       batch_id,
       schedule_id,
+      manufacturer,
+      brand_name,
     } = req.body;
 
     console.log('[VACCINATION CREATE] Received payload:', JSON.stringify(req.body));
@@ -591,6 +586,18 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
     console.log('[VACCINATION CREATE] Vaccine validation result:', JSON.stringify(vaccineValidation));
     if (!vaccineValidation.valid) {
       return res.status(400).json({ error: vaccineValidation.error });
+    }
+
+    const providedBrand = brand_name !== undefined ? brand_name : manufacturer;
+    const brandFieldName = brand_name !== undefined ? 'brand_name' : 'manufacturer';
+    const brandValidation = validateApprovedVaccineBrand(
+      providedBrand,
+      vaccineValidation.vaccine.name,
+      { fieldName: brandFieldName },
+    );
+
+    if (!brandValidation.valid) {
+      return res.status(400).json({ error: brandValidation.error });
     }
 
     const client = await pool.connect();
@@ -1018,8 +1025,10 @@ router.get('/patient/:patientId/schedule', async (req, res) => {
         SELECT *
         FROM vaccination_schedules
         WHERE is_active = true
+          AND vaccine_name = ANY($1::text[])
         ORDER BY age_in_months ASC
       `,
+      [APPROVED_VACCINE_NAMES],
     );
 
     const vaccinationStatus = schedule.rows.map((scheduleItem) => {

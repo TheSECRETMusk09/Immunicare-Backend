@@ -7,7 +7,8 @@ const {
   requirePermission,
 } = require('../middleware/rbac');
 const socketService = require('../services/socketService');
-const { validateVaccinationHistory, VALIDATION_STATUS } = require('../services/vaccineRulesEngine');
+const { VALIDATION_STATUS } = require('../services/vaccineRulesEngine');
+const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 
 const router = express.Router();
 
@@ -72,7 +73,7 @@ router.post('/', async (req, res) => {
 
     // Verify the infant belongs to this guardian
     const infantCheck = await pool.query(
-      `SELECT id, first_name, last_name FROM patients
+      `SELECT id, first_name, last_name, dob FROM patients
        WHERE id = $1 AND guardian_id = $2 AND is_active = true`,
       [infant_id, guardianId],
     );
@@ -86,13 +87,30 @@ router.post('/', async (req, res) => {
 
     // Validate each submitted vaccine
     const validVaccines = [];
-    for (const vaccine of submitted_vaccines) {
-      if (!vaccine.vaccine_name || !vaccine.dose_number) {
-        continue; // Skip invalid entries
+    for (let index = 0; index < submitted_vaccines.length; index += 1) {
+      const vaccine = submitted_vaccines[index] || {};
+      const vaccineNameValidation = validateApprovedVaccineName(vaccine.vaccine_name, {
+        fieldName: `submitted_vaccines[${index}].vaccine_name`,
+      });
+
+      if (!vaccineNameValidation.valid) {
+        return res.status(400).json({
+          success: false,
+          error: vaccineNameValidation.error,
+        });
       }
+
+      const parsedDoseNumber = parseInt(vaccine.dose_number, 10);
+      if (!Number.isInteger(parsedDoseNumber) || parsedDoseNumber <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: `submitted_vaccines[${index}].dose_number must be a positive integer.`,
+        });
+      }
+
       validVaccines.push({
-        vaccine_name: vaccine.vaccine_name,
-        dose_number: parseInt(vaccine.dose_number, 10),
+        vaccine_name: vaccineNameValidation.vaccineName,
+        dose_number: parsedDoseNumber,
         date_administered: vaccine.date_administered || null,
         batch_number: vaccine.batch_number || null,
         facility_name: vaccine.facility_name || null,
@@ -114,12 +132,83 @@ router.post('/', async (req, res) => {
       dob: infantCheck.rows[0].dob,
     };
 
-    // Validate vaccination history using vaccine rules engine
-    const validationResult = await validateVaccinationHistory(
-      childProfile,
-      validVaccines,
-      { facilityId: 'san_nicolas' }, // Hard-scoped to San Nicolas Health Center
-    );
+    const validationSummary = {
+      validDoses: 0,
+      duplicateDoses: 0,
+      invalidDates: 0,
+      invalidDoses: 0,
+      invalidVaccines: 0,
+      totalDoses: validVaccines.length,
+      errors: [],
+      warnings: [],
+    };
+    const seenDoseKeys = new Set();
+    const childDob = childProfile.dob ? new Date(childProfile.dob) : null;
+    const now = new Date();
+
+    validVaccines.forEach((record) => {
+      const doseKey = `${record.vaccine_name}:${record.dose_number}`;
+      let recordHasErrors = false;
+
+      if (seenDoseKeys.has(doseKey)) {
+        validationSummary.duplicateDoses += 1;
+        validationSummary.errors.push(`Duplicate dose detected for ${record.vaccine_name} dose ${record.dose_number}.`);
+        recordHasErrors = true;
+      } else {
+        seenDoseKeys.add(doseKey);
+      }
+
+      if (!record.date_administered) {
+        validationSummary.warnings.push(
+          `Administration date for ${record.vaccine_name} dose ${record.dose_number} was not provided.`,
+        );
+      } else {
+        const administeredDate = new Date(record.date_administered);
+        if (Number.isNaN(administeredDate.getTime())) {
+          validationSummary.invalidDates += 1;
+          validationSummary.errors.push(
+            `Invalid administration date for ${record.vaccine_name} dose ${record.dose_number}.`,
+          );
+          recordHasErrors = true;
+        } else {
+          if (administeredDate > now) {
+            validationSummary.invalidDates += 1;
+            validationSummary.errors.push(
+              `Administration date for ${record.vaccine_name} dose ${record.dose_number} cannot be in the future.`,
+            );
+            recordHasErrors = true;
+          }
+
+          if (childDob && administeredDate < childDob) {
+            validationSummary.invalidDates += 1;
+            validationSummary.errors.push(
+              `Administration date for ${record.vaccine_name} dose ${record.dose_number} cannot be earlier than the child's date of birth.`,
+            );
+            recordHasErrors = true;
+          }
+        }
+      }
+
+      if (!recordHasErrors) {
+        validationSummary.validDoses += 1;
+      }
+    });
+
+    const hasValidationErrors =
+      validationSummary.duplicateDoses > 0 ||
+      validationSummary.invalidDates > 0 ||
+      validationSummary.invalidDoses > 0 ||
+      validationSummary.invalidVaccines > 0;
+
+    const validationResult = {
+      data: {
+        status: hasValidationErrors ? VALIDATION_STATUS.FOR_VALIDATION : VALIDATION_STATUS.APPROVED,
+        validationSummary,
+        nextAction: hasValidationErrors ? 'Needs nurse review' : 'Ready for scheduling',
+      },
+    };
+    const autoApproved = validationResult.data.status === VALIDATION_STATUS.APPROVED;
+    const triageCategory = autoApproved ? 'ready_for_scheduling' : 'needs_record_verification';
 
     // Insert the transfer-in case
     const result = await pool.query(
@@ -150,8 +239,8 @@ router.post('/', async (req, res) => {
         remarks || null,
         validationResult.data.status,
         PRIORITY.NORMAL,
-        validationResult.data.status === VALIDATION_STATUS.APPROVED ? 'ready_for_scheduling' : 'needs_record_verification',
-        validationResult.data.status === VALIDATION_STATUS.APPROVED,
+        triageCategory,
+        autoApproved,
         JSON.stringify(validationResult.data.validationSummary),
       ],
     );
@@ -167,7 +256,7 @@ router.post('/', async (req, res) => {
        WHERE id = $3`,
       [
         source_facility,
-        auto_approved ? VALIDATION_STATUS.APPROVED : VALIDATION_STATUS.FOR_VALIDATION,
+        autoApproved ? VALIDATION_STATUS.APPROVED : VALIDATION_STATUS.FOR_VALIDATION,
         infant_id,
       ],
     );
@@ -177,7 +266,7 @@ router.post('/', async (req, res) => {
       id: transferCase.id,
       infant_name: `${infantCheck.rows[0].first_name} ${infantCheck.rows[0].last_name}`,
       source_facility,
-      triage_category,
+      triage_category: triageCategory,
     });
 
     // Send notification to guardian
@@ -188,8 +277,8 @@ router.post('/', async (req, res) => {
       `,
       [
         guardianId,
-        auto_approved ? 'Transfer Case Approved' : 'Transfer Case Submitted',
-        auto_approved
+        autoApproved ? 'Transfer Case Approved' : 'Transfer Case Submitted',
+        autoApproved
           ? `Your child's vaccination records from ${source_facility} have been verified. Your child is now ready for scheduling.`
           : `Your child's vaccination records from ${source_facility} have been submitted for review. You will be notified once verified.`,
       ],
@@ -203,7 +292,7 @@ router.post('/', async (req, res) => {
         validationSummary: validationResult.data.validationSummary,
         nextAction: validationResult.data.nextAction,
       },
-      message: validationResult.data.status === VALIDATION_STATUS.APPROVED
+      message: autoApproved
         ? 'Transfer case automatically approved. Child is ready for scheduling.'
         : 'Transfer case submitted successfully for review.',
     });
@@ -626,10 +715,24 @@ router.put('/:id/approve-vaccines', requirePermission('patient:update'), async (
         const importResults = [];
 
         for (const vaccine of approvedVaccines) {
+          const vaccineNameValidation = validateApprovedVaccineName(vaccine?.vaccine_name, {
+            fieldName: 'approvedVaccines.vaccine_name',
+          });
+
+          if (!vaccineNameValidation.valid) {
+            importResults.push({
+              vaccine_name: vaccine?.vaccine_name || null,
+              dose_number: vaccine?.dose_number || null,
+              status: 'failed',
+              message: vaccineNameValidation.error,
+            });
+            continue;
+          }
+
           // Get vaccine ID by name
           const vaccineResult = await client.query(
-            'SELECT id FROM vaccines WHERE LOWER(name) = LOWER($1) AND is_active = true LIMIT 1',
-            [vaccine.vaccine_name],
+            'SELECT id FROM vaccines WHERE name = $1 AND is_active = true LIMIT 1',
+            [vaccineNameValidation.vaccineName],
           );
 
           if (vaccineResult.rows.length === 0) {
@@ -736,13 +839,32 @@ router.put('/:id/approve-vaccines', requirePermission('patient:update'), async (
         client.release();
       }
     } else {
+      const normalizedApprovedVaccines = [];
+      for (const vaccine of approvedVaccines || []) {
+        const vaccineNameValidation = validateApprovedVaccineName(vaccine?.vaccine_name, {
+          fieldName: 'approvedVaccines.vaccine_name',
+        });
+
+        if (!vaccineNameValidation.valid) {
+          return res.status(400).json({
+            success: false,
+            error: vaccineNameValidation.error,
+          });
+        }
+
+        normalizedApprovedVaccines.push({
+          ...vaccine,
+          vaccine_name: vaccineNameValidation.vaccineName,
+        });
+      }
+
       // Just save the approved vaccines without importing
       await pool.query(
         `UPDATE transfer_in_cases
          SET approved_vaccines = $1,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $2`,
-        [JSON.stringify(approvedVaccines || []), caseId],
+        [JSON.stringify(normalizedApprovedVaccines), caseId],
       );
 
       res.json({

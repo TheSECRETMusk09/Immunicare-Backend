@@ -65,6 +65,35 @@ const reportsRouter = require('../routes/reports');
 
 const ReportService = require('../services/reportService');
 
+const getRouteHandler = (routePath, method = 'post') => {
+  const routeLayer = reportsRouter.stack.find(
+    (layer) => layer.route?.path === routePath && layer.route.methods?.[method],
+  );
+
+  if (!routeLayer) {
+    throw new Error(`Unable to find ${method.toUpperCase()} ${routePath} route handler`);
+  }
+
+  return routeLayer.route.stack[routeLayer.route.stack.length - 1].handle;
+};
+
+const createMockResponse = (overrides = {}) => {
+  const res = {
+    headersSent: false,
+    writableEnded: false,
+    setHeader: jest.fn(),
+    on: jest.fn(),
+    destroy: jest.fn(),
+    setTimeout: jest.fn(),
+    ...overrides,
+  };
+
+  res.status = overrides.status || jest.fn(() => res);
+  res.json = overrides.json || jest.fn(() => res);
+
+  return res;
+};
+
 reportsRouter.stack
   .filter((layer) => layer?.route?.path === '/generate')
   .forEach((layer) => {
@@ -282,6 +311,69 @@ describe('Reports routes contract', () => {
       'excel',
       99,
     );
+  });
+
+  it('extends the timeout window for long-running report generation requests', async () => {
+    const generateHandler = getRouteHandler('/generate');
+
+    mockReportService.generateReport.mockResolvedValue({
+      id: 501,
+      type: 'vaccination',
+      title: 'Vaccination Report',
+    });
+
+    const req = {
+      user: { id: 99 },
+      body: {
+        type: 'vaccination',
+        format: 'csv',
+      },
+      setTimeout: jest.fn(),
+    };
+    const res = createMockResponse();
+
+    await generateHandler(req, res);
+
+    expect(req.setTimeout).toHaveBeenCalledWith(300000);
+    expect(res.setTimeout).toHaveBeenCalledWith(300000);
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: true,
+        message: 'Report generated successfully.',
+      }),
+    );
+  });
+
+  it('does not attempt a second response when report generation finishes after headers were already sent', async () => {
+    const generateHandler = getRouteHandler('/generate');
+
+    mockReportService.generateReport.mockResolvedValue({
+      id: 501,
+      type: 'vaccination',
+      title: 'Vaccination Report',
+    });
+
+    const req = {
+      user: { id: 99 },
+      body: {
+        type: 'vaccination',
+        format: 'csv',
+      },
+      setTimeout: jest.fn(),
+    };
+    const res = createMockResponse({ headersSent: true });
+
+    await expect(generateHandler(req, res)).resolves.toBeUndefined();
+
+    expect(mockReportService.generateReport).toHaveBeenCalledWith(
+      'vaccination',
+      expect.objectContaining({ startDate: undefined, endDate: undefined }),
+      'csv',
+      99,
+    );
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 
   it('propagates empty dataset error semantics from service', async () => {

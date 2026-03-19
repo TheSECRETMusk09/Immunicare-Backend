@@ -21,6 +21,7 @@ const router = express.Router();
 const reportService = new ReportService();
 
 const DOWNLOAD_STREAM_HIGH_WATER_MARK = 64 * 1024;
+const LONG_RUNNING_REPORT_TIMEOUT_MS = 5 * 60 * 1000;
 
 const getValidReportTypes = () => reportService.getReportTypes();
 const getValidReportFormats = () => reportService.getReportFormats();
@@ -41,6 +42,18 @@ const errorToStatusCode = (error) => {
 };
 
 const normalizeStringFilter = (value, maxLength = 120) => sanitizeText(value, { maxLength });
+
+const extendLongRunningTimeout = (req, res, timeoutMs = LONG_RUNNING_REPORT_TIMEOUT_MS) => {
+  if (req && typeof req.setTimeout === 'function') {
+    req.setTimeout(timeoutMs);
+  }
+
+  if (res && typeof res.setTimeout === 'function') {
+    res.setTimeout(timeoutMs);
+  }
+};
+
+const hasResponseBeenCommitted = (res) => Boolean(res?.headersSent || res?.writableEnded);
 
 const normalizeReportFilters = (payload = {}) => {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -298,6 +311,8 @@ router.get('/stats', requirePermission('report:view'), async (req, res) => {
 // POST /api/reports/generate - Generate a report file and persist metadata
 router.post('/generate', requirePermission('report:create'), async (req, res) => {
   try {
+    extendLongRunningTimeout(req, res);
+
     const VALID_REPORT_TYPES = getValidReportTypes();
     const VALID_REPORT_FORMATS = getValidReportFormats();
     const { id: userId } = req.user;
@@ -352,6 +367,10 @@ router.post('/generate', requirePermission('report:create'), async (req, res) =>
       userId,
     );
 
+    if (hasResponseBeenCommitted(res)) {
+      return;
+    }
+
     return res.status(201).json({
       success: true,
       message: 'Report generated successfully.',
@@ -359,6 +378,11 @@ router.post('/generate', requirePermission('report:create'), async (req, res) =>
     });
   } catch (error) {
     console.error('Error generating report:', error);
+
+    if (hasResponseBeenCommitted(res)) {
+      return;
+    }
+
     const statusCode = errorToStatusCode(error);
     return res.status(statusCode).json({
       success: false,
@@ -371,6 +395,8 @@ router.post('/generate', requirePermission('report:create'), async (req, res) =>
 // POST /api/reports/batch-generate - Generate multiple reports in sequence
 router.post('/batch-generate', requirePermission('report:create'), async (req, res) => {
   try {
+    extendLongRunningTimeout(req, res);
+
     const VALID_REPORT_TYPES = getValidReportTypes();
     const VALID_REPORT_FORMATS = getValidReportFormats();
     const { id: userId } = req.user;
@@ -444,6 +470,10 @@ router.post('/batch-generate', requirePermission('report:create'), async (req, r
       }
     }
 
+    if (hasResponseBeenCommitted(res)) {
+      return;
+    }
+
     return res.status(201).json({
       success: true,
       message: `Batch generation completed: ${successCount} successful, ${failureCount} failed.`,
@@ -451,6 +481,11 @@ router.post('/batch-generate', requirePermission('report:create'), async (req, r
     });
   } catch (error) {
     console.error('Error during batch report generation:', error);
+
+    if (hasResponseBeenCommitted(res)) {
+      return;
+    }
+
     const statusCode = errorToStatusCode(error);
     return res.status(statusCode).json({
       success: false,
@@ -522,6 +557,8 @@ router.get('/:id', requirePermission('report:view'), async (req, res) => {
 // GET /api/reports/:id/download - Download report file by metadata ID
 router.get('/:id/download', requirePermission('report:export'), async (req, res) => {
   try {
+    extendLongRunningTimeout(req, res);
+
     const reportId = safeInteger(req.params.id, 0);
     if (reportId <= 0) {
       return res.status(400).json({
@@ -531,6 +568,10 @@ router.get('/:id/download', requirePermission('report:export'), async (req, res)
     }
 
     const downloadResult = await reportService.downloadReport(reportId);
+
+    if (hasResponseBeenCommitted(res)) {
+      return;
+    }
 
     await pool.query('UPDATE reports SET download_count = download_count + 1 WHERE id = $1', [reportId]);
 
@@ -565,6 +606,11 @@ router.get('/:id/download', requirePermission('report:export'), async (req, res)
     return fileStream.pipe(res);
   } catch (error) {
     console.error('Error downloading report:', error);
+
+    if (hasResponseBeenCommitted(res)) {
+      return;
+    }
+
     const statusCode = errorToStatusCode(error);
     return res.status(statusCode).json({
       success: false,

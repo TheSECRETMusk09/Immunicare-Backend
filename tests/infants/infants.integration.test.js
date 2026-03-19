@@ -157,6 +157,8 @@ describe('Infants Module API Integration Tests', () => {
         birth_weight: 3.2,
         birth_height: 48,
         place_of_birth: 'Community Health Center',
+        purok: 'Purok 1',
+        street_color: 'Son Risa St. - Pink',
       };
 
       const response = await request(app)
@@ -167,6 +169,26 @@ describe('Infants Module API Integration Tests', () => {
       expect([200, 201]).toContain(response.status);
       expect(response.body.success).toBe(true);
       expect(response.body.data.first_name).toEqual(newInfant.first_name);
+      expect(response.body.data.purok).toEqual(newInfant.purok);
+      expect(response.body.data.street_color).toEqual(newInfant.street_color);
+    });
+
+    test('should reject mismatched purok and street color selections', async () => {
+      const response = await request(app)
+        .post('/api/infants/guardian')
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          first_name: 'Invalid',
+          last_name: 'Mapping',
+          dob: '2023-02-21',
+          sex: 'female',
+          purok: 'Purok 2',
+          street_color: 'Son Risa St. - Pink',
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+      expect(response.body.fields.street_color).toMatch(/does not match/i);
     });
 
     test('should return 403 for non-guardian role', async () => {
@@ -270,6 +292,8 @@ describe('Infants Module API Integration Tests', () => {
           last_name: 'Test',
           dob: '2023-03-10',
           sex: 'male',
+          purok: 'Purok 3',
+          street_color: 'M.H Del Pilar - Orange',
         });
 
       expect([200, 201]).toContain(createResponse.status);
@@ -282,6 +306,8 @@ describe('Infants Module API Integration Tests', () => {
         sex: 'male',
         birth_weight: 3.6,
         birth_height: 51,
+        purok: 'Purok 4',
+        street_color: 'M.H Del Pilar - Green',
       };
 
       const updateResponse = await request(app)
@@ -292,6 +318,8 @@ describe('Infants Module API Integration Tests', () => {
       expect(updateResponse.status).toBe(200);
       expect(updateResponse.body.success).toBe(true);
       expect(updateResponse.body.data.first_name).toEqual(updates.first_name);
+      expect(updateResponse.body.data.purok).toEqual(updates.purok);
+      expect(updateResponse.body.data.street_color).toEqual(updates.street_color);
     });
 
     test('should return 403 for guardian updating other infant', async () => {
@@ -314,6 +342,8 @@ describe('Infants Module API Integration Tests', () => {
           last_name: 'Check',
           dob: '2023-07-01',
           sex: 'female',
+          purok: 'Purok 6',
+          street_color: 'Dimanlig St. - White',
         });
 
       expect(createResponse.status).toBe(201);
@@ -375,6 +405,8 @@ describe('Infants Module API Integration Tests', () => {
           last_name: 'Remove',
           dob: '2023-05-20',
           sex: 'male',
+          purok: 'Purok 7',
+          street_color: 'Bedana / Dimanlig St. - Red',
         });
 
       expect(createResponse.status).toBe(201);

@@ -5,6 +5,9 @@ const db = require('./db');
 const { seedTestAccounts } = require('./tests/setup/testDataSeeder');
 
 beforeAll(async () => {
+  if (process.env.SKIP_DB_BOOTSTRAP === 'true') {
+    return;
+  }
   await initializeDatabase({ closePool: false, silent: true });
   await seedTestAccounts();
 }, 45000);
