@@ -3,9 +3,15 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
-const { CANONICAL_ROLES, getCanonicalRole, requireSystemAdmin } = require('../middleware/rbac');
+const {
+  CANONICAL_ROLES,
+  getCanonicalRole,
+  requirePermission,
+  requireSystemAdmin,
+} = require('../middleware/rbac');
 const securityEventService = require('../services/securityEventService');
 const socketService = require('../services/socketService');
+const { writeAuditLog } = require('../services/auditLogService');
 const {
   encryptPasswordForVisibility,
   decryptPasswordVisibilityPayload,
@@ -472,7 +478,9 @@ const buildSystemUserResponse = (row = {}) => ({
   role_name: row.role_name || null,
   display_name: row.display_name || null,
   clinic_id: row.clinic_id || null,
+  facility_id: row.clinic_id || null,
   clinic_name: row.clinic_name || null,
+  facility_name: row.clinic_name || null,
   user_type: 'system',
 });
 
@@ -642,6 +650,28 @@ const logSystemUserSecurityEvent = async ({
   });
 };
 
+const recordUserAuditEvent = async ({
+  req,
+  eventType,
+  entityType,
+  entityId,
+  oldValues = null,
+  newValues = null,
+  metadata = null,
+  severity = 'INFO',
+}) => {
+  await writeAuditLog({
+    req,
+    eventType,
+    entityType,
+    entityId,
+    oldValues,
+    newValues,
+    metadata,
+    severity,
+  });
+};
+
 const canRevealGuardianPasswords = (req) => {
   // Check canonical role (primary method)
   const canonicalRole = getCanonicalRole(req);
@@ -781,7 +811,7 @@ const parseExpectedUpdatedAt = (input) => {
 };
 
 // Get all users (including guardians) - unified view
-router.get('/all-users', requireSystemAdmin, async (req, res) => {
+router.get('/all-users', requirePermission('user:view'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -869,7 +899,7 @@ router.get('/', requireSystemAdmin, async (req, res) => {
 // Get all guardians (including infant count)
 // NOTE: Removed synchronizeGuardianUserAccounts() call as it was causing timeouts
 // The synchronization should be done asynchronously via background job, not on every request
-router.get('/guardians', requireSystemAdmin, async (req, res) => {
+router.get('/guardians', requirePermission('user:view'), async (req, res) => {
   const client = await pool.connect();
   try {
     // Parse pagination parameters with safe defaults
@@ -937,7 +967,7 @@ router.get('/guardians', requireSystemAdmin, async (req, res) => {
 });
 
 // Create new guardian
-router.post('/guardians', requireSystemAdmin, async (req, res) => {
+router.post('/guardians', requirePermission('user:create'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { name, phone, email, address, relationship } = req.body;
@@ -993,7 +1023,7 @@ router.post('/guardians', requireSystemAdmin, async (req, res) => {
 });
 
 // Update guardian
-router.put('/guardians/:id', requireSystemAdmin, async (req, res) => {
+router.put('/guardians/:id', requirePermission('user:update'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -1082,7 +1112,7 @@ router.put('/guardians/:id', requireSystemAdmin, async (req, res) => {
 });
 
 // Delete guardian
-router.delete('/guardians/:id', requireSystemAdmin, async (req, res) => {
+router.delete('/guardians/:id', requirePermission('user:delete'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1132,7 +1162,7 @@ router.delete('/guardians/:id', requireSystemAdmin, async (req, res) => {
 });
 
 // Get guardian password status (Admin only)
-router.get('/guardians/:id/password', requireSystemAdmin, async (req, res) => {
+router.get('/guardians/:id/password', requirePermission('admin:override'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1156,7 +1186,7 @@ router.get('/guardians/:id/password', requireSystemAdmin, async (req, res) => {
 });
 
 // Reset guardian password (Admin only)
-router.put('/guardians/:id/password', requireSystemAdmin, async (req, res) => {
+router.put('/guardians/:id/password', requirePermission('admin:override'), async (req, res) => {
   try {
     const { id } = req.params;
     const { password, isPasswordSet, mustChangePassword } = req.body;
@@ -1206,7 +1236,7 @@ router.put('/guardians/:id/password', requireSystemAdmin, async (req, res) => {
 // Reveal guardian password for system admins (admin/super_admin canonical role)
 router.get(
   '/guardians/:id/password-visibility',
-  requireSystemAdmin,
+  requirePermission('admin:override'),
   requirePasswordVisibilityRole,
   async (req, res) => {
     const { id } = req.params;
@@ -1287,7 +1317,7 @@ router.get(
 // Audit show/hide actions from UI for guardian password visibility
 router.post(
   '/guardians/:id/password-visibility/audit',
-  requireSystemAdmin,
+  requirePermission('admin:override'),
   requirePasswordVisibilityRole,
   async (req, res) => {
     const { id } = req.params;
@@ -1331,15 +1361,47 @@ router.post(
 
 // Get all system users (admin, doctor, nurse, staff)
 // NOTE: Removed synchronizeGuardianUserAccounts() call as it was causing timeouts
-router.get('/system-users', requireSystemAdmin, async (req, res) => {
+router.get('/system-users', requirePermission('user:view'), async (req, res) => {
   const client = await pool.connect();
   try {
     // Parse pagination parameters with safe defaults
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const offset = (page - 1) * limit;
+    const requestedRoles = String(req.query.roles || req.query.role || '')
+      .split(',')
+      .map((role) => role.trim().toLowerCase())
+      .filter(Boolean);
+
+    const clinicId = req.query.clinic_id || req.query.facility_id;
+    const isActive = req.query.is_active;
 
     // Query system users with pagination
+    const queryParams = [];
+    let paramIndex = 1;
+    const filterClauses = [];
+
+    if (requestedRoles.length > 0) {
+      filterClauses.push(`lower(r.name) = ANY($${paramIndex}::text[])`);
+      queryParams.push(requestedRoles);
+      paramIndex += 1;
+    }
+
+    if (clinicId) {
+      filterClauses.push(`u.clinic_id = $${paramIndex}`);
+      queryParams.push(parseInt(clinicId, 10));
+      paramIndex += 1;
+    }
+
+    if (isActive !== undefined && isActive !== '') {
+      filterClauses.push(`u.is_active = $${paramIndex}`);
+      queryParams.push(isActive === 'true');
+      paramIndex += 1;
+    }
+
+    const whereClause = filterClauses.length > 0 ? `WHERE ${filterClauses.join(' AND ')}` : '';
+    queryParams.push(limit, offset);
+
     const result = await client.query(
       `
         SELECT u.id, u.username, u.contact, u.last_login, u.created_at, u.updated_at, u.is_active,
@@ -1348,14 +1410,23 @@ router.get('/system-users', requireSystemAdmin, async (req, res) => {
         FROM users u
         JOIN roles r ON u.role_id = r.id
         LEFT JOIN clinics c ON u.clinic_id = c.id
+        ${whereClause}
         ORDER BY u.created_at DESC
-        LIMIT $1 OFFSET $2
+        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
       `,
-      [limit, offset],
+      queryParams,
     );
 
     // Get total count
-    const countResult = await client.query('SELECT COUNT(*)::int as total FROM users');
+    const countResult = await client.query(
+      `
+        SELECT COUNT(*)::int as total
+        FROM users u
+        JOIN roles r ON u.role_id = r.id
+        ${whereClause}
+      `,
+      queryParams.slice(0, paramIndex - 1),
+    );
     const total = parseInt(countResult.rows[0].total, 10);
     const totalPages = Math.ceil(total / limit);
 
@@ -1388,7 +1459,7 @@ router.get('/system-users', requireSystemAdmin, async (req, res) => {
 });
 
 // Create system user
-router.post('/system-users', requireSystemAdmin, async (req, res) => {
+router.post('/system-users', requirePermission('user:create'), async (req, res) => {
   try {
     const { username, password, role_id, clinic_id, contact } = req.body;
     const validation = validateSystemUserPayload({
@@ -1495,7 +1566,7 @@ router.post('/system-users', requireSystemAdmin, async (req, res) => {
 });
 
 // Update system user
-router.put('/system-users/:id', requireSystemAdmin, async (req, res) => {
+router.put('/system-users/:id', requirePermission('user:update'), async (req, res) => {
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
     if (!userId) {
@@ -1655,7 +1726,7 @@ router.put('/system-users/:id', requireSystemAdmin, async (req, res) => {
 });
 
 // Delete system user
-router.delete('/system-users/:id', requireSystemAdmin, async (req, res) => {
+router.delete('/system-users/:id', requirePermission('user:delete'), async (req, res) => {
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
     if (!userId) {
@@ -1729,7 +1800,7 @@ router.delete('/system-users/:id', requireSystemAdmin, async (req, res) => {
 });
 
 // Toggle system user active status (enable/disable)
-router.put('/system-users/:id/toggle-active', requireSystemAdmin, async (req, res) => {
+router.put('/system-users/:id/toggle-active', requirePermission('admin:override'), async (req, res) => {
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
     if (!userId) {
@@ -1828,7 +1899,7 @@ router.put('/system-users/:id/toggle-active', requireSystemAdmin, async (req, re
 });
 
 // Get all clinics
-router.get('/clinics', requireSystemAdmin, async (req, res) => {
+router.get('/clinics', requirePermission('system:settings'), async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM clinics ORDER BY name');
     res.json(result.rows);
@@ -1838,7 +1909,7 @@ router.get('/clinics', requireSystemAdmin, async (req, res) => {
 });
 
 // Create clinic
-router.post('/clinics', requireSystemAdmin, async (req, res) => {
+router.post('/clinics', requirePermission('system:settings'), async (req, res) => {
   try {
     const { name, region, address, contact } = req.body;
 
@@ -1854,7 +1925,7 @@ router.post('/clinics', requireSystemAdmin, async (req, res) => {
 });
 
 // Update clinic
-router.put('/clinics/:id', requireSystemAdmin, async (req, res) => {
+router.put('/clinics/:id', requirePermission('system:settings'), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, region, address, contact } = req.body;
@@ -1875,9 +1946,20 @@ router.put('/clinics/:id', requireSystemAdmin, async (req, res) => {
 });
 
 // Get all roles
-router.get('/roles', requireSystemAdmin, async (req, res) => {
+router.get('/roles', requirePermission('user:manage_roles'), async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM roles ORDER BY hierarchy_level DESC');
+    const { exclude } = req.query;
+    let query = 'SELECT * FROM roles';
+    const params = [];
+
+    if (exclude) {
+      const excludeRoles = exclude.split(',').map(r => r.trim().toLowerCase());
+      query += ' WHERE LOWER(name) != ALL($1::text[])';
+      params.push(excludeRoles);
+    }
+
+    query += ' ORDER BY hierarchy_level DESC';
+    const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1885,7 +1967,7 @@ router.get('/roles', requireSystemAdmin, async (req, res) => {
 });
 
 // Create role
-router.post('/roles', requireSystemAdmin, async (req, res) => {
+router.post('/roles', requirePermission('user:manage_roles'), async (req, res) => {
   try {
     const { name, permissions, display_name, hierarchy_level } = req.body;
 
@@ -1901,7 +1983,7 @@ router.post('/roles', requireSystemAdmin, async (req, res) => {
 });
 
 // Update role
-router.put('/roles/:id', requireSystemAdmin, async (req, res) => {
+router.put('/roles/:id', requirePermission('user:manage_roles'), async (req, res) => {
   try {
     const { id } = req.params;
     const { name, permissions, display_name, hierarchy_level, is_active } = req.body;
@@ -1922,7 +2004,7 @@ router.put('/roles/:id', requireSystemAdmin, async (req, res) => {
 });
 
 // Get system user password (Admin only)
-router.get('/system-users/:id/password', requireSystemAdmin, async (req, res) => {
+router.get('/system-users/:id/password', requirePermission('admin:override'), async (req, res) => {
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
     if (!userId) {
@@ -1967,7 +2049,7 @@ router.get('/system-users/:id/password', requireSystemAdmin, async (req, res) =>
 });
 
 // Reset system user password (Admin only)
-router.put('/system-users/:id/password', requireSystemAdmin, async (req, res) => {
+router.put('/system-users/:id/password', requirePermission('admin:override'), async (req, res) => {
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
     if (!userId) {

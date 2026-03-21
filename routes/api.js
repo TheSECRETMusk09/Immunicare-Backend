@@ -10,6 +10,7 @@ router.use('/analytics', require('./analytics'));
 router.use('/users', require('./users'));
 router.use('/infants', require('./infants'));
 router.use('/vaccinations', require('./vaccinations'));
+router.use('/vaccinations', require('./vaccination-with-inventory'));
 router.use('/vaccination-readiness', require('./vaccination-readiness'));
 router.use('/inventory', require('./inventory'));
 router.use('/appointments', require('./appointments'));

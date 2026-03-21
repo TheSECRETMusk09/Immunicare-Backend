@@ -13,6 +13,11 @@ const {
   validateNumberRange,
 } = require('../utils/adminValidation');
 const { validateApprovedVaccine: validateApprovedInventoryVaccine } = require('../utils/approvedVaccines');
+const {
+  sendExpiryAlert,
+  sendLowStockAlert,
+  sendOutOfStockAlert,
+} = require('../services/adminNotificationService');
 
 const router = express.Router();
 
@@ -39,8 +44,71 @@ const VACCINE_INVENTORY_TRANSACTION_TYPES = [
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
 
 // Helper function to validate that a vaccine is approved
-const validateVaccineApproved = async (vaccineId, res) => {
+const validateVaccineApproved = async (vaccineId, _res) => {
   return validateApprovedInventoryVaccine(vaccineId, { fieldName: 'vaccine_id' });
+};
+
+const calculateDaysUntilDate = (value) => {
+  const parsedDate = value ? new Date(value) : null;
+  if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  parsedDate.setHours(0, 0, 0, 0);
+
+  return Math.ceil((parsedDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+};
+
+const safeTriggerExpiryNotification = async ({ vaccineName, vaccineId, expiryDate, lotNumber }) => {
+  const daysUntilExpiry = calculateDaysUntilDate(expiryDate);
+  if (daysUntilExpiry === null || daysUntilExpiry > 30 || daysUntilExpiry < 0) {
+    return;
+  }
+
+  try {
+    await sendExpiryAlert(
+      vaccineName,
+      vaccineId,
+      new Date(expiryDate),
+      daysUntilExpiry,
+      lotNumber || 'N/A',
+    );
+  } catch (error) {
+    console.error('Failed to send expiry notification:', error.message);
+  }
+};
+
+const safeTriggerStockNotification = async ({
+  vaccineName,
+  vaccineId,
+  currentStock,
+  lotNumber,
+  lowStockThreshold = 10,
+}) => {
+  const normalizedStock = Number(currentStock || 0);
+  const normalizedThreshold = Number(lowStockThreshold || 10) || 10;
+  const normalizedLotNumber = lotNumber || 'N/A';
+
+  try {
+    if (normalizedStock <= 0) {
+      await sendOutOfStockAlert(vaccineName, vaccineId, normalizedLotNumber);
+      return;
+    }
+
+    if (normalizedStock <= normalizedThreshold) {
+      await sendLowStockAlert(
+        vaccineName,
+        vaccineId,
+        normalizedStock,
+        normalizedLotNumber,
+        normalizedThreshold,
+      );
+    }
+  } catch (error) {
+    console.error('Failed to send stock notification:', error.message);
+  }
 };
 
 const sanitizeInventoryTransactionPayload = (payload = {}) => {
@@ -143,8 +211,10 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
     }
   }
 
-  const lotNumber = sanitizeText(payload.lot_number, { maxLength: 100 });
-  const batchNumber = sanitizeText(payload.batch_number, { maxLength: 100 });
+  const lotBatchNumber = sanitizeText(
+    payload.lot_batch_number || payload.lot_number || payload.batch_number,
+    { maxLength: 100 },
+  );
   const supplierName = sanitizeText(payload.supplier_name, { maxLength: 255 });
   const referenceNumber = sanitizeText(payload.reference_number, { maxLength: 255 });
   const notes = sanitizeText(payload.notes, {
@@ -163,8 +233,8 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
       clinic_id: clinicIdCheck.value,
       transaction_type: transactionType,
       quantity: quantityValue,
-      lot_number: lotNumber || null,
-      batch_number: batchNumber || null,
+      lot_number: lotBatchNumber || null,
+      batch_number: lotBatchNumber || null,
       expiry_date: expiryDateRaw || null,
       supplier_name: supplierName || null,
       reference_number: referenceNumber || null,
@@ -553,8 +623,17 @@ router.post('/vaccine-batches', async (req, res) => {
       [vaccine_id, lot_no, expiry_date, qty_received, clinic_id || userClinicId],
     );
 
-    socketService.broadcast('vaccine_batch_created', result.rows[0]);
-    res.status(201).json(result.rows[0]);
+    const createdBatch = result.rows[0];
+
+    await safeTriggerExpiryNotification({
+      vaccineName: vaccineValidation.vaccine.name,
+      vaccineId: vaccineValidation.vaccine.id,
+      expiryDate: createdBatch.expiry_date,
+      lotNumber: createdBatch.lot_no,
+    });
+
+    socketService.broadcast('vaccine_batch_created', createdBatch);
+    res.status(201).json(createdBatch);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -580,8 +659,20 @@ router.put('/vaccine-batches/:id', async (req, res) => {
       return res.status(404).json({ error: 'Vaccine batch not found' });
     }
 
-    socketService.broadcast('vaccine_batch_updated', result.rows[0]);
-    res.json(result.rows[0]);
+    const updatedBatch = result.rows[0];
+    const vaccineLookup = await pool.query('SELECT name FROM vaccines WHERE id = $1', [
+      updatedBatch.vaccine_id,
+    ]);
+
+    await safeTriggerExpiryNotification({
+      vaccineName: vaccineLookup.rows[0]?.name || 'Vaccine',
+      vaccineId: updatedBatch.vaccine_id,
+      expiryDate: updatedBatch.expiry_date,
+      lotNumber: updatedBatch.lot_no,
+    });
+
+    socketService.broadcast('vaccine_batch_updated', updatedBatch);
+    res.json(updatedBatch);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1055,6 +1146,14 @@ router.post('/vaccine-inventory', async (req, res) => {
       );
     }
 
+    await safeTriggerStockNotification({
+      vaccineName: vaccineValidation.vaccine.name,
+      vaccineId: vaccineValidation.vaccine.id,
+      currentStock: computed.stockOnHand,
+      lotNumber: normalized.lot_batch_number,
+      lowStockThreshold: normalized.low_stock_threshold,
+    });
+
     socketService.broadcast('vaccine_inventory_created', result.rows[0]);
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -1162,6 +1261,18 @@ router.put('/vaccine-inventory/:id', async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Vaccine inventory record not found' });
     }
+
+    const vaccineLookup = await pool.query('SELECT name FROM vaccines WHERE id = $1', [
+      normalized.vaccine_id,
+    ]);
+
+    await safeTriggerStockNotification({
+      vaccineName: vaccineLookup.rows[0]?.name || 'Vaccine',
+      vaccineId: normalized.vaccine_id,
+      currentStock: computed.stockOnHand,
+      lotNumber: normalized.lot_batch_number,
+      lowStockThreshold: normalized.low_stock_threshold,
+    });
 
     socketService.broadcast('vaccine_inventory_updated', result.rows[0]);
     res.json(result.rows[0]);
@@ -1288,7 +1399,6 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
     // Get current user ID from JWT token
     const userId = req.user.id;
 
-    const inventoryFacilityColumn = await getInventoryFacilityColumn();
     const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
 
     // Get current inventory record to calculate balance
@@ -1407,6 +1517,14 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
         normalized.vaccine_inventory_id,
       ],
     );
+
+    await safeTriggerStockNotification({
+      vaccineName: vaccineValidation.vaccine.name,
+      vaccineId: resolvedVaccineId,
+      currentStock: newBalance,
+      lotNumber: normalized.batch_number || normalized.lot_number || inventory.lot_batch_number,
+      lowStockThreshold: inventory.low_stock_threshold,
+    });
 
     socketService.broadcast('vaccine_inventory_transaction_created', transactionResult.rows[0]);
     res.status(201).json(transactionResult.rows[0]);

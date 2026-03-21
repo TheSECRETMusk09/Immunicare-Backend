@@ -54,15 +54,25 @@ const PERMISSIONS = {
   // System permissions
   SYSTEM_SETTINGS: 'system:settings',
   SYSTEM_AUDIT: 'system:audit',
-  SYSTEM_BACKUP: 'system:backup'
+  SYSTEM_BACKUP: 'system:backup',
 };
 
 // Role definitions with permissions
 const ROLES = {
+  SYSTEM_ADMINISTRATOR: {
+    permissions: Object.values(PERMISSIONS),
+    description: 'System Administrator (Canonical)',
+    level: 100,
+  },
+  SYSTEM_ADMIN: {
+    permissions: Object.values(PERMISSIONS),
+    description: 'System Administrator (Canonical)',
+    level: 100,
+  },
   super_admin: {
     permissions: Object.values(PERMISSIONS),
     description: 'Full system access',
-    level: 100
+    level: 100,
   },
   admin: {
     permissions: [
@@ -86,14 +96,15 @@ const ROLES = {
       PERMISSIONS.USER_VIEW,
       PERMISSIONS.USER_CREATE,
       PERMISSIONS.USER_UPDATE,
-      PERMISSIONS.SYSTEM_AUDIT
+      PERMISSIONS.SYSTEM_AUDIT,
     ],
-    description: 'Health center administrator',
-    level: 80
+    description: 'Healthcare Worker Administrator',
+    level: 80,
   },
   health_worker: {
     permissions: [
       PERMISSIONS.DASHBOARD_VIEW,
+      PERMISSIONS.DASHBOARD_ANALYTICS,
       PERMISSIONS.PATIENT_VIEW,
       PERMISSIONS.PATIENT_CREATE,
       PERMISSIONS.PATIENT_UPDATE,
@@ -107,43 +118,79 @@ const ROLES = {
       PERMISSIONS.INVENTORY_CREATE,
       PERMISSIONS.INVENTORY_UPDATE,
       PERMISSIONS.REPORT_VIEW,
-      PERMISSIONS.REPORT_CREATE
+      PERMISSIONS.REPORT_CREATE,
+      PERMISSIONS.REPORT_EXPORT,
+      PERMISSIONS.USER_VIEW,
+      PERMISSIONS.USER_CREATE,
+      PERMISSIONS.USER_UPDATE,
+      PERMISSIONS.SYSTEM_AUDIT,
     ],
-    description: 'Health center worker',
-    level: 60
+    description: 'Healthcare Worker',
+    level: 60,
   },
   nurse: {
     permissions: [
       PERMISSIONS.DASHBOARD_VIEW,
+      PERMISSIONS.DASHBOARD_ANALYTICS,
       PERMISSIONS.PATIENT_VIEW,
+      PERMISSIONS.PATIENT_CREATE,
+      PERMISSIONS.PATIENT_UPDATE,
       PERMISSIONS.APPOINTMENT_VIEW,
+      PERMISSIONS.APPOINTMENT_CREATE,
       PERMISSIONS.APPOINTMENT_UPDATE,
       PERMISSIONS.VACCINATION_VIEW,
-      PERMISSIONS.VACCINATION_CREATE
+      PERMISSIONS.VACCINATION_CREATE,
+      PERMISSIONS.VACCINATION_UPDATE,
+      PERMISSIONS.INVENTORY_VIEW,
+      PERMISSIONS.INVENTORY_CREATE,
+      PERMISSIONS.INVENTORY_UPDATE,
+      PERMISSIONS.REPORT_VIEW,
+      PERMISSIONS.REPORT_CREATE,
+      PERMISSIONS.REPORT_EXPORT,
+      PERMISSIONS.USER_VIEW,
+      PERMISSIONS.USER_CREATE,
+      PERMISSIONS.USER_UPDATE,
+      PERMISSIONS.SYSTEM_AUDIT,
     ],
     description: 'Nurse',
-    level: 40
+    level: 40,
   },
   guardian: {
     permissions: [
       PERMISSIONS.DASHBOARD_VIEW,
       PERMISSIONS.PATIENT_VIEW_OWN,
       PERMISSIONS.APPOINTMENT_VIEW_OWN,
-      PERMISSIONS.VACCINATION_VIEW_OWN
+      PERMISSIONS.VACCINATION_VIEW_OWN,
     ],
     description: 'Patient guardian',
-    level: 20
+    level: 20,
   },
   user: {
     permissions: [
       PERMISSIONS.DASHBOARD_VIEW,
       PERMISSIONS.PATIENT_VIEW_OWN,
       PERMISSIONS.APPOINTMENT_VIEW_OWN,
-      PERMISSIONS.VACCINATION_VIEW_OWN
+      PERMISSIONS.VACCINATION_VIEW_OWN,
     ],
     description: 'Regular user',
-    level: 10
+    level: 10,
+  },
+};
+
+/**
+ * Helper to resolve the user's role considering the new canonical role_type
+ */
+const resolveUserRole = (user) => {
+  if (!user) {
+    return null;
   }
+  if (user.role_type === 'SYSTEM_ADMIN' || user.role === 'SYSTEM_ADMIN') {
+    return 'SYSTEM_ADMIN';
+  }
+  if (user.role_type === 'GUARDIAN' || user.role === 'GUARDIAN') {
+    return 'guardian';
+  }
+  return user.role;
 };
 
 /**
@@ -152,12 +199,11 @@ const ROLES = {
 const hasPermission = (userRole, requiredPermission) => {
   const role = ROLES[userRole];
   if (!role) {
+    // Super admin bypass or SYSTEM_ADMIN bypass
+    if (userRole === 'super_admin' || userRole === 'SYSTEM_ADMIN') {
+      return true;
+    }
     return false;
-  }
-
-  // Super admin bypass
-  if (userRole === 'super_admin') {
-    return true;
   }
 
   return role.permissions.includes(requiredPermission);
@@ -200,18 +246,18 @@ const requirePermission = (permission) => {
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required',
-          code: 'AUTH_REQUIRED'
+          code: 'AUTH_REQUIRED',
         });
       }
 
-      const userRole = req.user.role;
+      const userRole = resolveUserRole(req.user);
 
       if (!hasPermission(userRole, permission)) {
         return res.status(403).json({
           error: 'Insufficient permissions',
           code: 'INSUFFICIENT_PERMISSIONS',
           requiredPermission: permission,
-          userRole: userRole
+          userRole: userRole,
         });
       }
 
@@ -223,7 +269,7 @@ const requirePermission = (permission) => {
       console.error('Permission check error:', error);
       res.status(500).json({
         error: 'Permission check failed',
-        code: 'PERMISSION_CHECK_ERROR'
+        code: 'PERMISSION_CHECK_ERROR',
       });
     }
   };
@@ -238,18 +284,18 @@ const requireAnyPermission = (...permissions) => {
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required',
-          code: 'AUTH_REQUIRED'
+          code: 'AUTH_REQUIRED',
         });
       }
 
-      const userRole = req.user.role;
+      const userRole = resolveUserRole(req.user);
 
       if (!hasAnyPermission(userRole, permissions)) {
         return res.status(403).json({
           error: 'Insufficient permissions',
           code: 'INSUFFICIENT_PERMISSIONS',
           requiredPermissions: permissions,
-          userRole: userRole
+          userRole: userRole,
         });
       }
 
@@ -258,7 +304,7 @@ const requireAnyPermission = (...permissions) => {
       console.error('Permission check error:', error);
       res.status(500).json({
         error: 'Permission check failed',
-        code: 'PERMISSION_CHECK_ERROR'
+        code: 'PERMISSION_CHECK_ERROR',
       });
     }
   };
@@ -273,12 +319,13 @@ const requireOwnership = (resourceType, resourceIdParam = 'id') => {
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required',
-          code: 'AUTH_REQUIRED'
+          code: 'AUTH_REQUIRED',
         });
       }
 
-      // Super admin and admin bypass ownership check
-      if (req.user.role === 'super_admin' || req.user.role === 'admin') {
+      const userRole = resolveUserRole(req.user);
+      // Super admin, system admin, and admin bypass ownership check
+      if (userRole === 'SYSTEM_ADMIN' || userRole === 'super_admin' || userRole === 'admin') {
         return next();
       }
 
@@ -292,21 +339,21 @@ const requireOwnership = (resourceType, resourceIdParam = 'id') => {
       switch (resourceType) {
       case 'patient':
         query = `
-            SELECT id FROM patients 
+            SELECT id FROM patients
             WHERE id = $1 AND (created_by = $2 OR health_center_id = $3)
           `;
         params = [resourceId, userId, healthCenterId];
         break;
       case 'appointment':
         query = `
-            SELECT id FROM appointments 
+            SELECT id FROM appointments
             WHERE id = $1 AND (created_by = $2 OR health_center_id = $3)
           `;
         params = [resourceId, userId, healthCenterId];
         break;
       case 'vaccination':
         query = `
-            SELECT id FROM vaccinations 
+            SELECT id FROM vaccinations
             WHERE id = $1 AND (administered_by = $2 OR health_center_id = $3)
           `;
         params = [resourceId, userId, healthCenterId];
@@ -314,7 +361,7 @@ const requireOwnership = (resourceType, resourceIdParam = 'id') => {
       default:
         return res.status(400).json({
           error: 'Invalid resource type',
-          code: 'INVALID_RESOURCE_TYPE'
+          code: 'INVALID_RESOURCE_TYPE',
         });
       }
 
@@ -323,7 +370,7 @@ const requireOwnership = (resourceType, resourceIdParam = 'id') => {
       if (result.rows.length === 0) {
         return res.status(403).json({
           error: 'Access denied: Resource not found or no permission',
-          code: 'RESOURCE_ACCESS_DENIED'
+          code: 'RESOURCE_ACCESS_DENIED',
         });
       }
 
@@ -332,7 +379,7 @@ const requireOwnership = (resourceType, resourceIdParam = 'id') => {
       console.error('Ownership check error:', error);
       res.status(500).json({
         error: 'Ownership check failed',
-        code: 'OWNERSHIP_CHECK_ERROR'
+        code: 'OWNERSHIP_CHECK_ERROR',
       });
     }
   };
@@ -347,25 +394,26 @@ const requireHealthCenterAccess = () => {
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required',
-          code: 'AUTH_REQUIRED'
+          code: 'AUTH_REQUIRED',
         });
       }
 
-      // Super admin bypass
-      if (req.user.role === 'super_admin') {
+      const userRole = resolveUserRole(req.user);
+      // Super admin and system admin bypass
+      if (userRole === 'SYSTEM_ADMIN' || userRole === 'super_admin') {
         return next();
       }
 
       if (!req.user.health_center_id) {
         return res.status(403).json({
           error: 'Health center access required',
-          code: 'HEALTH_CENTER_REQUIRED'
+          code: 'HEALTH_CENTER_REQUIRED',
         });
       }
 
       // Add health center filter to request
       req.healthCenterFilter = {
-        health_center_id: req.user.health_center_id
+        health_center_id: req.user.health_center_id,
       };
 
       next();
@@ -373,7 +421,7 @@ const requireHealthCenterAccess = () => {
       console.error('Health center access check error:', error);
       res.status(500).json({
         error: 'Health center access check failed',
-        code: 'HEALTH_CENTER_CHECK_ERROR'
+        code: 'HEALTH_CENTER_CHECK_ERROR',
       });
     }
   };
@@ -388,16 +436,17 @@ const requireRoleHierarchy = (minRole) => {
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required',
-          code: 'AUTH_REQUIRED'
+          code: 'AUTH_REQUIRED',
         });
       }
 
-      if (!hasRoleLevel(req.user.role, minRole)) {
+      const userRole = resolveUserRole(req.user);
+      if (!hasRoleLevel(userRole, minRole)) {
         return res.status(403).json({
           error: 'Insufficient role level',
           code: 'INSUFFICIENT_ROLE_LEVEL',
           requiredRole: minRole,
-          userRole: req.user.role
+          userRole: userRole,
         });
       }
 
@@ -406,7 +455,7 @@ const requireRoleHierarchy = (minRole) => {
       console.error('Role hierarchy check error:', error);
       res.status(500).json({
         error: 'Role hierarchy check failed',
-        code: 'ROLE_HIERARCHY_CHECK_ERROR'
+        code: 'ROLE_HIERARCHY_CHECK_ERROR',
       });
     }
   };
@@ -419,7 +468,7 @@ const logAccess = async (req, permission) => {
   try {
     const query = `
       INSERT INTO access_logs (
-        user_id, username, role, permission, path, method, 
+        user_id, username, role, permission, path, method,
         ip_address, user_agent, accessed_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
     `;
@@ -432,7 +481,7 @@ const logAccess = async (req, permission) => {
       req.path,
       req.method,
       req.ip || req.connection.remoteAddress,
-      req.get('User-Agent')
+      req.get('User-Agent'),
     ]);
   } catch (error) {
     console.error('Access logging error:', error);
@@ -453,7 +502,7 @@ const getUserPermissions = (role) => {
 const getAllRoles = () => {
   return Object.entries(ROLES).map(([key, value]) => ({
     name: key,
-    ...value
+    ...value,
   }));
 };
 
@@ -479,5 +528,5 @@ module.exports = {
   getUserPermissions,
   getAllRoles,
   roleExists,
-  logAccess
+  logAccess,
 };

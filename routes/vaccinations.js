@@ -15,6 +15,11 @@ const {
   validateApprovedVaccine,
   validateApprovedVaccineBrand,
 } = require('../utils/approvedVaccines');
+const {
+  AUTO_AT_BIRTH_SOURCE,
+  isAutoAtBirthRecord,
+  normalizeDateOnly,
+} = require('../services/atBirthVaccinationService');
 const vaccineEligibilityService = require('../services/vaccineEligibilityService');
 const immunizationScheduleService = require('../services/immunizationScheduleService');
 
@@ -27,6 +32,139 @@ const PROVIDER_FALLBACK_LABEL_SQL = PROVIDER_FALLBACK_LABEL.replace(/'/g, '\'\''
 const PROVIDER_NAME_COLUMNS = ['full_name', 'name', 'username', 'email'];
 
 let providerSchemaPromise = null;
+let vaccinationTrackingColumnsPromise = null;
+let batchFacilityColumnPromise = null;
+
+const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
+
+const sanitizeOptionalText = (value) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const resolveLotBatchValue = (...values) => {
+  for (const value of values.flat()) {
+    const normalized = sanitizeOptionalText(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+};
+
+const ensureVaccinationTrackingColumns = async () => {
+  if (!vaccinationTrackingColumnsPromise) {
+    vaccinationTrackingColumnsPromise = (async () => {
+      await pool.query(`
+        ALTER TABLE immunization_records
+        ADD COLUMN IF NOT EXISTS lot_number VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS batch_number VARCHAR(255)
+      `);
+    })().catch((error) => {
+      vaccinationTrackingColumnsPromise = null;
+      throw error;
+    });
+  }
+
+  return vaccinationTrackingColumnsPromise;
+};
+
+const resolveBatchFacilityColumn = async () => {
+  if (!batchFacilityColumnPromise) {
+    batchFacilityColumnPromise = pool
+      .query(
+        `
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'vaccine_batches'
+            AND column_name = ANY($1::text[])
+        `,
+        [['clinic_id', 'facility_id']],
+      )
+      .then((result) => {
+        const availableColumns = new Set((result.rows || []).map((row) => row.column_name));
+        if (availableColumns.has('clinic_id')) {
+          return 'clinic_id';
+        }
+
+        if (availableColumns.has('facility_id')) {
+          return 'facility_id';
+        }
+
+        return null;
+      })
+      .catch((error) => {
+        batchFacilityColumnPromise = null;
+        throw error;
+      });
+  }
+
+  return batchFacilityColumnPromise;
+};
+
+const buildResolvedLotBatchExpression = (
+  recordAlias = 'ir',
+  batchAlias = 'batch',
+  preferredField = 'batch_number',
+) => {
+  const preferredColumn = preferredField === 'lot_number' ? 'lot_number' : 'batch_number';
+  const secondaryColumn = preferredColumn === 'lot_number' ? 'batch_number' : 'lot_number';
+
+  return `COALESCE(
+    NULLIF(TRIM(${recordAlias}.${preferredColumn}), ''),
+    NULLIF(TRIM(${recordAlias}.${secondaryColumn}), ''),
+    NULLIF(TRIM(${batchAlias}.lot_no), '')
+  )`;
+};
+
+const resolveBatchIdFromLotBatch = async ({
+  vaccineId,
+  batchId = null,
+  lotBatchNumber = null,
+  clinicId = null,
+}) => {
+  const parsedBatchId = parseInt(batchId, 10);
+  if (!Number.isNaN(parsedBatchId) && parsedBatchId > 0) {
+    return parsedBatchId;
+  }
+
+  const normalizedLotBatchNumber = resolveLotBatchValue(lotBatchNumber);
+  if (!normalizedLotBatchNumber) {
+    return null;
+  }
+
+  const batchFacilityColumn = clinicId ? await resolveBatchFacilityColumn() : null;
+  const scopedClinicId = clinicId ? parseInt(clinicId, 10) : null;
+  const queryParams = [vaccineId, normalizedLotBatchNumber];
+  let clinicClause = '';
+
+  if (batchFacilityColumn && !Number.isNaN(scopedClinicId) && scopedClinicId > 0) {
+    clinicClause = ` AND ${batchFacilityColumn} = $3`;
+    queryParams.push(scopedClinicId);
+  }
+
+  const result = await pool.query(
+    `
+      SELECT id
+      FROM vaccine_batches
+      WHERE vaccine_id = $1
+        AND lot_no = $2
+        AND is_active = true
+        ${clinicClause}
+      ORDER BY expiry_date ASC NULLS LAST, id ASC
+      LIMIT 1
+    `,
+    queryParams,
+  );
+
+  return result.rows[0]?.id || null;
+};
 
 const resolveProviderSchema = async () => {
   try {
@@ -130,11 +268,32 @@ const normalizeVaccinationProvider = (record) => {
     record?.provider_name || record?.administered_by_name || PROVIDER_FALLBACK_LABEL;
 
   const manualProviderName = record?.health_care_provider || null;
+  const lotBatchNumber = resolveLotBatchValue(
+    record?.lot_batch_number,
+    record?.resolved_batch_number,
+    record?.resolved_lot_number,
+    record?.batch_number,
+    record?.lot_number,
+    record?.lot_no,
+  );
+  const lotNumber = resolveLotBatchValue(
+    record?.lot_number,
+    record?.resolved_lot_number,
+    lotBatchNumber,
+  );
+  const batchNumber = resolveLotBatchValue(
+    record?.batch_number,
+    record?.resolved_batch_number,
+    lotBatchNumber,
+  );
 
   const finalProviderName = manualProviderName || userProviderName;
 
   return {
     ...record,
+    lot_batch_number: lotBatchNumber,
+    lot_number: lotNumber,
+    batch_number: batchNumber,
     provider_name: finalProviderName,
     administered_by_name: finalProviderName,
     health_care_provider: manualProviderName,
@@ -166,7 +325,10 @@ const guardianOwnsInfant = async (guardianId, infantId) => {
 };
 
 const getVaccinationRecord = async (id) => {
+  await ensureVaccinationTrackingColumns();
   const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+  const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
+  const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
 
   const result = await pool.query(
     `
@@ -178,11 +340,14 @@ const getVaccinationRecord = async (id) => {
         p.last_name AS patient_last_name,
         v.name as vaccine_name,
         v.code as vaccine_code,
+        ${resolvedBatchNumberExpression} AS resolved_batch_number,
+        ${resolvedLotNumberExpression} AS resolved_lot_number,
         ${providerValueExpression} AS provider_name,
         ${providerValueExpression} AS administered_by_name
       FROM immunization_records ir
       LEFT JOIN patients p ON p.id = ir.patient_id
       JOIN vaccines v ON v.id = ir.vaccine_id
+      LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
       ${providerJoinsSql}
       WHERE ir.id = $1
       LIMIT 1
@@ -195,6 +360,56 @@ const getVaccinationRecord = async (id) => {
   }
 
   return normalizeVaccinationProvider(result.rows[0]);
+};
+
+const validateAdministrationDateForPatient = async (patientId, adminDate) => {
+  const normalizedAdminDate = normalizeDateOnly(adminDate);
+  if (!normalizedAdminDate) {
+    return {
+      valid: false,
+      error: 'Administration date must be a valid date',
+    };
+  }
+
+  const patientResult = await pool.query(
+    `
+      SELECT dob
+      FROM patients
+      WHERE id = $1
+        AND is_active = true
+      LIMIT 1
+    `,
+    [patientId],
+  );
+
+  if (patientResult.rows.length === 0) {
+    return {
+      valid: false,
+      error: 'Patient not found',
+    };
+  }
+
+  const normalizedDob = normalizeDateOnly(patientResult.rows[0].dob);
+  const today = normalizeDateOnly(new Date());
+
+  if (normalizedAdminDate > today) {
+    return {
+      valid: false,
+      error: 'Administration date cannot be in the future',
+    };
+  }
+
+  if (normalizedDob && normalizedAdminDate < normalizedDob) {
+    return {
+      valid: false,
+      error: 'Administration date cannot be earlier than the infant\'s date of birth',
+    };
+  }
+
+  return {
+    valid: true,
+    normalizedAdminDate,
+  };
 };
 
 // Base route
@@ -215,6 +430,7 @@ router.get('/', async (_req, res) => {
 // Get vaccination records by infant ID
 router.get('/records/infant/:infantId', async (req, res) => {
   try {
+    await ensureVaccinationTrackingColumns();
     const infantId = parseInt(req.params.infantId, 10);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ error: 'Invalid infant ID' });
@@ -229,6 +445,8 @@ router.get('/records/infant/:infantId', async (req, res) => {
     }
 
     const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+    const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
+    const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
 
     const result = await pool.query(
       `
@@ -236,10 +454,13 @@ router.get('/records/infant/:infantId', async (req, res) => {
           ir.*,
           v.name as vaccine_name,
           v.code as vaccine_code,
+          ${resolvedBatchNumberExpression} as resolved_batch_number,
+          ${resolvedLotNumberExpression} as resolved_lot_number,
           ${providerValueExpression} as provider_name,
           ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
+        LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
@@ -258,8 +479,11 @@ router.get('/records/infant/:infantId', async (req, res) => {
 // Get all vaccination records (SYSTEM_ADMIN)
 router.get('/records', requirePermission('vaccination:view'), async (req, res) => {
   try {
+    await ensureVaccinationTrackingColumns();
     const limit = sanitizeLimit(req.query.limit, 200, 500);
     const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+    const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
+    const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
 
     const result = await pool.query(
       `
@@ -270,11 +494,16 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
           ir.vaccine_id,
           ir.dose_no,
           ir.admin_date,
+          ir.administered_by,
+          ir.health_care_provider,
           ir.site_of_injection,
           ir.reactions,
           ir.next_due_date,
           ir.notes,
           ir.status,
+          ir.batch_id,
+          ir.batch_number,
+          ir.lot_number,
           ir.created_at,
           ir.updated_at,
           v.name as vaccine_name,
@@ -284,12 +513,15 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
           p.dob as patient_dob,
           g.name as guardian_name,
           g.phone as guardian_phone,
+          ${resolvedBatchNumberExpression} as resolved_batch_number,
+          ${resolvedLotNumberExpression} as resolved_lot_number,
           ${providerValueExpression} as provider_name,
           ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
         LEFT JOIN patients p ON p.id = ir.patient_id
         LEFT JOIN guardians g ON g.id = p.guardian_id
+        LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         WHERE ir.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
@@ -497,18 +729,29 @@ router.get('/schedules/infant/:infantId', async (req, res) => {
 
     const recordsResult = await pool.query(
       `
-        SELECT vaccine_id, MAX(dose_no) as dose_no
+        SELECT id, vaccine_id, dose_no, admin_date, status
         FROM immunization_records
         WHERE patient_id = $1
           AND is_active = true
-        GROUP BY vaccine_id
+        ORDER BY dose_no ASC, admin_date ASC NULLS LAST
       `,
       [infantId],
     );
 
     const completedVaccines = {};
+    const completedDoseMap = new Map();
     recordsResult.rows.forEach((record) => {
-      completedVaccines[record.vaccine_id] = parseInt(record.dose_no, 10);
+      const normalizedStatus = String(record.status || '').trim().toLowerCase();
+      const isCompleted = Boolean(record.admin_date) || normalizedStatus === 'completed';
+
+      if (!isCompleted) {
+        return;
+      }
+
+      const vaccineId = parseInt(record.vaccine_id, 10);
+      const doseNumber = parseInt(record.dose_no, 10);
+      completedVaccines[vaccineId] = Math.max(completedVaccines[vaccineId] || 0, doseNumber);
+      completedDoseMap.set(`${vaccineId}:${doseNumber}`, record);
     });
 
     const scheduleResult = await pool.query(
@@ -522,7 +765,10 @@ router.get('/schedules/infant/:infantId', async (req, res) => {
 
     const schedules = scheduleResult.rows.map((schedule) => {
       const dosesCompleted = completedVaccines[schedule.vaccine_id] || 0;
-      const isComplete = dosesCompleted >= schedule.total_doses;
+      const doseNumber = parseInt(schedule.dose_number, 10);
+      const matchingRecord = completedDoseMap.get(`${schedule.vaccine_id}:${doseNumber}`) || null;
+      const isComplete = Boolean(matchingRecord);
+      const isNextDueDose = doseNumber === dosesCompleted + 1;
 
       const dueDate = new Date(dob);
       dueDate.setMonth(dueDate.getMonth() + schedule.age_in_months);
@@ -530,15 +776,29 @@ router.get('/schedules/infant/:infantId', async (req, res) => {
       return {
         id: schedule.id,
         vaccineId: schedule.vaccine_id,
+        vaccine_id: schedule.vaccine_id,
         vaccineName: schedule.vaccine_name,
-        doseNumber: schedule.dose_number,
+        doseNumber: doseNumber,
+        dose_number: doseNumber,
         totalDoses: schedule.total_doses,
         dosesCompleted,
         isComplete,
+        isNextDueDose,
         ageMonths: schedule.age_in_months,
         description: schedule.description,
         dueDate: isComplete ? null : dueDate.toISOString(),
-        isOverdue: !isComplete && dueDate < new Date(),
+        due_date: isComplete ? null : dueDate.toISOString(),
+        adminDate: matchingRecord?.admin_date || null,
+        admin_date: matchingRecord?.admin_date || null,
+        recordId: matchingRecord?.id || null,
+        status: isComplete
+          ? 'completed'
+          : !isNextDueDose
+            ? 'upcoming'
+            : dueDate < new Date()
+              ? 'overdue'
+              : 'pending',
+        isOverdue: !isComplete && isNextDueDose && dueDate < new Date(),
       };
     });
 
@@ -552,6 +812,7 @@ router.get('/schedules/infant/:infantId', async (req, res) => {
 // Create vaccination record (SYSTEM_ADMIN)
 router.post('/records', requirePermission('vaccination:create'), async (req, res) => {
   try {
+    await ensureVaccinationTrackingColumns();
     const {
       patient_id,
       vaccine_id,
@@ -565,6 +826,9 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       notes,
       status,
       batch_id,
+      lot_number,
+      batch_number,
+      lot_batch_number,
       schedule_id,
       manufacturer,
       brand_name,
@@ -579,6 +843,13 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
         error: 'Missing required fields: patient_id, vaccine_id, dose_no, and admin_date are required',
       });
     }
+
+    const adminDateValidation = await validateAdministrationDateForPatient(patient_id, admin_date);
+    if (!adminDateValidation.valid) {
+      return res.status(400).json({ error: adminDateValidation.error });
+    }
+
+    const normalizedAdminDate = adminDateValidation.normalizedAdminDate;
 
     // Validate vaccine is approved
     console.log('[VACCINATION CREATE] Validating vaccine_id:', vaccine_id);
@@ -600,25 +871,100 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       return res.status(400).json({ error: brandValidation.error });
     }
 
+    const normalizedLotBatchNumber = resolveLotBatchValue(
+      lot_batch_number,
+      batch_number,
+      lot_number,
+    );
+    const resolvedBatchId = await resolveBatchIdFromLotBatch({
+      vaccineId: vaccineValidation.vaccine.id,
+      batchId: batch_id,
+      lotBatchNumber: normalizedLotBatchNumber,
+      clinicId: req.user?.clinic_id || req.user?.facility_id || null,
+    });
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
       const duplicateCheck = await client.query(
         `
-           SELECT id
+           SELECT *
            FROM immunization_records
            WHERE patient_id = $1
-             AND vaccine_id = $2
-             AND dose_no = $3
-             AND COALESCE(schedule_id, 0) = COALESCE($4, 0)
-             AND is_active = true
+              AND vaccine_id = $2
+              AND dose_no = $3
+              AND is_active = true
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC
            LIMIT 1
          `,
-        [patient_id, vaccine_id, dose_no, schedule_id || null],
+        [patient_id, vaccine_id, dose_no],
       );
 
       if (duplicateCheck.rows.length > 0) {
+        const existingRecord = duplicateCheck.rows[0];
+        const existingStatus = String(existingRecord.status || '').trim().toLowerCase();
+
+        if (
+          isAutoAtBirthRecord(existingRecord) ||
+          !existingRecord.admin_date ||
+          existingStatus === 'pending' ||
+          existingStatus === 'scheduled'
+        ) {
+          const updateResult = await client.query(
+            `
+              UPDATE immunization_records
+              SET admin_date = $1,
+                  administered_by = COALESCE($2, administered_by),
+                  health_care_provider = $3,
+                  site_of_injection = $4,
+                  reactions = $5,
+                  next_due_date = $6,
+                  notes = $7,
+                  status = 'completed',
+                  batch_id = COALESCE($8, batch_id),
+                  batch_number = COALESCE($9, batch_number),
+                  lot_number = COALESCE($10, lot_number),
+                  schedule_id = COALESCE(schedule_id, $11),
+                  source_facility = CASE
+                    WHEN source_facility = $12 THEN NULL
+                    ELSE source_facility
+                  END,
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = $13
+              RETURNING *
+            `,
+            [
+              normalizedAdminDate,
+              administered_by || req.user.id,
+              health_care_provider || null,
+              site_of_injection || null,
+              reactions || null,
+              next_due_date || null,
+              notes || null,
+              resolvedBatchId || null,
+              normalizedLotBatchNumber,
+              normalizedLotBatchNumber,
+              schedule_id || null,
+              AUTO_AT_BIRTH_SOURCE,
+              existingRecord.id,
+            ],
+          );
+
+          await client.query('COMMIT');
+
+          const updatedRecord = await getVaccinationRecord(existingRecord.id);
+
+          try {
+            await reminderService.sendFirstVaccineNotification(patient_id, vaccine_id, normalizedAdminDate);
+          } catch (notificationError) {
+            console.error('Error sending vaccine notification:', notificationError);
+          }
+
+          socketService.broadcast('vaccination_updated', updatedRecord || updateResult.rows[0]);
+          return res.status(200).json(updatedRecord || updateResult.rows[0]);
+        }
+
         await client.query('ROLLBACK');
         return res.status(409).json({
           error: 'Duplicate vaccination record for this infant and schedule',
@@ -640,16 +986,18 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
              notes,
              status,
              batch_id,
+             batch_number,
+             lot_number,
              schedule_id
            )
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
            RETURNING *
          `,
         [
           patient_id,
           vaccine_id,
           dose_no,
-          admin_date,
+          normalizedAdminDate,
           administered_by || req.user.id,
           health_care_provider || null,
           site_of_injection || null,
@@ -657,32 +1005,36 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
           next_due_date || null,
           notes || null,
           status || 'completed',
-          batch_id || null,
+          resolvedBatchId || null,
+          normalizedLotBatchNumber,
+          normalizedLotBatchNumber,
           schedule_id || null,
         ],
       );
 
-      if (batch_id) {
+      if (resolvedBatchId) {
         await client.query(
           `
              UPDATE vaccine_batches
              SET qty_current = qty_current - 1
              WHERE id = $1
            `,
-          [batch_id],
+          [resolvedBatchId],
         );
       }
 
       await client.query('COMMIT');
 
+      const createdRecord = await getVaccinationRecord(insertResult.rows[0].id);
+
       try {
-        await reminderService.sendFirstVaccineNotification(patient_id, vaccine_id, admin_date);
+        await reminderService.sendFirstVaccineNotification(patient_id, vaccine_id, normalizedAdminDate);
       } catch (notificationError) {
         console.error('Error sending vaccine notification:', notificationError);
       }
 
-      socketService.broadcast('vaccination_created', insertResult.rows[0]);
-      res.status(201).json(insertResult.rows[0]);
+      socketService.broadcast('vaccination_created', createdRecord || insertResult.rows[0]);
+      res.status(201).json(createdRecord || insertResult.rows[0]);
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -709,12 +1061,125 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
   }
 });
 
+router.put('/records/:id/guardian-date', async (req, res) => {
+  try {
+    if (!isGuardian(req)) {
+      return res.status(403).json({ error: 'Only guardians can update administered dates here' });
+    }
+
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid vaccination ID' });
+    }
+
+    const record = await getVaccinationRecord(id);
+    if (!record) {
+      return res.status(404).json({ error: 'Vaccination record not found' });
+    }
+
+    const guardianId = parseInt(req.user.guardian_id, 10);
+    if (!guardianId || guardianId !== parseInt(record.owner_guardian_id, 10)) {
+      return res.status(403).json({ error: 'Access denied for this vaccination record' });
+    }
+
+    const adminDateValidation = await validateAdministrationDateForPatient(
+      record.patient_id,
+      req.body?.admin_date,
+    );
+    if (!adminDateValidation.valid) {
+      return res.status(400).json({ error: adminDateValidation.error });
+    }
+
+    const result = await pool.query(
+      `
+        UPDATE immunization_records
+        SET admin_date = $1,
+            status = 'completed',
+            source_facility = CASE
+              WHEN source_facility = $2 THEN NULL
+              ELSE source_facility
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3
+          AND is_active = true
+        RETURNING *
+      `,
+      [adminDateValidation.normalizedAdminDate, AUTO_AT_BIRTH_SOURCE, id],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Vaccination record not found' });
+    }
+
+    const updatedRecord = await getVaccinationRecord(id);
+    socketService.broadcast('vaccination_updated', updatedRecord || result.rows[0]);
+    return res.json(updatedRecord || result.rows[0]);
+  } catch (error) {
+    console.error('Error updating guardian vaccination administration date:', error);
+    return res.status(500).json({ error: 'Failed to update vaccination administration date' });
+  }
+});
+
 // Update vaccination record (SYSTEM_ADMIN)
 router.put('/records/:id', requirePermission('vaccination:update'), async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
       return res.status(400).json({ error: 'Invalid vaccination ID' });
+    }
+
+    const existingRecord = await getVaccinationRecord(id);
+    if (!existingRecord) {
+      return res.status(404).json({ error: 'Vaccination record not found' });
+    }
+
+    await ensureVaccinationTrackingColumns();
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'admin_date')) {
+      const adminDateValidation = await validateAdministrationDateForPatient(
+        existingRecord.patient_id,
+        req.body.admin_date,
+      );
+
+      if (!adminDateValidation.valid) {
+        return res.status(400).json({ error: adminDateValidation.error });
+      }
+
+      req.body.admin_date = adminDateValidation.normalizedAdminDate;
+      if (!Object.prototype.hasOwnProperty.call(req.body, 'status')) {
+        req.body.status = 'completed';
+      }
+    }
+
+    const hasLotBatchInput = ['lot_batch_number', 'lot_number', 'batch_number'].some((field) =>
+      hasOwn(req.body, field),
+    );
+
+    if (hasLotBatchInput) {
+      const normalizedLotBatchNumber = resolveLotBatchValue(
+        req.body.lot_batch_number,
+        req.body.batch_number,
+        req.body.lot_number,
+      );
+      req.body.batch_number = normalizedLotBatchNumber;
+      req.body.lot_number = normalizedLotBatchNumber;
+    }
+
+    if (hasLotBatchInput || hasOwn(req.body, 'batch_id')) {
+      const resolvedBatchId = await resolveBatchIdFromLotBatch({
+        vaccineId: existingRecord.vaccine_id,
+        batchId: req.body.batch_id,
+        lotBatchNumber: resolveLotBatchValue(
+          req.body.lot_batch_number,
+          req.body.batch_number,
+          req.body.lot_number,
+        ),
+        clinicId: req.user?.clinic_id || req.user?.facility_id || null,
+      });
+
+      if (resolvedBatchId) {
+        req.body.batch_id = resolvedBatchId;
+      }
     }
 
     const allowedFields = [
@@ -728,6 +1193,8 @@ router.put('/records/:id', requirePermission('vaccination:update'), async (req, 
       'notes',
       'status',
       'batch_id',
+      'batch_number',
+      'lot_number',
       'schedule_id',
     ];
 
@@ -745,6 +1212,14 @@ router.put('/records/:id', requirePermission('vaccination:update'), async (req, 
 
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(req.body, 'admin_date') &&
+      !Object.prototype.hasOwnProperty.call(req.body, 'source_facility') &&
+      isAutoAtBirthRecord(existingRecord)
+    ) {
+      updates.push('source_facility = NULL');
     }
 
     updates.push('updated_at = CURRENT_TIMESTAMP');
@@ -765,8 +1240,9 @@ router.put('/records/:id', requirePermission('vaccination:update'), async (req, 
       return res.status(404).json({ error: 'Vaccination record not found' });
     }
 
-    socketService.broadcast('vaccination_updated', result.rows[0]);
-    res.json(result.rows[0]);
+    const updatedRecord = await getVaccinationRecord(id);
+    socketService.broadcast('vaccination_updated', updatedRecord || result.rows[0]);
+    res.json(updatedRecord || result.rows[0]);
   } catch (error) {
     console.error('Error updating vaccination record:', error);
     res.status(500).json({ error: 'Failed to update vaccination record' });
@@ -814,6 +1290,7 @@ router.get('/:id(\\d+)', async (req, res) => {
 // Get vaccinations by patient ID
 router.get('/patient/:patientId', async (req, res) => {
   try {
+    await ensureVaccinationTrackingColumns();
     const patientId = parseInt(req.params.patientId, 10);
     if (Number.isNaN(patientId)) {
       return res.status(400).json({ error: 'Invalid patient ID' });
@@ -828,6 +1305,8 @@ router.get('/patient/:patientId', async (req, res) => {
     }
 
     const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+    const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
+    const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
 
     const result = await pool.query(
       `
@@ -835,10 +1314,13 @@ router.get('/patient/:patientId', async (req, res) => {
           ir.*,
           v.name as vaccine_name,
           v.code as vaccine_code,
+          ${resolvedBatchNumberExpression} as resolved_batch_number,
+          ${resolvedLotNumberExpression} as resolved_lot_number,
           ${providerValueExpression} as provider_name,
           ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
+        LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
@@ -889,6 +1371,7 @@ router.delete('/:id(\\d+)', requirePermission('vaccination:delete'), async (req,
 // Get vaccination history for a patient
 router.get('/patient/:patientId/history', async (req, res) => {
   try {
+    await ensureVaccinationTrackingColumns();
     const patientId = parseInt(req.params.patientId, 10);
     if (Number.isNaN(patientId)) {
       return res.status(400).json({ error: 'Invalid patient ID' });
@@ -903,6 +1386,8 @@ router.get('/patient/:patientId/history', async (req, res) => {
     }
 
     const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
+    const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
+    const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
 
     const records = await pool.query(
       `
@@ -910,10 +1395,13 @@ router.get('/patient/:patientId/history', async (req, res) => {
           ir.*,
           v.name as vaccine_name,
           v.code as vaccine_code,
+          ${resolvedBatchNumberExpression} as resolved_batch_number,
+          ${resolvedLotNumberExpression} as resolved_lot_number,
           ${providerValueExpression} as provider_name,
           ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
+        LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
@@ -982,7 +1470,7 @@ router.get('/patient/:patientId/schedule', async (req, res) => {
 
     const records = await pool.query(
       `
-        SELECT vaccine_id, dose_no
+        SELECT id, vaccine_id, dose_no, admin_date, status
         FROM immunization_records
         WHERE patient_id = $1
           AND is_active = true
@@ -1011,13 +1499,18 @@ router.get('/patient/:patientId/schedule', async (req, res) => {
       (today.getFullYear() - dob.getFullYear()) * 12 + (today.getMonth() - dob.getMonth());
 
     const completedVaccines = {};
+    const completedDoseMap = new Map();
     records.rows.forEach((record) => {
-      if (!completedVaccines[record.vaccine_id]) {
-        completedVaccines[record.vaccine_id] = 0;
+      const normalizedStatus = String(record.status || '').trim().toLowerCase();
+      const isCompleted = Boolean(record.admin_date) || normalizedStatus === 'completed';
+      if (!isCompleted) {
+        return;
       }
-      if (record.dose_no > completedVaccines[record.vaccine_id]) {
-        completedVaccines[record.vaccine_id] = record.dose_no;
-      }
+
+      const vaccineId = parseInt(record.vaccine_id, 10);
+      const doseNumber = parseInt(record.dose_no, 10);
+      completedVaccines[vaccineId] = Math.max(completedVaccines[vaccineId] || 0, doseNumber);
+      completedDoseMap.set(`${vaccineId}:${doseNumber}`, record);
     });
 
     const schedule = await pool.query(
@@ -1033,21 +1526,35 @@ router.get('/patient/:patientId/schedule', async (req, res) => {
 
     const vaccinationStatus = schedule.rows.map((scheduleItem) => {
       const dosesCompleted = completedVaccines[scheduleItem.vaccine_id] || 0;
-      const isComplete = dosesCompleted >= scheduleItem.total_doses;
+      const doseNumber = parseInt(scheduleItem.dose_number, 10);
+      const matchingRecord = completedDoseMap.get(`${scheduleItem.vaccine_id}:${doseNumber}`) || null;
+      const isComplete = Boolean(matchingRecord);
+      const isNextDueDose = doseNumber === dosesCompleted + 1;
 
       const dueDate = new Date(dob);
       dueDate.setMonth(dueDate.getMonth() + scheduleItem.age_in_months);
 
       return {
         vaccineName: scheduleItem.vaccine_name,
-        doseNumber: scheduleItem.dose_number,
+        vaccineId: scheduleItem.vaccine_id,
+        doseNumber: doseNumber,
         totalDoses: scheduleItem.total_doses,
         dosesCompleted,
         isComplete,
+        isNextDueDose,
         ageMonths: scheduleItem.age_in_months,
         description: scheduleItem.description,
         dueDate: isComplete ? null : dueDate,
-        isOverdue: !isComplete && dueDate < today,
+        adminDate: matchingRecord?.admin_date || null,
+        recordId: matchingRecord?.id || null,
+        status: isComplete
+          ? 'completed'
+          : !isNextDueDose
+            ? 'upcoming'
+            : dueDate < today
+              ? 'overdue'
+              : 'pending',
+        isOverdue: !isComplete && isNextDueDose && dueDate < today,
       };
     });
 

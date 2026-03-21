@@ -900,6 +900,38 @@ const getAppointmentsByGuardian = async (guardianId, limit = 5) => {
   }
 };
 
+const findConflictingActiveAppointment = async ({
+  infantId,
+  scheduledDate,
+  excludeAppointmentId = null,
+} = {}) => {
+  const parsedDate = parseDate(scheduledDate);
+  if (!infantId || !parsedDate) {
+    return null;
+  }
+
+  const { appointmentsPatient } = await getSchemaColumnMappings();
+  const params = [infantId, toDateKey(parsedDate)];
+  let query = `
+    SELECT id, scheduled_date, status
+    FROM appointments
+    WHERE ${appointmentsPatient} = $1
+      AND DATE(scheduled_date) = $2::date
+      AND is_active = true
+      AND status IN ('pending', 'scheduled')
+  `;
+
+  if (excludeAppointmentId) {
+    query += ` AND id <> $3`;
+    params.push(excludeAppointmentId);
+  }
+
+  query += ' ORDER BY scheduled_date ASC LIMIT 1';
+
+  const result = await pool.query(query, params);
+  return result.rows[0] || null;
+};
+
 /**
  * Creates a new appointment and sends notifications.
  * This is a new, production-ready function demonstrating the usage of the notification service.
@@ -1662,4 +1694,5 @@ module.exports = {
   notifyGuardianVaccineUnavailable,
   processMissedAppointments, // Export missed appointment processor
   checkAutoApprovalEligibility, // Export auto-approval checker
+  findConflictingActiveAppointment,
 };

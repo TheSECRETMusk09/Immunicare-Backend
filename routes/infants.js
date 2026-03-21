@@ -10,6 +10,7 @@ const {
   resolveOrCreateInfantPatient,
   INFANT_CONTROL_NUMBER_PATTERN,
 } = require('../services/infantControlNumberService');
+const { ensureAtBirthVaccinationRecords } = require('../services/atBirthVaccinationService');
 const socketService = require('../services/socketService');
 const adminNotificationService = require('../services/adminNotificationService');
 const { calculateAgeInMonths } = require('../utils/ageCalculation');
@@ -70,6 +71,7 @@ const toNullableString = (value) => {
 };
 
 let ensurePatientLocationColumnsPromise = null;
+let importedVaccinationPredicatePromise = null;
 
 const ensurePatientLocationColumnsExist = async () => {
   if (!ensurePatientLocationColumnsPromise) {
@@ -83,6 +85,31 @@ const ensurePatientLocationColumnsExist = async () => {
   }
 
   return ensurePatientLocationColumnsPromise;
+};
+
+const getImportedVaccinationPredicate = async () => {
+  if (!importedVaccinationPredicatePromise) {
+    importedVaccinationPredicatePromise = pool
+      .query(
+        `
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'immunization_records'
+            AND column_name = 'is_imported'
+          LIMIT 1
+        `,
+      )
+      .then((result) =>
+        result.rows.length > 0 ? 'COALESCE(ir.is_imported, false) = true' : 'false',
+      )
+      .catch((error) => {
+        importedVaccinationPredicatePromise = null;
+        throw error;
+      });
+  }
+
+  return importedVaccinationPredicatePromise;
 };
 
 const buildBackfillAssignments = (columnValues = {}) => {
@@ -320,6 +347,24 @@ router.get('/guardian/:guardianId', async (req, res) => {
           p.allergy_information,
           p.health_care_provider,
           (
+            SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND ir.is_active = true
+              AND (
+                ir.status = 'completed'
+                OR ir.admin_date IS NOT NULL
+              )
+          ) AS completed_vaccinations,
+          (
+            SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND ir.is_active = true
+              AND COALESCE(ir.status, 'pending') IN ('scheduled', 'pending')
+              AND ir.admin_date IS NULL
+          ) AS pending_vaccinations,
+          (
             SELECT json_agg(
               json_build_object(
                 'id', ia.id,
@@ -357,6 +402,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
 
     const limit = parseInt(req.query.limit, 10) || 100;
     const offset = parseInt(req.query.offset, 10) || 0;
+    const importedVaccinationPredicate = await getImportedVaccinationPredicate();
 
     // Ensure age_months column exists and update ages
     await pool.query(`
@@ -378,6 +424,63 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
           COALESCE(p.mother_name, p.father_name, g.name) as primary_parent_name,
           COALESCE(p.cellphone_number, g.phone) as primary_contact,
           EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.dob)) * 12 + EXTRACT(MONTH FROM AGE(CURRENT_DATE, p.dob)) as calculated_age_months,
+          (
+            SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND (
+                LOWER(COALESCE(ir.status, '')) = 'completed'
+                OR ir.admin_date IS NOT NULL
+              )
+          ) AS completed_vaccinations,
+          (
+            SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND COALESCE(LOWER(ir.status), 'pending') IN ('scheduled', 'pending')
+              AND ir.admin_date IS NULL
+          ) AS pending_vaccinations,
+          (
+           SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND ${importedVaccinationPredicate}
+              AND (
+                LOWER(COALESCE(ir.status, '')) = 'completed'
+                OR ir.admin_date IS NOT NULL
+              )
+          ) AS imported_vaccinations,
+          (
+            SELECT tic.id
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_id,
+          (
+            SELECT tic.validation_status
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_status,
+          (
+            SELECT tic.source_facility
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_source_facility,
+          (
+            SELECT tic.updated_at
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_updated_at,
           (
             SELECT json_agg(
               json_build_object(
@@ -592,6 +695,8 @@ router.get('/:id(\\d+)', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
     }
 
+    const importedVaccinationPredicate = await getImportedVaccinationPredicate();
+
     if (isGuardian(req)) {
       const isOwner = await guardianOwnsInfant(parseInt(req.user.guardian_id, 10), infantId);
       if (!isOwner) {
@@ -608,6 +713,63 @@ router.get('/:id(\\d+)', async (req, res) => {
           g.phone as guardian_phone,
           g.email as guardian_email,
           EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.dob)) * 12 + EXTRACT(MONTH FROM AGE(CURRENT_DATE, p.dob)) as calculated_age_months,
+          (
+            SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND (
+                LOWER(COALESCE(ir.status, '')) = 'completed'
+                OR ir.admin_date IS NOT NULL
+              )
+          ) AS completed_vaccinations,
+          (
+            SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND COALESCE(LOWER(ir.status), 'pending') IN ('scheduled', 'pending')
+              AND ir.admin_date IS NULL
+          ) AS pending_vaccinations,
+          (
+           SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND ${importedVaccinationPredicate}
+              AND (
+                LOWER(COALESCE(ir.status, '')) = 'completed'
+                OR ir.admin_date IS NOT NULL
+              )
+          ) AS imported_vaccinations,
+          (
+            SELECT tic.id
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_id,
+          (
+            SELECT tic.validation_status
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_status,
+          (
+            SELECT tic.source_facility
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_source_facility,
+          (
+            SELECT tic.updated_at
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_updated_at,
           (
             SELECT json_agg(
               json_build_object(
@@ -853,6 +1015,10 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       return res.status(500).json({ success: false, error: 'Failed to resolve infant record' });
     }
 
+    await ensureAtBirthVaccinationRecords(resolved.id, {
+      patientDob: result.rows[0].dob,
+    });
+
     socketService.broadcast('infant_created', result.rows[0]);
     res.status(resolved.existed ? 200 : 201).json({
       success: true,
@@ -1047,6 +1213,10 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
     if (result.rows.length === 0) {
       return res.status(500).json({ success: false, error: 'Failed to resolve child record' });
     }
+
+    await ensureAtBirthVaccinationRecords(resolved.id, {
+      patientDob: result.rows[0].dob,
+    });
 
     socketService.broadcast('infant_created', result.rows[0]);
 

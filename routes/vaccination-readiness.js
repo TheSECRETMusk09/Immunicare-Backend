@@ -2,12 +2,25 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
-const { requirePermission } = require('../middleware/rbac');
+const {
+  CANONICAL_ROLES,
+  getCanonicalRole,
+  requirePermission,
+} = require('../middleware/rbac');
 const socketService = require('../services/socketService');
 const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
 
 // Middleware to authenticate all routes
 router.use(authenticateToken);
+
+const guardianOwnsInfant = async (guardianId, infantId) => {
+  const result = await pool.query(
+    'SELECT id FROM patients WHERE id = $1 AND guardian_id = $2 AND is_active = true LIMIT 1',
+    [infantId, guardianId],
+  );
+
+  return result.rows.length > 0;
+};
 
 /**
  * Get infant vaccine readiness status
@@ -50,16 +63,25 @@ router.get('/infant/:infantId', async (req, res) => {
 
     // Get completed vaccinations
     const completedResult = await pool.query(
-      `SELECT DISTINCT vaccine_id, MAX(dose_no) as dose_no
-       FROM immunization_records
-       WHERE patient_id = $1 AND is_active = true AND status = 'completed'
-       GROUP BY vaccine_id`,
+      `SELECT ir.vaccine_id, ir.dose_no, ir.admin_date
+        FROM immunization_records ir
+        WHERE patient_id = $1
+          AND is_active = true
+          AND (
+            status = 'completed'
+            OR admin_date IS NOT NULL
+          )
+        ORDER BY ir.admin_date DESC`,
       [infantId],
     );
 
     const completedVaccines = {};
+    const completedDoseMap = new Map();
     completedResult.rows.forEach(record => {
-      completedVaccines[record.vaccine_id] = record.dose_no;
+      const vaccineId = parseInt(record.vaccine_id, 10);
+      const doseNumber = parseInt(record.dose_no, 10);
+      completedVaccines[vaccineId] = Math.max(completedVaccines[vaccineId] || 0, doseNumber);
+      completedDoseMap.set(`${vaccineId}:${doseNumber}`, record);
     });
 
     const readinessMap = {};
@@ -79,20 +101,29 @@ router.get('/infant/:infantId', async (req, res) => {
     // Build response with status
     const schedules = schedulesResult.rows.map(schedule => {
       const dosesCompleted = completedVaccines[schedule.vaccine_id] || 0;
-      const isComplete = dosesCompleted >= schedule.total_doses;
+      const doseNumber = parseInt(schedule.dose_number, 10);
+      const matchingDose = completedDoseMap.get(`${schedule.vaccine_id}:${doseNumber}`) || null;
+      const isComplete = Boolean(matchingDose);
+      const isNextDueDose = doseNumber === dosesCompleted + 1;
       const readiness = readinessMap[schedule.vaccine_id] || { isReady: false };
 
       // Calculate due date based on schedule
       const dueDate = new Date(infantDob);
       dueDate.setDate(dueDate.getDate() + (schedule.minimum_age_days || schedule.age_in_months * 30));
 
-      const isOverdue = !isComplete && dueDate < today;
-      const isDueSoon = !isComplete && !isOverdue && dueDate <= new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000);
+      const isOverdue = !isComplete && isNextDueDose && dueDate < today;
+      const isDueSoon =
+        !isComplete &&
+        isNextDueDose &&
+        !isOverdue &&
+        dueDate <= new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000);
 
       // Determine status based on age and readiness
       let status;
       if (isComplete) {
         status = 'completed';
+      } else if (!isNextDueDose) {
+        status = 'upcoming';
       } else if (ageInDays < (schedule.minimum_age_days || schedule.age_in_months * 30)) {
         status = 'upcoming'; // Not yet eligible due to age
       } else if (!readiness.isReady) {
@@ -110,20 +141,23 @@ router.get('/infant/:infantId', async (req, res) => {
         vaccineId: schedule.vaccine_id,
         vaccineName: schedule.vaccine_name,
         vaccineCode: schedule.vaccine_code,
-        doseNumber: schedule.dose_number,
+        doseNumber: doseNumber,
         totalDoses: schedule.total_doses,
         dosesCompleted,
         isComplete,
+        isNextDueDose,
         ageInMonths: schedule.age_in_months,
         minimumAgeDays: schedule.minimum_age_days || schedule.age_in_months * 30,
         dueDate: dueDate.toISOString(),
+        adminDate: matchingDose?.admin_date || null,
+        recordId: matchingDose?.id || null,
         isOverdue,
         isDueSoon,
         isReady: readiness.isReady,
         readinessConfirmedBy: readiness.confirmedBy,
         readinessConfirmedAt: readiness.confirmedAt,
         status,
-        canBeAdministered: readiness.isReady && !isComplete,
+        canBeAdministered: readiness.isReady && !isComplete && isNextDueDose,
       };
     });
 
@@ -379,15 +413,11 @@ router.get('/schedule/:infantId', async (req, res) => {
       return res.status(400).json({ error: 'Invalid infant ID' });
     }
 
-    // Verify guardian access
-    if (req.user.role === 'guardian') {
-      const guardianId = req.user.guardian_id;
-      const ownershipResult = await pool.query(
-        'SELECT id FROM patients WHERE id = $1 AND guardian_id = $2 AND is_active = true',
-        [infantId, guardianId],
-      );
+    if (getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
 
-      if (ownershipResult.rows.length === 0) {
+      if (!isOwner) {
         return res.status(403).json({ error: 'Access denied for this infant' });
       }
     }
@@ -413,7 +443,12 @@ router.get('/schedule/:infantId', async (req, res) => {
       `SELECT ir.vaccine_id, ir.dose_no, ir.admin_date, v.name as vaccine_name
        FROM immunization_records ir
        JOIN vaccines v ON ir.vaccine_id = v.id
-       WHERE ir.patient_id = $1 AND ir.is_active = true AND ir.status = 'completed'
+       WHERE ir.patient_id = $1
+         AND ir.is_active = true
+         AND (
+           LOWER(COALESCE(ir.status, '')) = 'completed'
+           OR ir.admin_date IS NOT NULL
+         )
        ORDER BY ir.admin_date DESC`,
       [infantId],
     );
@@ -439,23 +474,36 @@ router.get('/schedule/:infantId', async (req, res) => {
 
     // Map completed vaccinations
     const completedMap = {};
+    const completedDoseMap = new Map();
     completedResult.rows.forEach(record => {
-      if (!completedMap[record.vaccine_id]) {
-        completedMap[record.vaccine_id] = [];
+      const vaccineId = parseInt(record.vaccine_id, 10);
+      const doseNumber = parseInt(record.dose_no, 10);
+      if (!completedMap[vaccineId]) {
+        completedMap[vaccineId] = [];
       }
-      completedMap[record.vaccine_id].push(record);
+      completedMap[vaccineId].push(record);
+      completedDoseMap.set(`${vaccineId}:${doseNumber}`, record);
     });
 
     // Build guardian-friendly response
     const scheduleData = schedulesResult.rows.map(schedule => {
       const completedDoses = completedMap[schedule.vaccine_id] || [];
-      const isComplete = completedDoses.length >= schedule.total_doses;
+      const doseNumber = parseInt(schedule.dose_number, 10);
+      const matchingDose = completedDoseMap.get(`${schedule.vaccine_id}:${doseNumber}`) || null;
+      const isComplete = Boolean(matchingDose);
       const isReady = readyVaccines.has(schedule.vaccine_id);
+      const completedDoseCount = completedDoses.length;
+      const isNextDueDose = doseNumber === completedDoseCount + 1;
 
       const dueDate = new Date(infantDob);
       dueDate.setDate(dueDate.getDate() + (schedule.minimum_age_days || schedule.age_in_months * 30));
 
-      const isOverdue = !isComplete && dueDate < today;
+      const isOverdue = !isComplete && isNextDueDose && dueDate < today;
+      const isDueSoon =
+        !isComplete &&
+        isNextDueDose &&
+        !isOverdue &&
+        dueDate <= new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000);
       const ageRequirementMet = ageInDays >= (schedule.minimum_age_days || schedule.age_in_months * 30);
 
       // Status logic:
@@ -467,17 +515,19 @@ router.get('/schedule/:infantId', async (req, res) => {
       let status;
       if (isComplete) {
         status = 'completed';
-      } else if (!ageRequirementMet) {
+      } else if (!ageRequirementMet || !isNextDueDose) {
         status = 'upcoming';
       } else if (!isReady) {
         status = 'pending_confirmation';
       } else if (isOverdue) {
         status = 'overdue';
+      } else if (isDueSoon) {
+        status = 'due_soon';
       } else {
         status = 'ready';
       }
 
-      const lastDose = completedDoses.length > 0 ? completedDoses[0] : null;
+      const lastDose = matchingDose || (completedDoses.length > 0 ? completedDoses[0] : null);
 
       return {
         vaccine: {
@@ -486,20 +536,23 @@ router.get('/schedule/:infantId', async (req, res) => {
           code: schedule.vaccine_code,
         },
         dose: {
-          number: schedule.dose_number,
+          number: doseNumber,
           total: schedule.total_doses,
-          completed: completedDoses.length,
+          completed: completedDoseCount,
         },
         schedule: {
           ageInMonths: schedule.age_in_months,
           minimumAgeDays: schedule.minimum_age_days || schedule.age_in_months * 30,
           dueDate: dueDate.toISOString(),
           isOverdue,
+          isDueSoon,
         },
         status,
         isReady,
+        isNextDueDose,
+        recordId: matchingDose?.id || null,
         lastAdministered: lastDose ? lastDose.admin_date : null,
-        canBeAdministered: isReady && !isComplete,
+        canBeAdministered: isReady && !isComplete && isNextDueDose,
       };
     });
 
@@ -515,6 +568,7 @@ router.get('/schedule/:infantId', async (req, res) => {
         totalVaccines: scheduleData.length,
         completed: scheduleData.filter(s => s.status === 'completed').length,
         ready: scheduleData.filter(s => s.status === 'ready').length,
+        dueSoon: scheduleData.filter(s => s.status === 'due_soon').length,
         upcoming: scheduleData.filter(s => s.status === 'upcoming').length,
         overdue: scheduleData.filter(s => s.status === 'overdue').length,
         pendingConfirmation: scheduleData.filter(s => s.status === 'pending_confirmation').length,

@@ -13,6 +13,10 @@ const {
   validateApprovedVaccine,
   validateApprovedVaccineName,
 } = require('../utils/approvedVaccines');
+const {
+  ensureAtBirthVaccinationRecords,
+  importVaccinationRecord,
+} = require('../services/atBirthVaccinationService');
 
 router.use(authenticateToken);
 
@@ -102,6 +106,10 @@ router.post('/validate', requirePermission(TRANSFER_PERMISSIONS.VALIDATE), async
     const infant = infantResult.rows[0];
     const dob = new Date(infant.dob);
     const today = new Date();
+
+    await ensureAtBirthVaccinationRecords(infantId, {
+      patientDob: infant.dob,
+    });
 
     // Validate each vaccine
     const validationResults = [];
@@ -273,6 +281,11 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
     try {
       await client.query('BEGIN');
 
+      await ensureAtBirthVaccinationRecords(infantId, {
+        patientDob: infant.dob,
+        client,
+      });
+
       const importResults = [];
 
       for (const vaccine of vaccines) {
@@ -341,52 +354,20 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
           continue;
         }
 
-        // Check for duplicate
-        const duplicateCheck = await client.query(
-          `SELECT id FROM immunization_records
-           WHERE patient_id = $1 AND vaccine_id = $2 AND dose_no = $3
-           AND DATE(admin_date) = DATE($4) AND is_active = true LIMIT 1`,
-          [infantId, vaccineLookup.vaccine.id, parsedDoseNumber, vaccine.dateAdministered],
-        );
+        const importOutcome = await importVaccinationRecord({
+          client,
+          patientId: infantId,
+          vaccineName: vaccineNameValidation.vaccineName,
+          doseNo: parsedDoseNumber,
+          adminDate: vaccine.dateAdministered,
+          sourceFacility: vaccine.facilityName || sourceFacility || 'External',
+          transferCaseId: transferCaseId || null,
+          notes: vaccine.batchNumber ? `Batch: ${vaccine.batchNumber}` : null,
+        });
 
-        if (duplicateCheck.rows.length > 0) {
-          result.status = 'skipped';
-          result.message = 'Duplicate record skipped';
-          importResults.push(result);
-          continue;
-        }
-
-        // Insert the immunization record
-        const insertResult = await client.query(
-          `INSERT INTO immunization_records (
-            patient_id,
-            vaccine_id,
-            dose_no,
-            admin_date,
-            status,
-            is_imported,
-            source_facility,
-            transfer_case_id,
-            notes,
-            batch_id
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-          RETURNING id`,
-          [
-            infantId,
-            vaccineLookup.vaccine.id,
-            parsedDoseNumber,
-            vaccine.dateAdministered,
-            'completed',
-            true,
-            vaccine.facilityName || sourceFacility || 'External',
-            transferCaseId || null,
-            vaccine.batchNumber ? `Batch: ${vaccine.batchNumber}` : null,
-            null, // batch_id - not required for imported records
-          ],
-        );
-
-        result.recordId = insertResult.rows[0].id;
-        result.message = 'Record imported successfully';
+        result.recordId = importOutcome.record?.id || null;
+        result.status = importOutcome.action === 'skipped' ? 'skipped' : 'success';
+        result.message = importOutcome.message;
         importResults.push(result);
       }
 

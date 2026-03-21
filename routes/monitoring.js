@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { authenticateToken: auth } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/rbac');
+const { listAuditLogs, exportAuditLogsCsv } = require('../services/auditLogService');
 
 // Root route - return API info
 router.get('/', (req, res) => {
@@ -14,23 +16,28 @@ router.get('/', (req, res) => {
       '/audit-logs',
       '/usage-trends',
       '/user-activity',
-      '/template-performance'
-    ]
+      '/template-performance',
+    ],
   });
 });
 
-// GET /api/monitoring/monitoring - Get real-time monitoring data
-router.get('/monitoring', auth, async (req, res) => {
-  try {
-    // Check if user has admin role
-    if (!req.user || !['admin', 'super_admin'].includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin access required',
-        code: 'INSUFFICIENT_PERMISSIONS'
-      });
-    }
+const detectAuditAnomalies = (logs = []) =>
+  logs.filter((log) => {
+    const severity = String(log?.severity || '').toUpperCase();
+    const eventType = String(log?.event_type || log?.action_type || '').toUpperCase();
 
+    return (
+      severity === 'CRITICAL' ||
+      log?.success === false ||
+      /DELETE|RESET|OVERRIDE|DISABLED|REJECTED|FAILED/.test(eventType)
+    );
+  });
+
+const requireMonitoringAccess = requirePermission('dashboard:analytics');
+
+// GET /api/monitoring/monitoring - Get real-time monitoring data
+router.get('/monitoring', auth, requireMonitoringAccess, async (req, res) => {
+  try {
     const { start_date, end_date } = req.query;
 
     // Get document generation statistics
@@ -55,37 +62,28 @@ router.get('/monitoring', auth, async (req, res) => {
         completion_overview: completionOverview,
         recent_downloads: recentDownloads,
         alerts: alerts,
-        performance_metrics: performanceMetrics
-      }
+        performance_metrics: performanceMetrics,
+      },
     });
   } catch (error) {
     console.error('Error fetching monitoring data:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch monitoring data',
-      code: 'FETCH_ERROR'
+      code: 'FETCH_ERROR',
     });
   }
 });
 
 // GET /api/monitoring/alerts - Get document completion alerts
-router.get('/alerts', auth, async (req, res) => {
+router.get('/alerts', auth, requireMonitoringAccess, async (req, res) => {
   try {
-    // Check if user has admin, super_admin, nurse, or doctor role
-    if (!req.user || !['admin', 'super_admin', 'nurse', 'doctor'].includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin, nurse, or doctor access required',
-        code: 'INSUFFICIENT_PERMISSIONS'
-      });
-    }
-
     const { status = 'PENDING', limit = 20 } = req.query;
 
     try {
       const result = await db.query(
         `
-        SELECT 
+        SELECT
           pcs.*,
           i.first_name as infant_first_name,
           i.last_name as infant_last_name,
@@ -102,12 +100,12 @@ router.get('/alerts', auth, async (req, res) => {
         ORDER BY pcs.last_updated DESC
         LIMIT $2
       `,
-        [status, parseInt(limit)]
+        [status, parseInt(limit)],
       );
 
       res.json({
         success: true,
-        data: result.rows
+        data: result.rows,
       });
     } catch (dbError) {
       // Table doesn't exist, return empty data
@@ -115,7 +113,7 @@ router.get('/alerts', auth, async (req, res) => {
       res.json({
         success: true,
         data: [],
-        message: 'Alerts table not available'
+        message: 'Alerts table not available',
       });
     }
   } catch (error) {
@@ -123,118 +121,93 @@ router.get('/alerts', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch alerts',
-      code: 'FETCH_ERROR'
+      code: 'FETCH_ERROR',
     });
   }
 });
 
 // GET /api/monitoring/audit-logs - Get audit logs with anomaly detection
-router.get('/audit-logs', auth, async (req, res) => {
+router.get('/audit-logs', auth, requirePermission('system:audit'), async (req, res) => {
   try {
-    // Check if user has admin role
-    if (!req.user || !['admin', 'super_admin'].includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin access required',
-        code: 'INSUFFICIENT_PERMISSIONS'
-      });
-    }
+    const {
+      start_date,
+      end_date,
+      severity,
+      action_type,
+      user,
+      username,
+      dateRange,
+      limit = 100,
+      offset = 0,
+    } = req.query;
 
-    const { start_date, end_date, severity, action_type, limit = 100 } = req.query;
+    const logs = await listAuditLogs({
+      user,
+      username,
+      actionType: action_type,
+      severity,
+      startDate: start_date,
+      endDate: end_date,
+      dateRange,
+      limit,
+      offset,
+    });
 
-    try {
-      let whereClause = 'WHERE 1=1';
-      const params = [];
+    const anomalies = detectAuditAnomalies(logs);
 
-      if (start_date) {
-        whereClause += ` AND timestamp >= ${params.length + 1}`;
-        params.push(start_date);
-      }
-
-      if (end_date) {
-        whereClause += ` AND timestamp <= ${params.length + 1}`;
-        params.push(end_date);
-      }
-
-      if (severity) {
-        whereClause += ` AND severity = ${params.length + 1}`;
-        params.push(severity);
-      }
-
-      if (action_type) {
-        whereClause += ` AND action_type = ${params.length + 1}`;
-        params.push(action_type);
-      }
-
-      const result = await db.query(
-        `
-        SELECT 
-          id,
-          timestamp,
-          user_id,
-          action_type,
-          severity,
-          details,
-          ip_address,
-          user_agent
-        FROM audit_logs
-        ${whereClause}
-        ORDER BY timestamp DESC
-        LIMIT ${params.length + 1}
-      `,
-        [...params, parseInt(limit)]
-      );
-
-      // Detect anomalies
-      const anomalies = result.rows.filter(
-        (log) =>
-          log.severity === 'critical' ||
-          (log.action_type.includes('delete') && log.severity === 'warning')
-      );
-
-      res.json({
-        success: true,
-        data: {
-          logs: result.rows,
-          anomalies: anomalies,
-          anomaly_count: anomalies.length
-        }
-      });
-    } catch (dbError) {
-      // Table doesn't exist, return empty data
-      console.warn('Audit logs table not found:', dbError.message);
-      res.json({
-        success: true,
-        data: {
-          logs: [],
-          anomalies: [],
-          anomaly_count: 0
+    res.json({
+      success: true,
+      data: {
+        logs,
+        anomalies,
+        anomaly_count: anomalies.length,
+        summary: {
+          total: logs.length,
+          failed: logs.filter((log) => log.success === false).length,
+          critical: logs.filter((log) => String(log.severity || '').toUpperCase() === 'CRITICAL').length,
         },
-        message: 'Audit logs table not available'
-      });
-    }
+      },
+    });
   } catch (error) {
     console.error('Error fetching audit logs:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch audit logs',
-      code: 'FETCH_ERROR'
+      code: 'FETCH_ERROR',
+    });
+  }
+});
+
+router.get('/audit-logs/export', auth, requirePermission('system:audit'), async (req, res) => {
+  try {
+    const csv = await exportAuditLogsCsv({
+      user: req.query.user,
+      username: req.query.username,
+      actionType: req.query.action_type || req.query.actionType,
+      severity: req.query.severity,
+      startDate: req.query.start_date,
+      endDate: req.query.end_date,
+      dateRange: req.query.dateRange,
+      limit: req.query.limit || 1000,
+    });
+
+    const exportDate = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${exportDate}.csv"`);
+    res.status(200).send(csv);
+  } catch (error) {
+    console.error('Error exporting audit logs:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to export audit logs',
+      code: 'EXPORT_ERROR',
     });
   }
 });
 
 // GET /api/monitoring/usage-trends - Get usage trends over time
-router.get('/usage-trends', auth, async (req, res) => {
+router.get('/usage-trends', auth, requireMonitoringAccess, async (req, res) => {
   try {
-    // Check if user has admin role
-    if (!req.user || !['admin', 'super_admin'].includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin access required',
-        code: 'INSUFFICIENT_PERMISSIONS'
-      });
-    }
-
     const { start_date, end_date, interval = 'day' } = req.query;
 
     try {
@@ -251,7 +224,7 @@ router.get('/usage-trends', auth, async (req, res) => {
       }
 
       const result = await db.query(`
-        SELECT 
+        SELECT
           ${groupByClause} as period,
           COUNT(*) as download_count,
           COUNT(DISTINCT user_id) as unique_users,
@@ -269,7 +242,7 @@ router.get('/usage-trends', auth, async (req, res) => {
 
       res.json({
         success: true,
-        data: result.rows
+        data: result.rows,
       });
     } catch (dbError) {
       // Table doesn't exist, return empty data
@@ -277,7 +250,7 @@ router.get('/usage-trends', auth, async (req, res) => {
       res.json({
         success: true,
         data: [],
-        message: 'Usage trends table not available'
+        message: 'Usage trends table not available',
       });
     }
   } catch (error) {
@@ -285,29 +258,20 @@ router.get('/usage-trends', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch usage trends',
-      code: 'FETCH_ERROR'
+      code: 'FETCH_ERROR',
     });
   }
 });
 
 // GET /api/monitoring/user-activity - Get user activity metrics
-router.get('/user-activity', auth, async (req, res) => {
+router.get('/user-activity', auth, requireMonitoringAccess, async (req, res) => {
   try {
-    // Check if user has admin role
-    if (!req.user || !['admin', 'super_admin'].includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin access required',
-        code: 'INSUFFICIENT_PERMISSIONS'
-      });
-    }
-
     const { limit = 10 } = req.query;
 
     try {
       const result = await db.query(
         `
-        SELECT 
+        SELECT
           u.id,
           u.first_name,
           u.last_name,
@@ -323,12 +287,12 @@ router.get('/user-activity', auth, async (req, res) => {
         ORDER BY total_downloads DESC
         LIMIT $1
       `,
-        [parseInt(limit)]
+        [parseInt(limit)],
       );
 
       res.json({
         success: true,
-        data: result.rows
+        data: result.rows,
       });
     } catch (dbError) {
       // Table doesn't exist, return empty data
@@ -336,7 +300,7 @@ router.get('/user-activity', auth, async (req, res) => {
       res.json({
         success: true,
         data: [],
-        message: 'User activity table not available'
+        message: 'User activity table not available',
       });
     }
   } catch (error) {
@@ -344,26 +308,17 @@ router.get('/user-activity', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch user activity',
-      code: 'FETCH_ERROR'
+      code: 'FETCH_ERROR',
     });
   }
 });
 
 // GET /api/monitoring/template-performance - Get template performance metrics
-router.get('/template-performance', auth, async (req, res) => {
+router.get('/template-performance', auth, requireMonitoringAccess, async (req, res) => {
   try {
-    // Check if user has admin role
-    if (!req.user || !['admin', 'super_admin'].includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Admin access required',
-        code: 'INSUFFICIENT_PERMISSIONS'
-      });
-    }
-
     try {
       const result = await db.query(`
-        SELECT 
+        SELECT
           pt.id,
           pt.name as template_name,
           pt.template_type,
@@ -382,7 +337,7 @@ router.get('/template-performance', auth, async (req, res) => {
 
       res.json({
         success: true,
-        data: result.rows
+        data: result.rows,
       });
     } catch (dbError) {
       // Table doesn't exist, return empty data
@@ -390,7 +345,7 @@ router.get('/template-performance', auth, async (req, res) => {
       res.json({
         success: true,
         data: [],
-        message: 'Template performance table not available'
+        message: 'Template performance table not available',
       });
     }
   } catch (error) {
@@ -398,7 +353,7 @@ router.get('/template-performance', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch template performance',
-      code: 'FETCH_ERROR'
+      code: 'FETCH_ERROR',
     });
   }
 });
@@ -414,7 +369,7 @@ async function getGenerationStats(startDate, endDate) {
         : '';
 
     const result = await db.query(`
-      SELECT 
+      SELECT
         COUNT(*) as total_generations,
         COUNT(DISTINCT infant_id) as unique_infants,
         COUNT(DISTINCT user_id) as unique_users,
@@ -436,7 +391,7 @@ async function getGenerationStats(startDate, endDate) {
       unique_templates: 0,
       successful_generations: 0,
       failed_generations: 0,
-      avg_generation_time: 0
+      avg_generation_time: 0,
     };
   }
 }
@@ -444,7 +399,7 @@ async function getGenerationStats(startDate, endDate) {
 async function getCompletionOverview() {
   try {
     const result = await db.query(`
-      SELECT 
+      SELECT
         completion_status,
         COUNT(*) as count,
         ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) as percentage
@@ -463,7 +418,7 @@ async function getCompletionOverview() {
 async function getRecentDownloads() {
   try {
     const result = await db.query(`
-      SELECT 
+      SELECT
         dd.*,
         pt.name as template_name,
         pt.template_type,
@@ -489,7 +444,7 @@ async function getRecentDownloads() {
 async function getIncompleteDocumentAlerts() {
   try {
     const result = await db.query(`
-      SELECT 
+      SELECT
         pcs.*,
         i.first_name as infant_first_name,
         i.last_name as infant_last_name,
@@ -516,22 +471,22 @@ async function getIncompleteDocumentAlerts() {
 async function getPerformanceMetrics() {
   try {
     const result = await db.query(`
-      SELECT 
+      SELECT
         'avg_generation_time' as metric,
         AVG(EXTRACT(EPOCH FROM (download_date - download_date))) as value
       FROM document_downloads
       WHERE download_status = 'COMPLETED'
-      
+
       UNION ALL
-      
-      SELECT 
+
+      SELECT
         'failed_generation_rate' as metric,
         (COUNT(CASE WHEN download_status = 'FAILED' THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0)) as value
       FROM document_downloads
-      
+
       UNION ALL
-      
-      SELECT 
+
+      SELECT
         'avg_completion_percentage' as metric,
         AVG(completion_percentage) as value
       FROM paper_completion_status
@@ -548,7 +503,7 @@ async function getPerformanceMetrics() {
     return {
       avg_generation_time: 0,
       failed_generation_rate: 0,
-      avg_completion_percentage: 0
+      avg_completion_percentage: 0,
     };
   }
 }

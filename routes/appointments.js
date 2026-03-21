@@ -14,7 +14,12 @@ const blockedDatesService = require('../services/blockedDatesService');
 const {
   notifyAdminsOfGuardianAppointmentEvent,
 } = require('../services/appointmentEventNotificationService');
-const { sendAppointmentConfirmation, sendScheduleDateChangedNotification, hasNotificationBeenSent } = require('../services/smsService');
+const {
+  sendAppointmentConfirmation,
+  sendAppointmentRescheduledNotification,
+  sendScheduleDateChangedNotification,
+  hasNotificationBeenSent,
+} = require('../services/smsService');
 const socketService = require('../services/socketService');
 const {
   hasFieldErrors,
@@ -29,6 +34,7 @@ const {
   getPatientControlNumberById,
   INFANT_CONTROL_NUMBER_PATTERN,
 } = require('../services/infantControlNumberService');
+const { writeAuditLog } = require('../services/auditLogService');
 
 const router = express.Router();
 
@@ -286,6 +292,27 @@ const resolveSlotClinicId = (req, payloadClinicId) => {
 
 const CONTROL_NUMBER_FORMAT_ERROR = 'control_number must match INF-YYYY-######';
 
+const recordAppointmentAuditEvent = async ({
+  req,
+  eventType,
+  appointmentId,
+  oldValues = null,
+  newValues = null,
+  metadata = null,
+  severity = 'INFO',
+}) => {
+  await writeAuditLog({
+    req,
+    eventType,
+    entityType: 'appointment',
+    entityId: appointmentId || oldValues?.id || newValues?.id || null,
+    oldValues,
+    newValues,
+    metadata,
+    severity,
+  });
+};
+
 const fetchInfantOwnership = async (infantId) => {
   const result = await pool.query(
     `
@@ -481,6 +508,16 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
       errors.clinic_id = clinicIdCheck.error;
     }
 
+    const vaccineIdCheck = validateNumberRange(payload.vaccine_id, {
+      label: 'vaccine_id',
+      required: false,
+      min: 1,
+      integer: true,
+    });
+    if (hasOwn(payload, 'vaccine_id') && vaccineIdCheck.error) {
+      errors.vaccine_id = vaccineIdCheck.error;
+    }
+
     const controlNumberInput = sanitizeText(payload.control_number);
     const normalizedControlNumber = controlNumberInput
       ? sanitizeIdentifier(controlNumberInput, {
@@ -542,10 +579,52 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
       }
     }
 
-    const finalStatus = guardianFlow ? 'scheduled' : normalized.status || 'scheduled';
+    const finalStatus = guardianFlow ? 'pending' : normalized.status || 'scheduled';
     const finalClinicId = clinicIdCheck.value || infant.clinic_id || req.user.clinic_id || null;
+    const finalVaccineId = vaccineIdCheck.value || null;
     const appointmentPatientColumn = await getAppointmentPatientColumn();
     const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+
+    const availability = await appointmentSchedulingService.checkBookingAvailability({
+      scheduledDate: normalizedScheduledDate,
+      vaccineId: finalVaccineId,
+      clinicId: sanitizeNullableInt(finalClinicId),
+    });
+
+    if (!availability.available) {
+      if (availability.code === 'SELECTED_VACCINE_OUT_OF_STOCK' && guardianFlow) {
+        try {
+          await appointmentSchedulingService.notifyGuardianVaccineUnavailable({
+            guardianId: parseInt(req.user.guardian_id, 10),
+            infantId,
+            vaccineId: finalVaccineId,
+            scheduledDate: normalizedScheduledDate,
+            clinicId: sanitizeNullableInt(finalClinicId),
+          });
+        } catch (notifyError) {
+          console.error('Failed to send vaccine unavailable notification:', notifyError.message);
+        }
+      }
+
+      return res.status(400).json({
+        error: availability.message,
+        code: availability.code,
+        availability,
+      });
+    }
+
+    const conflictingAppointment = await appointmentSchedulingService.findConflictingActiveAppointment({
+      infantId,
+      scheduledDate: normalizedScheduledDate,
+    });
+
+    if (conflictingAppointment) {
+      return res.status(409).json({
+        error: 'This child already has an active appointment on the selected date.',
+        code: 'DUPLICATE_APPOINTMENT',
+        conflict: normalizeAppointmentRecord(conflictingAppointment),
+      });
+    }
 
     // Generate appointment control number
     let appointmentControlNumber = null;
@@ -556,42 +635,13 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
       // Continue without control number - non-critical
     }
 
-    if (guardianFlow) {
-      const availability = await appointmentSchedulingService.checkBookingAvailability({
-        scheduledDate: normalizedScheduledDate,
-        vaccineId: sanitizeNullableInt(req.body.vaccine_id),
-        clinicId: sanitizeNullableInt(finalClinicId),
-      });
-
-      if (!availability.available) {
-        if (availability.code === 'SELECTED_VACCINE_OUT_OF_STOCK') {
-          try {
-            await appointmentSchedulingService.notifyGuardianVaccineUnavailable({
-              guardianId: parseInt(req.user.guardian_id, 10),
-              infantId,
-              vaccineId: sanitizeNullableInt(req.body.vaccine_id),
-              scheduledDate: normalizedScheduledDate,
-              clinicId: sanitizeNullableInt(finalClinicId),
-            });
-          } catch (notifyError) {
-            console.error('Failed to send vaccine unavailable notification:', notifyError.message);
-          }
-        }
-
-        return res.status(400).json({
-          error: availability.message,
-          code: availability.code,
-          availability,
-        });
-      }
-    }
-
     const result = await pool.query(
       `
         INSERT INTO appointments (
           ${appointmentPatientColumn},
           scheduled_date,
           type,
+          vaccine_id,
           duration_minutes,
           notes,
           status,
@@ -601,13 +651,14 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
           control_number,
           guardian_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
       `,
       [
         infantId,
         normalizedScheduledDate,
         normalizedType,
+        finalVaccineId,
         normalizedDuration,
         normalizedNotes,
         finalStatus,
@@ -643,6 +694,19 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
     }
 
     const normalizedAppointment = normalizeAppointmentRecord(fullAppointment);
+
+    await recordAppointmentAuditEvent({
+      req,
+      eventType: guardianFlow ? 'GUARDIAN_APPOINTMENT_CREATED' : 'APPOINTMENT_CREATED',
+      appointmentId: appointment.id,
+      newValues: normalizedAppointment,
+      metadata: {
+        guardian_flow: guardianFlow,
+        vaccine_id: finalVaccineId,
+        clinic_id: finalClinicId,
+        control_number: appointmentControlNumber,
+      },
+    });
 
     socketService.broadcast('appointment_created', normalizedAppointment);
     res.status(201).json(normalizedAppointment);
@@ -834,10 +898,25 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
     const updatedAppointment = (await fetchAppointmentById(appointmentId)) || result.rows[0];
     const normalizedAppointment = normalizeAppointmentRecord(updatedAppointment);
 
+    await recordAppointmentAuditEvent({
+      req,
+      eventType: guardianFlow ? 'GUARDIAN_APPOINTMENT_RESCHEDULED' : 'APPOINTMENT_RESCHEDULED',
+      appointmentId,
+      oldValues: normalizeAppointmentRecord(appointment),
+      newValues: normalizedAppointment,
+      metadata: {
+        previous_scheduled_date: appointment.scheduled_date,
+        new_scheduled_date: updatedAppointment.scheduled_date,
+        vaccine_id: finalVaccineId,
+        clinic_id: finalClinicId,
+      },
+      severity: 'WARNING',
+    });
+
     // Send rescheduling notification
     if (updatedAppointment.guardian_phone) {
       try {
-        await smsService.sendAppointmentRescheduledNotification({
+        await sendAppointmentRescheduledNotification({
           phoneNumber: updatedAppointment.guardian_phone,
           guardianName: updatedAppointment.guardian_name || 'Guardian',
           childName: `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim(),
@@ -1212,6 +1291,20 @@ router.put('/:id(\\d+)', async (req, res) => {
       }
     }
 
+    const conflictingAppointment = await appointmentSchedulingService.findConflictingActiveAppointment({
+      infantId,
+      scheduledDate: scheduled_date,
+      excludeAppointmentId: appointmentId,
+    });
+
+    if (conflictingAppointment) {
+      return res.status(409).json({
+        error: 'This child already has an active appointment on the selected date.',
+        code: 'DUPLICATE_APPOINTMENT',
+        conflict: normalizeAppointmentRecord(conflictingAppointment),
+      });
+    }
+
     const { normalized: normalizedUpdates, errors } = sanitizeAppointmentMutablePayload(payload, {
       allowStatus: !guardianFlow,
     });
@@ -1231,6 +1324,22 @@ router.put('/:id(\\d+)', async (req, res) => {
           error: availability.message,
           code: availability.code,
           availability,
+        });
+      }
+    }
+
+    if (hasOwn(normalizedUpdates, 'scheduled_date')) {
+      const conflictingAppointment = await appointmentSchedulingService.findConflictingActiveAppointment({
+        infantId: appointment.infant_id,
+        scheduledDate: normalizedUpdates.scheduled_date,
+        excludeAppointmentId: appointmentId,
+      });
+
+      if (conflictingAppointment) {
+        return res.status(409).json({
+          error: 'This child already has an active appointment on the selected date.',
+          code: 'DUPLICATE_APPOINTMENT',
+          conflict: normalizeAppointmentRecord(conflictingAppointment),
         });
       }
     }
@@ -1342,6 +1451,17 @@ router.put('/:id(\\d+)', async (req, res) => {
 
     const normalizedAppointment = normalizeAppointmentRecord(updatedAppointment);
 
+    await recordAppointmentAuditEvent({
+      req,
+      eventType: guardianFlow ? 'GUARDIAN_APPOINTMENT_UPDATED' : 'APPOINTMENT_UPDATED',
+      appointmentId,
+      oldValues: normalizeAppointmentRecord(appointment),
+      newValues: normalizedAppointment,
+      metadata: {
+        updated_fields: Object.keys(normalizedUpdates),
+      },
+    });
+
     socketService.broadcast('appointment_updated', normalizedAppointment);
     res.json(normalizedAppointment);
   } catch (error) {
@@ -1413,6 +1533,18 @@ router.put('/:id(\\d+)/cancel', async (req, res) => {
 
     const normalizedAppointment = normalizeAppointmentRecord(cancelledAppointment);
 
+    await recordAppointmentAuditEvent({
+      req,
+      eventType: guardianFlow ? 'GUARDIAN_APPOINTMENT_CANCELLED' : 'APPOINTMENT_CANCELLED',
+      appointmentId,
+      oldValues: normalizeAppointmentRecord(appointment),
+      newValues: normalizedAppointment,
+      metadata: {
+        cancellation_reason: cancellationReason,
+      },
+      severity: 'WARNING',
+    });
+
     socketService.broadcast('appointment_updated', normalizedAppointment);
     res.json(normalizedAppointment);
   } catch (error) {
@@ -1427,6 +1559,11 @@ router.put('/:id(\\d+)/complete', requirePermission('appointment:update'), async
     const appointmentId = parseInt(req.params.id, 10);
     if (Number.isNaN(appointmentId)) {
       return res.status(400).json({ error: 'Invalid appointment ID' });
+    }
+
+    const appointment = await fetchAppointmentById(appointmentId);
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
     }
 
     const completionNotes = sanitizeText(req.body?.completion_notes, {
@@ -1457,6 +1594,17 @@ router.put('/:id(\\d+)/complete', requirePermission('appointment:update'), async
 
     const completedAppointment = (await fetchAppointmentById(appointmentId)) || result.rows[0];
     const normalizedAppointment = normalizeAppointmentRecord(completedAppointment);
+
+    await recordAppointmentAuditEvent({
+      req,
+      eventType: 'APPOINTMENT_COMPLETED',
+      appointmentId,
+      oldValues: normalizeAppointmentRecord(appointment),
+      newValues: normalizedAppointment,
+      metadata: {
+        completion_notes: completionNotes || null,
+      },
+    });
 
     socketService.broadcast('appointment_updated', normalizedAppointment);
     res.json(normalizedAppointment);
@@ -1543,11 +1691,28 @@ router.delete('/:id(\\d+)', requirePermission('appointment:delete'), async (req,
       return res.status(400).json({ error: 'Invalid appointment ID' });
     }
 
+    const existingAppointment = await fetchAppointmentById(appointmentId);
+    if (!existingAppointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
     const result = await pool.query('DELETE FROM appointments WHERE id = $1 RETURNING id', [appointmentId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Appointment not found' });
     }
+
+    await recordAppointmentAuditEvent({
+      req,
+      eventType: 'APPOINTMENT_DELETED',
+      appointmentId,
+      oldValues: normalizeAppointmentRecord(existingAppointment),
+      newValues: {
+        id: appointmentId,
+        is_deleted: true,
+      },
+      severity: 'WARNING',
+    });
 
     socketService.broadcast('appointment_deleted', { id: appointmentId });
     res.json({ message: 'Appointment deleted successfully' });

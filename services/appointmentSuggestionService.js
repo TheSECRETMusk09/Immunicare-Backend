@@ -1,5 +1,8 @@
 const pool = require('../db');
 const { calculateVaccineReadiness } = require('./vaccineRulesEngine');
+const NotificationService = require('./notificationService');
+
+const notificationService = new NotificationService();
 
 // Simplified vaccine schedule - in production this would come from a shared utility or backend
 const VACCINE_SCHEDULE = {
@@ -203,7 +206,7 @@ const getHolidayInfo = (date) => {
   return holidays.find(h => h.month === month && h.day === day) || null;
 };
 
-const findEarliestValidDate = (startDateStr, clinicId = null) => {
+const findEarliestValidDate = (startDateStr, _clinicId = null) => {
   const startDate = new Date(startDateStr);
   const maxDaysToCheck = 90; // Look ahead 3 months
 
@@ -230,14 +233,103 @@ const findEarliestValidDate = (startDateStr, clinicId = null) => {
   return null;
 };
 
+const toDateKey = (value) => {
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  return parsedDate.toISOString().split('T')[0];
+};
+
+const resolveNextVaccineFromReadiness = (readiness = {}) => {
+  const prioritizedVaccine =
+    readiness?.overdueVaccines?.[0] || readiness?.dueVaccines?.[0] || null;
+
+  if (!prioritizedVaccine) {
+    return null;
+  }
+
+  const doseMatch = String(prioritizedVaccine.label || '').match(/dose\s+(\d+)/i);
+
+  return {
+    vaccineId: prioritizedVaccine.vaccineId || null,
+    label: prioritizedVaccine.label || 'Due vaccine',
+    doseNumber: doseMatch ? parseInt(doseMatch[1], 10) : null,
+    earliestDate:
+      prioritizedVaccine.earliestDate ||
+      readiness?.nextAppointmentPrediction?.date ||
+      toDateKey(new Date()),
+    recommendedDate:
+      prioritizedVaccine.recommendedDate ||
+      prioritizedVaccine.earliestDate ||
+      readiness?.nextAppointmentPrediction?.date ||
+      null,
+    reason:
+      readiness?.nextAppointmentPrediction?.reason ||
+      (readiness?.readinessStatus === 'OVERDUE'
+        ? 'Overdue child prioritized for the earliest safe clinic slot'
+        : 'Earliest safe clinic slot based on due vaccine rules'),
+    isOverdue: readiness?.readinessStatus === 'OVERDUE',
+  };
+};
+
+const findFirstSchedulableSlotWindow = async ({
+  startDate,
+  vaccineId,
+  clinicId = null,
+  maxDaysToCheck = 90,
+}) => {
+  const appointmentSchedulingService = require('./appointmentSchedulingService');
+  const normalizedStartDate = toDateKey(startDate) || toDateKey(new Date());
+
+  if (!normalizedStartDate) {
+    return null;
+  }
+
+  const baseDate = new Date(`${normalizedStartDate}T00:00:00`);
+
+  for (let dayOffset = 0; dayOffset < maxDaysToCheck; dayOffset += 1) {
+    const candidateDate = new Date(baseDate);
+    candidateDate.setDate(baseDate.getDate() + dayOffset);
+
+    if (isWeekend(candidateDate) || getHolidayInfo(candidateDate)) {
+      continue;
+    }
+
+    const candidateDateKey = toDateKey(candidateDate);
+    if (!candidateDateKey) {
+      continue;
+    }
+
+    const slotWindow = await appointmentSchedulingService.getAvailableTimeSlots({
+      scheduledDate: candidateDateKey,
+      vaccineId,
+      clinicId,
+    });
+
+    if (slotWindow?.available && Array.isArray(slotWindow.slots) && slotWindow.slots.length > 0) {
+      return {
+        date: candidateDateKey,
+        slotWindow,
+      };
+    }
+  }
+
+  return null;
+};
+
 const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId = null }) => {
   const client = pool;
 
   try {
-    // Get infant details
+    const normalizedInfantId = parseInt(infantId, 10);
+    const normalizedGuardianId = guardianId ? parseInt(guardianId, 10) : null;
+    const normalizedClinicId = clinicId ? parseInt(clinicId, 10) : null;
+
     const infantResult = await client.query(
       'SELECT id, first_name, last_name, dob, guardian_id FROM patients WHERE id = $1',
-      [infantId],
+      [normalizedInfantId],
     );
 
     if (infantResult.rows.length === 0) {
@@ -246,103 +338,110 @@ const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId =
 
     const infant = infantResult.rows[0];
 
-    // Verify ownership if guardianId provided
-    if (guardianId && infant.guardian_id !== parseInt(guardianId, 10)) {
+    if (normalizedGuardianId && infant.guardian_id !== normalizedGuardianId) {
       throw new Error('Access denied: Infant does not belong to this guardian');
     }
 
-    // Get vaccination history
-    const vaccinationsResult = await client.query(
-      `SELECT vr.vaccine_id, vr.dose_no, vr.administered_at, v.name as vaccine_name
-       FROM vaccination_records vr
-       JOIN vaccines v ON vr.vaccine_id = v.id
-       WHERE vr.infant_id = $1
-       ORDER BY vr.administered_at`,
-      [infantId],
-    );
-
-    const vaccinationHistory = vaccinationsResult.rows.map(record => ({
-      vaccine: record.vaccine_name, // Use vaccine name for consistency with our schedule
-      dose_no: record.dose_no,
-      date_administered: record.administered_at,
-    }));
-
-    // Calculate next valid dose
-    const nextDoseInfo = calculateNextValidDose(infant.dob, vaccinationHistory);
+    const readinessResult = await calculateVaccineReadiness(normalizedInfantId);
+    const readiness = readinessResult?.success ? readinessResult.data || {} : {};
+    const nextDoseInfo = resolveNextVaccineFromReadiness(readiness);
 
     if (!nextDoseInfo) {
       return {
         suggestions: [],
-        message: 'No upcoming vaccines due for this child',
+        message:
+          readiness?.readinessStatus === 'PENDING_CONFIRMATION'
+            ? 'Child still requires admin confirmation before a vaccine appointment can be booked.'
+            : 'No upcoming vaccines due for this child',
         infant: {
           id: infant.id,
           name: `${infant.first_name} ${infant.last_name}`,
           dob: infant.dob,
         },
+        readinessStatus: readiness?.readinessStatus || 'UPCOMING',
       };
     }
 
-    // Find earliest valid date for the vaccine
-    const earliestValidDate = findEarliestValidDate(new Date().toISOString().split('T')[0], clinicId);
+    const earliestSlotWindow = await findFirstSchedulableSlotWindow({
+      startDate: nextDoseInfo.earliestDate || new Date(),
+      vaccineId: nextDoseInfo.vaccineId,
+      clinicId: normalizedClinicId,
+    });
 
-    if (!earliestValidDate) {
+    if (!earliestSlotWindow) {
       return {
         suggestions: [],
-        message: 'No valid appointment dates available in the next 3 months',
+        message: `No valid appointment dates with available stock were found for ${nextDoseInfo.label} in the next 3 months`,
         infant: {
           id: infant.id,
           name: `${infant.first_name} ${infant.last_name}`,
           dob: infant.dob,
         },
+        readinessStatus: readiness?.readinessStatus || 'UPCOMING',
         nextDoseInfo,
       };
     }
 
-    // Get available time slots for that date with stock-aware checking
-    const appointmentService = require('./appointmentSchedulingService');
-    // Map vaccine name to ID (simplified mapping - in production this would come from database)
-    const vaccineNameToIdMap = {
-      'hep_b': 1, // Hepatitis B
-      'bcg': 2,   // BCG
-      'penta': 3, // Pentavalent
-      'opv': 4,   // Oral Polio Vaccine
-      'ipv': 5,   // Inactivated Polio Vaccine
-      'pcv': 6,   // Pneumococcal Conjugate Vaccine
-      'mcv': 7,   // Measles Vaccine
-    };
-    const vaccineId = vaccineNameToIdMap[nextDoseInfo.vaccineKey] || null;
+    const suggestions = earliestSlotWindow.slotWindow.slots.slice(0, 5).map((time) => ({
+      infant_id: infant.id,
+      infant_name: `${infant.first_name} ${infant.last_name}`.trim(),
+      suggestedDate: earliestSlotWindow.date,
+      suggestedTime: time,
+      date: earliestSlotWindow.date,
+      time,
+      vaccineId: nextDoseInfo.vaccineId,
+      vaccine: nextDoseInfo.label,
+      doseNumber: nextDoseInfo.doseNumber,
+      recommendedDate: nextDoseInfo.recommendedDate,
+      reason: nextDoseInfo.reason,
+      priority: nextDoseInfo.isOverdue ? 'high' : 'normal',
+      isOverdue: nextDoseInfo.isOverdue,
+      bookedSlots: Array.isArray(earliestSlotWindow.slotWindow.bookedSlots)
+        ? earliestSlotWindow.slotWindow.bookedSlots.length
+        : 0,
+    }));
 
-    const availabilityResult = await appointmentService.getAvailableTimeSlots({
-      scheduled_date: earliestValidDate,
-      vaccine_id: vaccineId,
-      clinic_id: clinicId,
-    });
-
-    // Format suggestions
-    const suggestions = availabilityResult.available && availabilityResult.slots && availabilityResult.slots.length > 0
-      ? availabilityResult.slots.slice(0, 5).map(time => ({
-        date: earliestValidDate,
-        time,
-        vaccine: nextDoseInfo.vaccine,
-        doseNumber: nextDoseInfo.doseNumber,
-        daysUntil: nextDoseInfo.daysUntil || 0,
-        isOverdue: nextDoseInfo.isOverdue || false,
-      }))
-      : [];
+    if (normalizedGuardianId && suggestions.length > 0) {
+      try {
+        const primarySuggestion = suggestions[0];
+        await notificationService.sendNotification({
+          notification_type: 'appointment_suggested',
+          target_type: 'guardian',
+          target_id: normalizedGuardianId,
+          guardian_id: normalizedGuardianId,
+          channel: 'push',
+          priority: 'normal',
+          subject: 'Suggested appointment available',
+          title: 'Suggested appointment available',
+          message: `A suggested appointment is available for ${infant.first_name} ${infant.last_name}: ${nextDoseInfo.label} on ${primarySuggestion.date} at ${primarySuggestion.time}.`,
+          target_role: 'guardian',
+          category: 'appointment',
+          metadata: {
+            infant_id: infant.id,
+            vaccine_id: nextDoseInfo.vaccineId,
+            suggested_date: primarySuggestion.date,
+            suggested_time: primarySuggestion.time,
+          },
+        });
+      } catch (notificationError) {
+        console.error('Error sending appointment suggested notification:', notificationError.message);
+      }
+    }
 
     return {
       suggestions,
       message: suggestions.length > 0
-        ? `Found ${suggestions.length} suggested appointment slots for ${nextDoseInfo.vaccine} dose ${nextDoseInfo.doseNumber}`
-        : `No time slots available on the earliest valid date (${earliestValidDate}) for ${nextDoseInfo.vaccine} dose ${nextDoseInfo.doseNumber}`,
+        ? `Found ${suggestions.length} suggested appointment slots for ${nextDoseInfo.label}`
+        : `No time slots available on the earliest valid date for ${nextDoseInfo.label}`,
       infant: {
         id: infant.id,
         name: `${infant.first_name} ${infant.last_name}`,
         dob: infant.dob,
       },
+      readinessStatus: readiness?.readinessStatus || 'UPCOMING',
       nextDoseInfo,
-      earliestValidDate,
-      totalSlotsAvailable: availabilityResult.slots ? availabilityResult.slots.length : 0,
+      earliestValidDate: earliestSlotWindow.date,
+      totalSlotsAvailable: earliestSlotWindow.slotWindow.slots.length,
     };
   } catch (error) {
     console.error('Error generating appointment suggestions:', error);

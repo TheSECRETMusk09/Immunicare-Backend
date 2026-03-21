@@ -155,13 +155,19 @@ class ImmunizationScheduleService {
     const recordsByVaccine = {};
 
     rows.forEach(record => {
+      const normalizedStatus = String(record.status || '').trim().toLowerCase();
+      const isCompleted = Boolean(record.admin_date) || normalizedStatus === 'completed';
+
       if (!recordsByVaccine[record.vaccine_id]) {
         recordsByVaccine[record.vaccine_id] = [];
       }
-      recordsByVaccine[record.vaccine_id].push(record);
+      recordsByVaccine[record.vaccine_id].push({
+        ...record,
+        is_completed: isCompleted,
+      });
 
       const currentMax = administered[record.vaccine_id] || 0;
-      if (record.dose_no > currentMax) {
+      if (isCompleted && record.dose_no > currentMax) {
         administered[record.vaccine_id] = record.dose_no;
       }
     });
@@ -203,13 +209,13 @@ class ImmunizationScheduleService {
   /**
    * Determine the status of a vaccine dose
    * @param {Date} dueDate - The calculated due date
-   * {number} dosesCompleted - Number of doses already completed
-   * @param {number} totalDoses - Total doses required for this vaccine
+   * @param {number} scheduleDoseNumber - Schedule dose number being evaluated
+   * @param {number} completedDoseCount - Number of completed doses for this vaccine
    * @param {Array} records - Array of administered records for this vaccine
    * @param {string|null} facilityContext - Facility ID for facility-aware adjustments
    * @returns {Object} - Status object with status, adminDate, daysOverdue, etc.
    */
-  determineDoseStatus(dueDate, dosesCompleted, totalDoses, records = [], facilityContext = null) {
+  determineDoseStatus(dueDate, scheduleDoseNumber, completedDoseCount, records = [], facilityContext = null) {
     if (!(dueDate instanceof Date) || isNaN(dueDate.getTime())) {
       return {
         status: 'future',
@@ -225,11 +231,11 @@ class ImmunizationScheduleService {
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const due = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
 
-    // Find the latest record for this specific dose
-    const doseRecord = records.find(r => r.dose_no === dosesCompleted + 1);
+    const doseRecord = records.find((record) =>
+      Number(record.dose_no) === Number(scheduleDoseNumber) && record.is_completed,
+    );
 
-    if (dosesCompleted >= totalDoses) {
-      // All doses completed
+    if (doseRecord) {
       return {
         status: 'completed',
         statusLabel: 'Completed',
@@ -237,6 +243,18 @@ class ImmunizationScheduleService {
         dueDate: dueDate,
         daysOverdue: 0,
         isComplete: true,
+      };
+    }
+
+    const isNextDose = Number(scheduleDoseNumber) === Number(completedDoseCount) + 1;
+    if (!isNextDose) {
+      return {
+        status: 'future',
+        statusLabel: 'Not Yet Due',
+        adminDate: null,
+        dueDate: dueDate,
+        daysOverdue: 0,
+        isComplete: false,
       };
     }
 
@@ -311,8 +329,7 @@ class ImmunizationScheduleService {
 
       // Build schedule items with status
       const scheduleItems = schedules.map(schedule => {
-        const dosesCompleted = administered[schedule.vaccine_id] || 0;
-        const isComplete = dosesCompleted >= schedule.total_doses;
+        const completedDoseCount = administered[schedule.vaccine_id] || 0;
 
         // Use minimum_age_days if available, otherwise use age_months * 30
         const dueDate = schedule.minimum_age_days
@@ -322,8 +339,8 @@ class ImmunizationScheduleService {
         const records = recordsByVaccine[schedule.vaccine_id] || [];
         const doseStatus = this.determineDoseStatus(
           dueDate,
-          dosesCompleted,
-          schedule.total_doses,
+          schedule.dose_number,
+          completedDoseCount,
           records,
           facilityContext, // Pass facility context for facility-aware status determination
         );
@@ -337,8 +354,8 @@ class ImmunizationScheduleService {
           doseNumber: schedule.dose_number,
           doseName: schedule.dose_name,
           totalDoses: schedule.total_doses,
-          dosesCompleted,
-          isComplete,
+          dosesCompleted: completedDoseCount,
+          isComplete: doseStatus.isComplete,
           ageMonths: schedule.age_months,
           ageDescription: schedule.age_description,
           description: schedule.description,
@@ -540,7 +557,7 @@ class ImmunizationScheduleService {
     futureDate.setDate(futureDate.getDate() + days);
 
     return schedule.schedules.filter(s => {
-      if (s.isComplete || !s.dueDate) {
+      if (s.isComplete || !s.dueDate || !s.isUpcoming) {
         return false;
       }
       const dueDate = new Date(s.dueDate);

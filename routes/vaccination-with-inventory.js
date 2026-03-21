@@ -8,6 +8,108 @@ const { validateApprovedVaccine } = require('../utils/approvedVaccines');
 
 router.use(authenticateToken);
 
+const schemaCache = new Map();
+
+const resolveFirstExistingColumn = async (
+  tableName,
+  candidateColumns,
+  fallback = candidateColumns[0],
+) => {
+  const cacheKey = `${tableName}:${candidateColumns.join(',')}`;
+  if (schemaCache.has(cacheKey)) {
+    return schemaCache.get(cacheKey);
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = ANY($2::text[])
+      `,
+      [tableName, candidateColumns],
+    );
+
+    const availableColumns = new Set(result.rows.map((row) => row.column_name));
+    const resolvedColumn =
+      candidateColumns.find((columnName) => availableColumns.has(columnName)) ||
+      fallback;
+
+    schemaCache.set(cacheKey, resolvedColumn);
+    return resolvedColumn;
+  } catch (_error) {
+    schemaCache.set(cacheKey, fallback);
+    return fallback;
+  }
+};
+
+const getAppointmentPatientColumn = () =>
+  resolveFirstExistingColumn('appointments', ['infant_id', 'patient_id'], 'infant_id');
+
+const getInventoryTransactionsFacilityColumn = () =>
+  resolveFirstExistingColumn(
+    'vaccine_inventory_transactions',
+    ['clinic_id', 'facility_id'],
+    'clinic_id',
+  );
+
+const ensureAppointmentLinkColumn = async (client) => {
+  await client.query(
+    'ALTER TABLE immunization_records ADD COLUMN IF NOT EXISTS appointment_id INTEGER',
+  );
+};
+
+const computeInventoryBalance = (inventoryRecord) => {
+  return (
+    Number(inventoryRecord.beginning_balance || 0) +
+    Number(inventoryRecord.received_during_period || 0) +
+    Number(inventoryRecord.transferred_in || 0) -
+    Number(inventoryRecord.transferred_out || 0) -
+    Number(inventoryRecord.expired_wasted || 0) -
+    Number(inventoryRecord.issuance || 0)
+  );
+};
+
+const resolveLinkedAppointmentId = async ({ client, patientId, adminDate, appointmentId }) => {
+  const appointmentPatientColumn = await getAppointmentPatientColumn();
+
+  if (appointmentId) {
+    const explicitResult = await client.query(
+      `
+        SELECT id, status
+        FROM appointments
+        WHERE id = $1
+          AND ${appointmentPatientColumn} = $2
+          AND is_active = true
+        LIMIT 1
+      `,
+      [appointmentId, patientId],
+    );
+
+    return explicitResult.rows[0] || null;
+  }
+
+  const autoMatchedResult = await client.query(
+    `
+      SELECT id, status
+      FROM appointments
+      WHERE ${appointmentPatientColumn} = $1
+        AND DATE(scheduled_date) = DATE($2)
+        AND is_active = true
+        AND status <> 'cancelled'
+      ORDER BY
+        CASE WHEN status = 'attended' THEN 1 ELSE 2 END,
+        scheduled_date DESC
+      LIMIT 1
+    `,
+    [patientId, adminDate],
+  );
+
+  return autoMatchedResult.rows[0] || null;
+};
+
 /**
  * Enhanced vaccination recording with automatic inventory deduction
  * POST /api/vaccinations/record-with-inventory
@@ -21,12 +123,16 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       vaccine_id,
       dose_no,
       admin_date,
+      appointment_id,
       administered_by,
       site_of_injection,
       reactions,
       next_due_date,
       notes,
       batch_id,
+      lot_batch_number,
+      lot_number,
+      batch_number,
       vaccine_inventory_id,
       skip_inventory_deduction = false,
     } = req.body;
@@ -64,6 +170,7 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
     const isReady = readinessResult.rows.length > 0;
 
     await client.query('BEGIN');
+    await ensureAppointmentLinkColumn(client);
 
     // Check for duplicate vaccination record
     const duplicateCheck = await client.query(
@@ -80,54 +187,141 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       });
     }
 
+    const linkedAppointment = await resolveLinkedAppointmentId({
+      client,
+      patientId: patient_id,
+      adminDate: admin_date,
+      appointmentId: appointment_id,
+    });
+
     let inventoryTransactionId = null;
     let batchUpdated = false;
+    let updatedInventoryRecord = null;
 
     // Handle inventory deduction if not skipped
-    if (!skip_inventory_deduction && batch_id) {
+    if (!skip_inventory_deduction) {
+      if (!vaccine_inventory_id) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'A vaccine inventory record is required for stock deduction' });
+      }
+
+      const inventoryResult = await client.query(
+        'SELECT * FROM vaccine_inventory WHERE id = $1 LIMIT 1',
+        [vaccine_inventory_id],
+      );
+
+      if (inventoryResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Selected vaccine inventory record was not found' });
+      }
+
+      const inventoryRecord = inventoryResult.rows[0];
+      if (Number(inventoryRecord.vaccine_id) !== Number(vaccine_id)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Selected vaccine inventory record does not match the vaccine being recorded' });
+      }
+
+      const previousBalance = computeInventoryBalance(inventoryRecord);
+      if (previousBalance < 1) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Insufficient stock in the selected vaccine inventory record' });
+      }
+
       // Check batch availability
-      const batchResult = await client.query(
-        `SELECT id, qty_current, vaccine_id FROM vaccine_batches
-         WHERE id = $1 AND is_active = true AND status = 'active'`,
-        [batch_id],
-      );
+      if (batch_id) {
+        const batchResult = await client.query(
+          `SELECT id, qty_current, vaccine_id FROM vaccine_batches
+           WHERE id = $1 AND is_active = true AND status = 'active'`,
+          [batch_id],
+        );
 
-      if (batchResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Selected vaccine batch not found or inactive' });
+        if (batchResult.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Selected vaccine batch not found or inactive' });
+        }
+
+        const batch = batchResult.rows[0];
+
+        if (batch.qty_current < 1) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'Insufficient vaccine stock in selected batch' });
+        }
+
+        // Deduct from batch
+        await client.query(
+          'UPDATE vaccine_batches SET qty_current = qty_current - 1 WHERE id = $1',
+          [batch_id],
+        );
+        batchUpdated = true;
       }
 
-      const batch = batchResult.rows[0];
+      const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
+      const facilityId =
+        inventoryRecord.clinic_id ||
+        inventoryRecord.facility_id ||
+        req.user.clinic_id ||
+        req.user.facility_id ||
+        null;
+      const newBalance = previousBalance - 1;
 
-      if (batch.qty_current < 1) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Insufficient vaccine stock in selected batch' });
+      const transactionColumns = [
+        'vaccine_inventory_id',
+        'vaccine_id',
+        'transaction_type',
+        'quantity',
+        'previous_balance',
+        'new_balance',
+        'reference_number',
+        'notes',
+        'performed_by',
+      ];
+      const transactionValues = [
+        vaccine_inventory_id,
+        vaccine_id,
+        'ISSUE',
+        1,
+        previousBalance,
+        newBalance,
+        `VAC-${patient_id}-${vaccine_id}-${dose_no}`,
+        `Vaccination administered to infant ID ${patient_id}, dose ${dose_no}`,
+        administered_by || req.user.id,
+      ];
+
+      if (facilityId) {
+        transactionColumns.splice(2, 0, transactionFacilityColumn);
+        transactionValues.splice(2, 0, facilityId);
       }
-
-      // Deduct from batch
-      await client.query(
-        'UPDATE vaccine_batches SET qty_current = qty_current - 1 WHERE id = $1',
-        [batch_id],
-      );
-      batchUpdated = true;
 
       // Create inventory transaction
+      const transactionPlaceholders = transactionValues.map((_, index) => `$${index + 1}`);
       const txnResult = await client.query(
         `INSERT INTO vaccine_inventory_transactions (
-          vaccine_inventory_id, vaccine_id, transaction_type, quantity,
-          previous_balance, new_balance, reference_number, notes, performed_by
-        ) VALUES ($1, $2, 'ISSUE', 1, $3, $3 - 1, $4, $5, $6)
+          ${transactionColumns.join(', ')}
+        ) VALUES (${transactionPlaceholders.join(', ')})
         RETURNING id`,
-        [
-          vaccine_inventory_id || null,
-          vaccine_id,
-          batch.qty_current,
-          `VAC-${patient_id}-${vaccine_id}-${dose_no}`,
-          `Vaccination administered to infant ID ${patient_id}, dose ${dose_no}`,
-          administered_by || req.user.id,
-        ],
+        transactionValues,
       );
       inventoryTransactionId = txnResult.rows[0].id;
+
+      const inventoryUpdateResult = await client.query(
+        `UPDATE vaccine_inventory
+         SET issuance = COALESCE(issuance, 0) + 1,
+             updated_by = $1,
+             is_low_stock = CASE
+               WHEN ($2 <= COALESCE(low_stock_threshold, 10)) THEN true
+               ELSE false
+             END,
+             is_critical_stock = CASE
+               WHEN ($2 <= COALESCE(critical_stock_threshold, 5)) THEN true
+               ELSE false
+             END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3
+         RETURNING *`,
+        [req.user.id, newBalance, vaccine_inventory_id],
+      );
+
+      updatedInventoryRecord = inventoryUpdateResult.rows[0] || null;
     }
 
     // Create vaccination record
@@ -135,8 +329,9 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       `INSERT INTO immunization_records (
         patient_id, vaccine_id, dose_no, admin_date, administered_by,
         site_of_injection, reactions, next_due_date, notes, status,
-        batch_id, is_ready_confirmed, ready_confirmed_at, ready_confirmed_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed', $10, $11, $12, $13)
+        batch_id, is_ready_confirmed, ready_confirmed_at, ready_confirmed_by, appointment_id,
+        lot_number, batch_number
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed', $10, $11, $12, $13, $14, $15, $16)
       RETURNING *`,
       [
         patient_id,
@@ -152,10 +347,24 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
         isReady,
         isReady ? new Date() : null,
         isReady ? req.user.id : null,
+        linkedAppointment?.id || null,
+        lot_number || lot_batch_number || batch_number || null,
+        batch_number || lot_batch_number || lot_number || null,
       ],
     );
 
     const vaccinationRecord = recordResult.rows[0];
+
+    if (linkedAppointment?.id) {
+      await client.query(
+        `UPDATE appointments
+         SET status = 'attended',
+             completion_notes = COALESCE(completion_notes, 'Vaccination recorded'),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [linkedAppointment.id],
+      );
+    }
 
     // Create audit log
     await client.query(
@@ -188,10 +397,17 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
     res.status(201).json({
       success: true,
       vaccination: vaccinationRecord,
+      appointment: linkedAppointment
+        ? {
+          id: linkedAppointment.id,
+          status: 'attended',
+        }
+        : null,
       inventory: {
         deducted: batchUpdated,
         transactionId: inventoryTransactionId,
         batchUpdated,
+        inventoryRecord: updatedInventoryRecord,
       },
       readiness: {
         wasConfirmed: isReady,

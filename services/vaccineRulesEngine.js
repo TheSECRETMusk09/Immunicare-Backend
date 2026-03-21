@@ -249,16 +249,24 @@ const calculateVaccineReadiness = async (infantId) => {
 
     // Get completed vaccinations
     const completedResult = await pool.query(
-      `SELECT DISTINCT vaccine_id, MAX(dose_no) as dose_no
+      `SELECT vaccine_id, dose_no, admin_date
        FROM immunization_records
-       WHERE patient_id = $1 AND is_active = true AND status = 'completed'
-       GROUP BY vaccine_id`,
+       WHERE patient_id = $1
+         AND is_active = true
+         AND (
+           status = 'completed'
+           OR admin_date IS NOT NULL
+         )`,
       [infantId],
     );
 
     const completedVaccines = {};
+    const completedDoseMap = new Set();
     completedResult.rows.forEach(record => {
-      completedVaccines[record.vaccine_id] = record.dose_no;
+      const vaccineId = parseInt(record.vaccine_id, 10);
+      const doseNumber = parseInt(record.dose_no, 10);
+      completedVaccines[vaccineId] = Math.max(completedVaccines[vaccineId] || 0, doseNumber);
+      completedDoseMap.add(`${vaccineId}:${doseNumber}`);
     });
 
     // Get vaccination schedules
@@ -294,28 +302,30 @@ const calculateVaccineReadiness = async (infantId) => {
 
     schedulesResult.rows.forEach(schedule => {
       const dosesCompleted = completedVaccines[schedule.vaccine_id] || 0;
-      const isComplete = dosesCompleted >= schedule.total_doses;
+      const doseNumber = parseInt(schedule.dose_number, 10);
+      const isDoseCompleted = completedDoseMap.has(`${schedule.vaccine_id}:${doseNumber}`);
+      const isNextDueDose = doseNumber === dosesCompleted + 1;
       const readiness = readinessMap[schedule.vaccine_id] || { isReady: false };
 
       const dueDate = new Date(dob);
       dueDate.setDate(dueDate.getDate() + (schedule.minimum_age_days || schedule.age_in_months * 30));
 
-      const isOverdue = !isComplete && dueDate < today;
+      const isOverdue = !isDoseCompleted && isNextDueDose && dueDate < today;
       const ageRequirementMet = ageInDays >= (schedule.minimum_age_days || schedule.age_in_months * 30);
 
-      if (!isComplete) {
+      if (!isDoseCompleted && isNextDueDose) {
         if (ageRequirementMet && readiness.isReady) {
           if (isOverdue) {
             overdueVaccines.push({
               vaccineId: schedule.vaccine_id,
-              label: schedule.vaccine_name,
+              label: `${schedule.vaccine_name} (Dose ${doseNumber})`,
               earliestDate: dueDate.toISOString().split('T')[0],
               recommendedDate: dueDate.toISOString().split('T')[0],
             });
           } else {
             dueVaccines.push({
               vaccineId: schedule.vaccine_id,
-              label: schedule.vaccine_name,
+              label: `${schedule.vaccine_name} (Dose ${doseNumber})`,
               earliestDate: dueDate.toISOString().split('T')[0],
               recommendedDate: dueDate.toISOString().split('T')[0],
             });
@@ -323,7 +333,7 @@ const calculateVaccineReadiness = async (infantId) => {
         } else if (ageRequirementMet && !readiness.isReady) {
           blockedVaccines.push({
             vaccineId: schedule.vaccine_id,
-            label: schedule.vaccine_name,
+            label: `${schedule.vaccine_name} (Dose ${doseNumber})`,
             reason: 'Pending admin confirmation',
           });
         }

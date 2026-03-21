@@ -358,11 +358,8 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
         [newBalance, vaccine_inventory_id],
       );
 
-      // Handle out of stock alert
-      if (isOutOfStock) {
-        // Update vaccine_inventory to mark as out of stock (we'll add this column later if needed)
-        // For now, we'll create an alert
-
+      // Handle out of stock and low stock alerts
+      if (isOutOfStock || (newBalance > 0 && newBalance <= 10)) {
         // Get vaccine and clinic details for the alert
         const inventoryDetails = await pool.query(
           `SELECT vi.stock_on_hand, v.name as vaccine_name, c.name as clinic_name
@@ -375,37 +372,64 @@ exports.createVaccineInventoryTransaction = async (req, res) => {
 
         const { vaccine_name, clinic_name } = inventoryDetails.rows[0];
 
-        // Check if there's already an active out-of-stock alert for this inventory item to prevent duplicates
-        const existingAlert = await pool.query(
-          `SELECT id FROM vaccine_stock_alerts
-            WHERE vaccine_inventory_id = $1 AND alert_type = 'OUT_OF_STOCK' AND status = 'ACTIVE'`,
-          [vaccine_inventory_id],
-        );
+        if (isOutOfStock) {
+          // Check if there's already an active out-of-stock alert for this inventory item to prevent duplicates
+          const existingAlert = await pool.query(
+            `SELECT id FROM vaccine_stock_alerts
+              WHERE vaccine_inventory_id = $1 AND alert_type = 'OUT_OF_STOCK' AND status = 'ACTIVE'`,
+            [vaccine_inventory_id],
+          );
 
-        if (existingAlert.rows.length === 0) {
-          // Create new out-of-stock alert
-          await pool.query(
-            `INSERT INTO vaccine_stock_alerts (
-               vaccine_inventory_id, vaccine_id, facility_id, alert_type, current_stock, threshold_value,
-               status, message, priority
-             ) VALUES ($1, $2, $3, 'OUT_OF_STOCK', $4, $5, 'ACTIVE', $6, 'URGENT')`,
-            [
-              vaccine_inventory_id,
+          if (existingAlert.rows.length === 0) {
+            // Create new out-of-stock alert
+            await pool.query(
+              `INSERT INTO vaccine_stock_alerts (
+                 vaccine_inventory_id, vaccine_id, facility_id, alert_type, current_stock, threshold_value,
+                 status, message, priority
+               ) VALUES ($1, $2, $3, 'OUT_OF_STOCK', $4, $5, 'ACTIVE', $6, 'URGENT')`,
+              [
+                vaccine_inventory_id,
+                finalVaccineId,
+                finalClinicId,
+                newBalance, // current_stock = 0
+                0, // threshold_value = 0 for out of stock
+                `${vaccine_name} at ${clinic_name} is OUT OF STOCK: 0 remaining.`,
+              ],
+            );
+
+            // Send notifications using admin notification service
+            const adminNotificationService = require('../services/adminNotificationService');
+            await adminNotificationService.sendOutOfStockAlert(
+              vaccine_name,
               finalVaccineId,
-              finalClinicId,
-              newBalance, // current_stock = 0
-              0, // threshold_value = 0 for out of stock
-              `${vaccine_name} at ${clinic_name} is OUT OF STOCK: 0 remaining.`,
-            ],
+              lot_number || 'UNKNOWN',
+            );
+          }
+        } else if (newBalance > 0 && newBalance <= 10) {
+          // Check if there's already an active low stock alert
+          const existingLowStockAlert = await pool.query(
+            `SELECT id FROM vaccine_stock_alerts
+              WHERE vaccine_inventory_id = $1 AND alert_type = 'LOW_STOCK' AND status = 'ACTIVE'`,
+            [vaccine_inventory_id],
           );
 
-          // Send notifications using admin notification service
-          const adminNotificationService = require('../services/adminNotificationService');
-          await adminNotificationService.sendOutOfStockAlert(
-            vaccine_name,
-            finalVaccineId,
-            lot_number || 'UNKNOWN',
-          );
+          if (existingLowStockAlert.rows.length === 0) {
+            // Create new low stock alert
+            await pool.query(
+              `INSERT INTO vaccine_stock_alerts (
+                 vaccine_inventory_id, vaccine_id, facility_id, alert_type, current_stock, threshold_value,
+                 status, message, priority
+               ) VALUES ($1, $2, $3, 'LOW_STOCK', $4, $5, 'ACTIVE', $6, 'HIGH')`,
+              [
+                vaccine_inventory_id,
+                finalVaccineId,
+                finalClinicId,
+                newBalance,
+                10,
+                `${vaccine_name} at ${clinic_name} is running LOW: ${newBalance} remaining.`,
+              ],
+            );
+          }
         }
       }
 
@@ -532,7 +556,7 @@ exports.getVaccineInventoryStats = async (req, res) => {
         clinic_id,
       ]),
       pool.query(
-        'SELECT COUNT(*) as count FROM vaccine_inventory WHERE clinic_id = $1 AND stock_on_hand <= 10',
+        'SELECT COUNT(*) as count FROM vaccine_inventory WHERE clinic_id = $1 AND stock_on_hand <= 10 AND stock_on_hand > 0',
         [clinic_id],
       ),
       pool.query(

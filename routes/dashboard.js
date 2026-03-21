@@ -276,7 +276,10 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
         FROM immunization_records ir
         LEFT JOIN patients p ON p.id = ir.patient_id
         WHERE ${guardianScopeFilterSql} = $1
-          AND ir.status = 'completed'
+          AND (
+            ir.status = 'completed'
+            OR ir.admin_date IS NOT NULL
+          )
           AND ir.is_active = true
       `,
       [guardianId],
@@ -288,7 +291,8 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
         FROM immunization_records ir
         LEFT JOIN patients p ON p.id = ir.patient_id
         WHERE ${guardianScopeFilterSql} = $1
-          AND ir.status IN ('scheduled', 'pending')
+          AND COALESCE(ir.status, 'pending') IN ('scheduled', 'pending')
+          AND ir.admin_date IS NULL
           AND ir.is_active = true
       `,
       [guardianId],
@@ -399,8 +403,8 @@ router.get('/guardian/:guardianId/children', authenticateToken, async (req, res,
       `
         SELECT
           p.*,
-           (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND status = 'completed' AND is_active = true) as completed_vaccinations,
-           (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND status IN ('scheduled', 'pending') AND is_active = true) as pending_vaccinations,
+           (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND (status = 'completed' OR admin_date IS NOT NULL) AND is_active = true) as completed_vaccinations,
+           (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND COALESCE(status, 'pending') IN ('scheduled', 'pending') AND admin_date IS NULL AND is_active = true) as pending_vaccinations,
            (SELECT COUNT(*) FROM appointments WHERE infant_id = p.id AND scheduled_date >= CURRENT_DATE AND LOWER(REPLACE(COALESCE(status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled') AND is_active = true) as upcoming_appointments
         FROM patients p
         WHERE p.guardian_id = $1

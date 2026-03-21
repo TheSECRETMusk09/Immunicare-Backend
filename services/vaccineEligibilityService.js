@@ -10,6 +10,18 @@
 
 const pool = require('../db');
 
+const SCHEDULE_SCHEMA_COLUMNS = [
+  'age_in_months',
+  'age_months',
+  'age_in_weeks',
+  'min_age_weeks',
+  'age_description',
+  'minimum_age_days',
+  'grace_period_days',
+  'contraindications',
+];
+let scheduleSchemaPromise = null;
+
 // Minimum intervals in days between doses
 const MIN_INTERVAL_DAYS = {
   SAME_VACCINE: 28, // 4 weeks between doses of the same vaccine
@@ -19,6 +31,93 @@ const MIN_INTERVAL_DAYS = {
 // Weeks to days conversion
 const WEEKS_TO_DAYS = 7;
 const MONTHS_TO_DAYS = 30;
+
+const normalizeDateValue = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const isCompletedVaccinationRecord = (record) => {
+  const normalizedStatus = String(record?.status || '').trim().toLowerCase();
+  return Boolean(record?.admin_date) || normalizedStatus === 'completed';
+};
+
+const resolveScheduleSchema = async () => {
+  if (!scheduleSchemaPromise) {
+    scheduleSchemaPromise = pool
+      .query(
+        `
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'vaccination_schedules'
+            AND column_name = ANY($1::text[])
+        `,
+        [SCHEDULE_SCHEMA_COLUMNS],
+      )
+      .then((result) => {
+        const availableColumns = new Set((result.rows || []).map((row) => row.column_name));
+        let ageColumn = null;
+
+        if (availableColumns.has('age_in_months')) {
+          ageColumn = 'age_in_months';
+        } else if (availableColumns.has('age_months')) {
+          ageColumn = 'age_months';
+        }
+
+        if (!ageColumn) {
+          throw new Error('Vaccination schedules age column is not configured');
+        }
+
+        return {
+          columns: availableColumns,
+          ageColumn,
+        };
+      })
+      .catch((error) => {
+        scheduleSchemaPromise = null;
+        throw error;
+      });
+  }
+
+  return scheduleSchemaPromise;
+};
+
+const buildOptionalScheduleColumn = (availableColumns, columnName, fallbackSql, alias = columnName) => {
+  if (availableColumns.has(columnName)) {
+    return `vs.${columnName} as ${alias}`;
+  }
+
+  return `${fallbackSql} as ${alias}`;
+};
+
+const resolveMinimumAgeDays = (schedule = {}) => {
+  const minimumAgeDays = Number(schedule.minimum_age_days);
+  if (Number.isFinite(minimumAgeDays) && minimumAgeDays >= 0) {
+    return minimumAgeDays;
+  }
+
+  const minAgeWeeks = Number(schedule.min_age_weeks);
+  if (Number.isFinite(minAgeWeeks) && minAgeWeeks > 0) {
+    return Math.round(minAgeWeeks * WEEKS_TO_DAYS);
+  }
+
+  const ageInWeeks = Number(schedule.age_in_weeks);
+  if (Number.isFinite(ageInWeeks) && ageInWeeks > 0) {
+    return Math.round(ageInWeeks * WEEKS_TO_DAYS);
+  }
+
+  const ageInMonths = Number(schedule.age_months);
+  if (Number.isFinite(ageInMonths) && ageInMonths >= 0) {
+    return Math.round(ageInMonths * MONTHS_TO_DAYS);
+  }
+
+  return 0;
+};
 
 /**
  * Get all vaccination records for an infant
@@ -66,41 +165,51 @@ const getInfantDetails = async (infantId) => {
  * Get infant allergies
  */
 const getInfantAllergies = async (infantId) => {
-  const result = await pool.query(
-    `
-      SELECT id, infant_id, allergy_type, severity, description, allergen, reaction, is_active
-      FROM infant_allergies
-      WHERE infant_id = $1 AND is_active = true
-    `,
-    [infantId],
-  );
-  return result.rows;
+  try {
+    const result = await pool.query(
+      `
+        SELECT id, infant_id, allergy_type, severity, description, allergen, reaction, is_active
+        FROM infant_allergies
+        WHERE infant_id = $1 AND is_active = true
+      `,
+      [infantId],
+    );
+    return result.rows;
+  } catch (error) {
+    console.error('Error fetching infant allergies:', error);
+    return [];
+  }
 };
 
 /**
  * Get all vaccination schedules
  */
 const getVaccinationSchedules = async () => {
+  const scheduleSchema = await resolveScheduleSchema();
+  const { ageColumn, columns } = scheduleSchema;
+
   const result = await pool.query(
     `
       SELECT
         vs.id,
         vs.vaccine_id,
-        vs.vaccine_name,
+        COALESCE(NULLIF(TRIM(vs.vaccine_name), ''), v.name) as vaccine_name,
         vs.dose_number,
         vs.total_doses,
-        vs.age_months,
-        vs.age_description,
+        vs.${ageColumn} as age_months,
+        ${buildOptionalScheduleColumn(columns, 'age_in_weeks', 'NULL::integer')},
+        ${buildOptionalScheduleColumn(columns, 'min_age_weeks', 'NULL::integer')},
+        ${buildOptionalScheduleColumn(columns, 'age_description', 'NULL::text')},
         vs.description,
-        vs.minimum_age_days,
-        vs.grace_period_days,
-        vs.contraindications,
-        v.name as vaccine_name,
+        ${buildOptionalScheduleColumn(columns, 'minimum_age_days', 'NULL::integer')},
+        ${buildOptionalScheduleColumn(columns, 'grace_period_days', 'NULL::integer')},
+        ${buildOptionalScheduleColumn(columns, 'contraindications', 'NULL::text')},
+        v.name as canonical_vaccine_name,
         v.code as vaccine_code
       FROM vaccination_schedules vs
       JOIN vaccines v ON vs.vaccine_id = v.id
       WHERE vs.is_active = true
-      ORDER BY vs.age_months ASC, vs.vaccine_name ASC
+      ORDER BY vs.${ageColumn} ASC, COALESCE(NULLIF(TRIM(vs.vaccine_name), ''), v.name) ASC
     `,
   );
   return result.rows;
@@ -117,7 +226,10 @@ const getNextDoseNumber = async (infantId, vaccineId) => {
       WHERE patient_id = $1
         AND vaccine_id = $2
         AND is_active = true
-        AND status = 'completed'
+        AND (
+          status = 'completed'
+          OR admin_date IS NOT NULL
+        )
     `,
     [infantId, vaccineId],
   );
@@ -137,6 +249,10 @@ const getLastDoseDate = async (infantId, vaccineId) => {
       WHERE patient_id = $1
         AND vaccine_id = $2
         AND is_active = true
+        AND (
+          status = 'completed'
+          OR admin_date IS NOT NULL
+        )
     `,
     [infantId, vaccineId],
   );
@@ -154,7 +270,16 @@ const checkMinimumInterval = async (infantId, vaccineId) => {
     return { passed: true, daysSinceLastDose: null, reason: null };
   }
 
-  const lastDate = new Date(lastDoseDate);
+  const lastDate = normalizeDateValue(lastDoseDate);
+  if (!lastDate) {
+    return {
+      passed: false,
+      daysSinceLastDose: null,
+      lastDoseDate: null,
+      reason: 'Last dose date is invalid',
+    };
+  }
+
   const today = new Date();
   const daysSinceLastDose = Math.floor((today - lastDate) / (1000 * 60 * 60 * 24));
 
@@ -163,7 +288,7 @@ const checkMinimumInterval = async (infantId, vaccineId) => {
   return {
     passed: hasPassed,
     daysSinceLastDose,
-    lastDoseDate: lastDoseDate.toISOString().split('T')[0],
+    lastDoseDate: lastDate.toISOString().split('T')[0],
     reason: hasPassed ? null : `Must wait ${MIN_INTERVAL_DAYS.SAME_VACCINE - daysSinceLastDose} more days before next dose`,
   };
 };
@@ -175,10 +300,15 @@ const checkContraindications = async (infantId, vaccineId) => {
   // Get infant allergies
   const allergies = await getInfantAllergies(infantId);
 
+  const scheduleSchema = await resolveScheduleSchema();
+  const contraindicationsSelect = scheduleSchema.columns.has('contraindications')
+    ? 'vs.contraindications as contraindications'
+    : 'NULL::text as contraindications';
+
   // Get vaccine details to check contraindications
   const vaccineResult = await pool.query(
     `
-      SELECT v.id, v.name, v.code, vs.contraindications
+      SELECT v.id, v.name, v.code, ${contraindicationsSelect}
       FROM vaccines v
       LEFT JOIN vaccination_schedules vs ON vs.vaccine_id = v.id
       WHERE v.id = $1
@@ -262,23 +392,31 @@ const getNextDoseInfo = async (infantId, vaccineId) => {
     return { error: 'Infant not found' };
   }
 
+  const scheduleSchema = await resolveScheduleSchema();
+  const { ageColumn } = scheduleSchema;
+
   // Get next dose number
   const nextDoseNumber = await getNextDoseNumber(infantId, vaccineId);
 
   // Get vaccine schedule
   const scheduleResult = await pool.query(
     `
-      SELECT *
-      FROM vaccination_schedules
-      WHERE vaccine_id = $1
-        AND dose_number = $2
-        AND is_active = true
+      SELECT
+        vs.*,
+        vs.${ageColumn} as age_months
+      FROM vaccination_schedules vs
+      WHERE vs.vaccine_id = $1
+        AND vs.dose_number = $2
+        AND vs.is_active = true
       LIMIT 1
     `,
     [vaccineId, nextDoseNumber],
   );
 
   const schedule = scheduleResult.rows[0];
+  if (!schedule) {
+    return { error: 'No remaining scheduled dose found for this vaccine' };
+  }
 
   // Check minimum interval
   const intervalCheck = await checkMinimumInterval(infantId, vaccineId);
@@ -288,7 +426,7 @@ const getNextDoseInfo = async (infantId, vaccineId) => {
 
   // Calculate age eligibility
   const ageInDays = getInfantAgeInDays(infant.dob);
-  const minAgeDays = schedule?.minimum_age_days || (schedule?.age_months * MONTHS_TO_DAYS) || 0;
+  const minAgeDays = resolveMinimumAgeDays(schedule);
   const ageEligible = ageInDays >= minAgeDays;
 
   // Calculate when vaccine will be due
@@ -351,9 +489,16 @@ const getEligibleVaccines = async (infantId) => {
   // Group records by vaccine to get max dose for each
   const completedDosesByVaccine = {};
   records.forEach(record => {
-    if (!completedDosesByVaccine[record.vaccine_id] || record.dose_no > completedDosesByVaccine[record.vaccine_id]) {
+    if (!isCompletedVaccinationRecord(record)) {
+      return;
+    }
+
+    if (
+      !completedDosesByVaccine[record.vaccine_id] ||
+      record.dose_no > completedDosesByVaccine[record.vaccine_id].doseNo
+    ) {
       completedDosesByVaccine[record.vaccine_id] = {
-        doseNo: record.dose_no,
+        doseNo: parseInt(record.dose_no, 10),
         adminDate: record.admin_date,
         vaccineName: record.vaccine_name,
       };
@@ -408,22 +553,13 @@ const getEligibleVaccines = async (infantId) => {
     }
 
     // Check age eligibility
-    const minAgeDays = nextSchedule.minimum_age_days || (nextSchedule.age_months * MONTHS_TO_DAYS);
+    const minAgeDays = resolveMinimumAgeDays(nextSchedule);
     const ageEligible = ageInDays >= minAgeDays;
 
     // Check interval since last dose
     let intervalCheck = { passed: true, daysSinceLastDose: 0, reason: null };
     if (completedDose) {
-      const lastDate = new Date(completedDose.adminDate);
-      const today = new Date();
-      const daysSinceLastDose = Math.floor((today - lastDate) / (1000 * 60 * 60 * 24));
-      intervalCheck = {
-        passed: daysSinceLastDose >= MIN_INTERVAL_DAYS.SAME_VACCINE,
-        daysSinceLastDose,
-        lastDoseDate: completedDose.adminDate,
-        reason: daysSinceLastDose >= MIN_INTERVAL_DAYS.SAME_VACCINE ? null :
-          `Must wait ${MIN_INTERVAL_DAYS.SAME_VACCINE - daysSinceLastDose} more days`,
-      };
+      intervalCheck = await checkMinimumInterval(infantId, parseInt(vaccineId, 10));
     }
 
     // Check contraindications

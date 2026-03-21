@@ -1335,7 +1335,7 @@ class ReportService {
     });
   }
 
-  populateLegacyWorksheet({ worksheet, title, generatedAt, headers, reportType, rows }) {
+  async populateLegacyWorksheet({ worksheet, title, generatedAt, headers, reportType, rows }) {
     worksheet.addRow([title]);
     worksheet.addRow([`Generated: ${generatedAt.toISOString()}`]);
     worksheet.addRow([]);
@@ -1343,16 +1343,20 @@ class ReportService {
     const headerRow = worksheet.addRow(headers);
     headerRow.font = { bold: true };
 
-    rows.forEach((row, index) => {
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index];
+      if (index > 0 && index % 100 === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
       worksheet.addRow(this.mapRowForExport(reportType, row, index));
-    });
+    }
 
     worksheet.columns.forEach((column) => {
       column.width = Math.min(Math.max((column.header || '').length + 4, 14), 42);
     });
   }
 
-  populateWorksheet({
+  async populateWorksheet({
     worksheet,
     title,
     generatedAt,
@@ -1364,7 +1368,7 @@ class ReportService {
     emptyStateMessage = '',
   }) {
     if (this.isInventoryLayout(reportType)) {
-      this.populateLegacyWorksheet({ worksheet, title, generatedAt, headers, reportType, rows });
+      await this.populateLegacyWorksheet({ worksheet, title, generatedAt, headers, reportType, rows });
       return;
     }
 
@@ -1469,7 +1473,11 @@ class ReportService {
       };
       messageRow.height = 28;
     } else {
-      normalizedRows.forEach((rowValues, rowIndex) => {
+      for (let rowIndex = 0; rowIndex < normalizedRows.length; rowIndex++) {
+        const rowValues = normalizedRows[rowIndex];
+        if (rowIndex > 0 && rowIndex % 100 === 0) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
         const row = worksheet.addRow(rowValues);
         row.eachCell((cell) => {
           cell.alignment = {
@@ -1492,7 +1500,7 @@ class ReportService {
           }
         });
         this.applyExcelRowHeight(row, rowValues, worksheet);
-      });
+      }
     }
 
     headers.forEach((_header, index) => {
@@ -1514,7 +1522,7 @@ class ReportService {
 
     if (reportData.reportType === 'inventory' && (!reportData.sections || reportData.sections.length === 0)) {
       const worksheet = workbook.addWorksheet(this.buildSheetName(reportData.title, 'Report Data'));
-      this.populateLegacyWorksheet({
+      await this.populateLegacyWorksheet({
         worksheet,
         title: reportData.title,
         generatedAt: reportData.generatedAt,
@@ -1528,7 +1536,7 @@ class ReportService {
 
     if (reportData.sections && reportData.sections.length > 0) {
       const summarySheet = workbook.addWorksheet('Summary');
-      this.populateWorksheet({
+      await this.populateWorksheet({
         worksheet: summarySheet,
         title: `${reportData.title} Summary`,
         generatedAt: reportData.generatedAt,
@@ -1540,13 +1548,14 @@ class ReportService {
         emptyStateMessage: this.getEmptyStateMessage(`${reportData.title} summary`),
       });
 
-      reportData.sections.forEach((section, index) => {
+      for (let index = 0; index < reportData.sections.length; index++) {
+        const section = reportData.sections[index];
         const worksheet = workbook.addWorksheet(
           this.buildSheetName(section.sectionTitle, `Section ${index + 1}`),
         );
 
         if (this.isInventoryLayout(section.reportType)) {
-          this.populateLegacyWorksheet({
+          await this.populateLegacyWorksheet({
             worksheet,
             title: section.sectionTitle,
             generatedAt: reportData.generatedAt,
@@ -1554,10 +1563,10 @@ class ReportService {
             reportType: section.reportType,
             rows: section.rows,
           });
-          return;
+          continue;
         }
 
-        this.populateWorksheet({
+        await this.populateWorksheet({
           worksheet,
           title: section.sectionTitle,
           generatedAt: reportData.generatedAt,
@@ -1566,10 +1575,10 @@ class ReportService {
           rows: section.rows,
           filters: reportData.filters,
         });
-      });
+      }
     } else {
       const worksheet = workbook.addWorksheet(this.buildSheetName(reportData.title, 'Report Data'));
-      this.populateWorksheet({
+      await this.populateWorksheet({
         worksheet,
         title: reportData.title,
         generatedAt: reportData.generatedAt,
@@ -1746,7 +1755,7 @@ class ReportService {
     doc.moveDown(0.4);
   }
 
-  writeLegacyPdfSection({ doc, title, headers, reportType, rows, startOnNewPage = false }) {
+  async writeLegacyPdfSection({ doc, title, headers, reportType, rows, startOnNewPage = false }) {
     if (!doc.page || startOnNewPage) {
       this.addPdfPage(doc, { layout: 'portrait' });
     } else if (doc.y > doc.page.height - 100) {
@@ -1760,7 +1769,12 @@ class ReportService {
     doc.moveDown(0.1);
     doc.font('Helvetica').fontSize(9);
 
-    rows.forEach((row, index) => {
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index];
+      if (index > 0 && index % 25 === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
       if (doc.y > doc.page.height - 60) {
         this.addPdfPage(doc, { layout: 'portrait' });
       }
@@ -1771,10 +1785,10 @@ class ReportService {
         .slice(0, 320);
 
       doc.text(line);
-    });
+    }
   }
 
-  writeBrandedPdfSection({
+  async writeBrandedPdfSection({
     doc,
     title,
     headers,
@@ -1834,7 +1848,12 @@ class ReportService {
 
     redrawHeader();
 
-    normalizedRows.forEach((rowValues, rowIndex) => {
+    for (let rowIndex = 0; rowIndex < normalizedRows.length; rowIndex++) {
+      const rowValues = normalizedRows[rowIndex];
+      if (rowIndex > 0 && rowIndex % 20 === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
       const estimatedHeight = Math.max(
         ...rowValues.map((value, columnIndex) => {
           doc.font('Helvetica').fontSize(9);
@@ -1866,20 +1885,20 @@ class ReportService {
         rowIndex % 2 === 1,
       );
       currentY += rowHeight;
-    });
+    }
   }
 
-  writePdfSection(options) {
+  async writePdfSection(options) {
     if (this.isInventoryLayout(options.reportType)) {
-      this.writeLegacyPdfSection(options);
+      await this.writeLegacyPdfSection(options);
       return;
     }
 
-    this.writeBrandedPdfSection(options);
+    await this.writeBrandedPdfSection(options);
   }
 
   buildLegacyInventoryPdfBuffer(reportData) {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const chunks = [];
       const doc = new PDFDocument({ size: 'A4', margin: 40, compress: false });
 
@@ -1887,32 +1906,36 @@ class ReportService {
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', (error) => reject(error));
 
-      doc.font('Helvetica-Bold').fontSize(18).text(reportData.title);
-      doc.moveDown(0.2);
-      doc
-        .font('Helvetica')
-        .fontSize(10)
-        .fillColor('gray')
-        .text(`Generated: ${reportData.generatedAt.toISOString()}`);
+      try {
+        doc.font('Helvetica-Bold').fontSize(18).text(reportData.title);
+        doc.moveDown(0.2);
+        doc
+          .font('Helvetica')
+          .fontSize(10)
+          .fillColor('gray')
+          .text(`Generated: ${reportData.generatedAt.toISOString()}`);
 
-      if (reportData.summary && Object.keys(reportData.summary).length > 0) {
-        doc.moveDown(0.6);
-        doc.font('Helvetica-Bold').fontSize(11).fillColor('black').text('Summary');
-        doc.font('Helvetica').fontSize(10);
-        Object.entries(reportData.summary).forEach(([key, value]) => {
-          doc.text(`${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`);
+        if (reportData.summary && Object.keys(reportData.summary).length > 0) {
+          doc.moveDown(0.6);
+          doc.font('Helvetica-Bold').fontSize(11).fillColor('black').text('Summary');
+          doc.font('Helvetica').fontSize(10);
+          Object.entries(reportData.summary).forEach(([key, value]) => {
+            doc.text(`${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`);
+          });
+        }
+
+        await this.writeLegacyPdfSection({
+          doc,
+          title: 'Details',
+          headers: reportData.headers,
+          reportType: reportData.reportType,
+          rows: reportData.rows,
         });
+
+        doc.end();
+      } catch (err) {
+        reject(err);
       }
-
-      this.writeLegacyPdfSection({
-        doc,
-        title: 'Details',
-        headers: reportData.headers,
-        reportType: reportData.reportType,
-        rows: reportData.rows,
-      });
-
-      doc.end();
     });
   }
 
@@ -1921,7 +1944,7 @@ class ReportService {
       return this.buildLegacyInventoryPdfBuffer(reportData);
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const chunks = [];
       const doc = new PDFDocument({ autoFirstPage: false, margin: 40, compress: false });
 
@@ -1929,49 +1952,53 @@ class ReportService {
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', (error) => reject(error));
 
-      if (reportData.sections && reportData.sections.length > 0) {
-        this.writePdfSection({
-          doc,
-          title: `${reportData.title} Summary`,
-          headerTitle: reportData.title,
-          headers: ['Summary Metric', 'Value'],
-          reportType: 'summary',
-          rows: [],
-          filters: reportData.filters,
-          mappedRows: this.buildConsolidatedSummaryRows(reportData),
-          startOnNewPage: true,
-          emptyStateMessage: this.getEmptyStateMessage(`${reportData.title} summary`),
-        });
-
-        reportData.sections.forEach((section) => {
-          this.writePdfSection({
+      try {
+        if (reportData.sections && reportData.sections.length > 0) {
+          await this.writePdfSection({
             doc,
-            title: section.sectionTitle,
-            headerTitle: section.sectionTitle,
-            headers: section.headers,
-            reportType: section.reportType,
-            rows: section.rows,
+            title: `${reportData.title} Summary`,
+            headerTitle: reportData.title,
+            headers: ['Summary Metric', 'Value'],
+            reportType: 'summary',
+            rows: [],
             filters: reportData.filters,
+            mappedRows: this.buildConsolidatedSummaryRows(reportData),
+            startOnNewPage: true,
+            emptyStateMessage: this.getEmptyStateMessage(`${reportData.title} summary`),
+          });
+
+          for (const section of reportData.sections) {
+            await this.writePdfSection({
+              doc,
+              title: section.sectionTitle,
+              headerTitle: section.sectionTitle,
+              headers: section.headers,
+              reportType: section.reportType,
+              rows: section.rows,
+              filters: reportData.filters,
+              startOnNewPage: true,
+            });
+          }
+        } else {
+          await this.writePdfSection({
+            doc,
+            title: 'Report Details',
+            headerTitle: reportData.title,
+            headers: reportData.headers,
+            reportType: reportData.reportType,
+            rows: reportData.rows,
+            filters: reportData.filters,
+            summaryEntries: this.buildSummaryEntries(reportData.summary, {
+              generatedAt: reportData.generatedAt,
+            }),
             startOnNewPage: true,
           });
-        });
-      } else {
-        this.writePdfSection({
-          doc,
-          title: 'Report Details',
-          headerTitle: reportData.title,
-          headers: reportData.headers,
-          reportType: reportData.reportType,
-          rows: reportData.rows,
-          filters: reportData.filters,
-          summaryEntries: this.buildSummaryEntries(reportData.summary, {
-            generatedAt: reportData.generatedAt,
-          }),
-          startOnNewPage: true,
-        });
-      }
+        }
 
-      doc.end();
+        doc.end();
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
@@ -2428,13 +2455,45 @@ class ReportService {
         FROM reports
       `;
 
-    const [vaccination, inventory, appointments, guardians, infants, reports] = await Promise.all([
+    const transferCasesTable = await this.resolveFirstExistingTable(['transfer_in_cases'], null);
+    const transferSummaryQuery = transferCasesTable
+      ? `
+          SELECT
+            COUNT(*)::int AS total,
+            COUNT(
+              CASE
+                WHEN validation_status IN ('pending', 'for_validation', 'needs_clarification')
+                THEN 1
+              END
+            )::int AS open_cases,
+            ROUND(
+              AVG(
+                EXTRACT(EPOCH FROM (COALESCE(updated_at, created_at) - created_at)) / 86400.0
+              ) FILTER (WHERE validation_status IN ('approved', 'rejected')),
+              2
+            ) AS avg_turnaround_days
+          FROM ${transferCasesTable}
+        `
+      : null;
+
+    const [vaccination, inventory, appointments, guardians, infants, reports, transfers] = await Promise.all([
       this.pool.query(vaccinationSummaryQuery, vaccinationParams),
       this.pool.query(inventorySummaryQuery),
       this.pool.query(appointmentSummaryQuery, appointmentParams),
       this.pool.query(guardianSummaryQuery, guardiansParams),
       this.pool.query(infantSummaryQuery, infantParams),
       this.pool.query(reportActivityQuery),
+      transferSummaryQuery
+        ? this.pool.query(transferSummaryQuery)
+        : Promise.resolve({
+          rows: [
+            {
+              total: 0,
+              open_cases: 0,
+              avg_turnaround_days: 0,
+            },
+          ],
+        }),
     ]);
 
     return {
@@ -2464,6 +2523,12 @@ class ReportService {
             total_downloads: 0,
             reports_last_7_days: 0,
             reports_last_30_days: 0,
+          },
+      transfers:
+          transfers.rows[0] || {
+            total: 0,
+            open_cases: 0,
+            avg_turnaround_days: 0,
           },
     };
   }

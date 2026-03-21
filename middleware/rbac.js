@@ -16,7 +16,10 @@ const CANONICAL_ROLES = Object.freeze({
 const LEGACY_SYSTEM_ADMIN_ROLES = new Set([
   'system_admin',
   'super_admin',
+  'superadmin',
+  'superadministrator',
   'admin',
+  'administrator',
   'clinic_manager',
   'public_health_nurse',
   'inventory_manager',
@@ -73,7 +76,13 @@ const PERMISSIONS = {
   'inventory:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'inventory:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'inventory:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'inventory:correct': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'inventory:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
+
+  // Transfer workflow
+  'transfer:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'transfer:validate': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'transfer:approve': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
   // Reports
   'report:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
@@ -91,6 +100,7 @@ const PERMISSIONS = {
   'system:settings': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'system:audit': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'system:sms_config': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'admin:override': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
   // Notifications
   'notification:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
@@ -98,6 +108,7 @@ const PERMISSIONS = {
 
   // Documents
   'document:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
+  'document:export': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
   'document:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'document:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
 };
@@ -178,6 +189,7 @@ const requirePermission = (permission) => {
     }
 
     req.user.runtime_role = canonicalRole;
+    req.user.permissions = getRolePermissions(canonicalRole);
     next();
   };
 };
@@ -190,6 +202,7 @@ const requireRole = (...roles) => {
 
     const canonicalRole = getCanonicalRole(req);
     req.user.runtime_role = canonicalRole;
+    req.user.permissions = getRolePermissions(canonicalRole);
 
     const requiredCanonical = roles
       .flat()
@@ -216,6 +229,7 @@ const requireMinRole = (minRole) => {
 
     const canonicalRole = getCanonicalRole(req);
     req.user.runtime_role = canonicalRole;
+    req.user.permissions = getRolePermissions(canonicalRole);
 
     if (!hasRoleLevel(canonicalRole, minRole)) {
       return next(new AuthorizationError(`Access denied. Minimum role level: ${minRole}`));
@@ -333,6 +347,7 @@ const requireHealthCenterAccess = () => {
 
       const canonicalRole = getCanonicalRole(req);
       req.user.runtime_role = canonicalRole;
+      req.user.permissions = getRolePermissions(canonicalRole);
 
       const healthCenterId = req.user.health_center_id || req.user.clinic_id || null;
       req.healthCenterFilter = {
