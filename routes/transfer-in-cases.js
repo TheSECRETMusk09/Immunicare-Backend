@@ -16,6 +16,7 @@ const {
 const {
   validateTransferSubmission,
 } = require('../services/transferInCaseValidationService');
+const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
 
 const router = express.Router();
 
@@ -216,6 +217,20 @@ router.post('/', async (req, res) => {
       remarks,
     } = req.body;
 
+    // Normalize string arrays to objects for backward compatibility with frontend
+    const normalizedSubmittedVaccines = (submitted_vaccines || []).map(v => {
+      if (typeof v === 'string') {
+        const parts = v.split('_');
+        const dose = parseInt(parts[parts.length - 1], 10);
+        return {
+          vaccine_name: isNaN(dose) ? v : parts.slice(0, -1).join('_'),
+          dose_number: isNaN(dose) ? 1 : dose,
+          date_administered: null,
+        };
+      }
+      return v;
+    });
+
     // Validate required fields
     if (!infant_id) {
       return res.status(400).json({
@@ -263,7 +278,7 @@ router.post('/', async (req, res) => {
     } = await validateTransferSubmission({
       patientId: infant_id,
       childDob: infantCheck.rows[0].dob,
-      submittedVaccines: submitted_vaccines,
+      submittedVaccines: normalizedSubmittedVaccines,
     });
 
     if (normalizedRecords.length === 0) {
@@ -917,6 +932,18 @@ router.put('/:id/approve-vaccines', requirePermission('transfer:approve'), async
             import_summary: autoImportSummary.summary,
           },
         });
+
+        try {
+          const readiness = await calculateVaccineReadiness(currentCase.infant_id);
+          if (readiness.success && readiness.data.nextAppointmentPrediction) {
+            await client.query(
+              'UPDATE patients SET auto_computed_next_vaccine = $1 WHERE id = $2',
+              [readiness.data.nextAppointmentPrediction.label, currentCase.infant_id],
+            );
+          }
+        } catch (e) {
+          console.error('Failed to auto-calculate readiness', e);
+        }
 
         await client.query('COMMIT');
 

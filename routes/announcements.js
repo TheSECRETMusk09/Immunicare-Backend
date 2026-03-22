@@ -840,6 +840,45 @@ router.post('/', requireManagementRole, async (req, res) => {
   }
 });
 
+// Get my announcements
+router.get('/my', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const deliveryTableExists = await isTableAvailable(pool, 'announcement_recipient_deliveries');
+
+    let query;
+    let params = [];
+
+    if (deliveryTableExists) {
+      query = `
+        SELECT a.*, u.email as created_by_email,
+               d.delivery_status,
+               CASE WHEN d.delivery_status = 'read' THEN true ELSE false END as has_acknowledged
+        FROM announcements a
+        JOIN announcement_recipient_deliveries d ON a.id = d.announcement_id
+        LEFT JOIN users u ON a.created_by = u.id
+        WHERE d.recipient_user_id = $1 AND a.status = 'published'
+        ORDER BY a.priority DESC, a.created_at DESC
+      `;
+      params = [userId];
+    } else {
+      query = `
+        SELECT a.*, u.email as created_by_email, false as has_acknowledged
+        FROM announcements a
+        LEFT JOIN users u ON a.created_by = u.id
+        WHERE a.status = 'published'
+          AND (a.target_audience = 'all' OR a.target_audience = 'patients')
+        ORDER BY a.priority DESC, a.created_at DESC
+      `;
+    }
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Delivery summary for one announcement
 router.get('/:id/delivery-summary', requireManagementRole, async (req, res) => {
   try {
@@ -1217,6 +1256,32 @@ router.get('/:id', async (req, res) => {
     }
 
     res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Acknowledge announcement
+router.post('/:id/acknowledge', async (req, res) => {
+  try {
+    const announcementId = parseAnnouncementId(req.params.id);
+    const userId = req.user.id;
+
+    if (!announcementId) {
+      return res.status(400).json({ error: 'Invalid announcement ID' });
+    }
+
+    const deliveryTableExists = await isTableAvailable(pool, 'announcement_recipient_deliveries');
+    if (deliveryTableExists) {
+      await pool.query(
+        `UPDATE announcement_recipient_deliveries
+         SET delivery_status = 'read', read_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE announcement_id = $1 AND recipient_user_id = $2`,
+        [announcementId, userId]
+      );
+    }
+
+    res.json({ success: true, message: 'Announcement acknowledged' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

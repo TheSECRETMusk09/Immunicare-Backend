@@ -579,7 +579,8 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
       }
     }
 
-    const finalStatus = guardianFlow ? 'pending' : normalized.status || 'scheduled';
+    // Auto-approve all valid appointments passing availability checks
+    const finalStatus = normalized.status || 'scheduled';
     const finalClinicId = clinicIdCheck.value || infant.clinic_id || req.user.clinic_id || null;
     const finalVaccineId = vaccineIdCheck.value || null;
     const appointmentPatientColumn = await getAppointmentPatientColumn();
@@ -999,15 +1000,23 @@ router.get('/availability/calendar', async (req, res) => {
       });
     }
 
+    const clinicId = sanitizeNullableInt(req.query.clinic_id || req.user.clinic_id);
+
     const calendar = await appointmentSchedulingService.getCalendarAvailability({
       month,
       startDate,
       endDate,
       guardianId,
-      clinicId: sanitizeNullableInt(req.query.clinic_id || req.user.clinic_id),
+      clinicId,
     });
 
-    res.json(calendar);
+    // Combine blocked dates into the same payload to avoid duplicate network requests
+    const blockedDates = await blockedDatesService.getBlockedDatesForCalendar({ month, clinicId });
+
+    res.json({
+      ...calendar,
+      blockedDates: blockedDates || [],
+    });
   } catch (error) {
     console.error('Calendar availability error:', error);
     // Return detailed error in development
