@@ -643,11 +643,12 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
           FROM immunization_records ir
           LEFT JOIN patients p ON p.id = ir.patient_id
           JOIN vaccines v ON v.id = ir.vaccine_id
-          WHERE ir.created_at >= CURRENT_DATE - INTERVAL '${days} days'
+          WHERE ir.created_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
             AND ir.is_active = true
           ORDER BY ir.admin_date DESC
           LIMIT 20
         `,
+    [days],
     );
     vaccinations.rows.forEach((item) => activity.push(item));
 
@@ -668,11 +669,12 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
             END as action
           FROM appointments a
           LEFT JOIN patients p ON p.id = a.infant_id
-          WHERE a.created_at >= CURRENT_DATE - INTERVAL '${days} days'
+          WHERE a.created_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
             AND a.is_active = true
           ORDER BY a.scheduled_date DESC
           LIMIT 20
         `,
+    [days],
     );
     appointments.rows.forEach((item) => activity.push(item));
 

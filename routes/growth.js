@@ -12,6 +12,55 @@ router.use(authenticateToken);
 
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
+let growthColumnMapPromise = null;
+
+const resolveGrowthColumnMap = async () => {
+  if (!growthColumnMapPromise) {
+    growthColumnMapPromise = pool
+      .query(
+        `
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'patient_growth'
+        `,
+      )
+      .then((result) => {
+        const columns = new Set(result.rows.map((row) => row.column_name));
+
+        return {
+          weight: columns.has('weight_kg') ? 'weight_kg' : columns.has('weight') ? 'weight' : null,
+          height: columns.has('length_cm') ? 'length_cm' : columns.has('height') ? 'height' : null,
+          headCircumference: columns.has('head_circumference_cm')
+            ? 'head_circumference_cm'
+            : columns.has('head_circumference')
+              ? 'head_circumference'
+              : null,
+        };
+      })
+      .catch((error) => {
+        growthColumnMapPromise = null;
+        throw error;
+      });
+  }
+
+  return growthColumnMapPromise;
+};
+
+const getGrowthRangeInterval = (range) => {
+  switch (String(range || '').trim()) {
+  case '7days':
+    return '7 days';
+  case '90days':
+    return '90 days';
+  case '1year':
+    return '1 year';
+  case '30days':
+  default:
+    return '30 days';
+  }
+};
+
 const guardianOwnsInfant = async (guardianId, infantId) => {
   const result = await pool.query(
     `
@@ -53,6 +102,71 @@ router.get('/', requirePermission('dashboard:analytics'), async (_req, res) => {
   } catch (error) {
     console.error('Error fetching growth records:', error);
     res.json([]);
+  }
+});
+
+// Growth dashboard overview - SYSTEM_ADMIN analytics view
+router.get('/stats/overview', requirePermission('dashboard:analytics'), async (req, res) => {
+  try {
+    const growthColumns = await resolveGrowthColumnMap();
+    const intervalLiteral = getGrowthRangeInterval(req.query.range);
+
+    const weightSelect = growthColumns.weight
+      ? `ROUND(AVG(pg.${growthColumns.weight})::numeric, 2) AS weight`
+      : 'NULL::numeric AS weight';
+    const heightSelect = growthColumns.height
+      ? `ROUND(AVG(pg.${growthColumns.height})::numeric, 2) AS height`
+      : 'NULL::numeric AS height';
+    const headCircumferenceSelect = growthColumns.headCircumference
+      ? `ROUND(AVG(pg.${growthColumns.headCircumference})::numeric, 2) AS head_circumference`
+      : 'NULL::numeric AS head_circumference';
+
+    const trendResult = await pool.query(
+      `
+        SELECT
+          TO_CHAR(DATE_TRUNC('week', pg.measurement_date), 'Mon DD') AS week,
+          ${weightSelect},
+          ${heightSelect},
+          ${headCircumferenceSelect},
+          COUNT(*)::int AS measurements
+        FROM patient_growth pg
+        WHERE pg.is_active = true
+          AND pg.measurement_date >= CURRENT_DATE - INTERVAL '${intervalLiteral}'
+        GROUP BY DATE_TRUNC('week', pg.measurement_date)
+        ORDER BY DATE_TRUNC('week', pg.measurement_date) ASC
+      `,
+    );
+
+    const summaryResult = await pool.query(
+      `
+        SELECT
+          COUNT(*)::int AS total_measurements,
+          COUNT(DISTINCT pg.patient_id)::int AS infants_tracked,
+          MAX(pg.measurement_date) AS latest_measurement_date
+        FROM patient_growth pg
+        WHERE pg.is_active = true
+          AND pg.measurement_date >= CURRENT_DATE - INTERVAL '${intervalLiteral}'
+      `,
+    );
+
+    res.json({
+      data: trendResult.rows.map((row) => ({
+        week: row.week,
+        weight: row.weight !== null ? Number(row.weight) : null,
+        height: row.height !== null ? Number(row.height) : null,
+        headCircumference:
+          row.head_circumference !== null ? Number(row.head_circumference) : null,
+        measurements: row.measurements,
+      })),
+      summary: summaryResult.rows[0] || {
+        total_measurements: 0,
+        infants_tracked: 0,
+        latest_measurement_date: null,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching growth overview stats:', error);
+    res.status(500).json({ error: 'Failed to fetch growth overview stats' });
   }
 });
 

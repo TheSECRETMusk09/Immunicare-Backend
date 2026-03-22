@@ -816,8 +816,6 @@ router.get('/all-users', requirePermission('user:view'), async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    await synchronizeGuardianUserAccounts(client);
-
     // Get system users
     const systemUsersResult = await client.query(`
       SELECT
@@ -1233,131 +1231,7 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
   }
 });
 
-// Reveal guardian password for system admins (admin/super_admin canonical role)
-router.get(
-  '/guardians/:id/password-visibility',
-  requirePermission('admin:override'),
-  requirePasswordVisibilityRole,
-  async (req, res) => {
-    const { id } = req.params;
-    const sourceContext = getRequestSourceContext(req);
 
-    try {
-      const result = await pool.query(
-        `SELECT id, name, password_visibility_payload, password_visibility_updated_at
-       FROM guardians
-       WHERE id = $1`,
-        [id],
-      );
-
-      if (result.rows.length === 0) {
-        await logGuardianPasswordVisibilityEvent({
-          req,
-          guardianId: id,
-          action: 'access',
-          sourceContext,
-          success: false,
-          details: { reason: 'guardian_not_found' },
-        });
-        return res.status(404).json({ success: false, error: 'Guardian not found' });
-      }
-
-      const guardian = result.rows[0];
-      let visiblePassword = null;
-      let decryptError = null;
-
-      if (guardian.password_visibility_payload) {
-        try {
-          visiblePassword = decryptPasswordVisibilityPayload(guardian.password_visibility_payload);
-        } catch (error) {
-          decryptError = error.message;
-        }
-      }
-
-      await logGuardianPasswordVisibilityEvent({
-        req,
-        guardianId: guardian.id,
-        action: 'access',
-        sourceContext,
-        success: true,
-        details: {
-          password_available: Boolean(visiblePassword),
-          decrypt_error: decryptError,
-          target_guardian_name: guardian.name,
-        },
-      });
-
-      res.json({
-        success: true,
-        data: {
-          guardian_id: guardian.id,
-          guardian_name: guardian.name,
-          password: visiblePassword,
-          available: Boolean(visiblePassword),
-          masked: '••••••••',
-          source_context: sourceContext,
-          revealed_at: new Date().toISOString(),
-          updated_at: guardian.password_visibility_updated_at,
-        },
-      });
-    } catch (error) {
-      await logGuardianPasswordVisibilityEvent({
-        req,
-        guardianId: id,
-        action: 'access',
-        sourceContext,
-        success: false,
-        details: { reason: 'server_error', message: error.message },
-      });
-      res.status(500).json({ success: false, error: error.message });
-    }
-  },
-);
-
-// Audit show/hide actions from UI for guardian password visibility
-router.post(
-  '/guardians/:id/password-visibility/audit',
-  requirePermission('admin:override'),
-  requirePasswordVisibilityRole,
-  async (req, res) => {
-    const { id } = req.params;
-    const sourceContext = getRequestSourceContext(req);
-    const action = String(req.body?.action || '').toLowerCase();
-
-    if (!['show', 'hide', 'access'].includes(action)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid action. Allowed values: show, hide, access',
-      });
-    }
-
-    try {
-      await logGuardianPasswordVisibilityEvent({
-        req,
-        guardianId: id,
-        action,
-        sourceContext,
-        success: true,
-        details: {
-          ui_event: true,
-        },
-      });
-
-      res.json({
-        success: true,
-        message: `Guardian password visibility ${action} event logged`,
-        data: {
-          action,
-          source_context: sourceContext,
-          target_guardian_id: parseInt(id, 10),
-          timestamp: new Date().toISOString(),
-        },
-      });
-    } catch (error) {
-      res.status(500).json({ success: false, error: error.message });
-    }
-  },
-);
 
 // Get all system users (admin, doctor, nurse, staff)
 // NOTE: Removed synchronizeGuardianUserAccounts() call as it was causing timeouts
