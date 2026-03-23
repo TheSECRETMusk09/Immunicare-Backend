@@ -6,7 +6,8 @@
   "scripts": {
     "prestart": "node check-port.js",
     "start": "node server.js",
-    "build": "cd ../frontend && npm install && npm run build",
+    "build": "",
+    "postinstall": "node -e \"const fs = require('fs'); if (fs.existsSync('../frontend')) { const { execSync } = require('child_process'); console.log('Frontend directory found, starting build...'); execSync('cd ../frontend && npm install && npm run build', { stdio: 'inherit' }); } else { console.log('Frontend directory not found, skipping build.'); }\"",
     "start:prod": "node start.js production",
     "start:hostinger": "node start.js hostinger",
     "start:safe": "node check-port.js && node start.js production",
