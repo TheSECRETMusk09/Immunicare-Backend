@@ -1,4 +1,3 @@
-const jwt = require('jsonwebtoken');
 const db = require('../db');
 
 // Role-based access control middleware
@@ -9,7 +8,7 @@ const checkPermission = (requiredRoles) => {
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required',
-          success: false
+          success: false,
         });
       }
 
@@ -22,7 +21,7 @@ const checkPermission = (requiredRoles) => {
         healthcare_worker: 'health_worker',
         midwife: 'staff',
         nutritionist: 'staff',
-        dentist: 'doctor'
+        dentist: 'doctor',
       };
 
       // Use mapped role if the exact role doesn't exist in requiredRoles
@@ -37,7 +36,7 @@ const checkPermission = (requiredRoles) => {
           success: false,
           requiredRoles: requiredRoles,
           userRole: userRole,
-          mappedRole: mappedRole
+          mappedRole: mappedRole,
         });
       }
 
@@ -48,7 +47,7 @@ const checkPermission = (requiredRoles) => {
         role: mappedRole,
         originalRole: userRole,
         healthCenterId: healthCenterId,
-        permissions: getUserPermissions(mappedRole)
+        permissions: getUserPermissions(mappedRole),
       };
 
       // Log access for audit trail
@@ -59,7 +58,7 @@ const checkPermission = (requiredRoles) => {
       console.error('Role-based access control error:', error);
       res.status(500).json({
         error: 'Access control validation failed',
-        success: false
+        success: false,
       });
     }
   };
@@ -75,7 +74,7 @@ const requireMFA = async (req, res, next) => {
       return res.status(403).json({
         error: 'Multi-factor authentication required for this action',
         success: false,
-        mfa_required: true
+        mfa_required: true,
       });
     }
 
@@ -84,7 +83,7 @@ const requireMFA = async (req, res, next) => {
       return res.status(403).json({
         error: 'Multi-factor authentication verification required',
         success: false,
-        mfa_verification_required: true
+        mfa_verification_required: true,
       });
     }
 
@@ -93,7 +92,7 @@ const requireMFA = async (req, res, next) => {
     console.error('MFA verification error:', error);
     res.status(500).json({
       error: 'MFA verification failed',
-      success: false
+      success: false,
     });
   }
 };
@@ -105,7 +104,7 @@ const checkPermissionEnhanced = (requiredPermission) => {
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required',
-          success: false
+          success: false,
         });
       }
 
@@ -118,7 +117,7 @@ const checkPermissionEnhanced = (requiredPermission) => {
           error: 'Insufficient permissions',
           success: false,
           requiredPermission: requiredPermission,
-          userPermissions: userPermissions
+          userPermissions: userPermissions,
         });
       }
 
@@ -127,7 +126,7 @@ const checkPermissionEnhanced = (requiredPermission) => {
       console.error('Enhanced permission check error:', error);
       res.status(500).json({
         error: 'Permission validation failed',
-        success: false
+        success: false,
       });
     }
   };
@@ -141,7 +140,7 @@ const getUserPermissions = (role) => {
     healthcare_worker: 'health_worker',
     midwife: 'staff',
     nutritionist: 'staff',
-    dentist: 'doctor'
+    dentist: 'doctor',
   };
 
   // Use mapped role if the exact role doesn't exist in permissions
@@ -170,7 +169,7 @@ const getUserPermissions = (role) => {
       'read:reports',
       'manage:users',
       'manage:health_centers',
-      'manage:system_settings'
+      'manage:system_settings',
     ],
     admin: [
       'read:dashboard',
@@ -194,7 +193,7 @@ const getUserPermissions = (role) => {
       'read:reports',
       'manage:users',
       'manage:health_centers',
-      'manage:system_settings'
+      'manage:system_settings',
     ],
     doctor: [
       'read:dashboard',
@@ -210,7 +209,7 @@ const getUserPermissions = (role) => {
       'update:vaccinations',
       'read:certificates',
       'create:certificates',
-      'read:reports'
+      'read:reports',
     ],
     health_worker: [
       'read:dashboard',
@@ -228,32 +227,55 @@ const getUserPermissions = (role) => {
       'update:vaccinations',
       'read:certificates',
       'create:certificates',
-      'read:reports'
+      'read:reports',
     ],
     staff: [
       'read:dashboard',
       'read:patients',
+      'create:patients',
+      'update:patients',
       'read:appointments',
       'create:appointments',
       'update:appointments',
       'read:vaccinations',
-      'read:certificates'
+      'read:certificates',
+      'create:certificates',
+      'update:certificates',
+      'delete:certificates',
+      'read:reports',
+      'create:reports',
+      'update:reports',
+      'delete:reports',
     ],
     nurse: [
       'read:dashboard',
       'read:patients',
+      'create:patients',
+      'update:patients',
+      'read:inventory',
+      'create:inventory',
+      'update:inventory',
       'read:appointments',
+      'create:appointments',
       'update:appointments',
       'read:vaccinations',
       'create:vaccinations',
-      'read:certificates'
+      'update:vaccinations',
+      'read:certificates',
+      'create:certificates',
+      'update:certificates',
+      'delete:certificates',
+      'read:reports',
+      'create:reports',
+      'update:reports',
+      'delete:reports',
     ],
     guardian: [
       'read:patients:own',
       'read:appointments:own',
       'read:vaccinations:own',
-      'read:certificates:own'
-    ]
+      'read:certificates:own',
+    ],
   };
 
   return permissions[mappedRole] || permissions[role] || [];
@@ -275,7 +297,7 @@ const checkPatientAccess = async (req, res, next) => {
       healthcare_worker: 'health_worker',
       midwife: 'staff',
       nutritionist: 'staff',
-      dentist: 'doctor'
+      dentist: 'doctor',
     };
 
     const userRole = roleMapping[user.role] || user.role;
@@ -296,7 +318,7 @@ const checkPatientAccess = async (req, res, next) => {
       if (result.rows.length === 0) {
         return res.status(404).json({
           error: 'Patient not found',
-          success: false
+          success: false,
         });
       }
 
@@ -306,7 +328,7 @@ const checkPatientAccess = async (req, res, next) => {
       ) {
         return res.status(403).json({
           error: 'Access denied: Patient not in your health center',
-          success: false
+          success: false,
         });
       }
 
@@ -316,7 +338,7 @@ const checkPatientAccess = async (req, res, next) => {
     // Guardians can only access their own family members
     if (userRole === 'guardian' || user.role === 'guardian') {
       const query = `
-        SELECT id FROM patients 
+        SELECT id FROM patients
         WHERE id = $1 AND health_center_id = $2
       `;
       const result = await db.query(query, [patientId, user.health_center_id || user.clinic_id]);
@@ -324,7 +346,7 @@ const checkPatientAccess = async (req, res, next) => {
       if (result.rows.length === 0) {
         return res.status(403).json({
           error: 'Access denied: Cannot access this patient record',
-          success: false
+          success: false,
         });
       }
 
@@ -346,7 +368,7 @@ const checkPatientAccess = async (req, res, next) => {
       if (result.rows.length === 0) {
         return res.status(404).json({
           error: 'Patient not found',
-          success: false
+          success: false,
         });
       }
 
@@ -356,7 +378,7 @@ const checkPatientAccess = async (req, res, next) => {
       ) {
         return res.status(403).json({
           error: 'Access denied: Patient not in your health center',
-          success: false
+          success: false,
         });
       }
 
@@ -368,7 +390,7 @@ const checkPatientAccess = async (req, res, next) => {
     console.error('Patient access check error:', error);
     res.status(500).json({
       error: 'Patient access validation failed',
-      success: false
+      success: false,
     });
   }
 };
@@ -389,7 +411,7 @@ const checkInventoryAccess = async (req, res, next) => {
       healthcare_worker: 'health_worker',
       midwife: 'staff',
       nutritionist: 'staff',
-      dentist: 'doctor'
+      dentist: 'doctor',
     };
 
     const userRole = roleMapping[user.role] || user.role;
@@ -402,12 +424,12 @@ const checkInventoryAccess = async (req, res, next) => {
       'nurse',
       'super_admin',
       'physician',
-      'healthcare_worker'
+      'healthcare_worker',
     ];
     if (!allowedRoles.includes(userRole) && !allowedRoles.includes(user.role)) {
       return res.status(403).json({
         error: 'Access denied: Insufficient permissions for inventory management',
-        success: false
+        success: false,
       });
     }
 
@@ -419,7 +441,7 @@ const checkInventoryAccess = async (req, res, next) => {
     if (result.rows.length === 0) {
       return res.status(404).json({
         error: 'Inventory item not found',
-        success: false
+        success: false,
       });
     }
 
@@ -429,7 +451,7 @@ const checkInventoryAccess = async (req, res, next) => {
     ) {
       return res.status(403).json({
         error: 'Access denied: Item not in your health center',
-        success: false
+        success: false,
       });
     }
 
@@ -438,7 +460,7 @@ const checkInventoryAccess = async (req, res, next) => {
     console.error('Inventory access check error:', error);
     res.status(500).json({
       error: 'Inventory access validation failed',
-      success: false
+      success: false,
     });
   }
 };
@@ -462,7 +484,7 @@ const auditLog = async (req, res, next) => {
     ) {
       const auditQuery = `
         INSERT INTO vaccination_audit_log (
-          table_name, record_id, action, old_values, new_values, 
+          table_name, record_id, action, old_values, new_values,
           changed_by, health_center_id, ip_address, user_agent
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `;
@@ -478,7 +500,7 @@ const auditLog = async (req, res, next) => {
         user.id,
         user.health_center_id,
         ipAddress,
-        userAgent
+        userAgent,
       ]);
     }
 
@@ -513,7 +535,7 @@ const rateLimit = (maxRequests = 100, windowMs = 15 * 60 * 1000) => {
       return res.status(429).json({
         error: 'Too many requests. Please try again later.',
         success: false,
-        retryAfter: Math.ceil(windowMs / 1000)
+        retryAfter: Math.ceil(windowMs / 1000),
       });
     }
 
@@ -533,7 +555,7 @@ const validateInput = (schema) => {
       return res.status(400).json({
         error: 'Invalid input data',
         details: error.details.map((detail) => detail.message),
-        success: false
+        success: false,
       });
     }
     next();
@@ -563,5 +585,5 @@ module.exports = {
   rateLimit,
   validateInput,
   securityHeaders,
-  getUserPermissions
+  getUserPermissions,
 };

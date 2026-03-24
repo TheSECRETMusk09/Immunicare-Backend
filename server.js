@@ -289,6 +289,9 @@ app.use((err, req, res, next) => {
 // Helmet security headers - provides important security headers
 app.use(
   helmet({
+    // Temporarily disable permissions policy to remove browser console warnings
+    // about unrecognized features. Re-evaluate and configure granularly if needed.
+    permissionsPolicy: false,
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ['\'self\''],

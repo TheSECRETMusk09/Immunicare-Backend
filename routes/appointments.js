@@ -349,6 +349,7 @@ const fetchAppointmentById = async (id) => {
       LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE a.id = $1
+        AND a.is_active = true AND p.is_active = true
       LIMIT 1
     `,
     [id],
@@ -386,6 +387,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE a.is_active = true
+        AND p.is_active = true
     `;
 
     if (canonicalRole === CANONICAL_ROLES.GUARDIAN) {
@@ -1088,6 +1090,7 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
         LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE DATE(a.scheduled_date) = $1
+          AND a.is_active = true AND p.is_active = true
         ORDER BY a.scheduled_date ASC
       `,
       [date],
@@ -1119,6 +1122,7 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE a.scheduled_date >= CURRENT_DATE
           AND a.status = 'scheduled'
+          AND a.is_active = true AND p.is_active = true
         ORDER BY a.scheduled_date ASC
         LIMIT $1
       `,

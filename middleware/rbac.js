@@ -10,6 +10,7 @@ const { AuthorizationError, AuthenticationError } = require('./errorHandler');
 
 const CANONICAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: 'SYSTEM_ADMIN',
+  CLINIC_MANAGER: 'CLINIC_MANAGER',
   GUARDIAN: 'GUARDIAN',
 });
 
@@ -20,7 +21,6 @@ const LEGACY_SYSTEM_ADMIN_ROLES = new Set([
   'superadministrator',
   'admin',
   'administrator',
-  'clinic_manager',
   'public_health_nurse',
   'inventory_manager',
   'physician',
@@ -34,6 +34,8 @@ const LEGACY_SYSTEM_ADMIN_ROLES = new Set([
   'staff',
 ]);
 
+const LEGACY_CLINIC_MANAGER_ROLES = new Set(['clinic_manager']);
+
 const LEGACY_GUARDIAN_ROLES = new Set(['guardian', 'user', 'parent']);
 
 /**
@@ -42,52 +44,52 @@ const LEGACY_GUARDIAN_ROLES = new Set(['guardian', 'user', 'parent']);
  */
 const PERMISSIONS = {
   // Dashboard
-  'dashboard:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
-  'dashboard:analytics': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
+  'dashboard:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
+  'dashboard:analytics': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
 
   // Infants / Patients
-  'patient:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'patient:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
   'patient:view:own': [CANONICAL_ROLES.GUARDIAN],
-  'patient:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'patient:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
   'patient:create:own': [CANONICAL_ROLES.GUARDIAN],
-  'patient:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'patient:update': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
   'patient:update:own': [CANONICAL_ROLES.GUARDIAN],
-  'patient:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'patient:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
   'patient:delete:own': [CANONICAL_ROLES.GUARDIAN],
 
   // Appointments (policy C)
-  'appointment:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'appointment:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
   'appointment:view:own': [CANONICAL_ROLES.GUARDIAN],
-  'appointment:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'appointment:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
   'appointment:create:own': [CANONICAL_ROLES.GUARDIAN],
-  'appointment:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'appointment:cancel': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'appointment:update': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'appointment:cancel': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
   'appointment:cancel:own': [CANONICAL_ROLES.GUARDIAN],
-  'appointment:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'appointment:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
 
   // Vaccinations
-  'vaccination:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'vaccination:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
   'vaccination:view:own': [CANONICAL_ROLES.GUARDIAN],
-  'vaccination:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'vaccination:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'vaccination:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'vaccination:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'vaccination:update': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'vaccination:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
 
   // Inventory
-  'inventory:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'inventory:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'inventory:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'inventory:correct': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'inventory:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'inventory:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'inventory:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'inventory:update': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'inventory:correct': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'inventory:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
 
   // Transfer workflow
-  'transfer:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'transfer:validate': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'transfer:approve': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'transfer:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'transfer:validate': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'transfer:approve': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
 
   // Reports
-  'report:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'report:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'report:export': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'report:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'report:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'report:export': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
 
   // Users / Roles
   'user:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
@@ -103,18 +105,19 @@ const PERMISSIONS = {
   'admin:override': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
   // Notifications
-  'notification:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
-  'notification:send': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'notification:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
+  'notification:send': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
 
   // Documents
-  'document:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
-  'document:export': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
-  'document:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
-  'document:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'document:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
+  'document:export': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
+  'document:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'document:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
 };
 
 const ROLE_HIERARCHY = {
   [CANONICAL_ROLES.SYSTEM_ADMIN]: 100,
+  [CANONICAL_ROLES.CLINIC_MANAGER]: 50,
   [CANONICAL_ROLES.GUARDIAN]: 10,
 };
 
@@ -125,7 +128,7 @@ const normalizeRole = (role) => {
 
   const normalized = String(role).trim();
 
-  if (normalized === CANONICAL_ROLES.SYSTEM_ADMIN || normalized === CANONICAL_ROLES.GUARDIAN) {
+  if (normalized === CANONICAL_ROLES.SYSTEM_ADMIN || normalized === CANONICAL_ROLES.CLINIC_MANAGER || normalized === CANONICAL_ROLES.GUARDIAN) {
     return normalized;
   }
 
@@ -133,6 +136,10 @@ const normalizeRole = (role) => {
 
   if (LEGACY_SYSTEM_ADMIN_ROLES.has(lower)) {
     return CANONICAL_ROLES.SYSTEM_ADMIN;
+  }
+
+  if (LEGACY_CLINIC_MANAGER_ROLES.has(lower)) {
+    return CANONICAL_ROLES.CLINIC_MANAGER;
   }
 
   if (LEGACY_GUARDIAN_ROLES.has(lower)) {
@@ -249,7 +256,10 @@ const requireGuardian = (req, res, next) => {
 
 const requireAdmin = requireSystemAdmin;
 const requireSuperAdmin = requireSystemAdmin;
-const requireHealthWorker = requireSystemAdmin;
+
+const requireHealthWorker = (req, res, next) => {
+  return requireRole(CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER)(req, res, next);
+};
 
 const requireOwnershipOrRole = (
   resourceType,

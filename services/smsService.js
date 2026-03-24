@@ -187,7 +187,6 @@ async function sendViaTextBee(phoneNumber, message) {
   const payload = {
     recipients: [phoneNumber],
     message: message,
-    senderId: SMS_CONFIG.senderName,
   };
 
   const headers = {

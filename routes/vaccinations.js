@@ -350,6 +350,7 @@ const getVaccinationRecord = async (id) => {
       LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
       ${providerJoinsSql}
       WHERE ir.id = $1
+        AND p.is_active = true
       LIMIT 1
     `,
     [id],
@@ -460,10 +461,12 @@ router.get('/records/infant/:infantId', async (req, res) => {
           ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
+        LEFT JOIN patients p ON p.id = ir.patient_id
         LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
+          AND p.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
       `,
       [infantId],
@@ -524,6 +527,7 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
         LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         WHERE ir.is_active = true
+          AND p.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
         LIMIT $1
       `,
@@ -1320,10 +1324,12 @@ router.get('/patient/:patientId', async (req, res) => {
           ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
+        LEFT JOIN patients p ON p.id = ir.patient_id
         LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
+          AND p.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
       `,
       [patientId],
@@ -1401,10 +1407,12 @@ router.get('/patient/:patientId/history', async (req, res) => {
           ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
+        LEFT JOIN patients p ON p.id = ir.patient_id
         LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         WHERE ir.patient_id = $1
           AND ir.is_active = true
+          AND p.is_active = true
         ORDER BY ir.admin_date ASC NULLS LAST, ir.created_at ASC
       `,
       [patientId],

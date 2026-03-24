@@ -232,6 +232,7 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE a.scheduled_date >= CURRENT_DATE
           AND a.is_active = true
+          AND p.is_active = true
         ORDER BY a.scheduled_date
         LIMIT $1
       `,
@@ -281,6 +282,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
             OR ir.admin_date IS NOT NULL
           )
           AND ir.is_active = true
+          AND p.is_active = true
       `,
       [guardianId],
     );
@@ -294,6 +296,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
           AND COALESCE(ir.status, 'pending') IN ('scheduled', 'pending')
           AND ir.admin_date IS NULL
           AND ir.is_active = true
+          AND p.is_active = true
       `,
       [guardianId],
     );
@@ -307,6 +310,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
           AND ir.next_due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
           AND ir.status = 'scheduled'
           AND ir.is_active = true
+          AND p.is_active = true
       `,
       [guardianId],
     );
@@ -324,6 +328,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
           AND a.scheduled_date >= CURRENT_DATE
           AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
           AND a.is_active = true
+          AND p.is_active = true
         ORDER BY a.scheduled_date ASC
         LIMIT 1
       `,
@@ -372,6 +377,7 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
         LEFT JOIN patients p ON p.id = a.infant_id
         WHERE ${guardianScopeFilterSql} = $1
           AND a.is_active = true
+          AND p.is_active = true
         ORDER BY a.scheduled_date DESC
         LIMIT $2
       `,
@@ -454,6 +460,7 @@ router.get('/guardian/:guardianId/vaccinations', authenticateToken, async (req, 
         ${providerJoinsSql}
         WHERE ${guardianScopeFilterSql} = $1
           AND ir.is_active = true
+          AND p.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
         LIMIT $2
       `,
@@ -504,6 +511,7 @@ router.get('/guardian/:guardianId/health-charts', authenticateToken, async (req,
         LEFT JOIN patients p ON p.id = pg.patient_id
         WHERE ${whereClause}
           AND pg.is_active = true
+          AND p.is_active = true
         ORDER BY pg.patient_id, pg.measurement_date ASC
       `,
       params,
@@ -645,6 +653,7 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
           JOIN vaccines v ON v.id = ir.vaccine_id
           WHERE ir.created_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
             AND ir.is_active = true
+            AND p.is_active = true
           ORDER BY ir.admin_date DESC
           LIMIT 20
         `,
@@ -671,6 +680,7 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
           LEFT JOIN patients p ON p.id = a.infant_id
           WHERE a.created_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
             AND a.is_active = true
+            AND p.is_active = true
           ORDER BY a.scheduled_date DESC
           LIMIT 20
         `,
