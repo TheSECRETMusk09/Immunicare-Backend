@@ -361,7 +361,44 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
     }
 
     const limit = sanitizeLimit(req.query.limit, 10, 100);
+    const statusFilter = String(req.query.status || '').trim().toLowerCase().replace(/-/g, '_');
     noCache(res);
+
+    const params = [guardianId];
+    let whereClause = `
+      WHERE ${guardianScopeFilterSql} = $1
+        AND a.is_active = true
+        AND p.is_active = true
+    `;
+    let orderClause = 'ORDER BY a.scheduled_date DESC';
+
+    if (statusFilter === 'upcoming') {
+      whereClause += `
+        AND a.scheduled_date >= CURRENT_DATE
+        AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
+      `;
+      orderClause = 'ORDER BY a.scheduled_date ASC';
+    } else if (statusFilter) {
+      const statusMap = {
+        pending: ['pending'],
+        scheduled: ['scheduled', 'confirmed', 'rescheduled'],
+        attended: ['attended', 'completed'],
+        cancelled: ['cancelled'],
+        no_show: ['no_show', 'no-show'],
+      };
+
+      const statusValues = statusMap[statusFilter];
+      if (!statusValues) {
+        return res.status(400).json({
+          error: 'Invalid status filter',
+        });
+      }
+
+      whereClause += ` AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) = ANY($2::text[])`;
+      params.push(statusValues);
+    }
+
+    params.push(limit);
 
     const result = await db.query(
       `
@@ -375,13 +412,11 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
           COALESCE(a.type, 'Vaccination Appointment') as type
         FROM appointments a
         LEFT JOIN patients p ON p.id = a.infant_id
-        WHERE ${guardianScopeFilterSql} = $1
-          AND a.is_active = true
-          AND p.is_active = true
-        ORDER BY a.scheduled_date DESC
-        LIMIT $2
+        ${whereClause}
+        ${orderClause}
+        LIMIT $${params.length}
       `,
-      [guardianId, limit],
+      params,
     );
 
     res.json({ data: result.rows || [] });

@@ -33,6 +33,15 @@ router.get('/infant/:infantId', async (req, res) => {
       return res.status(400).json({ error: 'Invalid infant ID' });
     }
 
+    if (getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Access denied for this infant' });
+      }
+    }
+
     // Verify infant exists
     const infantResult = await pool.query(
       'SELECT id, first_name, last_name, dob FROM patients WHERE id = $1 AND is_active = true',
@@ -381,6 +390,15 @@ router.get('/:childId', async (req, res) => {
     const infantId = parseInt(req.params.childId, 10);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
+    }
+
+    if (getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN) {
+      const guardianId = parseInt(req.user.guardian_id, 10);
+      const isOwner = await guardianOwnsInfant(guardianId, infantId);
+
+      if (!isOwner) {
+        return res.status(403).json({ success: false, error: 'Access denied for this infant' });
+      }
     }
 
     // Use the vaccine rules engine to calculate readiness

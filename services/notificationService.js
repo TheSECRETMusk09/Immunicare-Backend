@@ -609,8 +609,27 @@ class NotificationService {
   }
 
   async incrementDeliveryAttempts(id) {
+    const columns = await getNotificationColumns();
+    const updateClauses = [];
+
+    if (columns.has('delivery_attempts')) {
+      updateClauses.push('delivery_attempts = COALESCE(delivery_attempts, 0) + 1');
+    } else if (columns.has('retry_count')) {
+      updateClauses.push('retry_count = COALESCE(retry_count, 0) + 1');
+    }
+
+    if (columns.has('last_attempt_at')) {
+      updateClauses.push('last_attempt_at = CURRENT_TIMESTAMP');
+    } else if (columns.has('updated_at')) {
+      updateClauses.push('updated_at = CURRENT_TIMESTAMP');
+    }
+
+    if (updateClauses.length === 0) {
+      return;
+    }
+
     await pool.query(
-      'UPDATE notifications SET delivery_attempts = delivery_attempts + 1, last_attempt_at = CURRENT_TIMESTAMP WHERE id = $1',
+      `UPDATE notifications SET ${updateClauses.join(', ')} WHERE id = $1`,
       [id],
     );
   }
@@ -665,19 +684,35 @@ class NotificationService {
   // Guardian Notification Preferences - uses guardian_id
   // Table schema: guardian_id, notification_type, email_enabled, sms_enabled, push_enabled, preferred_time
   async getGuardianNotificationPreferences(guardianId) {
-    const result = await pool.query(
-      'SELECT * FROM guardian_notification_preferences WHERE guardian_id = $1',
-      [guardianId],
-    );
-    return result.rows;
+    try {
+      const result = await pool.query(
+        'SELECT * FROM guardian_notification_preferences WHERE guardian_id = $1',
+        [guardianId],
+      );
+      return result.rows;
+    } catch (error) {
+      if (error?.code === '42P01') {
+        return [];
+      }
+
+      throw error;
+    }
   }
 
   async getGuardianNotificationPreferenceByType(guardianId, notificationType) {
-    const result = await pool.query(
-      'SELECT * FROM guardian_notification_preferences WHERE guardian_id = $1 AND notification_type = $2',
-      [guardianId, notificationType],
-    );
-    return result.rows[0] || null;
+    try {
+      const result = await pool.query(
+        'SELECT * FROM guardian_notification_preferences WHERE guardian_id = $1 AND notification_type = $2',
+        [guardianId, notificationType],
+      );
+      return result.rows[0] || null;
+    } catch (error) {
+      if (error?.code === '42P01') {
+        return null;
+      }
+
+      throw error;
+    }
   }
 
   async updateGuardianNotificationPreference(guardianId, notificationType, emailEnabled = true, smsEnabled = true, pushEnabled = true, preferredTime = '08:00:00') {
@@ -829,11 +864,21 @@ class NotificationService {
   // Debouncing - prevent spam from duplicate notifications
   async checkAndRecordDebounce(userId, notificationType, debounceMinutes = 10) {
     const cutoffTime = new Date(Date.now() - debounceMinutes * 60 * 1000);
+    const notificationColumns = await getNotificationColumns();
+    const recipientColumn = notificationColumns.has('recipient_guardian_id')
+      ? 'recipient_guardian_id'
+      : notificationColumns.has('guardian_id')
+        ? 'guardian_id'
+        : null;
+
+    if (!recipientColumn) {
+      return { debounced: false };
+    }
 
     // Check if similar notification was sent recently
     const result = await pool.query(
       `SELECT id FROM notifications
-       WHERE recipient_guardian_id = $1
+       WHERE ${recipientColumn} = $1
          AND notification_type = $2
          AND created_at > $3
          AND status NOT IN ('failed', 'cancelled')
@@ -851,11 +896,19 @@ class NotificationService {
 
   // Get debounce settings for a user
   async getDebounceSettings(userId) {
-    const result = await pool.query(
-      'SELECT * FROM notification_debounce_settings WHERE user_id = $1',
-      [userId],
-    );
-    return result.rows[0] || { enabled: true, debounce_minutes: 10 };
+    try {
+      const result = await pool.query(
+        'SELECT * FROM notification_debounce_settings WHERE user_id = $1',
+        [userId],
+      );
+      return result.rows[0] || { enabled: true, debounce_minutes: 10 };
+    } catch (error) {
+      if (error?.code === '42P01') {
+        return { enabled: true, debounce_minutes: 10 };
+      }
+
+      throw error;
+    }
   }
 
   // Update debounce settings

@@ -8,6 +8,8 @@
 
 const pool = require('../db');
 
+let vaccineCatalogColumnsPromise = null;
+
 const APPROVED_VACCINE_NAMES = Object.freeze([
   'BCG',
   'Diluent',
@@ -48,6 +50,25 @@ const getApprovedBrandsForVaccine = (vaccineName) =>
   Object.prototype.hasOwnProperty.call(APPROVED_VACCINE_BRANDS, vaccineName)
     ? [...APPROVED_VACCINE_BRANDS[vaccineName]]
     : [];
+
+const ensureVaccineCatalogColumns = async () => {
+  if (!vaccineCatalogColumnsPromise) {
+    vaccineCatalogColumnsPromise = pool
+      .query(`
+        ALTER TABLE vaccines
+        ADD COLUMN IF NOT EXISTS description TEXT,
+        ADD COLUMN IF NOT EXISTS recommended_age VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS display_order INTEGER
+      `)
+      .catch((error) => {
+        vaccineCatalogColumnsPromise = null;
+        throw error;
+      });
+  }
+
+  return vaccineCatalogColumnsPromise;
+};
 
 const normalizeVaccineName = (name) => (typeof name === 'string' ? name : '');
 
@@ -147,6 +168,8 @@ const validateApprovedVaccineBrand = (
 };
 
 const getApprovedVaccines = async (activeOnly = true) => {
+  await ensureVaccineCatalogColumns();
+
   let whereClause = 'WHERE v.name = ANY($1::text[])';
   const params = [APPROVED_VACCINE_NAMES];
 
@@ -173,6 +196,8 @@ const validateApprovedVaccine = async (
   vaccineIdOrName,
   { brand = null, fieldName = 'vaccine_id' } = {},
 ) => {
+  await ensureVaccineCatalogColumns();
+
   if (vaccineIdOrName === undefined || vaccineIdOrName === null || vaccineIdOrName === '') {
     return { valid: false, error: `${fieldName} is required` };
   }
@@ -250,6 +275,8 @@ const validateApprovedVaccine = async (
 };
 
 const getAllVaccinesWithApprovalStatus = async () => {
+  await ensureVaccineCatalogColumns();
+
   const result = await pool.query(
     `SELECT id, name, code, description, manufacturer, doses_required, recommended_age,
             is_active, is_approved, display_order, created_at, updated_at
@@ -266,6 +293,8 @@ const getAllVaccinesWithApprovalStatus = async () => {
 };
 
 const approveVaccine = async (vaccineId) => {
+  await ensureVaccineCatalogColumns();
+
   if (!vaccineId) {
     return { success: false, error: 'vaccine_id is required' };
   }
@@ -295,6 +324,8 @@ const approveVaccine = async (vaccineId) => {
 };
 
 const unapproveVaccine = async (vaccineId) => {
+  await ensureVaccineCatalogColumns();
+
   if (!vaccineId) {
     return { success: false, error: 'vaccine_id is required' };
   }

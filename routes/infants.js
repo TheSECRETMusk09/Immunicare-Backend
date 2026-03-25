@@ -11,6 +11,9 @@ const {
   INFANT_CONTROL_NUMBER_PATTERN,
 } = require('../services/infantControlNumberService');
 const { ensureAtBirthVaccinationRecords } = require('../services/atBirthVaccinationService');
+const {
+  createGuardianChildRecord,
+} = require('../services/guardianChildRegistrationService');
 const socketService = require('../services/socketService');
 const adminNotificationService = require('../services/adminNotificationService');
 const { calculateAgeInMonths } = require('../utils/ageCalculation');
@@ -78,6 +81,32 @@ const ensurePatientLocationColumnsExist = async () => {
     ensurePatientLocationColumnsPromise = (async () => {
       await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS purok VARCHAR(50)');
       await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS street_color VARCHAR(255)');
+      await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS allergy_information TEXT');
+      await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS health_care_provider VARCHAR(255)');
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS infant_allergies (
+          id SERIAL PRIMARY KEY,
+          infant_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+          allergy_type VARCHAR(100),
+          allergen VARCHAR(255),
+          severity VARCHAR(50),
+          reaction_description TEXT,
+          onset_date DATE,
+          is_active BOOLEAN NOT NULL DEFAULT TRUE,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS transfer_in_cases (
+          id SERIAL PRIMARY KEY,
+          infant_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+          validation_status VARCHAR(50),
+          source_facility VARCHAR(255),
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
     })().catch((error) => {
       ensurePatientLocationColumnsPromise = null;
       throw error;
@@ -329,6 +358,7 @@ const validateInfantPayloadExtended = (payload = {}, options = {}) => {
 router.get('/guardian/:guardianId', async (req, res) => {
   try {
     await ensurePatientLocationColumnsExist();
+    const importedVaccinationPredicate = await getImportedVaccinationPredicate();
 
     const guardianId = parseInt(req.params.guardianId, 10);
     if (Number.isNaN(guardianId)) {
@@ -365,6 +395,45 @@ router.get('/guardian/:guardianId', async (req, res) => {
               AND ir.admin_date IS NULL
           ) AS pending_vaccinations,
           (
+            SELECT COUNT(*)
+            FROM immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND ${importedVaccinationPredicate}
+              AND (
+                LOWER(COALESCE(ir.status, '')) = 'completed'
+                OR ir.admin_date IS NOT NULL
+              )
+          ) AS imported_vaccinations,
+          (
+            SELECT tic.id
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_id,
+          (
+            SELECT tic.validation_status
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_status,
+          (
+            SELECT tic.source_facility
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_source_facility,
+          (
+            SELECT tic.updated_at
+            FROM transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_updated_at,
+          (
             SELECT json_agg(
               json_build_object(
                 'id', ia.id,
@@ -386,10 +455,10 @@ router.get('/guardian/:guardianId', async (req, res) => {
       [guardianId],
     );
 
-    res.json({ data: result.rows || [] });
+    res.json({ success: true, data: result.rows || [] });
   } catch (error) {
     console.error('Error fetching infants by guardian:', error);
-    res.status(500).json({ error: 'Failed to fetch infants' });
+    res.status(500).json({ success: false, error: 'Failed to fetch infants' });
   }
 });
 
@@ -512,6 +581,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
     }
 
     res.json({
+      success: true,
       data: result.rows || [],
       pagination: {
         total,
@@ -523,7 +593,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
     });
   } catch (error) {
     console.error('[Infants API] Error fetching infants:', error);
-    res.status(500).json({ error: 'Failed to fetch infants' });
+    res.status(500).json({ success: false, error: 'Failed to fetch infants' });
   }
 });
 
@@ -556,6 +626,7 @@ router.get('/stats/overview', requirePermission('patient:view'), async (_req, re
     });
 
     res.json({
+      success: true,
       data: {
         totalInfants: parseInt(totalInfants.rows[0].count, 10),
         thisMonth: parseInt(thisMonth.rows[0].count, 10),
@@ -564,12 +635,12 @@ router.get('/stats/overview', requirePermission('patient:view'), async (_req, re
     });
   } catch (error) {
     console.error('Error fetching infant stats:', error);
-    res.status(500).json({ error: 'Failed to fetch infant stats' });
+    res.status(500).json({ success: false, error: 'Failed to fetch infant stats' });
   }
 });
 
 // Get infants with upcoming vaccinations
-router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (_req, res) => {
+router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (req, res) => {
   try {
     const limit = parseInt(req.query.limit, 10) || 50;
     const offset = parseInt(req.query.offset, 10) || 0;
@@ -595,10 +666,10 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (_
       [limit, offset],
     );
 
-    res.json({ data: result.rows || [] });
+    res.json({ success: true, data: result.rows || [] });
   } catch (error) {
     console.error('Error fetching upcoming vaccinations:', error);
-    res.status(500).json({ error: 'Failed to fetch upcoming vaccinations' });
+    res.status(500).json({ success: false, error: 'Failed to fetch upcoming vaccinations' });
   }
 });
 
@@ -1037,8 +1108,6 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
 // Create infant (GUARDIAN own)
 router.post('/guardian', requirePermission('patient:create:own'), async (req, res) => {
   try {
-    await ensurePatientLocationColumnsExist();
-
     if (!isGuardian(req)) {
       return res.status(403).json({
         success: false,
@@ -1069,166 +1138,43 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
       });
     }
 
-    const validationResult = validateInfantPayload(payload, { requirePurokFields: true });
-    if (!validationResult.isValid) {
-      return respondInfantValidationError(res, validationResult.errors);
-    }
-
-    const infantData = validationResult.data;
-
-    let resolved;
-
-    try {
-      resolved = await resolveOrCreateInfantPatient(
-        {
-          guardianId,
-          firstName: infantData.first_name,
-          lastName: infantData.last_name,
-          dob: infantData.dob,
-          sex: infantData.sex,
-          initialValues: {
-            middle_name: infantData.middle_name,
-            national_id: infantData.national_id,
-            address: infantData.address,
-            contact: infantData.contact,
-            photo_url: infantData.photo_url,
-            mother_name: infantData.mother_name,
-            father_name: infantData.father_name,
-            birth_weight: infantData.birth_weight,
-            birth_height: infantData.birth_height,
-            place_of_birth: infantData.place_of_birth,
-            barangay: infantData.barangay,
-            health_center: infantData.health_center,
-            purok: infantData.purok,
-            street_color: infantData.street_color,
-            family_no: infantData.family_no,
-            time_of_delivery: infantData.time_of_delivery,
-            type_of_delivery: infantData.type_of_delivery,
-            doctor_midwife_nurse: infantData.doctor_midwife_nurse,
-            nbs_done: infantData.nbs_done,
-            nbs_date: infantData.nbs_date,
-            cellphone_number: infantData.cellphone_number,
-            facility_id: infantData.facility_id,
-          },
-        },
-        pool,
-      );
-    } catch (resolveError) {
-      if (resolveError.code === 'AMBIGUOUS_INFANT_MATCH') {
-        return res.status(409).json({
-          success: false,
-          error:
-            'Multiple child records already match this name and date of birth. Please contact support to resolve duplicates.',
-          matches: resolveError.matches || [],
-        });
-      }
-
-      throw resolveError;
-    }
-
-    let result;
-
-    if (resolved.existed) {
-      const existingResult = await pool.query(
-        `
-          SELECT *
-          FROM patients
-          WHERE id = $1
-          LIMIT 1
-        `,
-        [resolved.id],
-      );
-
-      if (existingResult.rows.length === 0) {
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to resolve child record',
-        });
-      }
-
-      const existingInfant = existingResult.rows[0];
-      if (parseInt(existingInfant.guardian_id, 10) !== guardianId) {
-        return res.status(403).json({
-          success: false,
-          error: 'Matched child record is not owned by this guardian account.',
-        });
-      }
-
-      const {
-        updates: backfillUpdates,
-        values: backfillValues,
-        nextParamIndex: backfillParamIndex,
-      } = buildBackfillAssignments({
-        middle_name: infantData.middle_name,
-        national_id: infantData.national_id,
-        address: infantData.address,
-        contact: infantData.contact,
-        photo_url: infantData.photo_url,
-        mother_name: infantData.mother_name,
-        father_name: infantData.father_name,
-        birth_weight: infantData.birth_weight,
-        birth_height: infantData.birth_height,
-        place_of_birth: infantData.place_of_birth,
-        barangay: infantData.barangay,
-        health_center: infantData.health_center,
-        purok: infantData.purok,
-        street_color: infantData.street_color,
-        family_no: infantData.family_no,
-        time_of_delivery: infantData.time_of_delivery,
-        type_of_delivery: infantData.type_of_delivery,
-        doctor_midwife_nurse: infantData.doctor_midwife_nurse,
-        nbs_done: infantData.nbs_done,
-        nbs_date: infantData.nbs_date,
-        cellphone_number: infantData.cellphone_number,
-        facility_id: infantData.facility_id,
-      });
-
-      if (backfillUpdates.length > 0) {
-        result = await pool.query(
-          `
-            UPDATE patients
-            SET ${backfillUpdates.join(', ')},
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $${backfillParamIndex}
-              AND guardian_id = $${backfillParamIndex + 1}
-            RETURNING *
-          `,
-          [...backfillValues, resolved.id, guardianId],
-        );
-      } else {
-        result = existingResult;
-      }
-    } else {
-      result = await pool.query(
-        `
-          SELECT *
-          FROM patients
-          WHERE id = $1
-          LIMIT 1
-        `,
-        [resolved.id],
-      );
-    }
-
-    if (result.rows.length === 0) {
-      return res.status(500).json({ success: false, error: 'Failed to resolve child record' });
-    }
-
-    await ensureAtBirthVaccinationRecords(resolved.id, {
-      patientDob: result.rows[0].dob,
+    const { patient, controlNumber, existed } = await createGuardianChildRecord({
+      guardianId,
+      payload,
+      client: pool,
     });
 
-    socketService.broadcast('infant_created', result.rows[0]);
+    socketService.broadcast('infant_created', patient);
 
-    return res.status(resolved.existed ? 200 : 201).json({
+    return res.status(existed ? 200 : 201).json({
       success: true,
-      data: result.rows[0],
-      control_number: resolved.control_number,
-      message: resolved.existed
+      data: patient,
+      control_number: controlNumber,
+      message: existed
         ? 'An existing child record under your account was reused.'
         : 'Child registered successfully.',
     });
   } catch (error) {
+    if (error.code === 'VALIDATION_ERROR') {
+      return respondInfantValidationError(res, error.fields || {});
+    }
+
+    if (error.code === 'AMBIGUOUS_INFANT_MATCH') {
+      return res.status(409).json({
+        success: false,
+        error:
+          'Multiple child records already match this name and date of birth. Please contact support to resolve duplicates.',
+        matches: error.matches || [],
+      });
+    }
+
+    if (error.code === 'FOREIGN_CHILD_MATCH' || error.code === 'GUARDIAN_MAPPING_MISSING') {
+      return res.status(403).json({
+        success: false,
+        error: error.message,
+      });
+    }
+
     console.error('Error creating infant for guardian:', error);
     return res.status(500).json({ success: false, error: 'Failed to register child' });
   }

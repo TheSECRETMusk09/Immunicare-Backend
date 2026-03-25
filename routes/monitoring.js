@@ -4,6 +4,12 @@ const db = require('../db');
 const { authenticateToken: auth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 const { listAuditLogs, exportAuditLogsCsv } = require('../services/auditLogService');
+const { ensureDigitalPapersCompatibility } = require('../services/digitalPapersCompatibilityService');
+const {
+  getUserNameExpressions,
+  resolveFirstExistingColumn,
+  tableExists,
+} = require('../utils/queryCompatibility');
 
 // Root route - return API info
 router.get('/', (req, res) => {
@@ -34,6 +40,30 @@ const detectAuditAnomalies = (logs = []) =>
   });
 
 const requireMonitoringAccess = requirePermission('dashboard:analytics');
+const getCompletionStatusChildColumn = () =>
+  resolveFirstExistingColumn('paper_completion_status', ['infant_id', 'patient_id'], 'infant_id');
+const getDocumentDownloadsChildColumn = () =>
+  resolveFirstExistingColumn('document_downloads', ['infant_id', 'patient_id'], 'infant_id');
+const isSchemaCompatibilityError = (error) =>
+  ['42P01', '42703', '42883'].includes(error?.code);
+
+const getLegacyInfantsJoinConfig = async (alias = 'i', foreignKeyExpression) => {
+  if (!(await tableExists('infants'))) {
+    return {
+      joinClause: '',
+      firstNameExpression: '\'\'',
+      lastNameExpression: '\'\'',
+      dobExpression: 'NULL',
+    };
+  }
+
+  return {
+    joinClause: `LEFT JOIN infants ${alias} ON ${foreignKeyExpression} = ${alias}.id`,
+    firstNameExpression: `${alias}.first_name`,
+    lastNameExpression: `${alias}.last_name`,
+    dobExpression: `${alias}.dob`,
+  };
+};
 
 // GET /api/monitoring/monitoring - Get real-time monitoring data
 router.get('/monitoring', auth, requireMonitoringAccess, async (req, res) => {
@@ -79,44 +109,51 @@ router.get('/monitoring', auth, requireMonitoringAccess, async (req, res) => {
 router.get('/alerts', auth, requireMonitoringAccess, async (req, res) => {
   try {
     const { status = 'PENDING', limit = 20 } = req.query;
-
-    try {
-      const result = await db.query(
-        `
+    await ensureDigitalPapersCompatibility();
+    const childColumn = await getCompletionStatusChildColumn();
+    const completedByExpressions = await getUserNameExpressions('u', {
+      fallbackFirstName: 'System User',
+    });
+    const legacyInfantsJoin = await getLegacyInfantsJoinConfig('i', `pcs.${childColumn}`);
+    const result = await db.query(
+      `
         SELECT
           pcs.*,
-          i.first_name as infant_first_name,
-          i.last_name as infant_last_name,
-          i.dob as infant_dob,
-          pt.name as template_name,
+          COALESCE(p.first_name, ${legacyInfantsJoin.firstNameExpression}, '') AS infant_first_name,
+          COALESCE(p.last_name, ${legacyInfantsJoin.lastNameExpression}, '') AS infant_last_name,
+          COALESCE(p.dob, ${legacyInfantsJoin.dobExpression}) AS infant_dob,
+          pt.name AS template_name,
           pt.template_type,
-          u.first_name as completed_by_first_name,
-          u.last_name as completed_by_last_name
+          ${completedByExpressions.firstName} AS completed_by_first_name,
+          ${completedByExpressions.lastName} AS completed_by_last_name,
+          EXTRACT(DAY FROM NOW() - COALESCE(pcs.last_updated, CURRENT_TIMESTAMP)) AS days_since_update
         FROM paper_completion_status pcs
-        JOIN infants i ON pcs.infant_id = i.id
-        JOIN paper_templates pt ON pcs.template_id = pt.id
+        LEFT JOIN patients p ON pcs.${childColumn} = p.id
+        ${legacyInfantsJoin.joinClause}
+        LEFT JOIN paper_templates pt ON pcs.template_id = pt.id
         LEFT JOIN users u ON pcs.completed_by = u.id
         WHERE pcs.completion_status = $1
-        ORDER BY pcs.last_updated DESC
+        ORDER BY COALESCE(pcs.last_updated, CURRENT_TIMESTAMP) DESC
         LIMIT $2
       `,
-        [status, parseInt(limit)],
-      );
+      [status, parseInt(limit, 10)],
+    );
 
-      res.json({
-        success: true,
-        data: result.rows,
-      });
-    } catch (dbError) {
-      // Table doesn't exist, return empty data
-      console.warn('Alerts table not found:', dbError.message);
-      res.json({
+    res.json({
+      success: true,
+      data: result.rows,
+    });
+  } catch (error) {
+    if (isSchemaCompatibilityError(error)) {
+      console.warn('Monitoring alerts unavailable due to schema mismatch:', error.message);
+      return res.json({
         success: true,
         data: [],
-        message: 'Alerts table not available',
+        degraded: true,
+        message: 'Monitoring alerts are temporarily unavailable while digital papers analytics catches up with the current schema.',
       });
     }
-  } catch (error) {
+
     console.error('Error fetching alerts:', error);
     res.status(500).json({
       success: false,
@@ -269,21 +306,26 @@ router.get('/user-activity', auth, requireMonitoringAccess, async (req, res) => 
     const { limit = 10 } = req.query;
 
     try {
+      await ensureDigitalPapersCompatibility();
+      const userNameExpressions = await getUserNameExpressions('u', {
+        fallbackFirstName: 'System User',
+      });
+      const childColumn = await getDocumentDownloadsChildColumn();
       const result = await db.query(
         `
         SELECT
           u.id,
-          u.first_name,
-          u.last_name,
+          ${userNameExpressions.firstName} AS first_name,
+          ${userNameExpressions.lastName} AS last_name,
           u.role,
           COUNT(dd.id) as total_downloads,
-          COUNT(DISTINCT dd.infant_id) as unique_infants,
+          COUNT(DISTINCT dd.${childColumn}) as unique_infants,
           COUNT(DISTINCT dd.template_id) as unique_templates,
           MAX(dd.download_date) as last_activity
         FROM users u
         LEFT JOIN document_downloads dd ON u.id = dd.user_id
         WHERE u.role IN ('admin', 'nurse', 'doctor')
-        GROUP BY u.id, u.first_name, u.last_name, u.role
+        GROUP BY u.id, ${userNameExpressions.firstName}, ${userNameExpressions.lastName}, u.role
         ORDER BY total_downloads DESC
         LIMIT $1
       `,
@@ -361,6 +403,7 @@ router.get('/template-performance', auth, requireMonitoringAccess, async (req, r
 // Helper functions
 async function getGenerationStats(startDate, endDate) {
   try {
+    await ensureDigitalPapersCompatibility();
     const whereClause =
       startDate || endDate
         ? `WHERE 1=1 ${startDate ? `AND download_date >= '${startDate}'` : ''} ${
@@ -398,6 +441,7 @@ async function getGenerationStats(startDate, endDate) {
 
 async function getCompletionOverview() {
   try {
+    await ensureDigitalPapersCompatibility();
     const result = await db.query(`
       SELECT
         completion_status,
@@ -417,19 +461,26 @@ async function getCompletionOverview() {
 
 async function getRecentDownloads() {
   try {
+    await ensureDigitalPapersCompatibility();
+    const childColumn = await getDocumentDownloadsChildColumn();
+    const userNameExpressions = await getUserNameExpressions('u', {
+      fallbackFirstName: 'System User',
+    });
+    const legacyInfantsJoin = await getLegacyInfantsJoinConfig('i', `dd.${childColumn}`);
     const result = await db.query(`
       SELECT
         dd.*,
         pt.name as template_name,
         pt.template_type,
-        i.first_name as infant_first_name,
-        i.last_name as infant_last_name,
-        u.first_name as user_first_name,
-        u.last_name as user_last_name
+        COALESCE(p.first_name, ${legacyInfantsJoin.firstNameExpression}, '') as infant_first_name,
+        COALESCE(p.last_name, ${legacyInfantsJoin.lastNameExpression}, '') as infant_last_name,
+        ${userNameExpressions.firstName} as user_first_name,
+        ${userNameExpressions.lastName} as user_last_name
       FROM document_downloads dd
-      JOIN paper_templates pt ON dd.template_id = pt.id
-      JOIN infants i ON dd.infant_id = i.id
-      JOIN users u ON dd.user_id = u.id
+      LEFT JOIN paper_templates pt ON dd.template_id = pt.id
+      LEFT JOIN patients p ON dd.${childColumn} = p.id
+      ${legacyInfantsJoin.joinClause}
+      LEFT JOIN users u ON dd.user_id = u.id
       ORDER BY dd.download_date DESC
       LIMIT 10
     `);
@@ -443,18 +494,22 @@ async function getRecentDownloads() {
 
 async function getIncompleteDocumentAlerts() {
   try {
+    await ensureDigitalPapersCompatibility();
+    const childColumn = await getCompletionStatusChildColumn();
+    const legacyInfantsJoin = await getLegacyInfantsJoinConfig('i', `pcs.${childColumn}`);
     const result = await db.query(`
       SELECT
         pcs.*,
-        i.first_name as infant_first_name,
-        i.last_name as infant_last_name,
-        i.dob as infant_dob,
+        COALESCE(p.first_name, ${legacyInfantsJoin.firstNameExpression}, '') as infant_first_name,
+        COALESCE(p.last_name, ${legacyInfantsJoin.lastNameExpression}, '') as infant_last_name,
+        COALESCE(p.dob, ${legacyInfantsJoin.dobExpression}) as infant_dob,
         pt.name as template_name,
         pt.template_type,
         EXTRACT(DAY FROM NOW() - pcs.last_updated) as days_since_update
       FROM paper_completion_status pcs
-      JOIN infants i ON pcs.infant_id = i.id
-      JOIN paper_templates pt ON pcs.template_id = pt.id
+      LEFT JOIN patients p ON pcs.${childColumn} = p.id
+      ${legacyInfantsJoin.joinClause}
+      LEFT JOIN paper_templates pt ON pcs.template_id = pt.id
       WHERE pcs.completion_status = 'PENDING'
         AND pcs.last_updated < NOW() - INTERVAL '7 days'
       ORDER BY pcs.last_updated ASC
@@ -470,6 +525,7 @@ async function getIncompleteDocumentAlerts() {
 
 async function getPerformanceMetrics() {
   try {
+    await ensureDigitalPapersCompatibility();
     const result = await db.query(`
       SELECT
         'avg_generation_time' as metric,

@@ -18,6 +18,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
+const { getUserNameExpressions } = require('../utils/queryCompatibility');
 
 // Middleware to authenticate all infant document routes
 router.use(authenticateToken);
@@ -213,9 +214,13 @@ router.get('/:infantId', async (req, res) => {
       });
     }
 
+    const uploadedByExpressions = await getUserNameExpressions('u', {
+      fallbackFirstName: 'System User',
+    });
+
     // Build query
     let query = `
-      SELECT doc.*, u.first_name as uploaded_by_first, u.last_name as uploaded_by_last
+      SELECT doc.*, ${uploadedByExpressions.firstName} as uploaded_by_first, ${uploadedByExpressions.lastName} as uploaded_by_last
       FROM infant_documents doc
       LEFT JOIN users u ON doc.uploaded_by = u.id
       WHERE doc.infant_id = $1 AND doc.is_active = true
@@ -366,9 +371,13 @@ router.get('/info/:documentId', async (req, res) => {
       });
     }
 
+    const uploadedByExpressions = await getUserNameExpressions('u', {
+      fallbackFirstName: 'System User',
+    });
+
     // Get document info
     const docResult = await pool.query(
-      `SELECT doc.*, u.first_name as uploaded_by_first, u.last_name as uploaded_by_last
+      `SELECT doc.*, ${uploadedByExpressions.firstName} as uploaded_by_first, ${uploadedByExpressions.lastName} as uploaded_by_last
        FROM infant_documents doc
        LEFT JOIN users u ON doc.uploaded_by = u.id
        WHERE doc.id = $1 AND doc.is_active = true`,

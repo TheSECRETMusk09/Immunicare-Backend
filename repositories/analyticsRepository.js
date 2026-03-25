@@ -88,6 +88,8 @@ const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   inventoryTransactionsScopeFallback: null,
   inventoryAlertsScope: 'clinic_id',
   inventoryAlertsScopeFallback: null,
+  patientsSex: null,
+  patientsGender: null,
   notificationsScope: null,
   notificationsScopeFallback: null,
   notificationsChannel: null,
@@ -139,6 +141,8 @@ const resolveSchemaColumnMappings = async () => {
           'infant_id',
           'facility_id',
           'clinic_id',
+          'sex',
+          'gender',
           'status',
           'stock_on_hand',
           'beginning_balance',
@@ -197,6 +201,14 @@ const resolveSchemaColumnMappings = async () => {
     } else if (available.has('patients.clinic_id')) {
       mappings.patientsScope = 'clinic_id';
       mappings.patientsScopeFallback = null;
+    }
+
+    if (available.has('patients.sex')) {
+      mappings.patientsSex = 'sex';
+    }
+
+    if (available.has('patients.gender')) {
+      mappings.patientsGender = 'gender';
     }
 
     if (available.has('immunization_records.status')) {
@@ -1070,8 +1082,15 @@ const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, status
 };
 
 const getDemographics = async ({ facilityId, guardianId }) => {
-  const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
+  const {
+    patientsScope,
+    patientsScopeFallback,
+    patientsSex,
+    patientsGender,
+  } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const patientSexExpr = patientsSex ? `p.${patientsSex}` : 'NULL';
+  const patientGenderExpr = patientsGender ? `p.${patientsGender}` : 'NULL';
 
   const ageRows = await mapRows(
     `
@@ -1126,8 +1145,8 @@ const getDemographics = async ({ facilityId, guardianId }) => {
       WITH scoped_patients AS (
         SELECT
           p.id,
-          p.sex,
-          p.gender
+          ${patientSexExpr} AS sex,
+          ${patientGenderExpr} AS gender
         FROM patients p
         WHERE COALESCE(p.is_active, true) = true
           AND ($1::int IS NULL OR ${patientScopeExpr} = $1)

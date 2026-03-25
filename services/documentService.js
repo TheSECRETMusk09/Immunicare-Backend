@@ -12,7 +12,7 @@ class DocumentService {
   async ensureDocumentDirectory() {
     try {
       await fs.access(this.documentDir);
-    } catch (error) {
+    } catch (_error) {
       await fs.mkdir(this.documentDir, { recursive: true });
     }
   }
@@ -34,21 +34,23 @@ class DocumentService {
       // Get infant and guardian data
       let infant = null;
       let guardian = null;
+      let resolvedGuardianId = guardianId || null;
 
       if (infantId) {
         const infantResult = await pool.query(
-          'SELECT * FROM infants WHERE id = $1',
+          'SELECT * FROM patients WHERE id = $1 AND is_active = true',
           [infantId]
         );
         if (infantResult.rows.length > 0) {
           infant = infantResult.rows[0];
+          resolvedGuardianId = resolvedGuardianId || infant.guardian_id || null;
         }
       }
 
-      if (guardianId) {
+      if (resolvedGuardianId) {
         const guardianResult = await pool.query(
           'SELECT * FROM guardians WHERE id = $1',
-          [guardianId]
+          [resolvedGuardianId]
         );
         if (guardianResult.rows.length > 0) {
           guardian = guardianResult.rows[0];
@@ -92,7 +94,7 @@ class DocumentService {
         [
           templateId,
           infantId,
-          guardianId,
+          resolvedGuardianId,
           userId,
           filePath,
           filename,
@@ -182,7 +184,7 @@ class DocumentService {
          FROM document_generation dg
          LEFT JOIN digital_papers dp ON dg.id = dp.document_generation_id
          LEFT JOIN paper_templates t ON dg.template_id = t.id
-         LEFT JOIN infants i ON dg.infant_id = i.id
+         LEFT JOIN patients i ON dg.infant_id = i.id
          WHERE dg.guardian_id = $1
          ORDER BY dg.created_at DESC`,
         [guardianId]
@@ -202,7 +204,7 @@ class DocumentService {
          FROM document_generation dg
          LEFT JOIN digital_papers dp ON dg.id = dp.document_generation_id
          LEFT JOIN paper_templates t ON dg.template_id = t.id
-         LEFT JOIN infants i ON dg.infant_id = i.id
+         LEFT JOIN patients i ON dg.infant_id = i.id
          LEFT JOIN guardians g ON dg.guardian_id = g.id
          WHERE dg.generated_by = $1
          ORDER BY dg.created_at DESC`,
@@ -324,7 +326,7 @@ class DocumentService {
     try {
       await pool.query(
         `UPDATE document_generation 
-         SET download_count = download_count + 1, last_downloaded = CURRENT_TIMESTAMP
+         SET download_count = COALESCE(download_count, 0) + 1, last_downloaded = CURRENT_TIMESTAMP
          WHERE id = $1`,
         [id]
       );

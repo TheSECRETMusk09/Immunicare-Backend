@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { authenticateToken: auth } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/rbac');
 const socketService = require('../services/socketService');
 const { body, validationResult } = require('express-validator');
 
@@ -19,7 +20,7 @@ const handleValidationErrors = (req, res) => {
 };
 
 // GET /api/paper-templates - Get all paper templates
-router.get('/', auth, async (req, res) => {
+router.get('/', auth, requirePermission('document:view'), async (req, res) => {
   try {
     const { type, active } = req.query;
     let query = 'SELECT * FROM paper_templates WHERE 1=1';
@@ -56,7 +57,7 @@ router.get('/', auth, async (req, res) => {
 });
 
 // GET /api/paper-templates/:id - Get specific paper template
-router.get('/:id', auth, async (req, res) => {
+router.get('/:id', auth, requirePermission('document:view'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await db.query(
@@ -90,6 +91,7 @@ router.post(
   '/',
   [
     auth,
+    requirePermission('document:create'),
     body('name').notEmpty().withMessage('Template name is required'),
     body('template_type')
       .isIn([
@@ -148,6 +150,7 @@ router.put(
   '/:id',
   [
     auth,
+    requirePermission('document:create'),
     body('name')
       .optional()
       .notEmpty()
@@ -261,7 +264,7 @@ router.put(
 );
 
 // DELETE /api/paper-templates/:id - Delete paper template
-router.delete('/:id', auth, async (req, res) => {
+router.delete('/:id', auth, requirePermission('document:delete'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -295,7 +298,7 @@ router.delete('/:id', auth, async (req, res) => {
 });
 
 // GET /api/paper-templates/:id/fields - Get template fields
-router.get('/:id/fields', auth, async (req, res) => {
+router.get('/:id/fields', auth, requirePermission('document:view'), async (req, res) => {
   try {
     const { id } = req.params;
     const result = await db.query(

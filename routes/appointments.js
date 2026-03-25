@@ -35,6 +35,7 @@ const {
   INFANT_CONTROL_NUMBER_PATTERN,
 } = require('../services/infantControlNumberService');
 const { writeAuditLog } = require('../services/auditLogService');
+const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
 
 const router = express.Router();
 
@@ -89,6 +90,13 @@ const getAppointmentPatientColumn = () =>
   resolveFirstExistingColumn('appointments', ['infant_id', 'patient_id'], 'infant_id');
 
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
+const requireAppointmentCreateAccess = (req, res, next) => {
+  if (isGuardian(req)) {
+    return requirePermission('appointment:create:own')(req, res, next);
+  }
+
+  return requirePermission('appointment:create')(req, res, next);
+};
 
 const APPOINTMENT_STATUS_VALUES = [
   'pending',
@@ -149,6 +157,88 @@ const normalizeAppointmentRecord = (appointment) => {
 };
 
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
+
+const isVaccinationAppointmentType = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  return normalized.includes('vacc');
+};
+
+const getEligibleGuardianVaccines = (readinessData = {}) => {
+  return [
+    ...(Array.isArray(readinessData.overdueVaccines) ? readinessData.overdueVaccines : []),
+    ...(Array.isArray(readinessData.dueVaccines) ? readinessData.dueVaccines : []),
+  ]
+    .map((entry) => parseInt(entry?.vaccineId, 10))
+    .filter((value) => Number.isInteger(value) && value > 0);
+};
+
+const enforceGuardianVaccinationEligibility = async ({
+  infantId,
+  vaccineId,
+  appointmentType,
+}) => {
+  const vaccinationFlow = isVaccinationAppointmentType(appointmentType) || Number.isInteger(vaccineId);
+  if (!vaccinationFlow) {
+    return {
+      vaccineId: vaccineId || null,
+      readiness: null,
+    };
+  }
+
+  const readinessResult = await calculateVaccineReadiness(infantId);
+  if (!readinessResult?.success || !readinessResult?.data) {
+    const error = new Error('Failed to resolve vaccination readiness for this child');
+    error.statusCode = 500;
+    error.code = 'READINESS_UNAVAILABLE';
+    throw error;
+  }
+
+  const readiness = readinessResult.data;
+  const eligibleVaccineIds = getEligibleGuardianVaccines(readiness);
+  const eligibleVaccineSet = new Set(eligibleVaccineIds);
+  const blockedVaccineSet = new Set(
+    (Array.isArray(readiness.blockedVaccines) ? readiness.blockedVaccines : [])
+      .map((entry) => parseInt(entry?.vaccineId, 10))
+      .filter((value) => Number.isInteger(value) && value > 0),
+  );
+
+  if (Number.isInteger(vaccineId) && eligibleVaccineSet.has(vaccineId)) {
+    return {
+      vaccineId,
+      readiness,
+    };
+  }
+
+  if (!Number.isInteger(vaccineId) && eligibleVaccineIds.length > 0) {
+    return {
+      vaccineId: eligibleVaccineIds[0],
+      readiness,
+    };
+  }
+
+  const error = new Error(
+    readiness.readinessStatus === 'PENDING_CONFIRMATION'
+      ? 'This child is waiting for health center confirmation before a vaccination appointment can be booked.'
+      : readiness.readinessStatus === 'UPCOMING'
+        ? 'This child is not yet eligible for the next vaccination appointment.'
+        : 'No eligible vaccine is currently available for booking for this child.',
+  );
+  error.statusCode = 400;
+  error.code =
+    readiness.readinessStatus === 'PENDING_CONFIRMATION'
+      ? 'PENDING_CONFIRMATION'
+      : readiness.readinessStatus === 'UPCOMING'
+        ? 'NOT_YET_ELIGIBLE'
+        : blockedVaccineSet.has(vaccineId)
+          ? 'PENDING_CONFIRMATION'
+          : 'NO_ELIGIBLE_VACCINE';
+  error.readiness = readiness;
+  throw error;
+};
 
 const sanitizeAppointmentMutablePayload = (payload = {}, { allowStatus = true } = {}) => {
   const errors = {};
@@ -458,7 +548,7 @@ router.get('/', async (req, res) => {
 });
 
 // Create appointment (SYSTEM_ADMIN full, GUARDIAN own request)
-router.post('/', requirePermission('appointment:create:own'), async (req, res) => {
+router.post('/', requireAppointmentCreateAccess, async (req, res) => {
   try {
     console.log('[DEBUG] Create appointment request:', JSON.stringify(req.body, null, 2));
     const payload = req.body || {};
@@ -584,9 +674,30 @@ router.post('/', requirePermission('appointment:create:own'), async (req, res) =
     // Auto-approve all valid appointments passing availability checks
     const finalStatus = normalized.status || 'scheduled';
     const finalClinicId = clinicIdCheck.value || infant.clinic_id || req.user.clinic_id || null;
-    const finalVaccineId = vaccineIdCheck.value || null;
+    let finalVaccineId = vaccineIdCheck.value || null;
     const appointmentPatientColumn = await getAppointmentPatientColumn();
     const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+
+    if (guardianFlow) {
+      try {
+        const guardianEligibility = await enforceGuardianVaccinationEligibility({
+          infantId,
+          vaccineId: finalVaccineId,
+          appointmentType: normalizedType,
+        });
+        finalVaccineId = guardianEligibility.vaccineId;
+      } catch (eligibilityError) {
+        if (eligibilityError.statusCode) {
+          return res.status(eligibilityError.statusCode).json({
+            error: eligibilityError.message,
+            code: eligibilityError.code,
+            readiness: eligibilityError.readiness || null,
+          });
+        }
+
+        throw eligibilityError;
+      }
+    }
 
     const availability = await appointmentSchedulingService.checkBookingAvailability({
       scheduledDate: normalizedScheduledDate,
@@ -1302,20 +1413,6 @@ router.put('/:id(\\d+)', async (req, res) => {
           error: 'Guardians can only update date, type, duration, notes, and location',
         });
       }
-    }
-
-    const conflictingAppointment = await appointmentSchedulingService.findConflictingActiveAppointment({
-      infantId,
-      scheduledDate: scheduled_date,
-      excludeAppointmentId: appointmentId,
-    });
-
-    if (conflictingAppointment) {
-      return res.status(409).json({
-        error: 'This child already has an active appointment on the selected date.',
-        code: 'DUPLICATE_APPOINTMENT',
-        conflict: normalizeAppointmentRecord(conflictingAppointment),
-      });
     }
 
     const { normalized: normalizedUpdates, errors } = sanitizeAppointmentMutablePayload(payload, {

@@ -342,14 +342,14 @@ BEGIN
     LEFT JOIN appointments a
       ON a.infant_id = b.patient_id
       AND COALESCE(a.is_active, true)
-    LEFT JOIN patient_growth pg
-      ON pg.patient_id = b.patient_id
+    LEFT JOIN infant_growth pg
+      ON pg.infant_id = b.patient_id
       AND COALESCE(pg.is_active, true)
     LEFT JOIN health_records hr
-      ON hr.patient_id = b.patient_id
+      ON hr.infant_id = b.patient_id
       AND COALESCE(hr.is_active, true)
     LEFT JOIN document_generation dg
-      ON dg.patient_id = b.patient_id
+      ON dg.infant_id = b.patient_id
     LEFT JOIN notifications n
       ON n.related_entity_type = 'patient'
       AND n.related_entity_id = b.patient_id
@@ -541,30 +541,30 @@ BEGIN
 
   v_dependency_rows_repointed := v_dependency_rows_repointed + ROW_COUNT;
 
-  -- patient_growth.patient_id
+  -- infant_growth.patient_id
   INSERT INTO migration_b0_dependency_ref_backup (run_id, table_name, pk_column, pk_value, ref_column, old_patient_id, new_patient_id)
   SELECT
     v_run_id,
-    'patient_growth',
+    'infant_growth',
     'id',
     pg.id,
     'patient_id',
-    pg.patient_id,
+    pg.infant_id,
     mp.winner_patient_id
-  FROM patient_growth pg
+  FROM infant_growth pg
   JOIN migration_b0_merge_plan mp
     ON mp.run_id = v_run_id
-   AND mp.loser_patient_id = pg.patient_id
+   AND mp.loser_patient_id = pg.infant_id
   WHERE COALESCE(pg.is_active, true)
   ON CONFLICT DO NOTHING;
 
-  UPDATE patient_growth pg
+  UPDATE infant_growth pg
   SET
     patient_id = mp.winner_patient_id,
     updated_at = NOW()
   FROM migration_b0_merge_plan mp
   WHERE mp.run_id = v_run_id
-    AND pg.patient_id = mp.loser_patient_id
+    AND pg.infant_id = mp.loser_patient_id
     AND COALESCE(pg.is_active, true);
 
   v_dependency_rows_repointed := v_dependency_rows_repointed + ROW_COUNT;
@@ -577,12 +577,12 @@ BEGIN
     'id',
     hr.id,
     'patient_id',
-    hr.patient_id,
+    hr.infant_id,
     mp.winner_patient_id
   FROM health_records hr
   JOIN migration_b0_merge_plan mp
     ON mp.run_id = v_run_id
-   AND mp.loser_patient_id = hr.patient_id
+   AND mp.loser_patient_id = hr.infant_id
   WHERE COALESCE(hr.is_active, true)
   ON CONFLICT DO NOTHING;
 
@@ -592,7 +592,7 @@ BEGIN
     updated_at = NOW()
   FROM migration_b0_merge_plan mp
   WHERE mp.run_id = v_run_id
-    AND hr.patient_id = mp.loser_patient_id
+    AND hr.infant_id = mp.loser_patient_id
     AND COALESCE(hr.is_active, true);
 
   v_dependency_rows_repointed := v_dependency_rows_repointed + ROW_COUNT;
@@ -605,12 +605,12 @@ BEGIN
     'id',
     dg.id,
     'patient_id',
-    dg.patient_id,
+    dg.infant_id,
     mp.winner_patient_id
   FROM document_generation dg
   JOIN migration_b0_merge_plan mp
     ON mp.run_id = v_run_id
-   AND mp.loser_patient_id = dg.patient_id
+   AND mp.loser_patient_id = dg.infant_id
   ON CONFLICT DO NOTHING;
 
   UPDATE document_generation dg
@@ -619,7 +619,7 @@ BEGIN
     updated_at = NOW()
   FROM migration_b0_merge_plan mp
   WHERE mp.run_id = v_run_id
-    AND dg.patient_id = mp.loser_patient_id;
+    AND dg.infant_id = mp.loser_patient_id;
 
   v_dependency_rows_repointed := v_dependency_rows_repointed + ROW_COUNT;
 

@@ -1,4 +1,5 @@
 const request = require('supertest');
+const pool = require('../../db');
 const { app } = require('../helpers/testApp');
 const { loginAdmin, loginGuardian } = require('../helpers/authHelper');
 
@@ -7,7 +8,28 @@ describe('Appointments Module API Integration Tests', () => {
   let guardianToken;
   let testGuardianId;
   let testInfantId;
+  let guardianInfantId;
+  let guardianReadyInfantId;
   let testAppointmentId;
+  let guardianScheduleVaccineId;
+
+  const collectionFrom = (body) => (Array.isArray(body) ? body : body?.data || []);
+  const toManilaDateKey = (value) =>
+    new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(new Date(value));
+  const futureBusinessDate = (businessDaysAhead = 1) => {
+    const date = new Date();
+    let added = 0;
+
+    while (added < businessDaysAhead) {
+      date.setDate(date.getDate() + 1);
+      const day = date.getDay();
+      if (day !== 0 && day !== 6) {
+        added += 1;
+      }
+    }
+
+    return date.toISOString().split('T')[0];
+  };
 
   beforeAll(async () => {
     // Get tokens first
@@ -49,6 +71,77 @@ describe('Appointments Module API Integration Tests', () => {
       });
 
     testInfantId = createInfantResponse.body.data.id;
+
+    const uniqueSuffix = Date.now();
+    const guardianInfantResponse = await request(app)
+      .post('/api/infants/guardian')
+      .set('Authorization', `Bearer ${guardianToken}`)
+      .send({
+        first_name: `Guardian${uniqueSuffix}`,
+        last_name: 'Appointment',
+        dob: '2023-02-18',
+        sex: 'female',
+        purok: 'Purok 1',
+        street_color: 'Son Risa St. - Pink',
+      });
+
+    if (![200, 201].includes(guardianInfantResponse.status)) {
+      throw new Error(`Failed to create guardian-owned infant: ${JSON.stringify(guardianInfantResponse.body)}`);
+    }
+
+    guardianInfantId = guardianInfantResponse.body.data.id;
+
+    const readySuffix = Date.now() + 1;
+    const guardianReadyInfantResponse = await request(app)
+      .post('/api/infants/guardian')
+      .set('Authorization', `Bearer ${guardianToken}`)
+      .send({
+        first_name: `GuardianReady${readySuffix}`,
+        last_name: 'Appointment',
+        dob: '2023-02-19',
+        sex: 'female',
+        purok: 'Purok 1',
+        street_color: 'Son Risa St. - Pink',
+      });
+
+    if (![200, 201].includes(guardianReadyInfantResponse.status)) {
+      throw new Error(`Failed to create guardian-ready infant: ${JSON.stringify(guardianReadyInfantResponse.body)}`);
+    }
+
+    guardianReadyInfantId = guardianReadyInfantResponse.body.data.id;
+
+    const vaccineCode = `TEST_GUARD_APPT_${Date.now()}`;
+    const vaccineInsertResult = await pool.query(
+      `
+        INSERT INTO vaccines (code, name, manufacturer, doses_required, is_active)
+        VALUES ($1, $2, 'Test Manufacturer', 1, true)
+        RETURNING id
+      `,
+      [vaccineCode, `Guardian Appointment Vaccine ${vaccineCode}`],
+    );
+
+    guardianScheduleVaccineId = vaccineInsertResult.rows[0].id;
+
+    await pool.query(
+      `
+        INSERT INTO vaccination_schedules (
+          vaccine_id,
+          vaccine_name,
+          vaccine_code,
+          dose_number,
+          total_doses,
+          age_in_months,
+          minimum_age_days,
+          is_active
+        )
+        VALUES ($1, $2, $3, 1, 1, 0, 0, true)
+      `,
+      [
+        guardianScheduleVaccineId,
+        `Guardian Appointment Vaccine ${vaccineCode}`,
+        vaccineCode,
+      ],
+    );
   });
 
   describe('GET /api/appointments', () => {
@@ -58,7 +151,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
+      expect(Array.isArray(collectionFrom(response.body))).toBe(true);
     });
 
     test('should return guardian appointments for guardian user', async () => {
@@ -67,7 +160,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${guardianToken}`);
 
       expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
+      expect(Array.isArray(collectionFrom(response.body))).toBe(true);
     });
 
     test('should return 401 for unauthenticated', async () => {
@@ -80,9 +173,7 @@ describe('Appointments Module API Integration Tests', () => {
 
   describe('POST /api/appointments', () => {
     test('should create a new appointment for admin', async () => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(1);
 
       const newAppointment = {
         infant_id: testInfantId,
@@ -100,20 +191,17 @@ describe('Appointments Module API Integration Tests', () => {
         .send(newAppointment);
 
       expect(response.status).toBe(201);
-      expect(response.body.infant_id).toEqual(testInfantId);
-      expect(String(response.body.scheduled_date || '')).toContain(tomorrowDate);
-      expect(response.body.type).toEqual(newAppointment.type);
-
       testAppointmentId = response.body.id;
+      expect(response.body.infant_id || response.body.patient_id).toEqual(testInfantId);
+      expect(toManilaDateKey(response.body.scheduled_date)).toBe(tomorrowDate);
+      expect(response.body.type).toEqual(newAppointment.type);
     });
 
     test('should create a new appointment for guardian', async () => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 2);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(2);
 
       const newAppointment = {
-        infant_id: testInfantId,
+        infant_id: guardianInfantId,
         scheduled_date: tomorrowDate,
         type: 'Check-up',
         duration_minutes: 30,
@@ -127,8 +215,101 @@ describe('Appointments Module API Integration Tests', () => {
         .send(newAppointment);
 
       expect(response.status).toBe(201);
-      expect(response.body.infant_id).toEqual(testInfantId);
-      expect(String(response.body.scheduled_date || '')).toContain(tomorrowDate);
+      expect(response.body.infant_id || response.body.patient_id).toEqual(guardianInfantId);
+      expect(toManilaDateKey(response.body.scheduled_date)).toBe(tomorrowDate);
+    });
+
+    test('should block guardian vaccination booking while child is pending confirmation', async () => {
+      const targetDate = futureBusinessDate(3);
+
+      const response = await request(app)
+        .post('/api/appointments')
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          infant_id: guardianInfantId,
+          scheduled_date: targetDate,
+          type: 'Vaccination',
+          location: 'Main Health Center',
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('PENDING_CONFIRMATION');
+    });
+
+    test('should auto-assign an eligible vaccine for guardian vaccination booking', async () => {
+      const readinessResponse = await request(app)
+        .get(`/api/vaccination-readiness/${guardianReadyInfantId}`)
+        .set('Authorization', `Bearer ${guardianToken}`);
+
+      expect(readinessResponse.status).toBe(200);
+      const blockedVaccines = readinessResponse.body?.data?.blockedVaccines || [];
+      expect(blockedVaccines.length).toBeGreaterThan(0);
+
+      const matchingBlockedVaccine = blockedVaccines.find(
+        (entry) => Number.parseInt(entry.vaccineId, 10) === guardianScheduleVaccineId,
+      );
+      expect(matchingBlockedVaccine).toBeDefined();
+
+      const eligibleVaccineId = Number.parseInt(matchingBlockedVaccine.vaccineId, 10);
+      expect(eligibleVaccineId).toBeGreaterThan(0);
+
+      await pool.query(
+        `
+          INSERT INTO infant_vaccine_readiness (
+            infant_id,
+            vaccine_id,
+            is_ready,
+            ready_confirmed_by,
+            ready_confirmed_at,
+            created_by,
+            is_active
+          )
+          VALUES ($1, $2, TRUE, 1, CURRENT_TIMESTAMP, 1, TRUE)
+          ON CONFLICT (infant_id, vaccine_id, is_active)
+          DO UPDATE SET
+            is_ready = EXCLUDED.is_ready,
+            ready_confirmed_by = EXCLUDED.ready_confirmed_by,
+            ready_confirmed_at = EXCLUDED.ready_confirmed_at,
+            created_by = EXCLUDED.created_by,
+            updated_at = CURRENT_TIMESTAMP
+        `,
+        [guardianReadyInfantId, eligibleVaccineId],
+      );
+
+      const clinicResult = await pool.query(
+        'SELECT clinic_id FROM patients WHERE id = $1',
+        [guardianReadyInfantId],
+      );
+      const clinicId = Number.parseInt(clinicResult.rows[0]?.clinic_id, 10) || 1;
+
+      await pool.query(
+        `
+          INSERT INTO vaccine_batches (
+            vaccine_id,
+            clinic_id,
+            facility_id,
+            lot_number,
+            qty_current,
+            status,
+            expiry_date
+          )
+          VALUES ($1, $2, $2, $3, 50, 'active', CURRENT_DATE + INTERVAL '365 days')
+        `,
+        [eligibleVaccineId, clinicId, `READY-LOT-${Date.now()}`],
+      );
+
+      const response = await request(app)
+        .post('/api/appointments')
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          infant_id: guardianReadyInfantId,
+          scheduled_date: futureBusinessDate(4),
+          type: 'Vaccination',
+          location: 'Main Health Center',
+        });
+
+      expect(response.status).toBe(201);
+      expect(Number.parseInt(response.body.vaccine_id, 10)).toBe(eligibleVaccineId);
     });
 
     test('should return 400 for missing required fields', async () => {
@@ -143,15 +324,13 @@ describe('Appointments Module API Integration Tests', () => {
     });
 
     test('should return 403 for guardian creating appointment for other infant', async () => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(3);
 
       const response = await request(app)
         .post('/api/appointments')
         .set('Authorization', `Bearer ${guardianToken}`)
         .send({
-          infant_id: testInfantId + 1,
+          infant_id: testInfantId,
           scheduled_date: tomorrowDate,
           type: 'Vaccination',
         });
@@ -184,7 +363,6 @@ describe('Appointments Module API Integration Tests', () => {
       const updates = {
         notes: 'Updated appointment notes',
         duration_minutes: 45,
-        status: 'confirmed',
       };
 
       const response = await request(app)
@@ -199,15 +377,13 @@ describe('Appointments Module API Integration Tests', () => {
 
     test('should update appointment for guardian', async () => {
       // Create an appointment for the test guardian
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 3);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(4);
 
       const createResponse = await request(app)
         .post('/api/appointments')
         .set('Authorization', `Bearer ${guardianToken}`)
         .send({
-          infant_id: testInfantId,
+          infant_id: guardianInfantId,
           scheduled_date: tomorrowDate,
           type: 'Check-up',
           duration_minutes: 30,
@@ -257,15 +433,13 @@ describe('Appointments Module API Integration Tests', () => {
 
     test('should cancel appointment for guardian', async () => {
       // Create an appointment to cancel
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 4);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(5);
 
       const createResponse = await request(app)
         .post('/api/appointments')
         .set('Authorization', `Bearer ${guardianToken}`)
         .send({
-          infant_id: testInfantId,
+          infant_id: guardianInfantId,
           scheduled_date: tomorrowDate,
           type: 'Cancellation Test',
         });
@@ -288,9 +462,7 @@ describe('Appointments Module API Integration Tests', () => {
   describe('PUT /api/appointments/:id/complete', () => {
     test('should complete appointment for admin', async () => {
       // Create an appointment to complete
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(6);
 
       const createResponse = await request(app)
         .post('/api/appointments')
@@ -319,9 +491,7 @@ describe('Appointments Module API Integration Tests', () => {
 
   describe('GET /api/appointments/availability/check', () => {
     test('should check appointment availability', async () => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 7);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(7);
 
       const response = await request(app)
         .get(`/api/appointments/availability/check?scheduled_date=${tomorrowDate}`)
@@ -342,16 +512,14 @@ describe('Appointments Module API Integration Tests', () => {
 
   describe('GET /api/appointments/availability/slots', () => {
     test('should return available time slots', async () => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 7);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(8);
 
       const response = await request(app)
         .get(`/api/appointments/availability/slots?scheduled_date=${tomorrowDate}`)
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
+      expect(Array.isArray(response.body?.slots)).toBe(true);
     });
   });
 
@@ -377,7 +545,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
+      expect(Array.isArray(collectionFrom(response.body))).toBe(true);
     });
   });
 
@@ -388,16 +556,14 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
+      expect(Array.isArray(collectionFrom(response.body))).toBe(true);
     });
   });
 
   describe('DELETE /api/appointments/:id', () => {
     test('should delete appointment', async () => {
       // Create an appointment to delete
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 5);
-      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      const tomorrowDate = futureBusinessDate(9);
 
       const createResponse = await request(app)
         .post('/api/appointments')

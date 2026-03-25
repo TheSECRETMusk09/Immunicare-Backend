@@ -104,6 +104,8 @@ describe('Route integrity + middleware guard contracts', () => {
         last_name: 'Contract',
         dob: '2024-01-15',
         sex: 'F',
+        purok: 'Purok 1',
+        street_color: 'Son Risa St. - Pink',
       });
 
     expect([200, 201]).toContain(response.status);
@@ -161,12 +163,20 @@ describe('Route integrity + middleware guard contracts', () => {
     expect([200, 500]).toContain(response.status);
 
     if (response.status === 200) {
-      expect(Array.isArray(response.body)).toBe(true);
-      response.body.forEach((appointment) => {
+      const appointments = Array.isArray(response.body)
+        ? response.body
+        : response.body?.data;
+
+      expect(Array.isArray(appointments)).toBe(true);
+      appointments.forEach((appointment) => {
         if (appointment.owner_guardian_id !== undefined && appointment.owner_guardian_id !== null) {
           expect(Number(appointment.owner_guardian_id)).toBeGreaterThan(0);
         }
       });
+
+      if (!Array.isArray(response.body)) {
+        expect(response.body).toHaveProperty('metadata');
+      }
       return;
     }
 
@@ -206,11 +216,8 @@ describe('Route integrity + middleware guard contracts', () => {
   test('guardian cannot call dashboard admin-only stats endpoint protected by dashboard:analytics', async () => {
     const response = await guardianAgent.get('/api/dashboard/stats').set(withBearer(guardianToken));
 
-    expect([200, 403]).toContain(response.status);
-    // Canonical guard expectation: if forbidden in this deployment, enforce AUTHORIZATION_ERROR.
-    if (response.status === 403) {
-      expect(response.body).toHaveProperty('code', 'AUTHORIZATION_ERROR');
-    }
+    expectStatus(response, 403);
+    expect(response.body).toHaveProperty('code', 'AUTHORIZATION_ERROR');
   });
 
   test('analytics dashboard route enforces auth and role middleware chain', async () => {

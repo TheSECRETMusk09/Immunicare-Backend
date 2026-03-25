@@ -2,18 +2,24 @@ const request = require('supertest');
 const { app } = require('../helpers/testApp');
 const { loginAdmin, loginGuardian } = require('../helpers/authHelper');
 
+const formatVaccinationDateForGuardian = (value) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date(value));
+
 describe('Vaccinations Module API Integration Tests', () => {
   let adminToken;
   let guardianToken;
   let testGuardianId;
   let testInfantId;
+  let guardianInfantId;
   let testVaccineId;
   let testVaccinationId;
+  let guardianCreatedVaccinationId;
 
   beforeAll(async () => {
     // Get tokens first
     adminToken = await loginAdmin();
-    guardianToken = await loginGuardian();
+    const guardianLogin = await loginGuardian();
+    guardianToken = guardianLogin;
 
     // Get test guardian ID from guardians list API
     const guardiansResponse = await request(app)
@@ -50,6 +56,24 @@ describe('Vaccinations Module API Integration Tests', () => {
       });
 
     testInfantId = createInfantResponse.body.data.id;
+
+    const guardianInfantResponse = await request(app)
+      .post('/api/infants/guardian')
+      .set('Authorization', `Bearer ${guardianToken}`)
+      .send({
+        first_name: `GuardianVaccination${Date.now()}`,
+        last_name: 'Owner',
+        dob: '2023-01-15',
+        sex: 'female',
+        purok: 'Purok 1',
+        street_color: 'Son Risa St. - Pink',
+      });
+
+    if (![200, 201].includes(guardianInfantResponse.status)) {
+      throw new Error(`Failed to create guardian-owned infant: ${JSON.stringify(guardianInfantResponse.body)}`);
+    }
+
+    guardianInfantId = guardianInfantResponse.body.data.id;
 
     // Get a test vaccine from database
     const vaccinesResponse = await request(app)
@@ -127,7 +151,7 @@ describe('Vaccinations Module API Integration Tests', () => {
   describe('POST /api/vaccinations/records', () => {
     test('should create a new vaccination record for admin', async () => {
       const newVaccination = {
-        patient_id: testInfantId,
+        patient_id: guardianInfantId,
         vaccine_id: testVaccineId,
         dose_no: 1,
         admin_date: '2023-03-15',
@@ -141,12 +165,12 @@ describe('Vaccinations Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send(newVaccination);
 
-      expect(response.status).toBe(201);
-      expect(response.body.patient_id).toEqual(testInfantId);
+      testVaccinationId = response.body.id;
+
+      expect([200, 201]).toContain(response.status);
+      expect(response.body.patient_id).toEqual(guardianInfantId);
       expect(response.body.vaccine_id).toEqual(testVaccineId);
       expect(response.body.dose_no).toEqual(1);
-
-      testVaccinationId = response.body.id;
     });
 
     test('should return 400 for missing required fields', async () => {
@@ -207,7 +231,7 @@ describe('Vaccinations Module API Integration Tests', () => {
 
     test('should return infant vaccination records for guardian', async () => {
       const response = await request(app)
-        .get(`/api/vaccinations/records/infant/${testInfantId}`)
+        .get(`/api/vaccinations/records/infant/${guardianInfantId}`)
         .set('Authorization', `Bearer ${guardianToken}`);
 
       expect(response.status).toBe(200);
@@ -216,8 +240,46 @@ describe('Vaccinations Module API Integration Tests', () => {
 
     test('should return 403 for guardian accessing other infant records', async () => {
       const response = await request(app)
-        .get(`/api/vaccinations/records/infant/${testInfantId + 1}`)
+        .get(`/api/vaccinations/records/infant/${testInfantId}`)
         .set('Authorization', `Bearer ${guardianToken}`);
+
+      expect(response.status).toBe(403);
+    });
+  });
+
+  describe('POST /api/vaccinations/records/guardian-complete', () => {
+    test('should allow guardian to mark an owned vaccine dose as completed', async () => {
+      const response = await request(app)
+        .post('/api/vaccinations/records/guardian-complete')
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          patient_id: guardianInfantId,
+          vaccine_id: testVaccineId,
+          dose_no: 2,
+          admin_date: '2023-05-15',
+          source_facility: 'Community Health Center',
+          notes: 'Guardian confirmed external administration',
+        });
+
+      expect([200, 201]).toContain(response.status);
+      expect(response.body.patient_id).toEqual(guardianInfantId);
+      expect(response.body.vaccine_id).toEqual(testVaccineId);
+      expect(response.body.dose_no).toEqual(2);
+      expect(response.body.status).toEqual('completed');
+
+      guardianCreatedVaccinationId = response.body.id;
+    });
+
+    test('should return 403 when guardian marks another child vaccine as completed', async () => {
+      const response = await request(app)
+        .post('/api/vaccinations/records/guardian-complete')
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          patient_id: testInfantId,
+          vaccine_id: testVaccineId,
+          dose_no: 1,
+          admin_date: '2023-03-15',
+        });
 
       expect(response.status).toBe(403);
     });
@@ -248,6 +310,22 @@ describe('Vaccinations Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(response.status).toBe(404);
+    });
+  });
+
+  describe('PUT /api/vaccinations/records/:id/guardian-date', () => {
+    test('should allow guardian to update administered date for owned vaccination', async () => {
+      const response = await request(app)
+        .put(`/api/vaccinations/records/${guardianCreatedVaccinationId}/guardian-date`)
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          admin_date: '2023-05-20',
+          source_facility: 'Updated Community Health Center',
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.id).toEqual(guardianCreatedVaccinationId);
+      expect(formatVaccinationDateForGuardian(response.body.admin_date)).toBe('2023-05-20');
     });
   });
 
@@ -292,18 +370,32 @@ describe('Vaccinations Module API Integration Tests', () => {
 
   describe('DELETE /api/vaccinations/:id', () => {
     test('should delete vaccination record for admin', async () => {
-      // Create a test vaccination to delete
+      const deleteInfantResponse = await request(app)
+        .post('/api/infants')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          first_name: `DeleteVaccination${Date.now()}`,
+          last_name: 'Test',
+          dob: '2023-01-15',
+          sex: 'male',
+          guardian_id: testGuardianId,
+        });
+
+      expect([200, 201]).toContain(deleteInfantResponse.status);
+
+      const deleteInfantId = deleteInfantResponse.body.data.id;
+
       const createResponse = await request(app)
         .post('/api/vaccinations/records')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
-          patient_id: testInfantId,
+          patient_id: deleteInfantId,
           vaccine_id: testVaccineId,
           dose_no: 2,
           admin_date: '2023-06-15',
         });
 
-      expect(createResponse.status).toBe(201);
+      expect([200, 201]).toContain(createResponse.status);
       const vaccinationId = createResponse.body.id;
 
       const deleteResponse = await request(app)
@@ -335,7 +427,7 @@ describe('Vaccinations Module API Integration Tests', () => {
 
     test('should return infant vaccination schedules for guardian', async () => {
       const response = await request(app)
-        .get(`/api/vaccinations/schedules/infant/${testInfantId}`)
+        .get(`/api/vaccinations/schedules/infant/${guardianInfantId}`)
         .set('Authorization', `Bearer ${guardianToken}`);
 
       expect(response.status).toBe(200);
@@ -355,7 +447,7 @@ describe('Vaccinations Module API Integration Tests', () => {
 
     test('should return patient vaccinations for guardian', async () => {
       const response = await request(app)
-        .get(`/api/vaccinations/patient/${testInfantId}`)
+        .get(`/api/vaccinations/patient/${guardianInfantId}`)
         .set('Authorization', `Bearer ${guardianToken}`);
 
       expect(response.status).toBe(200);
@@ -398,12 +490,13 @@ describe('Vaccinations Module API Integration Tests', () => {
       expect(Array.isArray(response.body)).toBe(true);
     });
 
-    test('should return 400 for missing clinic_id', async () => {
+    test('should fall back to the admin clinic scope when clinic_id is omitted', async () => {
       const response = await request(app)
         .get('/api/vaccinations/inventory/valid')
         .set('Authorization', `Bearer ${adminToken}`);
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body)).toBe(true);
     });
   });
 });

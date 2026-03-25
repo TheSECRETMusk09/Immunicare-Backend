@@ -539,13 +539,12 @@ const createRefreshTokensTable = async () => {
   }
 };
 
-// Initialize refresh tokens table
-createRefreshTokensTable().catch((error) => {
-  logger.error('Failed to initialize refresh tokens table:', error);
-});
-
-// Schedule periodic cleanup of expired tokens (every hour)
 if (process.env.NODE_ENV !== 'test') {
+  createRefreshTokensTable().catch((error) => {
+    logger.error('Failed to initialize refresh tokens table:', error);
+  });
+
+  // Schedule periodic cleanup of expired tokens (every hour)
   setInterval(
     () => {
       cleanupExpiredTokens();

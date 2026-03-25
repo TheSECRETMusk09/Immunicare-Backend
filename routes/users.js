@@ -63,6 +63,21 @@ const GUARDIAN_PHONE_REGEX = /^(\+63|0)\d{10}$/;
 const MAX_GUARDIAN_USERNAME_SUFFIX = 10000;
 const GUARDIAN_USERNAME_FORMAT_REGEX = /^[a-z0-9]+(?:\.[a-z0-9]+)+$/;
 const GUARDIAN_PORTAL_CLINIC_NAME = 'Guardian Portal';
+let ensureGuardianProfileColumnsPromise = null;
+
+const ensureGuardianProfileColumnsExist = async () => {
+  if (!ensureGuardianProfileColumnsPromise) {
+    ensureGuardianProfileColumnsPromise = (async () => {
+      await pool.query('ALTER TABLE guardians ADD COLUMN IF NOT EXISTS emergency_contact VARCHAR(255)');
+      await pool.query('ALTER TABLE guardians ADD COLUMN IF NOT EXISTS emergency_phone VARCHAR(50)');
+    })().catch((error) => {
+      ensureGuardianProfileColumnsPromise = null;
+      throw error;
+    });
+  }
+
+  return ensureGuardianProfileColumnsPromise;
+};
 
 const normalizeGuardianEmail = (value) => {
   const normalized = String(value || '')
@@ -2036,6 +2051,7 @@ router.get('/stats', requireSystemAdmin, async (req, res) => {
 // Get guardian profile
 router.get('/guardian/profile/:guardianId', async (req, res) => {
   try {
+    await ensureGuardianProfileColumnsExist();
     const { guardianId } = req.params;
 
     if (!canAccessGuardianScope(req, guardianId)) {
@@ -2070,6 +2086,7 @@ router.get('/guardian/profile/:guardianId', async (req, res) => {
 router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
+    await ensureGuardianProfileColumnsExist();
     const { guardianId } = req.params;
     const { name, phone, email, address, emergency_contact, emergency_phone } = req.body;
 
@@ -2138,6 +2155,7 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
 router.put('/guardian/self/profile/:guardianId', async (req, res) => {
   const client = await pool.connect();
   try {
+    await ensureGuardianProfileColumnsExist();
     const { guardianId } = req.params;
     const requestedGuardianId = parseInt(guardianId, 10);
 
@@ -2461,6 +2479,7 @@ router.put('/me/notification-settings', async (req, res) => {
 // Export guardian data (profile, children, appointments, vaccinations)
 router.get('/guardian/export/:guardianId', async (req, res) => {
   try {
+    await ensureGuardianProfileColumnsExist();
     const { guardianId } = req.params;
 
     if (!canAccessGuardianScope(req, guardianId)) {

@@ -1,5 +1,6 @@
 const { createApiAgent } = require('../helpers/testApp');
 const { loginAsAdmin, loginAsGuardian, withBearer } = require('../helpers/authHelper');
+const { TEST_ADMIN } = require('../setup/testDataSeeder');
 const {
   expectStatus,
   expectErrorCode,
@@ -86,7 +87,7 @@ describe('Auth contract baseline', () => {
       table: 'refresh_tokens',
       whereSql:
         'user_id = (SELECT id FROM users WHERE lower(username) = lower($1) LIMIT 1) AND is_revoked = false',
-      params: ['qa_admin'],
+      params: [TEST_ADMIN.username],
     });
 
     expect(rows).toBeGreaterThan(0);
