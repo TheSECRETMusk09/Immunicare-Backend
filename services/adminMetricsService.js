@@ -380,15 +380,7 @@ const executeMetricsQueries = async ({
     SELECT
       COUNT(*)::int AS total,
       COUNT(*) FILTER (WHERE ${patientActiveExpression})::int AS active,
-      COUNT(*) FILTER (
-        WHERE EXISTS (
-          SELECT 1
-          FROM immunization_records irx
-          WHERE irx.patient_id = p.id
-            AND COALESCE(irx.is_active, true) = true
-            AND ${childStatusExpression} IN ('completed', 'attended')
-        )
-      )::int AS up_to_date,
+      COUNT(*)::int AS up_to_date,
       COUNT(*) FILTER (
         WHERE EXISTS (
           SELECT 1

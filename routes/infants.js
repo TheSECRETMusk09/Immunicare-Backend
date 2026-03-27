@@ -469,7 +469,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
 
     console.log('[Infants API] Fetching all infants - User:', req.user?.id, 'Role:', req.user?.role, 'Role Type:', req.user?.role_type);
 
-    const limit = parseInt(req.query.limit, 10) || 100;
+    const limit = parseInt(req.query.limit, 10) || 10000;
     const offset = parseInt(req.query.offset, 10) || 0;
     const importedVaccinationPredicate = await getImportedVaccinationPredicate();
 

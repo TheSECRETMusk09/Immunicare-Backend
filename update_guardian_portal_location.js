@@ -1,0 +1,64 @@
+/**
+ * Update Guardian Portal Vaccine Cold Storage to San Nicolas Health Center
+ */
+
+const pool = require('./db');
+
+async function updateGuardianPortalLocation() {
+  console.log('='.repeat(80));
+  console.log('UPDATING GUARDIAN PORTAL LOCATION');
+  console.log('='.repeat(80));
+  console.log();
+
+  try {
+    // Check current locations
+    console.log('Current locations:');
+    const current = await pool.query(`
+      SELECT DISTINCT location, COUNT(*) as count 
+      FROM inventory 
+      GROUP BY location 
+      ORDER BY location
+    `);
+    console.table(current.rows);
+
+    // Update Guardian Portal to San Nicolas Health Center
+    console.log('\nUpdating "Guardian Portal" to "San Nicolas Health Center"...');
+    const result = await pool.query(`
+      UPDATE inventory 
+      SET location = 'San Nicolas Health Center Vaccine Cold Storage'
+      WHERE location = 'Guardian Portal Vaccine Cold Storage'
+      RETURNING id, location
+    `);
+
+    console.log(`✅ Updated ${result.rowCount} records\n`);
+
+    if (result.rowCount > 0) {
+      console.log('Sample updated records:');
+      console.table(result.rows.slice(0, 5));
+    }
+
+    // Show final locations
+    console.log('\nFinal locations:');
+    const final = await pool.query(`
+      SELECT DISTINCT location, COUNT(*) as count 
+      FROM inventory 
+      GROUP BY location 
+      ORDER BY location
+    `);
+    console.table(final.rows);
+
+    console.log('\n' + '='.repeat(80));
+    console.log('✅ UPDATE COMPLETE - All inventory now at San Nicolas Health Center');
+    console.log('='.repeat(80));
+
+  } catch (error) {
+    console.error('\n❌ UPDATE FAILED');
+    console.error('Error:', error.message);
+    throw error;
+  } finally {
+    await pool.end();
+    process.exit(0);
+  }
+}
+
+updateGuardianPortalLocation();

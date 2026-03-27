@@ -1177,7 +1177,7 @@ router.get('/', requirePermission('transfer:view'), async (req, res) => {
       status,
       priority,
       triage_category,
-      limit = 50,
+      limit = 1000,
       offset = 0,
     } = req.query;
 

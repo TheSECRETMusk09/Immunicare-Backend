@@ -2,15 +2,10 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { authenticateToken } = require('../middleware/auth');
-const {
-  CANONICAL_ROLES,
-  getCanonicalRole,
-  requirePermission,
-} = require('../middleware/rbac');
-const {
-  getAdminInfantVaccinationMonitoring,
-} = require('../services/adminVaccinationMonitoringService');
+const { requirePermission, getCanonicalRole, CANONICAL_ROLES } = require('../middleware/rbac');
 const { getDashboardMetrics } = require('../services/adminMetricsService');
+const { resolvePatientColumn, resolvePatientTable } = require('../utils/schemaHelpers');
+const { resolveGuardianId } = require('../middleware/guardianScope');
 
 const noCache = (res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -30,7 +25,9 @@ const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 const canAccessGuardian = (req, guardianId) => {
   if (isGuardian(req)) {
-    return parseInt(req.user.guardian_id, 10) === parseInt(guardianId, 10);
+    // Use unified guardian scope resolver with fallback support
+    const resolvedGuardianId = resolveGuardianId(req.user);
+    return resolvedGuardianId === parseInt(guardianId, 10);
   }
   return getCanonicalRole(req) === CANONICAL_ROLES.SYSTEM_ADMIN;
 };
@@ -213,12 +210,14 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
     noCache(res);
 
     const limit = sanitizeLimit(req.query.limit, 20, 100);
+    const patientColumn = await resolvePatientColumn();
+    const patientTable = await resolvePatientTable();
 
     const result = await db.query(
       `
         SELECT
           a.id,
-          a.infant_id,
+          a.${patientColumn} as patient_id,
           a.scheduled_date,
           a.status,
           a.type,
@@ -232,7 +231,7 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
           COALESCE(NULLIF(TRIM(g.name), ''), 'Guardian unavailable') as guardian_name,
           p.control_number
         FROM appointments a
-        LEFT JOIN patients p ON p.id = a.infant_id
+        LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE a.scheduled_date >= CURRENT_DATE
           AND a.is_active = true
@@ -319,6 +318,9 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
       [guardianId],
     );
 
+    const patientColumn = await resolvePatientColumn();
+    const patientTable = await resolvePatientTable();
+    
     const nextAppointmentResult = await db.query(
       `
         SELECT
@@ -327,7 +329,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
           p.last_name,
           p.control_number
         FROM appointments a
-        LEFT JOIN patients p ON p.id = a.infant_id
+        LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
         WHERE ${guardianScopeFilterSql} = $1
           AND a.scheduled_date >= CURRENT_DATE
           AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
@@ -443,6 +445,8 @@ router.get('/guardian/:guardianId/children', authenticateToken, async (req, res,
     }
 
     noCache(res);
+    
+    const patientColumn = await resolvePatientColumn();
 
     const infantsResult = await db.query(
       `
@@ -450,7 +454,7 @@ router.get('/guardian/:guardianId/children', authenticateToken, async (req, res,
           p.*,
            (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND (status = 'completed' OR admin_date IS NOT NULL) AND is_active = true) as completed_vaccinations,
            (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND COALESCE(status, 'pending') IN ('scheduled', 'pending') AND admin_date IS NULL AND is_active = true) as pending_vaccinations,
-           (SELECT COUNT(*) FROM appointments WHERE infant_id = p.id AND scheduled_date >= CURRENT_DATE AND LOWER(REPLACE(COALESCE(status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled') AND is_active = true) as upcoming_appointments
+           (SELECT COUNT(*) FROM appointments WHERE ${patientColumn} = p.id AND scheduled_date >= CURRENT_DATE AND LOWER(REPLACE(COALESCE(status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled') AND is_active = true) as upcoming_appointments
         FROM patients p
         WHERE p.guardian_id = $1
           AND p.is_active = true
@@ -642,9 +646,31 @@ router.get('/guardian/:guardianId/notifications', authenticateToken, async (req,
 });
 
 // Dashboard guardians (SYSTEM_ADMIN)
-router.get('/guardians', authenticateToken, requirePermission('user:view'), async (_req, res, next) => {
+router.get('/guardians', authenticateToken, requirePermission('user:view'), async (req, res, next) => {
   try {
-    const result = await db.query('SELECT * FROM guardians ORDER BY created_at DESC LIMIT 100');
+    // Apply facility scoping to prevent data leakage
+    const scopeIds = [...new Set(
+      [req.user?.clinic_id, req.user?.facility_id]
+        .map((value) => Number.parseInt(value, 10))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    )];
+    
+    const canonicalRole = getCanonicalRole(req);
+    const requestedScope = String(req.query.scope || '').trim().toLowerCase();
+    const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
+    const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
+    
+    let query = 'SELECT * FROM guardians';
+    const params = [];
+    
+    if (useClinicScope) {
+      query += ' WHERE clinic_id = ANY($1::int[])';
+      params.push(scopeIds);
+    }
+    
+    query += ' ORDER BY created_at DESC LIMIT 100';
+    
+    const result = await db.query(query, params);
     res.json({ data: result.rows });
   } catch (error) {
     console.error('Dashboard guardians error:', error);
@@ -653,17 +679,38 @@ router.get('/guardians', authenticateToken, requirePermission('user:view'), asyn
 });
 
 // Dashboard infants (SYSTEM_ADMIN)
-router.get('/infants', authenticateToken, requirePermission('patient:view'), async (_req, res, next) => {
+router.get('/infants', authenticateToken, requirePermission('patient:view'), async (req, res, next) => {
   try {
+    // Apply facility scoping to prevent data leakage
+    const scopeIds = [...new Set(
+      [req.user?.clinic_id, req.user?.facility_id]
+        .map((value) => Number.parseInt(value, 10))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    )];
+    
+    const canonicalRole = getCanonicalRole(req);
+    const requestedScope = String(req.query.scope || '').trim().toLowerCase();
+    const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
+    const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
+    
+    let whereClause = 'WHERE i.is_active = true';
+    const params = [];
+    
+    if (useClinicScope) {
+      whereClause += ' AND i.clinic_id = ANY($1::int[])';
+      params.push(scopeIds);
+    }
+    
     const result = await db.query(
       `
         SELECT i.*, g.name as guardian_name
         FROM patients i
         LEFT JOIN guardians g ON i.guardian_id = g.id
-        WHERE i.is_active = true
+        ${whereClause}
         ORDER BY i.created_at DESC
         LIMIT 100
       `,
+      params,
     );
     res.json({ data: result.rows });
   } catch (error) {
@@ -677,6 +724,26 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
   try {
     const days = sanitizeLimit(req.query.days, 7, 90);
     const activity = [];
+    
+    // Apply facility scoping to prevent data leakage
+    const scopeIds = [...new Set(
+      [req.user?.clinic_id, req.user?.facility_id]
+        .map((value) => Number.parseInt(value, 10))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    )];
+    
+    const canonicalRole = getCanonicalRole(req);
+    const requestedScope = String(req.query.scope || '').trim().toLowerCase();
+    const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
+    const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
+    
+    let scopeFilter = '';
+    const vaccinationParams = [days];
+    
+    if (useClinicScope) {
+      scopeFilter = ' AND p.clinic_id = ANY($2::int[])';
+      vaccinationParams.push(scopeIds);
+    }
 
     const vaccinations = await db.query(
       `
@@ -693,13 +760,22 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
           WHERE ir.created_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
             AND ir.is_active = true
             AND p.is_active = true
+            ${scopeFilter}
           ORDER BY ir.admin_date DESC
           LIMIT 20
         `,
-    [days],
+      vaccinationParams,
     );
     vaccinations.rows.forEach((item) => activity.push(item));
 
+    const patientColumn = await resolvePatientColumn();
+    const patientTable = await resolvePatientTable();
+    
+    const appointmentParams = [days];
+    if (useClinicScope) {
+      appointmentParams.push(scopeIds);
+    }
+    
     const appointments = await db.query(
       `
           SELECT
@@ -716,14 +792,15 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
               ELSE 'Appointment updated'
             END as action
           FROM appointments a
-          LEFT JOIN patients p ON p.id = a.infant_id
+          LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
           WHERE a.created_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
             AND a.is_active = true
             AND p.is_active = true
+            ${scopeFilter}
           ORDER BY a.scheduled_date DESC
           LIMIT 20
         `,
-    [days],
+      appointmentParams,
     );
     appointments.rows.forEach((item) => activity.push(item));
 

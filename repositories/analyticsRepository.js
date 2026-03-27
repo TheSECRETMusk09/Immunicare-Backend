@@ -73,7 +73,7 @@ const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   patientsScope: 'facility_id',
   patientsScopeFallback: null,
   immunizationStatus: null,
-  inventoryScope: 'clinic_id',
+  inventoryScope: null,
   inventoryScopeFallback: null,
   inventoryStockOnHand: null,
   inventoryBeginningBalance: null,
@@ -131,6 +131,7 @@ const resolveSchemaColumnMappings = async () => {
           'appointments',
           'immunization_records',
           'patients',
+          'inventory',
           'vaccine_inventory',
           'vaccine_inventory_transactions',
           'vaccine_stock_alerts',
@@ -144,6 +145,7 @@ const resolveSchemaColumnMappings = async () => {
           'sex',
           'gender',
           'status',
+          'quantity',
           'stock_on_hand',
           'beginning_balance',
           'received_during_period',
@@ -215,6 +217,8 @@ const resolveSchemaColumnMappings = async () => {
       mappings.immunizationStatus = 'status';
     }
 
+    // Inventory table doesn't have facility/clinic scoping - it's global
+    // Only check vaccine_inventory table for backward compatibility
     if (available.has('vaccine_inventory.facility_id')) {
       mappings.inventoryScope = 'facility_id';
       mappings.inventoryScopeFallback = available.has('vaccine_inventory.clinic_id')
@@ -224,40 +228,46 @@ const resolveSchemaColumnMappings = async () => {
       mappings.inventoryScope = 'clinic_id';
       mappings.inventoryScopeFallback = null;
     }
+    // Note: inventory table has no facility scoping, so inventoryScope stays null
 
-    if (available.has('vaccine_inventory.stock_on_hand')) {
+    // Check for quantity column first (used by inventory table)
+    if (available.has('inventory.quantity')) {
+      mappings.inventoryQuantity = 'quantity';
+    }
+    
+    if (available.has('inventory.stock_on_hand') || available.has('vaccine_inventory.stock_on_hand')) {
       mappings.inventoryStockOnHand = 'stock_on_hand';
     }
 
-    if (available.has('vaccine_inventory.beginning_balance')) {
+    if (available.has('inventory.beginning_balance') || available.has('vaccine_inventory.beginning_balance')) {
       mappings.inventoryBeginningBalance = 'beginning_balance';
     }
 
-    if (available.has('vaccine_inventory.received_during_period')) {
+    if (available.has('inventory.received_during_period') || available.has('vaccine_inventory.received_during_period')) {
       mappings.inventoryReceivedDuringPeriod = 'received_during_period';
     }
 
-    if (available.has('vaccine_inventory.transferred_in')) {
+    if (available.has('inventory.transferred_in') || available.has('vaccine_inventory.transferred_in')) {
       mappings.inventoryTransferredIn = 'transferred_in';
     }
 
-    if (available.has('vaccine_inventory.transferred_out')) {
+    if (available.has('inventory.transferred_out') || available.has('vaccine_inventory.transferred_out')) {
       mappings.inventoryTransferredOut = 'transferred_out';
     }
 
-    if (available.has('vaccine_inventory.expired_wasted')) {
+    if (available.has('inventory.expired_wasted') || available.has('vaccine_inventory.expired_wasted')) {
       mappings.inventoryExpiredWasted = 'expired_wasted';
     }
 
-    if (available.has('vaccine_inventory.issuance')) {
+    if (available.has('inventory.issuance') || available.has('vaccine_inventory.issuance')) {
       mappings.inventoryIssuance = 'issuance';
     }
 
-    if (available.has('vaccine_inventory.low_stock_threshold')) {
+    if (available.has('inventory.low_stock_threshold') || available.has('vaccine_inventory.low_stock_threshold')) {
       mappings.inventoryLowStockThreshold = 'low_stock_threshold';
     }
 
-    if (available.has('vaccine_inventory.critical_stock_threshold')) {
+    if (available.has('inventory.critical_stock_threshold') || available.has('vaccine_inventory.critical_stock_threshold')) {
       mappings.inventoryCriticalStockThreshold = 'critical_stock_threshold';
     }
 
@@ -399,10 +409,17 @@ const buildImmunizationStatusExpression = ({ alias, statusColumn }) => {
 };
 
 const buildInventoryStockExpression = ({ alias, mappings }) => {
+  // Prefer quantity column (used by inventory table)
+  if (mappings.inventoryQuantity) {
+    return `GREATEST(COALESCE(${alias}.${mappings.inventoryQuantity}, 0), 0)`;
+  }
+  
+  // Then check for stock_on_hand (used by vaccine_inventory table)
   if (mappings.inventoryStockOnHand) {
     return `GREATEST(COALESCE(${alias}.${mappings.inventoryStockOnHand}, 0), 0)`;
   }
 
+  // Calculate from additions and deductions
   const additions = [
     mappings.inventoryBeginningBalance,
     mappings.inventoryReceivedDuringPeriod,
@@ -420,6 +437,11 @@ const buildInventoryStockExpression = ({ alias, mappings }) => {
     .map((column) => `COALESCE(${alias}.${column}, 0)`);
 
   const additionExpression = additions.length ? additions.join(' + ') : '0';
+
+  // If no columns available, default to 0
+  if (!additions.length && !deductions.length) {
+    return '0';
+  }
 
   if (!deductions.length) {
     return `GREATEST(${additionExpression}, 0)`;
@@ -815,12 +837,10 @@ const getAppointmentStatusBreakdown = async ({
 const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
   const mappings = await getSchemaColumnMappings();
   const {
-    inventoryScope,
-    inventoryScopeFallback,
     inventoryLowStockThreshold,
     inventoryCriticalStockThreshold,
   } = mappings;
-  const inventoryScopeExpr = buildScopedColumnExpression('vi', inventoryScope, inventoryScopeFallback);
+  // NOTE: inventory table has no facility scoping, so we ignore inventoryScope
   const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
   const lowThresholdExpr = inventoryLowStockThreshold
     ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
@@ -828,6 +848,16 @@ const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
   const criticalThresholdExpr = inventoryCriticalStockThreshold
     ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
     : '5';
+
+  // Build WHERE clause - no facility filtering for inventory table
+  const whereConditions = ['COALESCE(vi.is_active, true) = true'];
+  const params = [];
+  let paramIndex = 1;
+  
+  // Inventory table is global, no facility filtering
+  
+  whereConditions.push(`($${paramIndex}::int[] IS NULL OR vi.vaccine_id = ANY($${paramIndex}::int[]))`);
+  params.push(toNullableArray(vaccineIds));
 
   const rows = await mapRows(
     `
@@ -841,12 +871,10 @@ const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
           WHERE ${stockExpr} <= ${criticalThresholdExpr}
         )::int AS critical_stock_count,
         COUNT(*) FILTER (WHERE ${stockExpr} <= 0)::int AS out_of_stock_count
-      FROM vaccine_inventory vi
-      WHERE COALESCE(vi.is_active, true) = true
-        AND ($1::int IS NULL OR ${inventoryScopeExpr} = $1)
-        AND ($2::int[] IS NULL OR vi.vaccine_id = ANY($2::int[]))
+      FROM inventory vi
+      WHERE ${whereConditions.join(' AND ')}
     `,
-    [facilityId, toNullableArray(vaccineIds)],
+    params,
   );
 
   return rows[0] || {
@@ -861,12 +889,10 @@ const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
 const getInventoryByVaccine = async ({ facilityId, vaccineIds, vaccineKeys }) => {
   const mappings = await getSchemaColumnMappings();
   const {
-    inventoryScope,
-    inventoryScopeFallback,
     inventoryLowStockThreshold,
     inventoryCriticalStockThreshold,
   } = mappings;
-  const inventoryScopeExpr = buildScopedColumnExpression('vi', inventoryScope, inventoryScopeFallback);
+  // NOTE: inventory table has no facility scoping, so we ignore inventoryScope
   const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
   const lowThresholdExpr = inventoryLowStockThreshold
     ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
@@ -874,6 +900,22 @@ const getInventoryByVaccine = async ({ facilityId, vaccineIds, vaccineKeys }) =>
   const criticalThresholdExpr = inventoryCriticalStockThreshold
     ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
     : '5';
+
+  // Build JOIN conditions - no facility filtering for inventory table
+  const joinConditions = [
+    'vi.vaccine_id = vd.vaccine_id',
+    'COALESCE(vi.is_active, true) = true',
+  ];
+  const params = [];
+  let paramIndex = 1;
+  
+  // Inventory table is global, no facility filtering
+  
+  joinConditions.push(`($${paramIndex}::int[] IS NULL OR vi.vaccine_id = ANY($${paramIndex}::int[]))`);
+  params.push(toNullableArray(vaccineIds));
+  paramIndex++;
+  
+  params.push(vaccineKeys);
 
   const rows = await mapRows(
     `
@@ -891,12 +933,9 @@ const getInventoryByVaccine = async ({ facilityId, vaccineIds, vaccineKeys }) =>
           BOOL_OR(${stockExpr} <= ${lowThresholdExpr}) AS low_stock,
           BOOL_OR(${stockExpr} <= ${criticalThresholdExpr}) AS critical_stock
         FROM vaccine_dim vd
-        LEFT JOIN vaccine_inventory vi
-          ON vi.vaccine_id = vd.vaccine_id
-          AND COALESCE(vi.is_active, true) = true
-          AND ($1::int IS NULL OR ${inventoryScopeExpr} = $1)
-          AND ($2::int[] IS NULL OR vi.vaccine_id = ANY($2::int[]))
-        WHERE vd.vaccine_key = ANY($3::text[])
+        LEFT JOIN inventory vi
+          ON ${joinConditions.join(' AND ')}
+        WHERE vd.vaccine_key = ANY($${paramIndex}::text[])
         GROUP BY vd.vaccine_key
       )
       SELECT
@@ -906,14 +945,13 @@ const getInventoryByVaccine = async ({ facilityId, vaccineIds, vaccineKeys }) =>
         COALESCE(ir.low_stock, false) AS low_stock,
         COALESCE(ir.critical_stock, false) AS critical_stock
       FROM inventory_rollup ir
-      ORDER BY array_position($3::text[], ir.vaccine_key)
+      ORDER BY ir.vaccine_key
     `,
-    [facilityId, toNullableArray(vaccineIds), vaccineKeys],
+    params,
   );
 
   return rows;
 };
-
 const getVaccineProgress = async ({
   facilityId,
   startDate,
@@ -1479,7 +1517,7 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
     inventoryLowStockThreshold,
     inventoryCriticalStockThreshold,
   } = mappings;
-  const inventoryScopeExpr = buildScopedColumnExpression('vi', inventoryScope, inventoryScopeFallback);
+  const inventoryScopeExpr = inventoryScope ? buildScopedColumnExpression('vi', inventoryScope, inventoryScopeFallback) : null;
   const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
   const lowThresholdExpr = inventoryLowStockThreshold
     ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
@@ -1488,13 +1526,6 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
     ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
     : '5';
 
-  const stockAlertScopeExpr = buildScopedColumnExpression(
-    'vsa',
-    mappings.inventoryAlertsScope,
-    mappings.inventoryAlertsScopeFallback,
-  );
-  const stockAlertTimestampExpr = buildStockAlertTimestampExpression({ alias: 'vsa', mappings });
-  const stockAlertMessageExpr = buildStockAlertMessageExpression({ alias: 'vsa', mappings, stockExpr });
   const stockAlertSeverityExpr = buildStockAlertSeverityExpression({
     alias: 'vsa',
     mappings,
@@ -1502,46 +1533,47 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
     lowThresholdExpr,
     criticalThresholdExpr,
   });
-  const activeStockAlertPredicate = buildActiveStockAlertPredicate({ alias: 'vsa', mappings });
 
+  const stockAlertMessageExpr = mappings.stockAlertsMessage
+    ? `vsa.${mappings.stockAlertsMessage}`
+    : `CONCAT(v.name, ' is low on stock (', ${stockExpr}, ' doses remaining)')`;
+
+  const stockAlertTimestampExpr = mappings.stockAlertsCreatedAt
+    ? `vsa.${mappings.stockAlertsCreatedAt}`
+    : 'CURRENT_TIMESTAMP';
+
+  // Since inventory table has no facility scoping, we ignore facilityId
+  // and just query all low stock items globally
   const rows = await mapRows(
     `
-      WITH stock_alert_source AS (
-        SELECT
-          COALESCE(vsa.id::text, CONCAT('stock-', vi.id))::text AS id,
-          'inventory'::text AS type,
-          ${stockAlertSeverityExpr}::text AS severity,
-          ${stockAlertMessageExpr}::text AS message,
-          ${stockAlertTimestampExpr} AS alert_at,
-          ${stockExpr} AS stock_value
-        FROM vaccine_inventory vi
-        LEFT JOIN vaccines v ON v.id = vi.vaccine_id
-        LEFT JOIN vaccine_stock_alerts vsa
-          ON vsa.vaccine_inventory_id = vi.id
-          AND (${activeStockAlertPredicate})
-          AND ($1::int IS NULL OR ${stockAlertScopeExpr} = $1)
-        WHERE COALESCE(vi.is_active, true) = true
-          AND ($1::int IS NULL OR ${inventoryScopeExpr} = $1)
-          AND ($2::int[] IS NULL OR vi.vaccine_id = ANY($2::int[]))
-          AND ${stockExpr} <= ${lowThresholdExpr}
-      )
       SELECT
-        id,
-        type,
-        severity,
-        message,
-        alert_at
-      FROM stock_alert_source
-      ORDER BY
-        CASE
-          WHEN severity = 'critical' THEN 0
+        vi.id::text AS id,
+        'inventory'::text AS type,
+        CASE 
+          WHEN ${stockExpr} <= ${criticalThresholdExpr} THEN 'critical'
+          WHEN ${stockExpr} <= ${lowThresholdExpr} THEN 'warning'
+          ELSE 'info'
+        END AS severity,
+        CONCAT(v.name, ' is low on stock (', ${stockExpr}, ' doses remaining)') AS message,
+        CURRENT_TIMESTAMP AS alert_at,
+        v.id AS vaccine_id,
+        v.name AS vaccine_name,
+        ${stockExpr}::int AS current_stock,
+        ${lowThresholdExpr}::int AS threshold_value
+      FROM inventory vi
+      LEFT JOIN vaccines v ON v.id = vi.vaccine_id
+      WHERE COALESCE(vi.is_active, true) = true
+        AND ($1::int[] IS NULL OR vi.vaccine_id = ANY($1::int[]))
+        AND ${stockExpr} <= ${lowThresholdExpr}
+      ORDER BY 
+        CASE 
+          WHEN ${stockExpr} <= ${criticalThresholdExpr} THEN 0
           ELSE 1
         END ASC,
-        stock_value ASC,
-        alert_at DESC
-      LIMIT $3::int
+        ${stockExpr} ASC
+      LIMIT $2
     `,
-    [facilityId, toNullableArray(vaccineIds), limit],
+    [toNullableArray(vaccineIds), limit || 50],
   );
 
   return rows;

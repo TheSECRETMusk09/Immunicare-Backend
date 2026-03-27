@@ -115,14 +115,16 @@ const safeTriggerStockNotification = async ({
 const sanitizeInventoryTransactionPayload = (payload = {}) => {
   const errors = {};
 
+  // For RECEIVE transactions, allow vaccine_inventory_id of 0 (will auto-create)
+  const isReceiveTransaction = payload.transaction_type === 'RECEIVE';
   const vaccineInventoryIdCheck = validateNumberRange(payload.vaccine_inventory_id, {
     label: 'vaccine_inventory_id',
     required: true,
-    min: 1,
+    min: isReceiveTransaction ? 0 : 1,
     integer: true,
   });
   // If vaccine_inventory_id is not a valid number, keep it for later handling
-  if (vaccineInventoryIdCheck.error && payload.vaccine_inventory_id) {
+  if (vaccineInventoryIdCheck.error && payload.vaccine_inventory_id !== undefined) {
     // Store the value anyway for better error message
     vaccineInventoryIdCheck.value = payload.vaccine_inventory_id;
   }
@@ -1401,21 +1403,59 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
     const userId = req.user.id;
 
     const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
+    const inventoryFacilityColumn = await getInventoryFacilityColumn();
 
     // Get current inventory record to calculate balance
-    const inventoryResult = await pool.query('SELECT * FROM vaccine_inventory WHERE id = $1', [
-      normalized.vaccine_inventory_id,
-    ]);
-
-    if (inventoryResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Vaccine inventory record not found' });
+    let inventoryResult = { rows: [] };
+    
+    // Only query if we have a valid inventory ID
+    if (normalized.vaccine_inventory_id > 0) {
+      inventoryResult = await pool.query('SELECT * FROM vaccine_inventory WHERE id = $1', [
+        normalized.vaccine_inventory_id,
+      ]);
     }
 
-    const inventory = inventoryResult.rows[0];
-    if (Number(inventory.vaccine_id) !== Number(resolvedVaccineId)) {
-      return respondValidationError(res, {
-        vaccine_id: 'vaccine_id does not match the selected inventory record',
-      });
+    let inventory = null;
+    
+    // If inventory record doesn't exist and this is a RECEIVE transaction, auto-create it
+    if (inventoryResult.rows.length === 0 && normalized.transaction_type === 'RECEIVE') {
+      const userId = req.user.id;
+      const facilityId = normalized.clinic_id || req.user.clinic_id || req.user.facility_id;
+      
+      if (!facilityId) {
+        return respondValidationError(res, {
+          clinic_id: 'clinic_id is required to create inventory record',
+        });
+      }
+      
+      // Auto-create inventory record for RECEIVE transactions
+      const currentDate = new Date();
+      const periodStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+      const periodEnd = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+      
+      const createResult = await pool.query(
+        `INSERT INTO vaccine_inventory (
+          vaccine_id, ${inventoryFacilityColumn}, beginning_balance, received_during_period,
+          transferred_in, transferred_out, expired_wasted, issuance,
+          low_stock_threshold, critical_stock_threshold,
+          is_low_stock, is_critical_stock, period_start, period_end, created_by, updated_by
+        ) VALUES ($1, $2, 0, 0, 0, 0, 0, 0, 10, 5, false, false, $3, $4, $5, $5) RETURNING *`,
+        [resolvedVaccineId, facilityId, periodStart, periodEnd, userId]
+      );
+      
+      inventory = createResult.rows[0];
+      // Update the vaccine_inventory_id to the newly created record
+      normalized.vaccine_inventory_id = inventory.id;
+    } else if (inventoryResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Vaccine inventory record not found. Please save the inventory sheet first or use the Receive Stock button to auto-create the record.' });
+    } else {
+      inventory = inventoryResult.rows[0];
+      
+      if (Number(inventory.vaccine_id) !== Number(resolvedVaccineId)) {
+        return respondValidationError(res, {
+          vaccine_id: 'vaccine_id does not match the selected inventory record',
+        });
+      }
     }
 
     const previousBalance =
