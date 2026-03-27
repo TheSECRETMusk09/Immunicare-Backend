@@ -252,7 +252,7 @@ The server needs to be restarted to pick up the code changes:
 # Stop the current server (Ctrl+C in the terminal running it)
 # Then start it again
 cd backend
-node server.js
+node start.js production
 ```
 
 ### Step 3: Run Tests to Verify Fixes

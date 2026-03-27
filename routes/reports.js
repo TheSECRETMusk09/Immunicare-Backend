@@ -212,6 +212,12 @@ router.get('/templates', requirePermission('report:view'), async (_req, res) => 
 router.get('/admin/summary', requirePermission('report:view'), async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
+    const requestedScope = String(req.query.scope || '').trim().toLowerCase();
+    const scopeIds = [...new Set(
+      [req.user?.clinic_id, req.user?.facility_id]
+        .map((value) => Number.parseInt(value, 10))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    )];
     const { normalizedStartDate, normalizedEndDate, dateErrors } = normalizeDateFilters({
       startDate,
       endDate,
@@ -224,6 +230,11 @@ router.get('/admin/summary', requirePermission('report:view'), async (req, res) 
     const summary = await reportService.getAdminSummary({
       startDate: normalizedStartDate || undefined,
       endDate: normalizedEndDate || undefined,
+      facilityId:
+        requestedScope === 'system' || scopeIds.length === 0
+          ? null
+          : scopeIds[0],
+      scopeIds: requestedScope === 'system' ? [] : scopeIds,
     });
 
     return res.json({

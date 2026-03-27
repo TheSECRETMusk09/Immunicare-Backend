@@ -110,6 +110,29 @@ const ensureCoreSchema = async ({ silent = false } = {}) => {
       UNIQUE(user_id, token)
     );
 
+    CREATE TABLE IF NOT EXISTS pending_registrations (
+      id SERIAL PRIMARY KEY,
+      registration_data JSONB NOT NULL,
+      otp VARCHAR(10) NOT NULL,
+      phone_number VARCHAR(32) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TIMESTAMP NOT NULL,
+      verification_attempts INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS password_reset_otps (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      otp VARCHAR(10) NOT NULL,
+      method VARCHAR(20) NOT NULL DEFAULT 'email',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      ip_address VARCHAR(45),
+      user_agent TEXT,
+      used_at TIMESTAMP,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS admin_activity_log (
       id SERIAL PRIMARY KEY,
       admin_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

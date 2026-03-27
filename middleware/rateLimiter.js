@@ -235,6 +235,10 @@ const createLoginRateLimiter = () => {
       res.status(429).json(options.message);
     },
     skip: (req) => {
+      // Bypass rate limiting entirely during local development
+      if (process.env.NODE_ENV !== 'production') {
+        return true;
+      }
       if (req.path === '/api/health' || req.path === '/metrics') {
         return true;
       }
@@ -459,6 +463,17 @@ const createSMSVerificationRateLimiter = () => {
       if (req.path === '/api/health' || req.path === '/metrics') {
         return true;
       }
+
+      // Bypass rate limiting entirely for guardian users
+      const isGuardianLogin =
+        req.body?.role === 'guardian' ||
+        req.body?.userType === 'guardian' ||
+        (typeof req.body?.username === 'string' && /^\+?\d{10,15}$/.test(req.body.username.replace(/[-_()\s]/g, '')));
+
+      if (isGuardianLogin) {
+        return true;
+      }
+
       return false;
     },
   });

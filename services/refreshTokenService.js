@@ -14,6 +14,8 @@ const FATAL_DB_CONFIG_ERROR_CODES = new Set([
 
 const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
 let refreshTokensPersistenceDisabled = false;
+const allowRuntimeSchemaMutations =
+  String(process.env.ALLOW_RUNTIME_SCHEMA_MUTATIONS || 'false').toLowerCase() === 'true';
 
 const BARANGAY_SCOPE = Object.freeze({
   barangay_code: 'SAN_NICOLAS_PASIG',
@@ -482,6 +484,22 @@ const createRefreshTokensTable = async () => {
   }
 
   try {
+    const existingTableResult = await db.query(
+      "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'refresh_tokens') AS exists",
+    );
+
+    if (existingTableResult.rows[0]?.exists) {
+      logger.info('Refresh tokens table already present; skipping runtime schema mutation.');
+      return true;
+    }
+
+    if (!allowRuntimeSchemaMutations) {
+      logger.error(
+        'Refresh tokens table is missing. Run the database migrations before starting the application or set ALLOW_RUNTIME_SCHEMA_MUTATIONS=true for one-time legacy bootstrap.',
+      );
+      return false;
+    }
+
     const query = `
       CREATE TABLE IF NOT EXISTS refresh_tokens (
         id SERIAL PRIMARY KEY,

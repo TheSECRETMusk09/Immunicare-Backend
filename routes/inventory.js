@@ -6,6 +6,7 @@ const socketService = require('../services/socketService');
 const {
   hasFieldErrors,
   normalizeEnumValue,
+  normalizeIntegerArray,
   parseDateValue,
   respondValidationError,
   sanitizeText,
@@ -1536,7 +1537,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
 // Get vaccine stock alerts
 router.get('/vaccine-stock-alerts', canViewVaccineInventory, async (req, res) => {
   try {
-    const { status, alert_type, priority } = req.query;
+    const { status, alert_type, priority, clinic_id } = req.query;
 
     const stockAlertsFacilityColumn = await getStockAlertsFacilityColumn();
     const facilityTableName = await getFacilityTableName();
@@ -1545,6 +1546,18 @@ router.get('/vaccine-stock-alerts', canViewVaccineInventory, async (req, res) =>
     const normalizedStatus = sanitizeText(status, { maxLength: 50 });
     const normalizedAlertType = sanitizeText(alert_type, { maxLength: 50 });
     const normalizedPriority = sanitizeText(priority, { maxLength: 20 });
+    const clinicIdCheck = validateNumberRange(clinic_id, {
+      label: 'clinic_id',
+      required: false,
+      min: 1,
+      integer: true,
+    });
+
+    if (clinic_id && clinicIdCheck.error) {
+      return respondValidationError(res, {
+        clinic_id: clinicIdCheck.error,
+      });
+    }
 
     let query = `
       SELECT vsa.*, v.name as vaccine_name, v.code as vaccine_code,
@@ -1579,6 +1592,12 @@ router.get('/vaccine-stock-alerts', canViewVaccineInventory, async (req, res) =>
       paramCount++;
     }
 
+    if (clinicIdCheck.value) {
+      query += ` AND vsa.${stockAlertsFacilityColumn} = $${paramCount}`;
+      params.push(clinicIdCheck.value);
+      paramCount++;
+    }
+
     query += ` ORDER BY
       CASE vsa.priority
         WHEN 'URGENT' THEN 1
@@ -1590,6 +1609,135 @@ router.get('/vaccine-stock-alerts', canViewVaccineInventory, async (req, res) =>
 
     const result = await pool.query(query, params);
     res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/vaccine-stock-alerts/acknowledge-all', canModifyVaccineInventory, async (req, res) => {
+  try {
+    const alertIds = normalizeIntegerArray(req.body?.alert_ids, { min: 1 });
+    const clinicIdCheck = validateNumberRange(req.body?.clinic_id, {
+      label: 'clinic_id',
+      required: false,
+      min: 1,
+      integer: true,
+    });
+
+    if (!Array.isArray(req.body?.alert_ids) || alertIds.length === 0) {
+      return respondValidationError(res, {
+        alert_ids: 'alert_ids must contain at least one stock alert id',
+      });
+    }
+
+    if (req.body?.clinic_id !== undefined && clinicIdCheck.error) {
+      return respondValidationError(res, {
+        clinic_id: clinicIdCheck.error,
+      });
+    }
+
+    const stockAlertsFacilityColumn = await getStockAlertsFacilityColumn();
+    const userId = req.user.id;
+    const params = [userId, alertIds];
+
+    let facilityClause = '';
+    if (clinicIdCheck.value) {
+      params.push(clinicIdCheck.value);
+      facilityClause = ` AND ${stockAlertsFacilityColumn} = $${params.length}`;
+    }
+
+    const result = await pool.query(
+      `UPDATE vaccine_stock_alerts
+       SET status = 'ACKNOWLEDGED',
+           acknowledged_by = $1,
+           acknowledged_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ANY($2::int[])
+         AND status = 'ACTIVE'
+         ${facilityClause}
+       RETURNING *`,
+      params,
+    );
+
+    result.rows.forEach((row) => {
+      socketService.broadcast('vaccine_stock_alert_updated', row);
+    });
+
+    res.json({
+      updated_count: result.rows.length,
+      updated: result.rows,
+      message:
+        result.rows.length > 0
+          ? `Acknowledged ${result.rows.length} stock alert${result.rows.length === 1 ? '' : 's'}.`
+          : 'No pending stock alerts matched the request.',
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/vaccine-stock-alerts/resolve-all', canModifyVaccineInventory, async (req, res) => {
+  try {
+    const alertIds = normalizeIntegerArray(req.body?.alert_ids, { min: 1 });
+    const clinicIdCheck = validateNumberRange(req.body?.clinic_id, {
+      label: 'clinic_id',
+      required: false,
+      min: 1,
+      integer: true,
+    });
+    const resolutionNotes = sanitizeText(req.body?.resolution_notes, {
+      maxLength: 500,
+      preserveNewLines: true,
+    });
+
+    if (!Array.isArray(req.body?.alert_ids) || alertIds.length === 0) {
+      return respondValidationError(res, {
+        alert_ids: 'alert_ids must contain at least one stock alert id',
+      });
+    }
+
+    if (req.body?.clinic_id !== undefined && clinicIdCheck.error) {
+      return respondValidationError(res, {
+        clinic_id: clinicIdCheck.error,
+      });
+    }
+
+    const stockAlertsFacilityColumn = await getStockAlertsFacilityColumn();
+    const userId = req.user.id;
+    const params = [userId, resolutionNotes || null, alertIds];
+
+    let facilityClause = '';
+    if (clinicIdCheck.value) {
+      params.push(clinicIdCheck.value);
+      facilityClause = ` AND ${stockAlertsFacilityColumn} = $${params.length}`;
+    }
+
+    const result = await pool.query(
+      `UPDATE vaccine_stock_alerts
+       SET status = 'RESOLVED',
+           resolved_by = $1,
+           resolved_at = CURRENT_TIMESTAMP,
+           resolution_notes = COALESCE($2, resolution_notes),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ANY($3::int[])
+         AND status <> 'RESOLVED'
+         ${facilityClause}
+       RETURNING *`,
+      params,
+    );
+
+    result.rows.forEach((row) => {
+      socketService.broadcast('vaccine_stock_alert_updated', row);
+    });
+
+    res.json({
+      updated_count: result.rows.length,
+      updated: result.rows,
+      message:
+        result.rows.length > 0
+          ? `Resolved ${result.rows.length} stock alert${result.rows.length === 1 ? '' : 's'}.`
+          : 'No eligible stock alerts matched the request.',
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

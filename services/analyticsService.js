@@ -3,6 +3,7 @@ const {
   VACCINATION_STATUS_OPTIONS,
 } = require('../validators/analyticsValidators');
 const analyticsRepository = require('../repositories/analyticsRepository');
+const { getAdminMetricsSummary } = require('./adminMetricsService');
 
 const APPOINTMENT_STATUS_MAP = Object.freeze({
   completed: ['attended'],
@@ -280,6 +281,7 @@ const collectDashboardData = async ({ filters }) => {
   const statusFilters = getStatusFilters(filters.vaccinationStatus);
 
   const [
+    validatedMetrics,
     totals,
     vaccinationSnapshot,
     vaccinationStatusBreakdown,
@@ -296,6 +298,9 @@ const collectDashboardData = async ({ filters }) => {
     lowStockAlerts,
     failedSmsCount,
   ] = await Promise.all([
+    getAdminMetricsSummary({
+      facilityId: filters.facilityId,
+    }),
     analyticsRepository.getInfantGuardianTotals({
       facilityId: filters.facilityId,
       guardianId: filters.guardianId,
@@ -515,6 +520,7 @@ const collectDashboardData = async ({ filters }) => {
   return {
     filters,
     summary,
+    validatedMetrics,
     vaccinationAnalytics,
     appointmentFollowup,
     inventory,

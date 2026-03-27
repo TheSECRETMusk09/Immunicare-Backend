@@ -111,6 +111,61 @@ const sanitizeAnnouncementPayload = (payload = {}) => {
   };
 };
 
+const sanitizeAnnouncementFilterQuery = (query = {}) => {
+  const errors = {};
+
+  const statusInput = sanitizeText(query.status).toLowerCase();
+  const priorityInput = sanitizeText(query.priority).toLowerCase();
+  const targetAudienceInput = sanitizeText(query.target_audience).toLowerCase();
+  const periodStartRaw = sanitizeText(query.period_start);
+  const periodEndRaw = sanitizeText(query.period_end);
+
+  const status = statusInput
+    ? normalizeEnumValue(statusInput, STATUS_VALUES, '')
+    : '';
+  const priority = priorityInput
+    ? normalizeEnumValue(priorityInput, PRIORITY_VALUES, '')
+    : '';
+  const targetAudience = targetAudienceInput
+    ? normalizeEnumValue(targetAudienceInput, AUDIENCE_VALUES, '')
+    : '';
+
+  if (statusInput && !status) {
+    errors.status = `status must be one of: ${STATUS_VALUES.join(', ')}`;
+  }
+
+  if (priorityInput && !priority) {
+    errors.priority = `priority must be one of: ${PRIORITY_VALUES.join(', ')}`;
+  }
+
+  if (targetAudienceInput && !targetAudience) {
+    errors.target_audience = `target_audience must be one of: ${AUDIENCE_VALUES.join(', ')}`;
+  }
+
+  Object.assign(
+    errors,
+    validateDateRange({
+      startDate: periodStartRaw,
+      endDate: periodEndRaw,
+      startKey: 'period_start',
+      endKey: 'period_end',
+      startLabel: 'Start date',
+      endLabel: 'End date',
+    }),
+  );
+
+  return {
+    normalized: {
+      status,
+      priority,
+      target_audience: targetAudience,
+      period_start: periodStartRaw || '',
+      period_end: periodEndRaw || '',
+    },
+    errors,
+  };
+};
+
 const parseAnnouncementId = (rawId) => {
   const id = parseInt(rawId, 10);
   if (Number.isNaN(id) || id <= 0) {
@@ -743,7 +798,11 @@ router.put('/bulk-update', requireManagementRole, async (req, res) => {
 // Get all announcements
 router.get('/', async (req, res) => {
   try {
-    const { status, priority, target_audience } = req.query;
+    const { normalized, errors } = sanitizeAnnouncementFilterQuery(req.query);
+    if (hasFieldErrors(errors)) {
+      return respondValidationError(res, errors, 'Invalid announcement filters');
+    }
+
     let query = `
       SELECT a.*, u.email as created_by_email
       FROM announcements a
@@ -752,19 +811,29 @@ router.get('/', async (req, res) => {
     `;
     const params = [];
 
-    if (status) {
+    if (normalized.status) {
       query += ' AND a.status = $' + (params.length + 1);
-      params.push(status);
+      params.push(normalized.status);
     }
 
-    if (priority) {
+    if (normalized.priority) {
       query += ' AND a.priority = $' + (params.length + 1);
-      params.push(priority);
+      params.push(normalized.priority);
     }
 
-    if (target_audience) {
-      query += ' AND (a.target_audience = \'all\' OR a.target_audience = $' + (params.length + 1) + ')';
-      params.push(target_audience);
+    if (normalized.target_audience) {
+      query += ' AND a.target_audience = $' + (params.length + 1);
+      params.push(normalized.target_audience);
+    }
+
+    if (normalized.period_start) {
+      query += ' AND DATE(a.created_at) >= $' + (params.length + 1);
+      params.push(normalized.period_start);
+    }
+
+    if (normalized.period_end) {
+      query += ' AND DATE(a.created_at) <= $' + (params.length + 1);
+      params.push(normalized.period_end);
     }
 
     query += ' ORDER BY a.created_at DESC';

@@ -51,8 +51,22 @@ function checkPrerequisites() {
 
   // Check if database credentials are set
   const envContent = fs.readFileSync(envPath, 'utf8');
+  const databaseUrlMatch = envContent.match(/^DATABASE_URL=(.*)$/m);
+  const databaseUrlValue = databaseUrlMatch ? databaseUrlMatch[1].trim() : '';
+  const hasDatabaseUrl =
+    databaseUrlValue.length > 0 &&
+    !databaseUrlValue.startsWith('your_') &&
+    databaseUrlValue !== 'postgres://username:password@host:5432/database';
+
+  const readEnvValue = (name) => {
+    const match = envContent.match(new RegExp(`^${name}=(.*)$`, 'm'));
+    return match ? match[1].trim() : '';
+  };
+
   const requiredVars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
-  const missingVars = requiredVars.filter(v => !envContent.includes(`${v}=`));
+  const missingVars = hasDatabaseUrl
+    ? []
+    : requiredVars.filter((v) => !readEnvValue(v));
 
   if (missingVars.length > 0) {
     log.warn(`Missing database configuration for: ${missingVars.join(', ')}`);
@@ -143,11 +157,12 @@ ${GREEN}Option 1: Deploy to VPS with PM2 (Recommended)${RESET}
 2. SSH into your VPS and run:
 ${YELLOW}   cd /path/to/backend
    npm install --production
+   npm run migrate:prod
    NODE_ENV=production node quick_admin_setup.js${RESET}
 
 3. Start with PM2 (process manager):
 ${YELLOW}   npm install -g pm2
-   pm2 start server.js --name immunicare
+   pm2 start start.js --name immunicare -- production
    pm2 save
    pm2 startup${RESET}
 
@@ -195,7 +210,7 @@ ${BLUE}   [Unit]
    User=www-data
    WorkingDirectory=/path/to/backend
    Environment=NODE_ENV=production
-   ExecStart=/usr/bin/node server.js
+   ExecStart=/usr/bin/node /path/to/backend/start.js production
    Restart=always
    RestartSec=10
 
@@ -212,12 +227,22 @@ ${GREEN}Database Configuration (Namecheap VPS)${RESET}
 --------------------------------------
 Your backend/.env.production already has Namecheap database config:
 
+${BLUE}   DATABASE_URL=postgres://user:password@host:5432/database${RESET}
+
+or:
+
 ${BLUE}   DB_HOST=203.161.48.137
    DB_PORT=5432
    DB_NAME=immunicare_prod
    DB_USER=immunicare_user
    DB_PASSWORD=******
-   DB_SSL=true${RESET}
+   DB_SSL=true
+   SERVE_FRONTEND=false${RESET}
+
+If you use TLS certificates, encode the PEM values as base64 strings:
+${BLUE}   DB_SSL_CA=<base64 encoded PEM>
+   DB_SSL_CERT=<base64 encoded PEM>
+   DB_SSL_KEY=<base64 encoded PEM>${RESET}
 
 If using local PostgreSQL on the same VPS, change:
 ${YELLOW}   DB_HOST=localhost

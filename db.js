@@ -5,6 +5,33 @@ const { getPrimaryDbPassword, getPrimaryDbUser } = require('./config/dbCredentia
 const logger = require('./config/logger');
 
 const runtimeEnv = process.env.NODE_ENV || 'development';
+const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
+const connectionString = String(process.env.DATABASE_URL || '').trim();
+
+const parseConnectionString = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+};
+
+const parsedConnectionString = parseConnectionString(connectionString);
+const parsedConnectionPassword = parsedConnectionString
+  ? decodeURIComponent(parsedConnectionString.password || '')
+  : '';
+const parsedConnectionUser = parsedConnectionString
+  ? decodeURIComponent(parsedConnectionString.username || '')
+  : '';
+const parsedConnectionHost = parsedConnectionString?.hostname || '';
+const parsedConnectionPort = parsedConnectionString?.port || '';
+const parsedConnectionDatabase = parsedConnectionString?.pathname
+  ? decodeURIComponent(parsedConnectionString.pathname.replace(/^\//, ''))
+  : '';
 
 const parseBoolean = (value, fallback = false) => {
   if (value === undefined || value === null) {
@@ -57,22 +84,28 @@ const isFatalDbConfigError = (errorOrCode) => {
 };
 
 // Validate required production database configuration
-const requiredDbEnvVars = ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
+const requiredDbEnvVars = connectionString
+  ? []
+  : ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
 const missingDbEnvVars = requiredDbEnvVars.filter(envVar => !process.env[envVar]);
 
-if (missingDbEnvVars.length > 0 && runtimeEnv === 'production') {
+if (missingDbEnvVars.length > 0 && isProductionLikeEnv) {
   logger.error('CRITICAL: Missing required database configuration environment variables', {
     missing: missingDbEnvVars,
   });
   throw new Error('Production database configuration is incomplete');
 }
 
-const dbPassword = getPrimaryDbPassword();
-if (runtimeEnv === 'production' && !dbPassword) {
+if (connectionString && !parsedConnectionString) {
+  throw new Error('DATABASE_URL is invalid and could not be parsed');
+}
+
+const dbPassword = getPrimaryDbPassword() || parsedConnectionPassword;
+if (isProductionLikeEnv && !dbPassword && !connectionString) {
   throw new Error('Production DB_PASSWORD is required and cannot be empty');
 }
 
-if (runtimeEnv !== 'production' && process.env.DB_PASSWORD !== undefined && dbPassword.length === 0) {
+if (!isProductionLikeEnv && process.env.DB_PASSWORD !== undefined && dbPassword.length === 0) {
   logger.warn(
     'DB_PASSWORD is set to an empty string. If PostgreSQL uses password/SCRAM authentication, set a non-empty DB_PASSWORD to avoid connection failures.',
   );
@@ -82,31 +115,32 @@ if (runtimeEnv !== 'production' && process.env.DB_PASSWORD !== undefined && dbPa
 const dbSslEnabled = parseBoolean(process.env.DB_SSL, false);
 const sslConfig = dbSslEnabled
   ? {
-    rejectUnauthorized: parseBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED, runtimeEnv === 'production'),
+    rejectUnauthorized: parseBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED, isProductionLikeEnv),
     ca: process.env.DB_SSL_CA ? Buffer.from(process.env.DB_SSL_CA, 'base64').toString() : undefined,
     cert: process.env.DB_SSL_CERT ? Buffer.from(process.env.DB_SSL_CERT, 'base64').toString() : undefined,
     key: process.env.DB_SSL_KEY ? Buffer.from(process.env.DB_SSL_KEY, 'base64').toString() : undefined,
   }
   : false;
 
-if (runtimeEnv === 'production' && !dbSslEnabled) {
+if (isProductionLikeEnv && !dbSslEnabled) {
   logger.warn('DB_SSL is disabled in production. Enable TLS for database connections where supported.');
 }
 
-const host = process.env.DB_HOST || (runtimeEnv === 'production' ? '' : 'localhost');
-const port = parseInteger(process.env.DB_PORT, 5432);
-const database = process.env.DB_NAME || (runtimeEnv === 'production' ? '' : 'immunicare_dev');
-const user = getPrimaryDbUser() || (runtimeEnv === 'production' ? '' : 'postgres');
+const host = process.env.DB_HOST || parsedConnectionHost || (isProductionLikeEnv ? '' : 'localhost');
+const port = parseInteger(process.env.DB_PORT || parsedConnectionPort, 5432);
+const database =
+  process.env.DB_NAME || parsedConnectionDatabase || (isProductionLikeEnv ? '' : 'immunicare_dev');
+const user = getPrimaryDbUser() || parsedConnectionUser || (isProductionLikeEnv ? '' : 'postgres');
 
-const maxPoolSize = parseInteger(process.env.DB_POOL_MAX, runtimeEnv === 'production' ? 30 : 20);
-const minPoolSize = parseInteger(process.env.DB_POOL_MIN, runtimeEnv === 'production' ? 2 : 0);
+const maxPoolSize = parseInteger(process.env.DB_POOL_MAX, isProductionLikeEnv ? 30 : 20);
+const minPoolSize = parseInteger(process.env.DB_POOL_MIN, isProductionLikeEnv ? 2 : 0);
 const idleTimeoutMillis = parseInteger(process.env.DB_IDLE_TIMEOUT, 60000);
 const connectionTimeoutMillis = parseInteger(process.env.DB_CONNECTION_TIMEOUT, 15000);
 const queryTimeoutMillis = parseInteger(process.env.DB_QUERY_TIMEOUT, 60000);
 const statementTimeoutMillis = parseInteger(process.env.DB_STATEMENT_TIMEOUT, 60000);
 const acquireTimeoutMillis = parseInteger(process.env.DB_ACQUIRE_TIMEOUT, 30000);
 
-if (runtimeEnv === 'production') {
+if (isProductionLikeEnv) {
   const invalidPoolBounds = minPoolSize < 0 || maxPoolSize <= 0 || minPoolSize > maxPoolSize;
   if (invalidPoolBounds) {
     throw new Error('Invalid DB pool configuration: ensure DB_POOL_MIN >= 0 and DB_POOL_MAX >= DB_POOL_MIN');
@@ -119,6 +153,7 @@ if (runtimeEnv === 'production') {
 
 // Pool configuration with production-ready settings
 const poolConfig = {
+  ...(connectionString ? { connectionString } : {}),
   host,
   port,
   database,

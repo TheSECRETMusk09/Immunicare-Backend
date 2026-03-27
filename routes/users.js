@@ -463,6 +463,25 @@ const toIntegerId = (value) => {
   return Number.isNaN(parsed) ? null : parsed;
 };
 
+const parseDateBoundary = (value, boundary = 'start') => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const parsedDate = new Date(value);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return undefined;
+  }
+
+  if (boundary === 'end') {
+    parsedDate.setHours(23, 59, 59, 999);
+  } else {
+    parsedDate.setHours(0, 0, 0, 0);
+  }
+
+  return parsedDate.toISOString();
+};
+
 const requireValidIdParam = (res, value, fieldName = 'id') => {
   const parsedId = toIntegerId(value);
   if (!parsedId || parsedId <= 0) {
@@ -915,51 +934,139 @@ router.get('/', requireSystemAdmin, async (req, res) => {
 router.get('/guardians', requirePermission('user:view'), async (req, res) => {
   const client = await pool.connect();
   try {
-    // Parse pagination parameters with safe defaults
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const requestedLimit = Math.max(1, parseInt(req.query.limit, 10) || 50);
+    const view = String(req.query.view || '').trim().toLowerCase();
+    const limit = view === 'lookup'
+      ? Math.min(20, requestedLimit)
+      : Math.min(100, requestedLimit);
     const offset = (page - 1) * limit;
+    const search = String(req.query.search || '').trim();
+    const createdFrom = parseDateBoundary(req.query.created_from, 'start');
+    const createdTo = parseDateBoundary(req.query.created_to, 'end');
 
-    // Query guardians with pagination
+    if (createdFrom === undefined || createdTo === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'created_from and created_to must be valid dates',
+        data: [],
+      });
+    }
+
+    const queryParams = [];
+    const filterClauses = [];
+    let paramIndex = 1;
+
+    if (search) {
+      filterClauses.push(`(
+        bg.username ILIKE $${paramIndex}
+        OR bg.name ILIKE $${paramIndex}
+        OR bg.email ILIKE $${paramIndex}
+        OR bg.phone ILIKE $${paramIndex}
+        OR bg.address ILIKE $${paramIndex}
+      )`);
+      queryParams.push(`%${search}%`);
+      paramIndex += 1;
+    }
+
+    if (createdFrom) {
+      filterClauses.push(`bg.created_at >= $${paramIndex}`);
+      queryParams.push(createdFrom);
+      paramIndex += 1;
+    }
+
+    if (createdTo) {
+      filterClauses.push(`bg.created_at <= $${paramIndex}`);
+      queryParams.push(createdTo);
+      paramIndex += 1;
+    }
+
+    const whereClause = filterClauses.length > 0 ? `WHERE ${filterClauses.join(' AND ')}` : '';
+    queryParams.push(limit, offset);
+
+    const selectColumns = view === 'lookup'
+      ? `
+          bg.id,
+          bg.username,
+          bg.name,
+          bg.phone,
+          COUNT(*) OVER()::int AS filtered_total
+        `
+      : `
+          bg.id,
+          bg.username,
+          bg.name,
+          bg.phone,
+          bg.email,
+          bg.address,
+          bg.relationship,
+          bg.is_password_set,
+          bg.must_change_password,
+          bg.last_login,
+          bg.is_active,
+          bg.created_at,
+          bg.updated_at,
+          COALESCE(gic.infant_count, 0)::int AS infant_count,
+          COUNT(*) OVER()::int AS filtered_total
+        `;
+
+    const joinClause = view === 'lookup'
+      ? ''
+      : 'LEFT JOIN guardian_infant_counts gic ON gic.guardian_id = bg.id';
+
     const result = await client.query(
       `
-        SELECT
-          g.id,
-          COALESCE(linked_user.username, '') as username,
-          g.name, g.phone, g.email, g.address, g.relationship,
-          g.is_password_set, g.must_change_password, g.last_login,
-          g.is_active, g.created_at, g.updated_at,
-          COALESCE(
-            (
-              SELECT COUNT(*)
-              FROM patients i
-              WHERE i.guardian_id = g.id
-                AND i.is_active = true
-            ),
-            0
-          )::int as infant_count
-        FROM guardians g
-        LEFT JOIN LATERAL (
-          SELECT u.username
+        WITH latest_linked_users AS (
+          SELECT DISTINCT ON (u.guardian_id)
+            u.guardian_id,
+            u.username
           FROM users u
-          WHERE u.guardian_id = g.id
-          ORDER BY u.id DESC
-          LIMIT 1
-        ) linked_user ON true
-        ORDER BY g.created_at DESC
-        LIMIT $1 OFFSET $2
+          WHERE u.guardian_id IS NOT NULL
+          ORDER BY u.guardian_id, u.id DESC
+        ),
+        base_guardians AS (
+          SELECT
+            g.id,
+            COALESCE(llu.username, '') AS username,
+            g.name,
+            g.phone,
+            g.email,
+            g.address,
+            g.relationship,
+            g.is_password_set,
+            g.must_change_password,
+            g.last_login,
+            g.is_active,
+            g.created_at,
+            g.updated_at
+          FROM guardians g
+          LEFT JOIN latest_linked_users llu ON llu.guardian_id = g.id
+        ),
+        guardian_infant_counts AS (
+          SELECT
+            p.guardian_id,
+            COUNT(*)::int AS infant_count
+          FROM patients p
+          WHERE p.is_active = true
+          GROUP BY p.guardian_id
+        )
+        SELECT
+          ${selectColumns}
+        FROM base_guardians bg
+        ${joinClause}
+        ${whereClause}
+        ORDER BY bg.created_at DESC
+        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
       `,
-      [limit, offset],
+      queryParams,
     );
 
-    // Get total count for pagination metadata
-    const countResult = await client.query('SELECT COUNT(*)::int as total FROM guardians');
-    const total = parseInt(countResult.rows[0].total, 10);
+    const total = result.rows[0]?.filtered_total || 0;
     const totalPages = Math.ceil(total / limit);
 
     res.json({
       success: true,
-      data: result.rows,
+      data: result.rows.map(({ filtered_total, ...row }) => row),
       meta: {
         pagination: {
           page,
@@ -1253,7 +1360,6 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
 router.get('/system-users', requirePermission('user:view'), async (req, res) => {
   const client = await pool.connect();
   try {
-    // Parse pagination parameters with safe defaults
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const offset = (page - 1) * limit;
@@ -1261,14 +1367,43 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
       .split(',')
       .map((role) => role.trim().toLowerCase())
       .filter(Boolean);
-
+    const includeGuardians = String(req.query.include_guardians || '').trim().toLowerCase() === 'true';
+    const search = String(req.query.search || '').trim();
     const clinicId = req.query.clinic_id || req.query.facility_id;
     const isActive = req.query.is_active;
+    const createdFrom = parseDateBoundary(req.query.created_from, 'start');
+    const createdTo = parseDateBoundary(req.query.created_to, 'end');
 
-    // Query system users with pagination
+    if (createdFrom === undefined || createdTo === undefined) {
+      return respondSystemUserError(res, {
+        statusCode: 400,
+        error: 'created_from and created_to must be valid dates',
+        code: 'SYSTEM_USERS_INVALID_DATE_FILTER',
+      });
+    }
+
+    const sortableColumns = {
+      created_at: 'u.created_at',
+      username: 'u.username',
+      role_name: 'r.name',
+      clinic_name: 'c.name',
+      contact: 'u.contact',
+      is_active: 'u.is_active',
+    };
+    const requestedSortField = String(req.query.sort_field || 'created_at').trim().toLowerCase();
+    const sortColumn = sortableColumns[requestedSortField] || sortableColumns.created_at;
+    const sortDirection = String(req.query.sort_direction || 'desc').trim().toLowerCase() === 'asc'
+      ? 'ASC'
+      : 'DESC';
+
     const queryParams = [];
     let paramIndex = 1;
     const filterClauses = [];
+
+    if (!includeGuardians) {
+      filterClauses.push(`COALESCE(u.guardian_id, 0) = 0`);
+      filterClauses.push(`lower(r.name) <> 'guardian'`);
+    }
 
     if (requestedRoles.length > 0) {
       filterClauses.push(`lower(r.name) = ANY($${paramIndex}::text[])`);
@@ -1288,6 +1423,30 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
       paramIndex += 1;
     }
 
+    if (search) {
+      filterClauses.push(`(
+        u.username ILIKE $${paramIndex}
+        OR COALESCE(u.contact, '') ILIKE $${paramIndex}
+        OR COALESCE(r.name, '') ILIKE $${paramIndex}
+        OR COALESCE(r.display_name, '') ILIKE $${paramIndex}
+        OR COALESCE(c.name, '') ILIKE $${paramIndex}
+      )`);
+      queryParams.push(`%${search}%`);
+      paramIndex += 1;
+    }
+
+    if (createdFrom) {
+      filterClauses.push(`u.created_at >= $${paramIndex}`);
+      queryParams.push(createdFrom);
+      paramIndex += 1;
+    }
+
+    if (createdTo) {
+      filterClauses.push(`u.created_at <= $${paramIndex}`);
+      queryParams.push(createdTo);
+      paramIndex += 1;
+    }
+
     const whereClause = filterClauses.length > 0 ? `WHERE ${filterClauses.join(' AND ')}` : '';
     queryParams.push(limit, offset);
 
@@ -1295,33 +1454,24 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
       `
         SELECT u.id, u.username, u.contact, u.last_login, u.created_at, u.updated_at, u.is_active,
                u.guardian_id,
-               u.role_id, r.name as role_name, r.display_name, u.clinic_id, c.name as clinic_name
+               u.role_id, r.name as role_name, r.display_name, u.clinic_id, c.name as clinic_name,
+               COUNT(*) OVER()::int as filtered_total
         FROM users u
         JOIN roles r ON u.role_id = r.id
         LEFT JOIN clinics c ON u.clinic_id = c.id
         ${whereClause}
-        ORDER BY u.created_at DESC
+        ORDER BY ${sortColumn} ${sortDirection}, u.created_at DESC, u.id DESC
         LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
       `,
       queryParams,
     );
 
-    // Get total count
-    const countResult = await client.query(
-      `
-        SELECT COUNT(*)::int as total
-        FROM users u
-        JOIN roles r ON u.role_id = r.id
-        ${whereClause}
-      `,
-      queryParams.slice(0, paramIndex - 1),
-    );
-    const total = parseInt(countResult.rows[0].total, 10);
+    const total = parseInt(result.rows[0]?.filtered_total || 0, 10);
     const totalPages = Math.ceil(total / limit);
 
     return res.json({
       success: true,
-      data: result.rows.map(buildSystemUserResponse),
+      data: result.rows.map(({ filtered_total, ...row }) => buildSystemUserResponse(row)),
       meta: {
         count: result.rows.length,
         pagination: {

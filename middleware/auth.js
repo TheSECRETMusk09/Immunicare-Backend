@@ -8,6 +8,10 @@ const {
 } = require('./rbac');
 const refreshTokenService = require('../services/refreshTokenService');
 const logger = require('../config/logger');
+const {
+  getBaseAuthCookieOptions,
+  getRefreshTokenCookieOptions,
+} = require('../utils/authCookies');
 
 const getCanonicalUser = (user) => {
   const runtimeRole = normalizeRole(user?.runtime_role || user?.role_type || user?.role);
@@ -86,12 +90,12 @@ const authenticateToken = (req, res, next) => {
           });
         }
         if (err.name === 'JsonWebTokenError') {
-          return res.status(403).json({
+          return res.status(401).json({
             error: 'Invalid token format',
             code: 'INVALID_TOKEN',
           });
         }
-        return res.status(403).json({
+        return res.status(401).json({
           error: 'Token verification failed',
           code: 'TOKEN_ERROR',
         });
@@ -99,7 +103,7 @@ const authenticateToken = (req, res, next) => {
 
       // Validate user payload
       if (!user || !user.id || !user.role) {
-        return res.status(403).json({
+        return res.status(401).json({
           error: 'Invalid token payload',
           code: 'INVALID_PAYLOAD',
         });
@@ -107,7 +111,7 @@ const authenticateToken = (req, res, next) => {
 
       const canonicalUser = getCanonicalUser(user);
       if (!canonicalUser) {
-        return res.status(403).json({
+        return res.status(401).json({
           error: 'Unsupported role in token payload',
           code: 'UNSUPPORTED_ROLE',
         });
@@ -235,12 +239,7 @@ const handleTokenRefresh = async (req, res, next) => {
     );
 
     // Set new refresh token in HTTP-only cookie
-    res.cookie('refreshToken', tokenData.refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
+    res.cookie('refreshToken', tokenData.refreshToken, getRefreshTokenCookieOptions());
 
     // Return new access token in Authorization header
     res.setHeader('Authorization', `Bearer ${tokenData.accessToken}`);
@@ -255,7 +254,7 @@ const handleTokenRefresh = async (req, res, next) => {
     logger.error('Token refresh failed:', error.message);
 
     // Clear invalid refresh token cookie
-    res.clearCookie('refreshToken');
+    res.clearCookie('refreshToken', getBaseAuthCookieOptions());
 
     return res.status(401).json({
       error: 'Invalid or expired refresh token',

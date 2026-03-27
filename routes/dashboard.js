@@ -10,6 +10,7 @@ const {
 const {
   getAdminInfantVaccinationMonitoring,
 } = require('../services/adminVaccinationMonitoringService');
+const { getDashboardMetrics } = require('../services/adminMetricsService');
 
 const noCache = (res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -175,26 +176,29 @@ router.get('/health', async (_req, res) => {
 router.get('/stats', authenticateToken, requirePermission('dashboard:analytics'), async (req, res, next) => {
   try {
     noCache(res);
+    const canonicalRole = getCanonicalRole(req);
+    const scopeIds = [...new Set(
+      [req.user?.clinic_id, req.user?.facility_id]
+        .map((value) => Number.parseInt(value, 10))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    )];
+    const requestedScope = String(req.query.scope || '').trim().toLowerCase();
+    const allowSystemScope =
+      canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
+    const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
 
-    const query = `
-      SELECT
-        (SELECT COUNT(*) FROM patients WHERE is_active = true) as infants,
-        (SELECT COUNT(*) FROM immunization_records WHERE is_active = true) as vaccinations,
-        (SELECT COUNT(*) FROM appointments WHERE is_active = true) as appointments,
-        (SELECT COUNT(*) FROM users WHERE is_active = true) as users,
-        (SELECT COUNT(*) FROM vaccines WHERE is_active = true) as vaccines,
-        (SELECT COUNT(*) FROM guardians WHERE is_active = true) as guardians
-    `;
+    const stats = await getDashboardMetrics({
+      facilityId: useClinicScope ? scopeIds[0] : null,
+      scopeIds: useClinicScope ? scopeIds : [],
+    });
 
-    const { rows } = await db.query(query);
-    const stats = {
-      infants: parseInt(rows[0].infants, 10),
-      vaccinations: parseInt(rows[0].vaccinations, 10),
-      appointments: parseInt(rows[0].appointments, 10),
-      users: parseInt(rows[0].users, 10),
-      vaccines: parseInt(rows[0].vaccines, 10),
-      guardians: parseInt(rows[0].guardians, 10),
-    };
+    const vaccinesResult = await db.query(
+      'SELECT COUNT(*)::int AS total FROM vaccines WHERE COALESCE(is_active, true) = true',
+    );
+
+    stats.vaccines = Number.parseInt(vaccinesResult.rows[0]?.total, 10) || 0;
+    stats.scope = useClinicScope ? 'clinic' : 'system';
+    stats.clinicId = useClinicScope ? scopeIds[0] : null;
 
     res.json(stats);
   } catch (error) {

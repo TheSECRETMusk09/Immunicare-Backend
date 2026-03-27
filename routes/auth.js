@@ -23,6 +23,11 @@ const {
   getAccessTokenFromRequest,
   getRefreshTokenFromRequest,
 } = require('../middleware/auth');
+const {
+  getBaseAuthCookieOptions,
+  getAccessTokenCookieOptions,
+  getRefreshTokenCookieOptions,
+} = require('../utils/authCookies');
 
 const router = express.Router();
 
@@ -1176,20 +1181,12 @@ router.post(
       }
 
       // Set cookies
-      const cookieOptions = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-        maxAge: 15 * 60 * 1000,
-        path: '/',
-      };
+      const accessCookieOptions = getAccessTokenCookieOptions();
+      const refreshCookieOptions = getRefreshTokenCookieOptions();
 
-      res.cookie('token', accessToken, cookieOptions);
+      res.cookie('token', accessToken, accessCookieOptions);
 
-      res.cookie('refreshToken', refreshToken, {
-        ...cookieOptions,
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      res.cookie('refreshToken', refreshToken, refreshCookieOptions);
 
       res.json({
         message: 'Login successful',
@@ -1884,12 +1881,7 @@ router.post('/change-password', async (req, res) => {
       // Suppress email errors in development mode (SMTP not configured)
     }
 
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-      path: '/',
-    };
+    const cookieOptions = getBaseAuthCookieOptions();
 
     res.clearCookie('token', cookieOptions);
     res.clearCookie('refreshToken', cookieOptions);
@@ -1939,12 +1931,7 @@ router.post('/logout', async (req, res) => {
     }
 
     // Clear cookies
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-      path: '/',
-    };
+    const cookieOptions = getBaseAuthCookieOptions();
 
     res.clearCookie('token', cookieOptions);
 
@@ -2023,20 +2010,12 @@ router.post('/refresh', async (req, res) => {
     }
 
     // Set new cookies
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-      maxAge: 15 * 60 * 1000,
-      path: '/',
-    };
+    const accessCookieOptions = getAccessTokenCookieOptions();
+    const refreshCookieOptions = getRefreshTokenCookieOptions();
 
-    res.cookie('token', refreshResult.accessToken, cookieOptions);
+    res.cookie('token', refreshResult.accessToken, accessCookieOptions);
 
-    res.cookie('refreshToken', refreshResult.refreshToken, {
-      ...cookieOptions,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie('refreshToken', refreshResult.refreshToken, refreshCookieOptions);
 
     res.json({
       message: 'Token refreshed',
@@ -2048,12 +2027,7 @@ router.post('/refresh', async (req, res) => {
     });
   } catch (error) {
     console.error('Refresh error:', error);
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-      path: '/',
-    };
+    const cookieOptions = getBaseAuthCookieOptions();
     res.clearCookie('token', cookieOptions);
     res.clearCookie('refreshToken', cookieOptions);
 

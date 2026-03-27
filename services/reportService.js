@@ -5,6 +5,7 @@ const PDFDocument = require('pdfkit');
 
 const pool = require('../db');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
+const { getAdminMetricsSummary } = require('./adminMetricsService');
 
 const REPORT_TYPES = Object.freeze([
   'vaccination',
@@ -478,6 +479,203 @@ class ReportService {
 
   async ensureReportDirectory() {
     await fs.mkdir(this.reportDir, { recursive: true });
+  }
+
+  getReportFileCandidates(storedPath = '') {
+    const sanitizedPath = this.sanitizeFilterText(storedPath, 500);
+    if (!sanitizedPath) {
+      return [];
+    }
+
+    const normalizedPath = sanitizedPath.replace(/\\/g, '/');
+    const isLegacyVirtualPath =
+      normalizedPath.startsWith('/reports/') ||
+      normalizedPath.startsWith('reports/') ||
+      normalizedPath.startsWith('/uploads/reports/') ||
+      normalizedPath.startsWith('uploads/reports/');
+
+    const candidates = [];
+
+    if (!isLegacyVirtualPath && path.isAbsolute(sanitizedPath)) {
+      candidates.push(sanitizedPath);
+    }
+
+    const reportRelativePath = normalizedPath
+      .replace(/^\/?uploads\/reports\//i, '')
+      .replace(/^\/?reports\//i, '');
+
+    if (reportRelativePath) {
+      candidates.push(path.join(this.reportDir, reportRelativePath));
+    }
+
+    if (!path.isAbsolute(sanitizedPath)) {
+      const trimmedRelativePath = sanitizedPath.replace(/^[\\/]+/, '');
+      if (trimmedRelativePath) {
+        candidates.push(path.join(this.reportDir, trimmedRelativePath));
+      }
+    }
+
+    const fileName = path.basename(normalizedPath);
+    if (fileName) {
+      candidates.push(path.join(this.reportDir, fileName));
+    }
+
+    return Array.from(new Set(candidates.filter(Boolean)));
+  }
+
+  async resolveExistingReportFile(storedPath = '') {
+    const candidates = this.getReportFileCandidates(storedPath);
+
+    for (const candidate of candidates) {
+      try {
+        const fileStats = await fs.stat(candidate);
+        if (fileStats.isFile()) {
+          return {
+            path: candidate,
+            fileStats,
+          };
+        }
+      } catch {
+        // Try the next candidate path.
+      }
+    }
+
+    return null;
+  }
+
+  expandLegacyMonthFilter(rawMonth = '') {
+    const normalizedMonth = this.sanitizeFilterText(rawMonth, 16);
+    if (!/^\d{4}-\d{2}$/.test(normalizedMonth)) {
+      return {};
+    }
+
+    const [yearValue, monthValue] = normalizedMonth.split('-').map((part) => Number(part));
+    if (!Number.isInteger(yearValue) || !Number.isInteger(monthValue) || monthValue < 1 || monthValue > 12) {
+      return {};
+    }
+
+    const startDate = new Date(Date.UTC(yearValue, monthValue - 1, 1));
+    const endDate = new Date(Date.UTC(yearValue, monthValue, 0));
+
+    return {
+      startDate: startDate.toISOString().slice(0, 10),
+      endDate: endDate.toISOString().slice(0, 10),
+    };
+  }
+
+  normalizeStoredReportParameters(reportType, rawParameters = {}, reportMetadata = {}) {
+    let parsedParameters = rawParameters;
+    if (typeof rawParameters === 'string') {
+      try {
+        parsedParameters = JSON.parse(rawParameters);
+      } catch {
+        parsedParameters = {};
+      }
+    }
+
+    const source =
+      parsedParameters &&
+      typeof parsedParameters === 'object' &&
+      !Array.isArray(parsedParameters)
+        ? { ...parsedParameters }
+        : {};
+
+    const monthRange = this.expandLegacyMonthFilter(source.month);
+    const normalizedSource = {
+      ...source,
+      ...monthRange,
+      vaccineType: source.vaccineType || source.vaccine || source.category || '',
+      healthCenter: source.healthCenter || source.health_center || source.clinic || '',
+      type: source.type || source.appointmentType || '',
+      itemType: source.itemType || source.item_type || '',
+      lowStockOnly: source.lowStockOnly ?? source.low_stock_only ?? false,
+      userId: reportMetadata.generated_by || source.userId || null,
+    };
+
+    return this.normalizeReportFilters(reportType, normalizedSource);
+  }
+
+  async persistRecoveredReportFile(reportId, absolutePath, fileFormat, fileSize) {
+    const updates = [
+      'file_path = $2',
+      'file_format = $3',
+      'status = $4',
+    ];
+    const values = [reportId, absolutePath, fileFormat, 'completed'];
+    let placeholderIndex = 5;
+
+    if (await this.hasColumn('reports', 'file_size')) {
+      updates.push(`file_size = $${placeholderIndex}`);
+      values.push(this.toInteger(fileSize, 0));
+      placeholderIndex += 1;
+    }
+
+    if (await this.hasColumn('reports', 'updated_at')) {
+      updates.push('updated_at = NOW()');
+    }
+
+    await this.pool.query(
+      `UPDATE reports SET ${updates.join(', ')} WHERE id = $1`,
+      values,
+    );
+  }
+
+  async regenerateStoredReportFile(report = {}) {
+    const reportType = this.normalizeReportType(report.type);
+    const fileFormat = this.normalizeReportFormat(report.file_format) || 'pdf';
+
+    if (!reportType) {
+      throw this.createHttpError(
+        'Report file is missing and the report type is invalid for regeneration.',
+        404,
+        'REPORT_REGENERATION_TYPE_INVALID',
+      );
+    }
+
+    const normalizedFilters = this.normalizeStoredReportParameters(
+      reportType,
+      report.parameters,
+      report,
+    );
+
+    const reportData = await this.getReportData(reportType, normalizedFilters);
+    if (!this.hasRenderableData(reportData)) {
+      throw this.createHttpError(
+        'Report file not found on disk and there is no data available to regenerate it.',
+        404,
+        'REPORT_REGENERATION_EMPTY',
+      );
+    }
+
+    await this.ensureReportDirectory();
+
+    const recoveredFilename =
+      path.basename(this.sanitizeFilterText(report.file_path, 500) || '') ||
+      this.buildFilename(
+        reportType,
+        fileFormat,
+        report.date_generated ? new Date(report.date_generated) : new Date(),
+      );
+    const recoveredPath = path.join(this.reportDir, recoveredFilename);
+    const buffer = await this.buildReportBuffer(reportData, fileFormat);
+
+    if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
+      throw this.createHttpError(
+        'Report file not found on disk and regeneration produced no file content.',
+        500,
+        'REPORT_REGENERATION_FAILED',
+      );
+    }
+
+    await fs.writeFile(recoveredPath, buffer);
+    await this.persistRecoveredReportFile(report.id, recoveredPath, fileFormat, buffer.length);
+
+    return {
+      path: recoveredPath,
+      filename: path.basename(recoveredPath),
+      mimeType: this.getMimeType(fileFormat),
+      fileSize: buffer.length,
+    };
   }
 
   async hasColumn(tableName, columnName) {
@@ -2190,7 +2388,16 @@ class ReportService {
 
     const result = await this.pool.query(
       `
-          SELECT id, type, title, file_path, file_format, status
+          SELECT
+            id,
+            type,
+            title,
+            file_path,
+            file_format,
+            status,
+            parameters,
+            generated_by,
+            date_generated
           FROM reports
           WHERE id = $1
           LIMIT 1
@@ -2220,34 +2427,29 @@ class ReportService {
       );
     }
 
-    const absolutePath = path.isAbsolute(storedPath)
-      ? storedPath
-      : path.join(this.reportDir, storedPath);
+    const resolvedFile = await this.resolveExistingReportFile(storedPath);
+    if (resolvedFile) {
+      const fileFormat = this.normalizeReportFormat(report.file_format) || 'pdf';
+      const fallbackFilename = this.buildFilename(report.type || 'report', fileFormat, new Date());
+      const filename = path.basename(resolvedFile.path) || fallbackFilename;
 
-    let fileStats;
-    try {
-      fileStats = await fs.stat(absolutePath);
-    } catch (_error) {
-      throw this.createHttpError('Report file not found on disk.', 404, 'REPORT_FILE_NOT_FOUND');
+      return {
+        path: resolvedFile.path,
+        filename,
+        mimeType: this.getMimeType(fileFormat),
+        fileSize: resolvedFile.fileStats.size,
+      };
     }
 
-    if (!fileStats.isFile()) {
-      throw this.createHttpError('Report file is invalid.', 404, 'REPORT_FILE_INVALID');
-    }
-
-    const fileFormat = this.normalizeReportFormat(report.file_format) || 'pdf';
-    const fallbackFilename = this.buildFilename(report.type || 'report', fileFormat, new Date());
-    const filename = path.basename(absolutePath) || fallbackFilename;
-
-    return {
-      path: absolutePath,
-      filename,
-      mimeType: this.getMimeType(fileFormat),
-      fileSize: fileStats.size,
-    };
+    return this.regenerateStoredReportFile(report);
   }
 
-  async getAdminSummary({ startDate = '', endDate = '' } = {}) {
+  async getAdminSummary({
+    startDate = '',
+    endDate = '',
+    facilityId = null,
+    scopeIds = [],
+  } = {}) {
     const normalizedStartDate = startDate
       ? this.normalizeDateInput(startDate, 'Start date')
       : '';
@@ -2263,188 +2465,12 @@ class ReportService {
       );
     }
 
-    const patientsTable = this.ensureResolvedSchemaValue(
-      await this.getPatientsTableName(),
-      'Unable to resolve patients table for report summary queries.',
-    );
-    const appointmentsDateColumn = this.ensureResolvedSchemaValue(
-      await this.getAppointmentsDateColumn(),
-      'Unable to resolve appointment date column for report summary queries.',
-    );
-    const statusExpression = await this.getStatusExpressionForImmunizationRecords('ir');
-
-    const vaccinationParams = [];
-    let vaccinationIndex = 1;
-    let vaccinationDateCondition = '';
-    if (normalizedStartDate) {
-      vaccinationDateCondition += ` AND ir.admin_date::date >= $${vaccinationIndex}`;
-      vaccinationParams.push(normalizedStartDate);
-      vaccinationIndex += 1;
-    }
-    if (normalizedEndDate) {
-      vaccinationDateCondition += ` AND ir.admin_date::date <= $${vaccinationIndex}`;
-      vaccinationParams.push(normalizedEndDate);
-      vaccinationIndex += 1;
-    }
-
-    const vaccinationSummaryQuery = `
-        SELECT
-          COUNT(*)::int AS total,
-          COUNT(CASE WHEN LOWER(${statusExpression}) = 'completed' THEN 1 END)::int AS completed,
-          COUNT(CASE WHEN LOWER(${statusExpression}) = 'pending' THEN 1 END)::int AS pending,
-          COUNT(CASE WHEN LOWER(${statusExpression}) = 'cancelled' THEN 1 END)::int AS cancelled
-        FROM immunization_records ir
-        WHERE COALESCE(ir.is_active, true) = true
-        ${vaccinationDateCondition}
-      `;
-
-    const inventorySummaryQuery = `
-        SELECT
-          COUNT(*)::int AS total_items,
-          COUNT(
-            CASE
-              WHEN (
-                COALESCE(beginning_balance, 0)
-                + COALESCE(received_during_period, 0)
-                + COALESCE(transferred_in, 0)
-                - COALESCE(transferred_out, 0)
-                - COALESCE(expired_wasted, 0)
-                - COALESCE(issuance, 0)
-              ) <= COALESCE(low_stock_threshold, 10)
-              THEN 1
-            END
-          )::int AS low_stock_items,
-          (
-            SELECT COUNT(*)::int
-            FROM vaccine_batches vb
-            WHERE vb.expiry_date < CURRENT_DATE
-              AND COALESCE(vb.is_active, true) = true
-          ) AS expired_items,
-          0::numeric AS total_value
-        FROM vaccine_inventory
-      `;
-
-    const appointmentParams = [];
-    let appointmentIndex = 1;
-    let appointmentDateCondition = '';
-    if (normalizedStartDate) {
-      appointmentDateCondition += ` AND a.${appointmentsDateColumn}::date >= $${appointmentIndex}`;
-      appointmentParams.push(normalizedStartDate);
-      appointmentIndex += 1;
-    }
-    if (normalizedEndDate) {
-      appointmentDateCondition += ` AND a.${appointmentsDateColumn}::date <= $${appointmentIndex}`;
-      appointmentParams.push(normalizedEndDate);
-      appointmentIndex += 1;
-    }
-
-    const appointmentSummaryQuery = `
-        SELECT
-          COUNT(*)::int AS total,
-          COUNT(CASE WHEN LOWER(COALESCE(a.status::text, '')) = 'scheduled' THEN 1 END)::int AS scheduled,
-          COUNT(CASE WHEN LOWER(COALESCE(a.status::text, '')) = 'attended' THEN 1 END)::int AS completed,
-          COUNT(CASE WHEN LOWER(COALESCE(a.status::text, '')) = 'cancelled' THEN 1 END)::int AS cancelled,
-          COUNT(
-            CASE WHEN LOWER(COALESCE(a.status::text, '')) IN ('no_show', 'no-show') THEN 1 END
-          )::int AS no_show
-        FROM appointments a
-        WHERE COALESCE(a.is_active, true) = true
-        ${appointmentDateCondition}
-      `;
-
-    const guardiansDateCondition = [];
-    const guardiansParams = [];
-    let guardiansIndex = 1;
-    if (normalizedStartDate) {
-      guardiansDateCondition.push(`g.created_at::date >= $${guardiansIndex}`);
-      guardiansParams.push(normalizedStartDate);
-      guardiansIndex += 1;
-    }
-    if (normalizedEndDate) {
-      guardiansDateCondition.push(`g.created_at::date <= $${guardiansIndex}`);
-      guardiansParams.push(normalizedEndDate);
-      guardiansIndex += 1;
-    }
-
-    const hasGuardianIsActive = await this.hasColumn('guardians', 'is_active');
-    const guardianActiveExpression = hasGuardianIsActive ? 'COALESCE(g.is_active, true)' : 'true';
-
-    const guardianSummaryQuery = `
-        SELECT
-          COUNT(*)::int AS total,
-          COUNT(CASE WHEN ${guardianActiveExpression} THEN 1 END)::int AS active,
-          COUNT(CASE WHEN g.created_at >= NOW() - INTERVAL '30 days' THEN 1 END)::int AS new_last_30_days
-        FROM guardians g
-        ${
-  guardiansDateCondition.length > 0
-    ? `WHERE ${guardiansDateCondition.join(' AND ')}`
-    : ''
-}
-      `;
-
-    const infantDateConditions = [];
-    const infantParams = [];
-    let infantIndex = 1;
-    if (normalizedStartDate) {
-      infantDateConditions.push(`p.created_at::date >= $${infantIndex}`);
-      infantParams.push(normalizedStartDate);
-      infantIndex += 1;
-    }
-    if (normalizedEndDate) {
-      infantDateConditions.push(`p.created_at::date <= $${infantIndex}`);
-      infantParams.push(normalizedEndDate);
-      infantIndex += 1;
-    }
-
-    const hasPatientIsActive = await this.hasColumn(patientsTable, 'is_active');
-    const patientActiveExpression = hasPatientIsActive ? 'COALESCE(p.is_active, true)' : 'true';
-    const childStatusExpression = await this.getStatusExpressionForImmunizationRecords('irx');
-
-    const infantSummaryQuery = `
-        SELECT
-          COUNT(*)::int AS total,
-          COUNT(CASE WHEN ${patientActiveExpression} THEN 1 END)::int AS active,
-          COUNT(
-            CASE
-              WHEN EXISTS (
-                SELECT 1
-                FROM immunization_records irx
-                WHERE irx.patient_id = p.id
-                  AND COALESCE(irx.is_active, true) = true
-                  AND LOWER(${childStatusExpression}) = 'completed'
-              ) THEN 1
-            END
-          )::int AS up_to_date,
-          COUNT(
-            CASE
-              WHEN EXISTS (
-                SELECT 1
-                FROM immunization_records irx
-                WHERE irx.patient_id = p.id
-                  AND COALESCE(irx.is_active, true) = true
-              )
-              AND NOT EXISTS (
-                SELECT 1
-                FROM immunization_records irx
-                WHERE irx.patient_id = p.id
-                  AND COALESCE(irx.is_active, true) = true
-                  AND LOWER(${childStatusExpression}) = 'completed'
-              ) THEN 1
-            END
-          )::int AS partially_vaccinated,
-          COUNT(
-            CASE
-              WHEN NOT EXISTS (
-                SELECT 1
-                FROM immunization_records irx
-                WHERE irx.patient_id = p.id
-                  AND COALESCE(irx.is_active, true) = true
-              ) THEN 1
-            END
-          )::int AS not_vaccinated
-        FROM ${patientsTable} p
-        ${infantDateConditions.length > 0 ? `WHERE ${infantDateConditions.join(' AND ')}` : ''}
-      `;
+    const coreSummary = await getAdminMetricsSummary({
+      startDate: normalizedStartDate,
+      endDate: normalizedEndDate,
+      facilityId,
+      scopeIds,
+    });
 
     const reportActivityQuery = `
         SELECT
@@ -2476,12 +2502,7 @@ class ReportService {
         `
       : null;
 
-    const [vaccination, inventory, appointments, guardians, infants, reports, transfers] = await Promise.all([
-      this.pool.query(vaccinationSummaryQuery, vaccinationParams),
-      this.pool.query(inventorySummaryQuery),
-      this.pool.query(appointmentSummaryQuery, appointmentParams),
-      this.pool.query(guardianSummaryQuery, guardiansParams),
-      this.pool.query(infantSummaryQuery, infantParams),
+    const [reports, transfers] = await Promise.all([
       this.pool.query(reportActivityQuery),
       transferSummaryQuery
         ? this.pool.query(transferSummaryQuery)
@@ -2497,26 +2518,11 @@ class ReportService {
     ]);
 
     return {
-      vaccination: vaccination.rows[0] || { total: 0, completed: 0, pending: 0, cancelled: 0 },
-      inventory:
-          inventory.rows[0] || { total_items: 0, low_stock_items: 0, expired_items: 0, total_value: 0 },
-      appointments:
-          appointments.rows[0] || {
-            total: 0,
-            scheduled: 0,
-            completed: 0,
-            cancelled: 0,
-            no_show: 0,
-          },
-      guardians: guardians.rows[0] || { total: 0, active: 0, new_last_30_days: 0 },
-      infants:
-          infants.rows[0] || {
-            total: 0,
-            active: 0,
-            up_to_date: 0,
-            partially_vaccinated: 0,
-            not_vaccinated: 0,
-          },
+      vaccination: coreSummary.vaccination,
+      inventory: coreSummary.inventory,
+      appointments: coreSummary.appointments,
+      guardians: coreSummary.guardians,
+      infants: coreSummary.infants,
       reports:
           reports.rows[0] || {
             total_reports: 0,

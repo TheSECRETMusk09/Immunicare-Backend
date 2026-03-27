@@ -564,9 +564,10 @@ exports.getVaccineInventoryStats = async (req, res) => {
         [clinic_id],
       ),
       pool.query(
-        `SELECT COUNT(*) as count FROM vaccine_inventory_transactions vit
-                  JOIN vaccine_inventory vi ON vit.vaccine_inventory_id = vi.id
-                  WHERE vi.clinic_id = $1 AND vit.created_at >= CURRENT_DATE - INTERVAL '30 days'`,
+        `SELECT COUNT(*) as count
+           FROM vaccine_inventory_transactions vit
+          WHERE vit.clinic_id = $1
+            AND vit.created_at >= CURRENT_DATE - INTERVAL '30 days'`,
         [clinic_id],
       ),
     ]);

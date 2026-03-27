@@ -159,5 +159,19 @@
     "type": "sql",
     "deprecated": false,
     "description": "Create transfer_in_cases table for managing vaccine transfers from other health centers"
+  },
+  {
+    "id": "production_readiness_hardening_20260326",
+    "file": "20260326_production_readiness_hardening.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Production hardening for refresh token schema, announcement delivery ledger, and inventory analytics index"
+  },
+  {
+    "id": "user_settings_schema_20260326",
+    "file": "20260326_user_settings_schema.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Create user settings tables, audit trigger, default settings bootstrap, and summary view"
   }
 ]

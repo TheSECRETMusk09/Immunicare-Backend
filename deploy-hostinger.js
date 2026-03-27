@@ -47,8 +47,27 @@ function checkPrerequisites() {
 
   // Check if database credentials are set
   const envContent = fs.readFileSync(envPath, 'utf8');
+  const databaseUrlMatch = envContent.match(/^DATABASE_URL=(.*)$/m);
+  const databaseUrlValue = databaseUrlMatch ? databaseUrlMatch[1].trim() : '';
+  const hasDatabaseUrl =
+    databaseUrlValue.length > 0 &&
+    !databaseUrlValue.startsWith('your_') &&
+    databaseUrlValue !== 'postgres://username:password@host:5432/database';
+
+  const readEnvValue = (name) => {
+    const match = envContent.match(new RegExp(`^${name}=(.*)$`, 'm'));
+    return match ? match[1].trim() : '';
+  };
+
   const requiredVars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
-  const missingVars = requiredVars.filter(v => !envContent.includes(`${v}=`) || envContent.includes(`${v}=your_`));
+  const missingVars = hasDatabaseUrl
+    ? []
+    : requiredVars.filter(
+      (v) => {
+        const value = readEnvValue(v);
+        return !value || value.startsWith('your_');
+      },
+    );
 
   if (missingVars.length > 0) {
     log.warn(`Missing or placeholder database configuration for: ${missingVars.join(', ')}`);
@@ -82,7 +101,7 @@ function runMigrations() {
     process.env.NODE_ENV = 'hostinger';
 
     // Run migrations
-    execSync('node run-migrations-production.js', {
+    execSync('npm run migrate:hostinger', {
       cwd: __dirname,
       stdio: 'inherit',
       env: { ...process.env, NODE_ENV: 'hostinger' },
@@ -141,7 +160,7 @@ ${GREEN}Option 1: Git Deployment (Recommended)${RESET}
    - Hostinger will automatically deploy on push
    - Build command: npm install --production
    - Application root: /backend
-   - Application start: node server.js
+   - Application start: node start.js hostinger
 
 ${GREEN}Option 2: File Upload via FTP${RESET}
 ----------------------------------
@@ -150,6 +169,7 @@ ${GREEN}Option 2: File Upload via FTP${RESET}
 3. Connect via SSH and run:
    cd backend
    npm install --production
+   npm run migrate:hostinger
    node quick_admin_setup.js
 
 ${GREEN}Required Environment Variables in Hostinger${RESET}
@@ -158,11 +178,25 @@ Set these in Hostinger hPanel > Node.js > Environment Variables:
 
 NODE_ENV=hostinger
 PORT=5000
+SERVE_FRONTEND=false
+
+Use either:
+
+DATABASE_URL=postgres://user:password@host:5432/database
+
+or the discrete variables:
+
 DB_HOST=your_postgres_host
 DB_PORT=5432
 DB_NAME=your_database_name
 DB_USER=your_database_user
 DB_PASSWORD=your_database_password
+
+If your provider requires TLS client certificates, set:
+DB_SSL=true
+DB_SSL_CA=<base64 encoded PEM>
+DB_SSL_CERT=<base64 encoded PEM>
+DB_SSL_KEY=<base64 encoded PEM>
 
 ${GREEN}Database Setup in Hostinger${RESET}
 --------------------------------

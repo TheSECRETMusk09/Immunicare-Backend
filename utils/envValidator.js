@@ -6,14 +6,8 @@
 
 const crypto = require('crypto');
 
-const requiredEnvVars = [
-  'DB_HOST',
-  'DB_NAME',
-  'DB_USER',
-  'DB_PASSWORD',
-  'JWT_SECRET',
-  'JWT_REFRESH_SECRET',
-];
+const requiredEnvVars = ['JWT_SECRET', 'JWT_REFRESH_SECRET'];
+const requiredDbEnvVars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
 
 const recommendedEnvVars = ['DB_PORT', 'PORT', 'FRONTEND_URL', 'NODE_ENV'];
 
@@ -43,6 +37,8 @@ const hasNonEmptyEnv = (name) => {
 
   return String(process.env[name] || '').trim().length > 0;
 };
+
+const hasDatabaseUrl = () => hasNonEmptyEnv('DATABASE_URL');
 
 const WEAK_SECRET_PATTERNS = [
   /^your[-_]?secret[-_]?key$/i,
@@ -204,11 +200,29 @@ function validateEnv(exitOnFailure = true) {
   const warnings = [];
   const info = [];
   const runtimeEnv = process.env.NODE_ENV || 'development';
+  const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
 
   // Check required environment variables
   for (const varName of requiredEnvVars) {
     if (!process.env[varName]) {
       missing.push(varName);
+    }
+  }
+
+  if (hasDatabaseUrl()) {
+    try {
+      const parsed = new URL(process.env.DATABASE_URL);
+      if (!parsed.protocol || !parsed.hostname) {
+        missing.push('DATABASE_URL');
+      }
+    } catch {
+      missing.push('DATABASE_URL');
+    }
+  } else {
+    for (const varName of requiredDbEnvVars) {
+      if (!process.env[varName]) {
+        missing.push(varName);
+      }
     }
   }
 
@@ -223,7 +237,7 @@ function validateEnv(exitOnFailure = true) {
   if (process.env.JWT_SECRET) {
     const jwtSecret = process.env.JWT_SECRET;
     if (!hasSufficientSecretEntropy(jwtSecret) || isWeakSecret(jwtSecret)) {
-      if (runtimeEnv === 'production') {
+      if (isProductionLikeEnv) {
         missing.push('JWT_SECRET');
       } else {
         warnings.push('JWT_SECRET is weak. Use a high-entropy secret (>=32 chars)');
@@ -235,7 +249,7 @@ function validateEnv(exitOnFailure = true) {
   if (process.env.JWT_REFRESH_SECRET) {
     const refreshSecret = process.env.JWT_REFRESH_SECRET;
     if (!hasSufficientSecretEntropy(refreshSecret) || isWeakSecret(refreshSecret)) {
-      if (runtimeEnv === 'production') {
+      if (isProductionLikeEnv) {
         missing.push('JWT_REFRESH_SECRET');
       } else {
         warnings.push('JWT_REFRESH_SECRET is weak. Use a high-entropy secret (>=32 chars)');
@@ -243,7 +257,7 @@ function validateEnv(exitOnFailure = true) {
     }
 
     if (process.env.JWT_SECRET && refreshSecret === process.env.JWT_SECRET) {
-      if (runtimeEnv === 'production') {
+      if (isProductionLikeEnv) {
         missing.push('JWT_REFRESH_SECRET');
       } else {
         warnings.push('JWT_REFRESH_SECRET should be different from JWT_SECRET');
@@ -255,7 +269,7 @@ function validateEnv(exitOnFailure = true) {
   if (process.env.SESSION_SECRET) {
     const sessionSecret = process.env.SESSION_SECRET;
     if (!hasSufficientSecretEntropy(sessionSecret) || isWeakSecret(sessionSecret)) {
-      if (runtimeEnv === 'production') {
+      if (isProductionLikeEnv) {
         missing.push('SESSION_SECRET');
       } else {
         warnings.push('SESSION_SECRET is weak. Use a high-entropy secret (>=32 chars)');
@@ -265,7 +279,7 @@ function validateEnv(exitOnFailure = true) {
 
   // Validate rate limit configuration
   const authRateLimitMax = parseInteger(process.env.AUTH_RATE_LIMIT_MAX, 0);
-  if (authRateLimitMax > 0 && authRateLimitMax < 5 && runtimeEnv === 'production') {
+  if (authRateLimitMax > 0 && authRateLimitMax < 5 && isProductionLikeEnv) {
     warnings.push('AUTH_RATE_LIMIT_MAX is very low (<5) for production. Consider increasing to prevent legitimate users from being rate-limited.');
   }
   if (authRateLimitMax > 1000) {
@@ -274,7 +288,7 @@ function validateEnv(exitOnFailure = true) {
 
   const dbPassword = process.env.DB_PASSWORD;
   if (dbPassword && isLikelyWeakDbPassword(dbPassword)) {
-    if (runtimeEnv === 'production') {
+    if (isProductionLikeEnv) {
       missing.push('DB_PASSWORD');
     } else {
       warnings.push('DB_PASSWORD appears weak for production-grade deployments.');
@@ -297,7 +311,7 @@ function validateEnv(exitOnFailure = true) {
     warnings.push('DB_CONNECTION_TIMEOUT is outside recommended bounds (1000-60000 ms).');
   }
 
-  if (runtimeEnv === 'production') {
+  if (isProductionLikeEnv) {
     const dbSslEnabled = parseBoolean(process.env.DB_SSL, false);
     if (!dbSslEnabled) {
       warnings.push('DB_SSL is disabled in production. Enable TLS for database connections.');
@@ -305,7 +319,7 @@ function validateEnv(exitOnFailure = true) {
   }
 
   // Check for production-specific concerns
-  if (runtimeEnv === 'production') {
+  if (isProductionLikeEnv) {
     productionRequiredPresenceEnvVars.forEach((varName) => {
       if (!hasNonEmptyEnv(varName)) {
         missing.push(varName);
@@ -390,7 +404,7 @@ function getRequiredEnv(name) {
  * @returns {boolean}
  */
 function isProduction() {
-  return process.env.NODE_ENV === 'production';
+  return process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'hostinger';
 }
 
 /**

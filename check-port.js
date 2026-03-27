@@ -1,6 +1,6 @@
 /**
  * Pre-start port availability check
- * Run this before starting the server to ensure port is available
+ * Run this before starting the server to ensure port is available.
  *
  * Usage:
  *   node check-port.js
@@ -11,6 +11,8 @@ const net = require('net');
 
 const PORT = parseInt(process.env.PORT, 10) || 5000;
 const HOST = '0.0.0.0';
+const runtimeEnv = process.env.IMMUNICARE_RUNTIME_ENV || process.env.NODE_ENV || 'development';
+const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
 
 /**
  * Check if a specific port is available
@@ -47,7 +49,7 @@ function checkPort(port) {
  * @returns {Promise<number|null>} - Available port or null
  */
 async function findAvailablePort(basePort, maxAttempts = 10) {
-  for (let i = 0; i < maxAttempts; i++) {
+  for (let i = 0; i < maxAttempts; i += 1) {
     const port = basePort + i;
     const available = await checkPort(port).catch(() => false);
     if (available) {
@@ -68,29 +70,36 @@ async function main() {
     const isAvailable = await checkPort(PORT);
 
     if (isAvailable) {
-      console.log(`\n✅ Port ${PORT} is available!\n`);
+      console.log(`\nPort ${PORT} is available.\n`);
       process.exit(0);
-    } else {
-      console.log(`\n⚠️  Port ${PORT} is already in use`);
-
-      // Try to find an alternative port
-      console.log('\nSearching for an available port...');
-      const availablePort = await findAvailablePort(PORT + 1, 10);
-
-      if (availablePort) {
-        console.log(`\n✅ Found available port: ${availablePort}`);
-        console.log(`   Set PORT=${availablePort} in backend/.env to use this port\n`);
-        process.exit(0);
-      } else {
-        console.error('\n❌ ERROR: Could not find an available port');
-        console.error(`   Ports ${PORT} to ${PORT + 10} are all in use`);
-        console.error('\nTo resolve:');
-        console.error('   Windows CMD: netstat -ano | findstr :5000');
-        console.error('   Then: taskkill /PID <PID> /F');
-        console.error('   Or: taskkill /IM node.exe /F\n');
-        process.exit(1);
-      }
     }
+
+    console.log(`\nPort ${PORT} is already in use.`);
+
+    if (isProductionLikeEnv) {
+      console.error(
+        '\nRefusing to auto-select a different port in production-like environments.',
+      );
+      console.error('Free the configured port or update PORT explicitly before starting.\n');
+      process.exit(1);
+    }
+
+    console.log('\nSearching for an available port...');
+    const availablePort = await findAvailablePort(PORT + 1, 10);
+
+    if (availablePort) {
+      console.log(`\nFound available port: ${availablePort}`);
+      console.log(`   Set PORT=${availablePort} in backend/.env to use this port\n`);
+      process.exit(0);
+    }
+
+    console.error('\nERROR: Could not find an available port');
+    console.error(`   Ports ${PORT} to ${PORT + 10} are all in use`);
+    console.error('\nTo resolve:');
+    console.error('   Windows CMD: netstat -ano | findstr :5000');
+    console.error('   Then: taskkill /PID <PID> /F');
+    console.error('   Or: taskkill /IM node.exe /F\n');
+    process.exit(1);
   } catch (err) {
     console.error(`Error checking port: ${err.message}`);
     process.exit(1);

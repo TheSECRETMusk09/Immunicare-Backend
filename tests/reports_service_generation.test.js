@@ -102,7 +102,7 @@ describe('ReportService generation + download contract', () => {
         };
       }
 
-      if (/SELECT\s+id,\s*type,\s*title,\s*file_path,\s*file_format,\s*status\s+FROM\s+reports/i.test(queryText)) {
+      if (/SELECT[\s\S]+file_path[\s\S]+file_format[\s\S]+status[\s\S]+FROM\s+reports/i.test(queryText)) {
         const currentReportFiles = await fs.readdir(tempReportDir);
         const generatedName =
           currentReportFiles.find((name) =>
@@ -118,6 +118,9 @@ describe('ReportService generation + download contract', () => {
               file_path: path.join(tempReportDir, generatedName),
               file_format: 'csv',
               status: 'completed',
+              parameters: {},
+              generated_by: 1,
+              date_generated: '2026-03-08T00:00:00.000Z',
             },
           ],
         };
@@ -164,7 +167,7 @@ describe('ReportService generation + download contract', () => {
     });
 
     await expect(
-      service.generateReport('vaccination', { vaccineType: 'unlikely' }, 'csv', 1),
+      service.generateReport('vaccination', {}, 'csv', 1),
     ).rejects.toMatchObject({
       statusCode: 400,
       code: 'REPORT_EMPTY_DATASET',
@@ -188,30 +191,48 @@ describe('ReportService generation + download contract', () => {
     expect(fileContent).toContain('Test Child');
   });
 
-  it('downloadReport fails when physical file is missing', async () => {
+  it('downloadReport regenerates a completed report when the legacy file is missing', async () => {
     dbMock.query.mockImplementation(async (queryText) => {
-      if (/SELECT\s+id,\s*type,\s*title,\s*file_path,\s*file_format,\s*status\s+FROM\s+reports/i.test(queryText)) {
+      if (/SELECT[\s\S]+file_path[\s\S]+file_format[\s\S]+status[\s\S]+FROM\s+reports/i.test(queryText)) {
         return {
           rows: [
             {
               id: 99,
               type: 'vaccination',
               title: 'Vaccination Report',
-              file_path: path.join(tempReportDir, 'missing-report.csv'),
+              file_path: '/reports/missing-report.csv',
               file_format: 'csv',
               status: 'completed',
+              parameters: { month: '2026-03' },
+              generated_by: 1,
+              date_generated: '2026-03-08T00:00:00.000Z',
             },
           ],
         };
       }
 
+      if (/UPDATE\s+reports\s+SET/i.test(queryText)) {
+        return { rows: [] };
+      }
+
       return { rows: [] };
     });
 
-    await expect(service.downloadReport(99)).rejects.toMatchObject({
-      statusCode: 404,
-      code: 'REPORT_FILE_NOT_FOUND',
+    jest.spyOn(service, 'getReportData').mockResolvedValue({
+      reportTitle: 'Vaccination Report',
+      columns: ['Child Name'],
+      rows: [{ child_name: 'Test Child' }],
     });
+    jest.spyOn(service, 'buildReportBuffer').mockResolvedValue(Buffer.from('report'));
+
+    const downloadMeta = await service.downloadReport(99);
+
+    expect(downloadMeta).toBeDefined();
+    expect(downloadMeta.path).toContain(path.join('uploads', 'reports-test', 'missing-report.csv'));
+    expect(downloadMeta.filename).toBe('missing-report.csv');
+    expect(downloadMeta.mimeType).toBe('text/csv');
+    expect(downloadMeta.fileSize).toBe(6);
+    await expect(fs.access(downloadMeta.path)).resolves.toBeUndefined();
   });
 
   it('downloadReport returns stream metadata for existing file', async () => {

@@ -2,10 +2,10 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "server.js",
+  "main": "start.js",
   "scripts": {
     "prestart": "node check-port.js",
-    "start": "node server.js",
+    "start": "node start.js",
     "build": "",
     "start:prod": "node start.js production",
     "start:hostinger": "node start.js hostinger",
@@ -18,8 +18,8 @@
     "test:watch": "jest --watch",
     "test:coverage": "set NODE_ENV=test && jest --coverage",
     "migrate": "node run_migrations_manifest.js",
-    "migrate:prod": "node run-migrations-production.js",
-    "migrate:hostinger": "NODE_ENV=hostinger node run-migrations-production.js",
+    "migrate:prod": "node run_migrations_manifest.js production",
+    "migrate:hostinger": "node run_migrations_manifest.js hostinger",
     "lint": "eslint . --ext .js",
     "lint:fix": "eslint . --ext .js --fix",
     "lint:lineendings": "node fix_line_endings.js",
@@ -29,7 +29,8 @@
     "deploy:hostinger:full": "node deploy-hostinger.js --full-deploy",
     "deploy:vps": "node deploy-vps.js",
     "deploy:vps:full": "node deploy-vps.js --full-deploy",
-    "cleanup:synthetic": "node cleanup_synthetic_data.js"
+    "cleanup:synthetic": "node cleanup_synthetic_data.js",
+    "seed:defense-demo": "node reseed_defense_demo_dataset.js"
   },
   "keywords": [],
   "author": "",

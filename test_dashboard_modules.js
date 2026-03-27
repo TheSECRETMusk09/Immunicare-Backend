@@ -232,7 +232,7 @@ async function runTests() {
     console.error('✗ Server is not running or not accessible!');
     console.error(`Error: ${err.message}`);
     console.log('\nPlease start the backend server first:');
-    console.log('  cd backend && node server.js\n');
+    console.log('  cd backend && npm run start:prod\n');
     process.exit(1);
   }
 

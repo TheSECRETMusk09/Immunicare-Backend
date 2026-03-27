@@ -77,6 +77,7 @@ server.on('clientError', (err, socket) => {
 const PORT = process.env.PORT || 5000;
 const HTTPS_PORT = process.env.HTTPS_PORT || 5443;
 const ENABLE_HTTPS = process.env.ENABLE_HTTPS === 'true';
+const SERVE_FRONTEND = String(process.env.SERVE_FRONTEND || '').trim().toLowerCase() === 'true';
 const runtimeStateDir = path.join(__dirname, '.runtime');
 const runtimePortStateFile = path.join(runtimeStateDir, 'active-port.json');
 
@@ -195,6 +196,10 @@ const productionOrigins =
 const allowedOrigins = isProductionLikeEnv
   ? Array.from(new Set(productionOrigins))
   : Array.from(new Set([...productionOrigins, ...defaultDevOrigins]));
+
+if (isProductionLikeEnv) {
+  app.set('trust proxy', 1);
+}
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -381,6 +386,46 @@ app.use(
 const cookieParser = require('cookie-parser');
 app.use(cookieParser());
 
+const unsafeCookieAuthMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+const resolveRequestOrigin = (req) => {
+  const originHeader = normalizeOrigin(req.get('Origin'));
+  if (originHeader) {
+    return originHeader;
+  }
+
+  return normalizeOrigin(req.get('Referer'));
+};
+
+// Lightweight same-origin protection for cookie-authenticated writes.
+// Bearer-token API clients continue to work normally; browser cookie sessions
+// must originate from an allowed application origin in production-like envs.
+app.use('/api', (req, res, next) => {
+  if (!isProductionLikeEnv) {
+    return next();
+  }
+
+  if (!unsafeCookieAuthMethods.has(String(req.method || '').toUpperCase())) {
+    return next();
+  }
+
+  const hasCookieAuth = Boolean(req.cookies?.token || req.cookies?.refreshToken);
+  if (!hasCookieAuth) {
+    return next();
+  }
+
+  const requestOrigin = resolveRequestOrigin(req);
+  if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    error: 'Cross-site cookie-authenticated requests are not allowed',
+    code: 'CSRF_ORIGIN_MISMATCH',
+  });
+});
+
 // Global input sanitization middleware - prevents XSS and injection attacks
 console.log('Loading input sanitization middleware...');
 const { createSanitizationMiddleware, preventPrototypePollution } = require('./middleware/sanitization');
@@ -527,12 +572,33 @@ app.get('/api/ws-health', (req, res) => {
 // Global error handler - using centralized error handling middleware
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
-// Serve frontend
-if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'hostinger') {
-  app.use(express.static(path.join(__dirname, '../frontend/build')));
+// Serve frontend only when backend/frontend are intentionally co-hosted.
+const frontendBuildPath = path.join(__dirname, '../frontend/build');
+const frontendIndexPath = path.join(frontendBuildPath, 'index.html');
+const shouldServeFrontend = SERVE_FRONTEND && fs.existsSync(frontendIndexPath);
 
-  app.get('*', (req, res) => {
-    res.sendFile(path.resolve(__dirname, '../frontend/build', 'index.html'));
+if (SERVE_FRONTEND && !shouldServeFrontend) {
+  console.warn(
+    'SERVE_FRONTEND=true but frontend/build/index.html was not found. Skipping frontend static hosting.',
+  );
+}
+
+if (shouldServeFrontend) {
+  app.use(express.static(frontendBuildPath));
+
+  app.get('*', (req, res, next) => {
+    if (
+      req.path.startsWith('/api') ||
+      req.path.startsWith('/socket.io') ||
+      req.path.startsWith('/api-docs') ||
+      req.path === '/metrics' ||
+      req.path === '/health' ||
+      req.path === '/favicon.ico'
+    ) {
+      return next();
+    }
+
+    return res.sendFile(frontendIndexPath);
   });
 }
 
@@ -660,7 +726,7 @@ async function startServer() {
           }
         }
 
-        if (process.env.NODE_ENV === 'production') {
+        if (isProductionLikeEnv) {
           logger.error('CRITICAL: Database connection is required for production. Exiting.');
           process.exit(1);
         } else {
@@ -669,7 +735,7 @@ async function startServer() {
       }
     } catch (dbError) {
       logger.error('Database connection failed:', dbError.message);
-      if (process.env.NODE_ENV === 'production') {
+      if (isProductionLikeEnv) {
         logger.error('CRITICAL: Database connection is required for production. Exiting.');
         process.exit(1);
       } else {
@@ -682,6 +748,13 @@ async function startServer() {
     const portAvailable = await isPortAvailable(BASE_PORT);
     if (!portAvailable) {
       console.warn(`Port ${BASE_PORT} is already in use`);
+
+      if (isProductionLikeEnv) {
+        console.error(
+          `Configured production port ${BASE_PORT} is unavailable. Refusing to auto-switch ports behind a reverse proxy.`,
+        );
+        process.exit(1);
+      }
 
       // Try to find an available port
       const availablePort = await findAvailablePort(BASE_PORT + 1, MAX_PORT_ATTEMPTS);

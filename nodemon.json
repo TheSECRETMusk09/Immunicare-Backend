@@ -6,5 +6,5 @@
   "signal": "SIGTERM",
   "verbose": false,
   "exitcrash": false,
-  "exec": "node server.js"
+  "exec": "node start.js development"
 }

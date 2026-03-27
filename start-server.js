@@ -100,7 +100,7 @@ function startServer() {
   // Start the server
   log('Starting server...', 'info');
 
-  const server = spawn('node', ['server.js'], {
+  const server = spawn('node', ['start.js', 'development'], {
     cwd: __dirname,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, NODE_ENV: 'development' }

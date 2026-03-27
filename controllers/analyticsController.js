@@ -1,4 +1,13 @@
+const fs = require('fs');
 const analyticsService = require('../services/analyticsService');
+const ReportService = require('../services/reportService');
+
+const reportService = new ReportService();
+const ANALYTICS_EXPORT_TYPE_MAP = Object.freeze({
+  vaccinations: 'vaccination',
+  appointments: 'appointment',
+  infants: 'infant',
+});
 
 const handleError = (res, error, fallbackContext = 'Analytics request failed') => {
   const statusCode = Number.isFinite(error?.statusCode) ? error.statusCode : 500;
@@ -114,6 +123,49 @@ const filters = async (_req, res) => {
   }
 };
 
+const exportAnalytics = async (req, res) => {
+  try {
+    const requestedType = String(req.query.type || '').trim().toLowerCase();
+    const mappedType = ANALYTICS_EXPORT_TYPE_MAP[requestedType];
+
+    if (!mappedType) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid analytics export type.',
+        details: ['type must be one of: vaccinations, appointments, infants'],
+      });
+    }
+
+    const requestedFormat = String(req.query.format || 'csv').trim().toLowerCase();
+    const normalizedFormat = requestedFormat === 'xlsx' ? 'excel' : requestedFormat;
+
+    if (!['csv', 'pdf', 'excel'].includes(normalizedFormat)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid analytics export format.',
+        details: ['format must be one of: csv, pdf, excel, xlsx'],
+      });
+    }
+
+    const { type, format, ...rawFilters } = req.query || {};
+    const generatedReport = await reportService.generateReport(
+      mappedType,
+      rawFilters,
+      normalizedFormat,
+      req.user?.id || null,
+    );
+    const downloadResult = await reportService.downloadReport(generatedReport.id);
+
+    res.setHeader('Content-Type', downloadResult.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${downloadResult.filename}"`);
+    res.setHeader('Content-Length', String(downloadResult.fileSize));
+
+    return fs.createReadStream(downloadResult.path).pipe(res);
+  } catch (error) {
+    return handleError(res, error, 'Analytics export request failed');
+  }
+};
+
 const health = (_req, res) => {
   return res.json({
     success: true,
@@ -141,4 +193,5 @@ module.exports = {
   trends,
   demographics,
   filters,
+  exportAnalytics,
 };

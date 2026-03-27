@@ -74,6 +74,35 @@ describe('Users Module API Integration Tests', () => {
 
       expect(response.status).toBe(401);
     });
+
+    test('should support guardian lookup mode with filtered pagination metadata', async () => {
+      const response = await request(app)
+        .get('/api/users/guardians?view=lookup&search=Maria&limit=20')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.meta.pagination.limit).toBeLessThanOrEqual(20);
+
+      if (response.body.data.length > 0) {
+        expect(response.body.data[0]).toEqual(
+          expect.objectContaining({
+            id: expect.any(Number),
+            name: expect.any(String),
+          }),
+        );
+        expect(response.body.data[0]).not.toHaveProperty('infant_count');
+      }
+    });
+
+    test('should reject invalid guardian date filters', async () => {
+      const response = await request(app)
+        .get('/api/users/guardians?created_from=not-a-date')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
   });
 
   describe('POST /api/users/guardians', () => {
@@ -187,6 +216,17 @@ describe('Users Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${guardianToken}`);
 
       expect(response.status).toBe(403);
+    });
+
+    test('should accept search and sort filters for admin directories', async () => {
+      const response = await request(app)
+        .get('/api/users/system-users?search=admin&sort_field=username&sort_direction=asc')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.meta.pagination).toBeDefined();
+      expect(Array.isArray(response.body.data)).toBe(true);
     });
   });
 

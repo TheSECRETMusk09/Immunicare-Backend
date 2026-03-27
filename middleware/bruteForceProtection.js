@@ -15,12 +15,14 @@ const lockedAccounts = new Map();
 const parsedMaxAttempts = Number.parseInt(process.env.BRUTE_FORCE_MAX_ATTEMPTS || '', 10);
 const parsedLockoutDuration = Number.parseInt(process.env.BRUTE_FORCE_LOCKOUT_DURATION || '', 10);
 
+const isDev = process.env.NODE_ENV !== 'production';
+
 const MAX_ATTEMPTS = Number.isFinite(parsedMaxAttempts) && parsedMaxAttempts > 0
   ? parsedMaxAttempts
-  : 3;
+  : (isDev ? 100 : 3);
 const LOCKOUT_DURATION = Number.isFinite(parsedLockoutDuration) && parsedLockoutDuration > 0
   ? parsedLockoutDuration
-  : 15 * 60 * 1000;
+  : (isDev ? 10 * 1000 : 15 * 60 * 1000); // 10 sec in dev, 15 min in prod
 
 const PROGRESSIVE_DELAY = false;
 const DELAY_INCREMENT = 1000;
@@ -240,6 +242,21 @@ const bruteForceProtection = (options = {}) => {
   } = options;
 
   return (req, res, next) => {
+    // Bypass brute force protection entirely during local development
+    if (process.env.NODE_ENV !== 'production') {
+      return next();
+    }
+
+    // Bypass brute force protection entirely for guardian users
+    const isGuardianLogin =
+      req.body?.role === 'guardian' ||
+      req.body?.userType === 'guardian' ||
+      (typeof req.body?.username === 'string' && /^\+?\d{10,15}$/.test(req.body.username.replace(/[-_()\s]/g, '')));
+
+    if (isGuardianLogin) {
+      return next();
+    }
+
     // Determine identifier
     let identifier;
     switch (keyType) {

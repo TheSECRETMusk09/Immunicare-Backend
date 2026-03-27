@@ -81,4 +81,12 @@ router.get(
   analyticsController.demographics,
 );
 
+router.get(
+  '/export',
+  authenticateToken,
+  requirePermission('dashboard:analytics'),
+  requireHealthCenterAccess(),
+  analyticsController.exportAnalytics,
+);
+
 module.exports = router;
