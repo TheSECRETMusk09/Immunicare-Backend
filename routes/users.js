@@ -1307,22 +1307,71 @@ router.get('/guardians/:id/password', requirePermission('admin:override'), async
 
 // Reset guardian password (Admin only)
 router.put('/guardians/:id/password', requirePermission('admin:override'), async (req, res) => {
+  const client = await pool.connect();
+  let transactionCompleted = false;
+
   try {
-    const { id } = req.params;
+    const guardianId = requireValidIdParam(res, req.params?.id, 'id');
+    if (!guardianId) {
+      return;
+    }
+
     const { password, isPasswordSet, mustChangePassword } = req.body;
 
     if (!password || password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 6 characters long',
+        code: 'INVALID_PASSWORD',
+        field: 'password',
+      });
+    }
+
+    await client.query('BEGIN');
+
+    const existingGuardianResult = await client.query(
+      `SELECT id, name, email
+       FROM guardians
+       WHERE id = $1
+       FOR UPDATE`,
+      [guardianId],
+    );
+
+    if (existingGuardianResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      transactionCompleted = true;
+      return res.status(404).json({
+        success: false,
+        error: 'Guardian not found',
+        code: 'GUARDIAN_NOT_FOUND',
+      });
+    }
+
+    const existingGuardian = existingGuardianResult.rows[0];
+    const linkedGuardianUser = await ensureGuardianUserAccount(client, existingGuardian);
+    const linkedUserId = parseInt(linkedGuardianUser?.id, 10);
+
+    if (!linkedUserId || linkedUserId <= 0) {
+      await client.query('ROLLBACK');
+      transactionCompleted = true;
+      return res.status(500).json({
+        success: false,
+        error: 'Guardian password reset failed because no linked guardian account could be resolved',
+        code: 'GUARDIAN_LINKED_USER_NOT_FOUND',
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const passwordVisibilityPayload = encryptPasswordForVisibility(password);
+    const normalizedIsPasswordSet = isPasswordSet !== undefined ? Boolean(isPasswordSet) : true;
+    const normalizedMustChangePassword =
+      mustChangePassword !== undefined ? Boolean(mustChangePassword) : false;
 
-    const result = await pool.query(
+    const guardianUpdateResult = await client.query(
       `UPDATE guardians
        SET password_hash = $1,
-           is_password_set = COALESCE($2, true),
-           must_change_password = COALESCE($3, false),
+           is_password_set = $2,
+           must_change_password = $3,
            password_visibility_payload = $4,
            password_visibility_updated_at = CURRENT_TIMESTAMP,
            password_visibility_updated_by = $5,
@@ -1331,25 +1380,74 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
        RETURNING id, name, email, is_password_set, must_change_password, password_visibility_updated_at`,
       [
         hashedPassword,
-        isPasswordSet !== undefined ? isPasswordSet : true,
-        mustChangePassword,
+        normalizedIsPasswordSet,
+        normalizedMustChangePassword,
         passwordVisibilityPayload,
         req.user?.id || null,
-        id,
+        guardianId,
       ],
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Guardian not found' });
+    await client.query(
+      `UPDATE users
+       SET password_hash = $1,
+           force_password_change = $2,
+           password_changed_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3`,
+      [hashedPassword, normalizedMustChangePassword, linkedUserId],
+    );
+
+    await client.query('COMMIT');
+    transactionCompleted = true;
+
+    const updatedUser = await ensureSystemUserExists(linkedUserId);
+    const normalizedUser = updatedUser ? buildSystemUserResponse(updatedUser) : null;
+
+    await logSystemUserSecurityEvent({
+      req,
+      eventType: securityEventService.EVENT_TYPES.PASSWORD_CHANGED,
+      severity: securityEventService.SEVERITY.CRITICAL,
+      targetUserId: linkedUserId,
+      details: {
+        action: 'guardian_password_reset',
+        guardian_id: guardianId,
+        target_username: linkedGuardianUser?.username || updatedUser?.username || null,
+        source_context: getRequestSourceContext(req),
+      },
+    });
+
+    socketService.broadcast('guardian_updated', guardianUpdateResult.rows[0]);
+    if (normalizedUser) {
+      socketService.broadcast('system_user_updated', normalizedUser);
     }
 
-    socketService.broadcast('guardian_updated', result.rows[0]);
-    res.json({
+    return res.json({
+      success: true,
       message: 'Guardian password reset successfully',
-      guardian: result.rows[0],
+      code: 'GUARDIAN_PASSWORD_RESET',
+      guardian: guardianUpdateResult.rows[0],
+      user: normalizedUser,
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (!transactionCompleted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Rollback error while resetting guardian password:', rollbackError);
+      }
+    }
+
+    console.error('Error resetting guardian password:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to reset guardian password',
+      code: 'GUARDIAN_PASSWORD_RESET_FAILED',
+      details: process.env.NODE_ENV === 'development' ? { message: error.message } : undefined,
+    });
+  } finally {
+    client.release();
   }
 });
 

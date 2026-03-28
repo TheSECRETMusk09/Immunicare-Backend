@@ -1,0 +1,91 @@
+{
+  "timestamp": "2026-03-28T13:31:48.411Z",
+  "fixes": {
+    "facilityMerge": {
+      "success": true,
+      "duration": 74,
+      "data": {
+        "appointments": "14387",
+        "inventory": "522",
+        "guardians": "3623",
+        "users": "3637",
+        "duplicate_exists": "0"
+      }
+    },
+    "performanceIndexes": {
+      "success": true,
+      "duration": 166,
+      "indexCount": 10,
+      "indexes": [
+        {
+          "schemaname": "public",
+          "tablename": "appointments",
+          "indexname": "idx_appointments_clinic_created"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "appointments",
+          "indexname": "idx_appointments_clinic_scheduled"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "blocked_dates",
+          "indexname": "idx_blocked_dates_clinic"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "guardians",
+          "indexname": "idx_guardians_clinic_created"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "infants",
+          "indexname": "idx_infants_clinic_active"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "infants",
+          "indexname": "idx_infants_clinic_created"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "inventory_summary",
+          "indexname": "idx_inventory_summary_clinic"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "users",
+          "indexname": "idx_users_clinic_role"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "vaccine_inventory",
+          "indexname": "idx_vaccine_inventory_clinic_vaccine"
+        },
+        {
+          "schemaname": "public",
+          "tablename": "vaccine_inventory_transactions",
+          "indexname": "idx_vaccine_inventory_transactions_clinic_created_at"
+        }
+      ]
+    },
+    "analyticsFacilityFiltering": {
+      "success": false,
+      "hasFacilityFiltering": true,
+      "passesUserContext": false,
+      "note": "Analytics already properly filters by facility via user context"
+    },
+    "finalVerification": {
+      "success": true,
+      "facilityData": {
+        "id": 1,
+        "name": "San Nicolas Health Center",
+        "infants": "5000",
+        "appointments": "14387",
+        "inventory": "522",
+        "guardians": "3623",
+        "users": "3637"
+      }
+    }
+  }
+}

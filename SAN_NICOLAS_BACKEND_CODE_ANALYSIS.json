@@ -1,0 +1,2841 @@
+{
+  "timestamp": "2026-03-28T13:24:19.224Z",
+  "healthCenter": "San Nicolas Health Center (ID: 1)",
+  "location": "Pasig City",
+  "codeAnalysis": {
+    "routes": {
+      "admin.js": {
+        "routes": 0,
+        "routeDetails": [],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 7318
+      },
+      "analytics.js": {
+        "routes": 1,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 2053
+      },
+      "announcements.js": {
+        "routes": 17,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/delivery/summary"
+          },
+          {
+            "method": "GET",
+            "path": "/stats/overview"
+          },
+          {
+            "method": "GET",
+            "path": "/search/:query"
+          },
+          {
+            "method": "GET",
+            "path": "/active/:audience"
+          },
+          {
+            "method": "GET",
+            "path": "/priority/:priority"
+          },
+          {
+            "method": "PUT",
+            "path": "/bulk-update"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/my"
+          },
+          {
+            "method": "GET",
+            "path": "/:id/delivery-summary"
+          },
+          {
+            "method": "GET",
+            "path": "/:id/deliveries"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id/publish"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id/archive"
+          },
+          {
+            "method": "GET",
+            "path": "/:id"
+          },
+          {
+            "method": "POST",
+            "path": "/:id/acknowledge"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 44505
+      },
+      "api.js": {
+        "routes": 0,
+        "routeDetails": [],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 2290
+      },
+      "appointments.js": {
+        "routes": 24,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/availability/check"
+          },
+          {
+            "method": "POST",
+            "path": "/check-stock"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)/reschedule"
+          },
+          {
+            "method": "GET",
+            "path": "/availability/slots"
+          },
+          {
+            "method": "GET",
+            "path": "/availability/calendar"
+          },
+          {
+            "method": "GET",
+            "path": "/availability/date/:date"
+          },
+          {
+            "method": "GET",
+            "path": "/date/:date"
+          },
+          {
+            "method": "GET",
+            "path": "/upcoming"
+          },
+          {
+            "method": "GET",
+            "path": "/suggestions/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/stats/overview"
+          },
+          {
+            "method": "GET",
+            "path": "/types"
+          },
+          {
+            "method": "GET",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)/cancel"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)/complete"
+          },
+          {
+            "method": "PUT",
+            "path": "/bulk-update"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "GET",
+            "path": "/blocked-dates"
+          },
+          {
+            "method": "POST",
+            "path": "/blocked-dates/toggle"
+          },
+          {
+            "method": "POST",
+            "path": "/blocked-dates/set"
+          },
+          {
+            "method": "DELETE",
+            "path": "/blocked-dates/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/blocked-dates/check"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 65868
+      },
+      "auth.js": {
+        "routes": 15,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/register/guardian"
+          },
+          {
+            "method": "POST",
+            "path": "/verify-email"
+          },
+          {
+            "method": "POST",
+            "path": "/forgot-password"
+          },
+          {
+            "method": "POST",
+            "path": "/forgot-password/otp"
+          },
+          {
+            "method": "POST",
+            "path": "/forgot-password/verify-otp"
+          },
+          {
+            "method": "POST",
+            "path": "/forgot-password/reset-with-token"
+          },
+          {
+            "method": "POST",
+            "path": "/reset-password"
+          },
+          {
+            "method": "POST",
+            "path": "/change-password"
+          },
+          {
+            "method": "POST",
+            "path": "/logout"
+          },
+          {
+            "method": "POST",
+            "path": "/refresh"
+          },
+          {
+            "method": "GET",
+            "path": "/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/sessions"
+          },
+          {
+            "method": "DELETE",
+            "path": "/sessions/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/sessions"
+          },
+          {
+            "method": "GET",
+            "path": "/test"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 67313
+      },
+      "dashboard.js": {
+        "routes": 15,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/health"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/appointments"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId/appointments"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId/children"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId/vaccinations"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId/health-charts"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId/notifications"
+          },
+          {
+            "method": "GET",
+            "path": "/guardians"
+          },
+          {
+            "method": "GET",
+            "path": "/infants"
+          },
+          {
+            "method": "GET",
+            "path": "/activity"
+          },
+          {
+            "method": "GET",
+            "path": "/admin/vaccination-monitoring"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId/vaccinations/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId/growth/:infantId"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 31482
+      },
+      "documents.js": {
+        "routes": 13,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/history"
+          },
+          {
+            "method": "GET",
+            "path": "/status/:infantId"
+          },
+          {
+            "method": "POST",
+            "path": "/generate/:templateId"
+          },
+          {
+            "method": "GET",
+            "path": "/download/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/analytics"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/templates/:templateId/fields"
+          },
+          {
+            "method": "GET",
+            "path": "/shared/with-me"
+          },
+          {
+            "method": "GET",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "POST",
+            "path": "/:id(\\\\d+)/share"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 34904
+      },
+      "growth.js": {
+        "routes": 14,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/stats/overview"
+          },
+          {
+            "method": "GET",
+            "path": "/infant/:patientId"
+          },
+          {
+            "method": "GET",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "GET",
+            "path": "/infant/:patientId/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/infant/:patientId/chart"
+          },
+          {
+            "method": "GET",
+            "path": "/records"
+          },
+          {
+            "method": "POST",
+            "path": "/records"
+          },
+          {
+            "method": "GET",
+            "path": "/records/:id"
+          },
+          {
+            "method": "PUT",
+            "path": "/records/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/records/:id"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 29041
+      },
+      "guardianNotifications.js": {
+        "routes": 8,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/unread-count"
+          },
+          {
+            "method": "GET",
+            "path": "/:id"
+          },
+          {
+            "method": "PATCH",
+            "path": "/:id/read"
+          },
+          {
+            "method": "PATCH",
+            "path": "/:id/unread"
+          },
+          {
+            "method": "PATCH",
+            "path": "/read-all"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/stats/summary"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 9011
+      },
+      "incomingSms.js": {
+        "routes": 3,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/sms"
+          },
+          {
+            "method": "GET",
+            "path": "/sms/logs"
+          },
+          {
+            "method": "POST",
+            "path": "/sms/test"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 3504
+      },
+      "infant-ages.js": {
+        "routes": 6,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/update-all"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "POST",
+            "path": "/calculate"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 6259
+      },
+      "infantAllergies.js": {
+        "routes": 6,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/:infantId/vaccine-check/:vaccineId"
+          },
+          {
+            "method": "GET",
+            "path": "/:infantId"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 14019
+      },
+      "infantDocuments.js": {
+        "routes": 6,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/file/:documentId"
+          },
+          {
+            "method": "GET",
+            "path": "/info/:documentId"
+          },
+          {
+            "method": "PUT",
+            "path": "/:documentId"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:documentId"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 17966
+      },
+      "infants.js": {
+        "routes": 14,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/stats/overview"
+          },
+          {
+            "method": "GET",
+            "path": "/upcoming-vaccinations"
+          },
+          {
+            "method": "GET",
+            "path": "/control-number/:controlNumber"
+          },
+          {
+            "method": "GET",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "POST",
+            "path": "/guardian"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)/guardian"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id(\\\\d+)/guardian"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "GET",
+            "path": "/search/:query"
+          },
+          {
+            "method": "GET",
+            "path": "/age-range/:minAge/:maxAge"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 57302
+      },
+      "inventory.js": {
+        "routes": 35,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory/stats"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccine-inventory"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-inventory/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/vaccine-inventory/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory-transactions"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccine-inventory-transactions"
+          },
+          {
+            "method": "GET",
+            "path": "/items"
+          },
+          {
+            "method": "GET",
+            "path": "/items/type/:type"
+          },
+          {
+            "method": "POST",
+            "path": "/items"
+          },
+          {
+            "method": "PUT",
+            "path": "/items/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/items/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-batches"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccine-batches"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-batches/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/low-stock"
+          },
+          {
+            "method": "GET",
+            "path": "/expiring"
+          },
+          {
+            "method": "GET",
+            "path": "/suppliers"
+          },
+          {
+            "method": "POST",
+            "path": "/suppliers"
+          },
+          {
+            "method": "PUT",
+            "path": "/suppliers/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/suppliers/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/transactions"
+          },
+          {
+            "method": "POST",
+            "path": "/transactions"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccine-inventory"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-inventory/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory-transactions"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccine-inventory-transactions"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-stock-alerts"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-stock-alerts/acknowledge-all"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-stock-alerts/resolve-all"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-stock-alerts/:id/acknowledge"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-stock-alerts/:id/resolve"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory/stats"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 63118
+      },
+      "inventory_secure.js": {
+        "routes": 29,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/vaccine-inventory"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-inventory/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/vaccine-inventory/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/items"
+          },
+          {
+            "method": "GET",
+            "path": "/items/type/:type"
+          },
+          {
+            "method": "POST",
+            "path": "/items"
+          },
+          {
+            "method": "PUT",
+            "path": "/items/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/items/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-batches"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccine-batches"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-batches/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/low-stock"
+          },
+          {
+            "method": "GET",
+            "path": "/expiring"
+          },
+          {
+            "method": "GET",
+            "path": "/suppliers"
+          },
+          {
+            "method": "POST",
+            "path": "/suppliers"
+          },
+          {
+            "method": "PUT",
+            "path": "/suppliers/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/suppliers/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/transactions"
+          },
+          {
+            "method": "POST",
+            "path": "/transactions"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccine-inventory"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-inventory/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory-transactions"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccine-inventory-transactions"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-stock-alerts"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-stock-alerts/:id/acknowledge"
+          },
+          {
+            "method": "PUT",
+            "path": "/vaccine-stock-alerts/:id/resolve"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccine-inventory/stats"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": false,
+        "size": 27837
+      },
+      "messages.js": {
+        "routes": 8,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/conversations"
+          },
+          {
+            "method": "GET",
+            "path": "/conversation/:conversationId"
+          },
+          {
+            "method": "PUT",
+            "path": "/conversation/:conversationId/read"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/user/:userId"
+          },
+          {
+            "method": "PUT",
+            "path": "/:messageId/read"
+          },
+          {
+            "method": "GET",
+            "path": "/unread-count"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 11272
+      },
+      "monitoring.js": {
+        "routes": 8,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/monitoring"
+          },
+          {
+            "method": "GET",
+            "path": "/alerts"
+          },
+          {
+            "method": "GET",
+            "path": "/audit-logs"
+          },
+          {
+            "method": "GET",
+            "path": "/audit-logs/export"
+          },
+          {
+            "method": "GET",
+            "path": "/usage-trends"
+          },
+          {
+            "method": "GET",
+            "path": "/user-activity"
+          },
+          {
+            "method": "GET",
+            "path": "/template-performance"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 18291
+      },
+      "notifications-enhanced.js": {
+        "routes": 21,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/filtered"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/analytics"
+          },
+          {
+            "method": "GET",
+            "path": "/preferences"
+          },
+          {
+            "method": "PUT",
+            "path": "/preferences"
+          },
+          {
+            "method": "POST",
+            "path": "/preferences/reset"
+          },
+          {
+            "method": "POST",
+            "path": "/preferences/dnd"
+          },
+          {
+            "method": "PUT",
+            "path": "/preferences/quiet-hours"
+          },
+          {
+            "method": "GET",
+            "path": "/summary"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "PATCH",
+            "path": "/:id/read"
+          },
+          {
+            "method": "POST",
+            "path": "/:id/click"
+          },
+          {
+            "method": "PATCH",
+            "path": "/:id/dismiss"
+          },
+          {
+            "method": "PATCH",
+            "path": "/read-all"
+          },
+          {
+            "method": "GET",
+            "path": "/:id/engagement"
+          },
+          {
+            "method": "GET",
+            "path": "/alerts"
+          },
+          {
+            "method": "POST",
+            "path": "/alerts"
+          },
+          {
+            "method": "PATCH",
+            "path": "/alerts/:id/resolve"
+          },
+          {
+            "method": "GET",
+            "path": "/unread-count"
+          },
+          {
+            "method": "GET",
+            "path": "/category/:category"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 21865
+      },
+      "notifications.js": {
+        "routes": 19,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/alerts"
+          },
+          {
+            "method": "PATCH",
+            "path": "/:id/read"
+          },
+          {
+            "method": "PATCH",
+            "path": "/read-all"
+          },
+          {
+            "method": "GET",
+            "path": "/settings"
+          },
+          {
+            "method": "PUT",
+            "path": "/settings"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "POST",
+            "path": "/alerts"
+          },
+          {
+            "method": "PATCH",
+            "path": "/alerts/:id/resolve"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/unread-count"
+          },
+          {
+            "method": "GET",
+            "path": "/category/:category"
+          },
+          {
+            "method": "GET",
+            "path": "/templates"
+          },
+          {
+            "method": "GET",
+            "path": "/preferences"
+          },
+          {
+            "method": "GET",
+            "path": "/preferences/:notificationType"
+          },
+          {
+            "method": "PUT",
+            "path": "/preferences"
+          },
+          {
+            "method": "DELETE",
+            "path": "/preferences/:notificationType/:channel"
+          },
+          {
+            "method": "POST",
+            "path": "/templates/render"
+          },
+          {
+            "method": "POST",
+            "path": "/cleanup"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 19885
+      },
+      "paper-templates.js": {
+        "routes": 4,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/:id/fields"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 8995
+      },
+      "reports-enhanced.js": {
+        "routes": 2,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "POST",
+            "path": "/custom"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 14124
+      },
+      "reports.js": {
+        "routes": 10,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/templates"
+          },
+          {
+            "method": "GET",
+            "path": "/admin/summary"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "POST",
+            "path": "/generate"
+          },
+          {
+            "method": "POST",
+            "path": "/batch-generate"
+          },
+          {
+            "method": "GET",
+            "path": "/:id/status"
+          },
+          {
+            "method": "GET",
+            "path": "/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/:id/download"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 20783
+      },
+      "settings.js": {
+        "routes": 5,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/summary"
+          },
+          {
+            "method": "GET",
+            "path": "/facility"
+          },
+          {
+            "method": "GET",
+            "path": "/export"
+          },
+          {
+            "method": "GET",
+            "path": "/audit/log"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": false,
+        "size": 15538
+      },
+      "sms.js": {
+        "routes": 11,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "POST",
+            "path": "/send-verification"
+          },
+          {
+            "method": "POST",
+            "path": "/verify-code"
+          },
+          {
+            "method": "POST",
+            "path": "/password-reset/request"
+          },
+          {
+            "method": "POST",
+            "path": "/password-reset/verify"
+          },
+          {
+            "method": "POST",
+            "path": "/password-reset/reset"
+          },
+          {
+            "method": "GET",
+            "path": "/phone/:guardianId"
+          },
+          {
+            "method": "PUT",
+            "path": "/phone/:guardianId"
+          },
+          {
+            "method": "POST",
+            "path": "/phone/:guardianId/verify"
+          },
+          {
+            "method": "DELETE",
+            "path": "/phone/:guardianId/:phoneId"
+          },
+          {
+            "method": "POST",
+            "path": "/test"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 27338
+      },
+      "smsNotifications.js": {
+        "routes": 0,
+        "routeDetails": [],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 2624
+      },
+      "smsRoutes.js": {
+        "routes": 10,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/send-otp"
+          },
+          {
+            "method": "POST",
+            "path": "/verify-otp"
+          },
+          {
+            "method": "POST",
+            "path": "/send-appointment-reminder"
+          },
+          {
+            "method": "GET",
+            "path": "/config-status"
+          },
+          {
+            "method": "GET",
+            "path": "/preferences"
+          },
+          {
+            "method": "PUT",
+            "path": "/preferences"
+          },
+          {
+            "method": "POST",
+            "path": "/verify-phone"
+          },
+          {
+            "method": "POST",
+            "path": "/confirm-phone"
+          },
+          {
+            "method": "POST",
+            "path": "/password-reset"
+          },
+          {
+            "method": "GET",
+            "path": "/logs"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 13045
+      },
+      "transfer-in-cases.js": {
+        "routes": 8,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/register-child"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian"
+          },
+          {
+            "method": "GET",
+            "path": "/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id/validate"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id/approve-vaccines"
+          },
+          {
+            "method": "GET",
+            "path": "/stats/overview"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 51931
+      },
+      "uploads.js": {
+        "routes": 6,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/upload"
+          },
+          {
+            "method": "POST",
+            "path": "/upload-multiple"
+          },
+          {
+            "method": "GET",
+            "path": "/download/:filename"
+          },
+          {
+            "method": "GET",
+            "path": "/info/:filename"
+          },
+          {
+            "method": "GET",
+            "path": "/list"
+          },
+          {
+            "method": "DELETE",
+            "path": "/delete/:filename"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 7520
+      },
+      "users.js": {
+        "routes": 31,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/all-users"
+          },
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/guardians"
+          },
+          {
+            "method": "POST",
+            "path": "/guardians"
+          },
+          {
+            "method": "PUT",
+            "path": "/guardians/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/guardians/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/guardians/:id/password"
+          },
+          {
+            "method": "PUT",
+            "path": "/guardians/:id/password"
+          },
+          {
+            "method": "GET",
+            "path": "/system-users"
+          },
+          {
+            "method": "POST",
+            "path": "/system-users"
+          },
+          {
+            "method": "PUT",
+            "path": "/system-users/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/system-users/:id"
+          },
+          {
+            "method": "PUT",
+            "path": "/system-users/:id/toggle-active"
+          },
+          {
+            "method": "GET",
+            "path": "/clinics"
+          },
+          {
+            "method": "POST",
+            "path": "/clinics"
+          },
+          {
+            "method": "PUT",
+            "path": "/clinics/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/roles"
+          },
+          {
+            "method": "POST",
+            "path": "/roles"
+          },
+          {
+            "method": "PUT",
+            "path": "/roles/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/system-users/:id/password"
+          },
+          {
+            "method": "PUT",
+            "path": "/system-users/:id/password"
+          },
+          {
+            "method": "GET",
+            "path": "/stats"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/profile/:guardianId"
+          },
+          {
+            "method": "PUT",
+            "path": "/guardian/profile/:guardianId"
+          },
+          {
+            "method": "PUT",
+            "path": "/guardian/self/profile/:guardianId"
+          },
+          {
+            "method": "GET",
+            "path": "/profile/:userId"
+          },
+          {
+            "method": "PUT",
+            "path": "/profile/:userId"
+          },
+          {
+            "method": "GET",
+            "path": "/me/notification-settings"
+          },
+          {
+            "method": "PUT",
+            "path": "/me/notification-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/export/:guardianId"
+          },
+          {
+            "method": "PUT",
+            "path": "/me/password"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 85902
+      },
+      "vaccination-management.js": {
+        "routes": 16,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/dashboard"
+          },
+          {
+            "method": "GET",
+            "path": "/patients"
+          },
+          {
+            "method": "POST",
+            "path": "/patients"
+          },
+          {
+            "method": "PUT",
+            "path": "/patients/:id"
+          },
+          {
+            "method": "DELETE",
+            "path": "/patients/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/inventory"
+          },
+          {
+            "method": "POST",
+            "path": "/inventory"
+          },
+          {
+            "method": "PUT",
+            "path": "/inventory/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/appointments"
+          },
+          {
+            "method": "POST",
+            "path": "/appointments"
+          },
+          {
+            "method": "PUT",
+            "path": "/appointments/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccinations"
+          },
+          {
+            "method": "POST",
+            "path": "/vaccinations"
+          },
+          {
+            "method": "GET",
+            "path": "/reports/coverage"
+          },
+          {
+            "method": "GET",
+            "path": "/reports/inventory"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": false,
+        "size": 23419
+      },
+      "vaccination-readiness.js": {
+        "routes": 5,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/infant/:infantId"
+          },
+          {
+            "method": "POST",
+            "path": "/infant/:infantId/vaccine/:vaccineId"
+          },
+          {
+            "method": "POST",
+            "path": "/infant/:infantId/batch"
+          },
+          {
+            "method": "GET",
+            "path": "/:childId"
+          },
+          {
+            "method": "GET",
+            "path": "/schedule/:infantId"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 20948
+      },
+      "vaccination-with-inventory.js": {
+        "routes": 3,
+        "routeDetails": [
+          {
+            "method": "POST",
+            "path": "/record-with-inventory"
+          },
+          {
+            "method": "GET",
+            "path": "/inventory-status/:vaccineId"
+          },
+          {
+            "method": "GET",
+            "path": "/transactions"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 16416
+      },
+      "vaccinationReminders.js": {
+        "routes": 5,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/upcoming"
+          },
+          {
+            "method": "POST",
+            "path": "/send/:patientId"
+          },
+          {
+            "method": "POST",
+            "path": "/check-and-send"
+          },
+          {
+            "method": "GET",
+            "path": "/next/:patientId"
+          },
+          {
+            "method": "POST",
+            "path": "/calculate-due-date"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 4449
+      },
+      "vaccinations.js": {
+        "routes": 29,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/records/infant/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/records"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccines"
+          },
+          {
+            "method": "GET",
+            "path": "/schedules"
+          },
+          {
+            "method": "GET",
+            "path": "/batches"
+          },
+          {
+            "method": "GET",
+            "path": "/inventory/valid"
+          },
+          {
+            "method": "GET",
+            "path": "/schedules/infant/:infantId"
+          },
+          {
+            "method": "POST",
+            "path": "/records"
+          },
+          {
+            "method": "POST",
+            "path": "/records/guardian-complete"
+          },
+          {
+            "method": "PUT",
+            "path": "/records/:id/guardian-date"
+          },
+          {
+            "method": "PUT",
+            "path": "/records/:id"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "PUT",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "GET",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "GET",
+            "path": "/patient/:patientId"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id(\\\\d+)"
+          },
+          {
+            "method": "GET",
+            "path": "/patient/:patientId/history"
+          },
+          {
+            "method": "GET",
+            "path": "/patient/:patientId/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/eligible/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/next-dose/:infantId/:vaccineId"
+          },
+          {
+            "method": "GET",
+            "path": "/readiness/:infantId/:vaccineId"
+          },
+          {
+            "method": "GET",
+            "path": "/contraindications/:infantId/:vaccineId"
+          },
+          {
+            "method": "GET",
+            "path": "/schedule/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/overdue/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/upcoming/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/catchup/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/status/:infantId"
+          },
+          {
+            "method": "GET",
+            "path": "/extended/:infantId"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": true,
+        "size": 75775
+      },
+      "vaccinationTransfer.js": {
+        "routes": 4,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/vaccines"
+          },
+          {
+            "method": "POST",
+            "path": "/validate"
+          },
+          {
+            "method": "POST",
+            "path": "/import"
+          },
+          {
+            "method": "GET",
+            "path": "/infant/:infantId"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": true,
+        "size": 15118
+      },
+      "vaccine-supply.js": {
+        "routes": 30,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "POST",
+            "path": "/requests"
+          },
+          {
+            "method": "GET",
+            "path": "/requests"
+          },
+          {
+            "method": "GET",
+            "path": "/requests/:id"
+          },
+          {
+            "method": "PUT",
+            "path": "/requests/:id"
+          },
+          {
+            "method": "PUT",
+            "path": "/requests/:id/review"
+          },
+          {
+            "method": "POST",
+            "path": "/allocations"
+          },
+          {
+            "method": "GET",
+            "path": "/allocations"
+          },
+          {
+            "method": "GET",
+            "path": "/allocations/:id"
+          },
+          {
+            "method": "PUT",
+            "path": "/allocations/:id/deliver"
+          },
+          {
+            "method": "PUT",
+            "path": "/allocations/:id/status"
+          },
+          {
+            "method": "POST",
+            "path": "/temperature"
+          },
+          {
+            "method": "GET",
+            "path": "/temperature/:facilityId"
+          },
+          {
+            "method": "GET",
+            "path": "/temperature/alerts"
+          },
+          {
+            "method": "GET",
+            "path": "/storage/:facilityId"
+          },
+          {
+            "method": "POST",
+            "path": "/storage"
+          },
+          {
+            "method": "POST",
+            "path": "/storage/:id/count"
+          },
+          {
+            "method": "POST",
+            "path": "/storage/:id/use"
+          },
+          {
+            "method": "POST",
+            "path": "/storage/:id/expire"
+          },
+          {
+            "method": "POST",
+            "path": "/reports"
+          },
+          {
+            "method": "GET",
+            "path": "/reports"
+          },
+          {
+            "method": "GET",
+            "path": "/reports/:id"
+          },
+          {
+            "method": "PUT",
+            "path": "/reports/:id/review"
+          },
+          {
+            "method": "GET",
+            "path": "/reports/consolidated"
+          },
+          {
+            "method": "GET",
+            "path": "/dashboard/barangay/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/dashboard/city"
+          },
+          {
+            "method": "GET",
+            "path": "/dashboard/alerts"
+          },
+          {
+            "method": "GET",
+            "path": "/facilities/barangays"
+          },
+          {
+            "method": "GET",
+            "path": "/facilities/warehouse"
+          },
+          {
+            "method": "GET",
+            "path": "/vaccines"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasRBAC": false,
+        "size": 53551
+      },
+      "vaccineDistribution.js": {
+        "routes": 17,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "POST",
+            "path": "/distribution/requests"
+          },
+          {
+            "method": "GET",
+            "path": "/distribution/requests"
+          },
+          {
+            "method": "POST",
+            "path": "/distribution/dispatch"
+          },
+          {
+            "method": "PUT",
+            "path": "/distribution/:id/receive"
+          },
+          {
+            "method": "GET",
+            "path": "/distribution"
+          },
+          {
+            "method": "POST",
+            "path": "/distribution/:id/temperature"
+          },
+          {
+            "method": "POST",
+            "path": "/reports/periodic"
+          },
+          {
+            "method": "GET",
+            "path": "/reports/periodic"
+          },
+          {
+            "method": "PUT",
+            "path": "/reports/periodic/:id/review"
+          },
+          {
+            "method": "GET",
+            "path": "/inventory/export"
+          },
+          {
+            "method": "POST",
+            "path": "/inventory/import"
+          },
+          {
+            "method": "POST",
+            "path": "/schedules/generate"
+          },
+          {
+            "method": "GET",
+            "path": "/schedules/:infantId"
+          },
+          {
+            "method": "PUT",
+            "path": "/schedules/:id"
+          },
+          {
+            "method": "GET",
+            "path": "/schedules/overdue"
+          },
+          {
+            "method": "POST",
+            "path": "/schedules/:id/reminder"
+          }
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 3569
+      },
+      "vaccineWaitlist.js": {
+        "routes": 5,
+        "routeDetails": [
+          {
+            "method": "GET",
+            "path": "/"
+          },
+          {
+            "method": "GET",
+            "path": "/guardian/:guardianId"
+          },
+          {
+            "method": "POST",
+            "path": "/"
+          },
+          {
+            "method": "DELETE",
+            "path": "/:id"
+          },
+          {
+            "method": "POST",
+            "path": "/:id/notify"
+          }
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasRBAC": false,
+        "size": 12753
+      }
+    },
+    "controllers": {
+      "analyticsController.js": {
+        "functions": 11,
+        "functionNames": [
+          "handleError",
+          "dashboard",
+          "dashboardSummary",
+          "vaccinations",
+          "appointments",
+          "inventory",
+          "trends",
+          "demographics",
+          "filters",
+          "exportAnalytics",
+          "health"
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "size": 5310
+      },
+      "smsNotificationController.js": {
+        "functions": 8,
+        "functionNames": [
+          "sendPhoneVerificationOTP",
+          "sendPasswordResetOTP",
+          "verifyOTP",
+          "sendAppointmentConfirmation",
+          "sendAppointmentReminder",
+          "sendVaccinationDueReminder",
+          "bulkSendAppointmentReminders",
+          "getSMSConfigStatus"
+        ],
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "size": 14670
+      },
+      "vaccineDistributionController.js": {
+        "functions": 20,
+        "functionNames": [
+          "generateRequestNumber",
+          "generateDistributionNumber",
+          "generateReportNumber",
+          "createDistributionRequest",
+          "getDistributionRequests",
+          "approveDistributionRequest",
+          "createDistribution",
+          "receiveDistribution",
+          "getDistributions",
+          "recordTemperatureReading",
+          "createPeriodicReport",
+          "getPeriodicReports",
+          "reviewPeriodicReport",
+          "exportInventoryToExcel",
+          "importInventoryFromExcel",
+          "generateInfantSchedule",
+          "getInfantSchedule",
+          "updateScheduleStatus",
+          "getOverdueSchedules",
+          "createScheduleReminder"
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "size": 45125
+      },
+      "vaccineInventoryController.js": {
+        "functions": 10,
+        "functionNames": [
+          "getVaccineInventoryByClinic",
+          "createVaccineInventory",
+          "updateVaccineInventory",
+          "deleteVaccineInventory",
+          "getVaccineInventoryTransactions",
+          "createVaccineInventoryTransaction",
+          "getVaccineStockAlerts",
+          "acknowledgeVaccineStockAlert",
+          "resolveVaccineStockAlert",
+          "getVaccineInventoryStats"
+        ],
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "size": 19757
+      }
+    },
+    "services": {
+      "adminActivityService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": true,
+        "hasSMSService": false,
+        "size": 9511
+      },
+      "adminMetricsService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 20256
+      },
+      "adminNotificationService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": true,
+        "size": 13905
+      },
+      "adminVaccinationMonitoringService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 4950
+      },
+      "analyticsService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 21616
+      },
+      "appointmentConfirmationService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": true,
+        "size": 18967
+      },
+      "appointmentControlNumberService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 4096
+      },
+      "appointmentEmailService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 22350
+      },
+      "appointmentEventNotificationService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 5478
+      },
+      "appointmentSchedulingService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": true,
+        "hasEmailService": true,
+        "hasSMSService": true,
+        "size": 51858
+      },
+      "appointmentSuggestionService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 19109
+      },
+      "atBirthVaccinationService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 8541
+      },
+      "auditLogService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 7974
+      },
+      "blockedDatesService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 6547
+      },
+      "cleanupService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 2937
+      },
+      "criticalStockMonitor.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": true,
+        "size": 11880
+      },
+      "dashboardService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 5545
+      },
+      "digitalPapersCompatibilityService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 6385
+      },
+      "documentService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 12515
+      },
+      "emailService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": true,
+        "hasSMSService": false,
+        "size": 16523
+      },
+      "encryptionService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 15579
+      },
+      "expiryMonitor.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": true,
+        "size": 13947
+      },
+      "guardianChildRegistrationService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 13697
+      },
+      "guardianNotifications.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 0
+      },
+      "guardianNotificationService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 6512
+      },
+      "immunizationScheduleService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 22005
+      },
+      "infantControlNumberService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 8139
+      },
+      "notificationAnalytics.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 26044
+      },
+      "notificationAutomationService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 3169
+      },
+      "notificationContracts.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 8503
+      },
+      "notificationOrchestrator.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": true,
+        "hasSMSService": true,
+        "size": 25629
+      },
+      "notificationPreferences.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 18523
+      },
+      "notificationService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": true,
+        "hasSMSService": true,
+        "size": 33828
+      },
+      "passwordHistoryService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 5814
+      },
+      "passwordResetService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": true,
+        "hasSMSService": false,
+        "size": 13397
+      },
+      "pdfGenerator.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 17263
+      },
+      "refreshTokenService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 16833
+      },
+      "reportService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 104588
+      },
+      "resendEmailService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": true,
+        "hasSMSService": false,
+        "size": 17948
+      },
+      "securityEventService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 20971
+      },
+      "sessionService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 12186
+      },
+      "smsReminderScheduler.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": true,
+        "size": 9037
+      },
+      "smsService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": true,
+        "size": 31445
+      },
+      "smsTemplates.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 19954
+      },
+      "smsTemplateService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": true,
+        "size": 22576
+      },
+      "socketService.js": {
+        "hasClinicFilter": true,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 15254
+      },
+      "transferInCaseValidationService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 10403
+      },
+      "useGuardianNotifications.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 0
+      },
+      "vaccinationReminderScheduler.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": false,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 3402
+      },
+      "vaccinationReminderService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 13264
+      },
+      "vaccineEligibilityService.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": false,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 20228
+      },
+      "vaccineRulesEngine.js": {
+        "hasClinicFilter": false,
+        "hasFacilityFilter": true,
+        "hasPoolQuery": true,
+        "hasEmailService": false,
+        "hasSMSService": false,
+        "size": 12492
+      }
+    },
+    "middleware": {
+      "auditLogging.js": {
+        "hasAuth": true,
+        "hasRBAC": true,
+        "hasClinicFilter": false,
+        "size": 13902
+      },
+      "auth.js": {
+        "hasAuth": true,
+        "hasRBAC": true,
+        "hasClinicFilter": true,
+        "size": 8955
+      },
+      "bruteForceProtection.js": {
+        "hasAuth": true,
+        "hasRBAC": true,
+        "hasClinicFilter": false,
+        "size": 14076
+      },
+      "cache.js": {
+        "hasAuth": false,
+        "hasRBAC": false,
+        "hasClinicFilter": false,
+        "size": 698
+      },
+      "enhanced-rbac.js": {
+        "hasAuth": true,
+        "hasRBAC": true,
+        "hasClinicFilter": false,
+        "size": 13757
+      },
+      "errorHandler.js": {
+        "hasAuth": true,
+        "hasRBAC": true,
+        "hasClinicFilter": false,
+        "size": 6122
+      },
+      "expressValidation.js": {
+        "hasAuth": false,
+        "hasRBAC": false,
+        "hasClinicFilter": true,
+        "size": 5534
+      },
+      "facilityAccess.js": {
+        "hasAuth": true,
+        "hasRBAC": true,
+        "hasClinicFilter": true,
+        "size": 3224
+      },
+      "guardianAuth.js": {
+        "hasAuth": true,
+        "hasRBAC": true,
+        "hasClinicFilter": false,
+        "size": 7303
+      },
+      "guardianScope.js": {
+        "hasAuth": true,
+        "hasRBAC": true,
+        "hasClinicFilter": false,
+        "size": 3010
+      },
+      "monitoring.js": {
+        "hasAuth": false,
+        "hasRBAC": false,
+        "hasClinicFilter": false,
+        "size": 1001
+      },
+      "rateLimiter.js": {
+        "hasAuth": false,
+        "hasRBAC": true,
+        "hasClinicFilter": false,
+        "size": 14341
+      },
+      "rbac.js": {
+        "hasAuth": false,
+        "hasRBAC": true,
+        "hasClinicFilter": true,
+        "size": 12868
+      },
+      "requestLogger.js": {
+        "hasAuth": false,
+        "hasRBAC": false,
+        "hasClinicFilter": false,
+        "size": 2137
+      },
+      "role-based-access.js": {
+        "hasAuth": false,
+        "hasRBAC": true,
+        "hasClinicFilter": true,
+        "size": 15749
+      },
+      "sanitization.js": {
+        "hasAuth": false,
+        "hasRBAC": false,
+        "hasClinicFilter": false,
+        "size": 13866
+      },
+      "validation.js": {
+        "hasAuth": false,
+        "hasRBAC": true,
+        "hasClinicFilter": false,
+        "size": 10606
+      }
+    },
+    "rbac": {
+      "exists": true,
+      "rolesCount": 5,
+      "permissionsCount": 0
+    },
+    "authentication": {
+      "hasJWT": true,
+      "hasPasswordHash": true,
+      "hasRefreshToken": true,
+      "hasClinicAssignment": true
+    },
+    "isolationPatterns": {
+      "whereClinicId": 7,
+      "whereFacilityId": 6,
+      "reqUserClinicId": 42,
+      "reqUserFacilityId": 20,
+      "joinClinicId": 19
+    }
+  }
+}

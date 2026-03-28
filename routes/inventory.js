@@ -14,6 +14,7 @@ const {
   validateNumberRange,
 } = require('../utils/adminValidation');
 const { validateApprovedVaccine: validateApprovedInventoryVaccine } = require('../utils/approvedVaccines');
+const { decodeHtmlEntities } = require('../utils/htmlEntities');
 const {
   sendExpiryAlert,
   sendLowStockAlert,
@@ -163,7 +164,7 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
     errors.clinic_id = clinicIdCheck.error;
   }
 
-  const transactionTypeInput = sanitizeText(payload.transaction_type).toUpperCase();
+  const transactionTypeInput = String(payload.transaction_type || '').trim().toUpperCase();
   const transactionType = normalizeEnumValue(
     transactionTypeInput,
     VACCINE_INVENTORY_TRANSACTION_TYPES,
@@ -215,12 +216,18 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
   }
 
   const lotBatchNumber = sanitizeText(
-    payload.lot_batch_number || payload.lot_number || payload.batch_number,
+    decodeHtmlEntities(
+      payload.lot_batch_number || payload.lot_number || payload.batch_number,
+    ),
     { maxLength: 100 },
   );
-  const supplierName = sanitizeText(payload.supplier_name, { maxLength: 255 });
-  const referenceNumber = sanitizeText(payload.reference_number, { maxLength: 255 });
-  const notes = sanitizeText(payload.notes, {
+  const supplierName = sanitizeText(decodeHtmlEntities(payload.supplier_name), {
+    maxLength: 255,
+  });
+  const referenceNumber = sanitizeText(decodeHtmlEntities(payload.reference_number), {
+    maxLength: 255,
+  });
+  const notes = sanitizeText(decodeHtmlEntities(payload.notes), {
     maxLength: 500,
     preserveNewLines: true,
   });
@@ -458,7 +465,57 @@ const getStockAlertsFacilityColumn = () =>
 const getFacilityTableName = () =>
   resolveFirstExistingTable(['clinics', 'healthcare_facilities'], 'clinics');
 
-const getUserTableName = () => resolveFirstExistingTable(['admin', 'users'], 'users');
+const getUserDisplayNameExpression = (tableName, alias) => {
+  if (tableName === 'users') {
+    return `COALESCE(NULLIF(TRIM(CONCAT_WS(' ', ${alias}.first_name, ${alias}.last_name)), ''), ${alias}.username)`;
+  }
+
+  return `${alias}.username`;
+};
+
+const getUserDisplayJoinSpec = async (foreignKeyExpression, aliasBase) => {
+  const usersTableName = await resolveFirstExistingTable(['users'], null);
+  const adminTableName = await resolveFirstExistingTable(['admin'], null);
+  const joins = [];
+  const displayNameExpressions = [];
+
+  if (usersTableName) {
+    const usersAlias = `${aliasBase}_users`;
+    joins.push(`LEFT JOIN ${usersTableName} ${usersAlias} ON ${foreignKeyExpression} = ${usersAlias}.id`);
+    displayNameExpressions.push(getUserDisplayNameExpression('users', usersAlias));
+  }
+
+  if (adminTableName) {
+    const adminAlias = `${aliasBase}_admin`;
+    joins.push(`LEFT JOIN ${adminTableName} ${adminAlias} ON ${foreignKeyExpression} = ${adminAlias}.id`);
+    displayNameExpressions.push(getUserDisplayNameExpression('admin', adminAlias));
+  }
+
+  return {
+    joins,
+    displayNameSql: displayNameExpressions.length
+      ? `COALESCE(${displayNameExpressions.join(', ')})`
+      : 'NULL',
+  };
+};
+
+const getAuthenticatedUserDisplayName = (user = {}) => {
+  const fullName = sanitizeText(
+    [user.first_name, user.last_name].filter(Boolean).join(' '),
+    { maxLength: 255 },
+  );
+
+  if (fullName) {
+    return fullName;
+  }
+
+  return (
+    sanitizeText(user.display_name, { maxLength: 255 }) ||
+    sanitizeText(user.name, { maxLength: 255 }) ||
+    sanitizeText(user.username, { maxLength: 255 }) ||
+    null
+  );
+};
 
 // Apply read protection to vaccine inventory routes
 router.get('/vaccine-inventory', canViewVaccineInventory);
@@ -893,7 +950,7 @@ router.post('/transactions', async (req, res) => {
     if (stockChange !== 0) {
       const batchUpdate = await pool.query(
         `
-        UPDATE vaccine_batches
+        UPDATE vaccine_batchesvaccine_batches
         SET qty_current = qty_current + $1, updated_at = CURRENT_TIMESTAMP
         WHERE id = $2 RETURNING *
       `,
@@ -993,16 +1050,16 @@ router.get('/vaccine-inventory', async (req, res) => {
 
     const inventoryFacilityColumn = await getInventoryFacilityColumn();
     const facilityTableName = await getFacilityTableName();
-    const userTableName = await getUserTableName();
+    const creatorJoinSpec = await getUserDisplayJoinSpec('vi.created_by', 'creator');
 
     let query = `
       SELECT vi.*, v.name as vaccine_name, v.code as vaccine_code,
-             hf.name as facility_name, creator.username as created_by_name
+             hf.name as facility_name, ${creatorJoinSpec.displayNameSql} as created_by_name
       FROM vaccine_inventory vi
       JOIN vaccines v ON vi.vaccine_id = v.id
       JOIN ${facilityTableName} hf ON vi.${inventoryFacilityColumn} = hf.id
-      LEFT JOIN ${userTableName} creator ON vi.created_by = creator.id
-      WHERE 1=1
+      ${creatorJoinSpec.joins.join('\n      ')}
+      WHERE v.is_active = true
     `;
 
     const params = [];
@@ -1339,15 +1396,17 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
 
     const safeLimit = limitCheck.value || 100;
     const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
-    const userTableName = await getUserTableName();
+    const performerJoinSpec = await getUserDisplayJoinSpec('vit.performed_by', 'performer');
+    const approverJoinSpec = await getUserDisplayJoinSpec('vit.approved_by', 'approver');
 
     let query = `
       SELECT vit.*, v.name as vaccine_name, v.code as vaccine_code,
-             performer.username as performed_by_name, approver.username as approved_by_name
+             ${performerJoinSpec.displayNameSql} as performed_by_name,
+             ${approverJoinSpec.displayNameSql} as approved_by_name
       FROM vaccine_inventory_transactions vit
       JOIN vaccines v ON vit.vaccine_id = v.id
-      LEFT JOIN ${userTableName} performer ON vit.performed_by = performer.id
-      LEFT JOIN ${userTableName} approver ON vit.approved_by = approver.id
+      ${performerJoinSpec.joins.join('\n      ')}
+      ${approverJoinSpec.joins.join('\n      ')}
       WHERE 1=1
     `;
 
@@ -1385,8 +1444,31 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
 // Create vaccine inventory transaction
 router.post('/vaccine-inventory-transactions', async (req, res) => {
   try {
+    const fs = require('fs');
+    const debugOutput = `
+=== TRANSACTION REQUEST ===
+Time: ${new Date().toISOString()}
+
+Payload received:
+${JSON.stringify(req.body, null, 2)}
+
+`;
+    fs.appendFileSync('transaction_debug.log', debugOutput);
+    
     const { normalized, errors } = sanitizeInventoryTransactionPayload(req.body || {});
+    
+    const debugNormalized = `
+Normalized:
+${JSON.stringify(normalized, null, 2)}
+
+Validation errors:
+${JSON.stringify(errors, null, 2)}
+
+`;
+    fs.appendFileSync('transaction_debug.log', debugNormalized);
+    
     if (hasFieldErrors(errors)) {
+      fs.appendFileSync('transaction_debug.log', '❌ Validation failed!\n\n');
       return respondValidationError(res, errors);
     }
 
@@ -1458,13 +1540,15 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
       }
     }
 
-    const previousBalance =
-      Number(inventory.beginning_balance || 0) +
-      Number(inventory.received_during_period || 0) +
-      Number(inventory.transferred_in || 0) -
-      Number(inventory.transferred_out || 0) -
-      Number(inventory.expired_wasted || 0) -
-      Number(inventory.issuance || 0);
+    // Use stock_on_hand if available, otherwise calculate from components
+    const previousBalance = inventory.stock_on_hand !== null && inventory.stock_on_hand !== undefined
+      ? Number(inventory.stock_on_hand)
+      : Number(inventory.beginning_balance || 0) +
+        Number(inventory.received_during_period || 0) +
+        Number(inventory.transferred_in || 0) -
+        Number(inventory.transferred_out || 0) -
+        Number(inventory.expired_wasted || 0) -
+        Number(inventory.issuance || 0);
     let newBalance = previousBalance;
 
     // Calculate new balance based on transaction type
@@ -1548,6 +1632,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
         transferred_out = CASE WHEN $2 = 'TRANSFER_OUT' THEN transferred_out + $3 ELSE transferred_out END,
         issuance = CASE WHEN $2 = 'ISSUE' THEN issuance + $3 ELSE issuance END,
         expired_wasted = CASE WHEN $2 IN ('EXPIRE','WASTE') THEN expired_wasted + $3 ELSE expired_wasted END,
+        stock_on_hand = $6,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $5`,
       [
@@ -1556,6 +1641,7 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
         normalized.quantity,
         adjustmentDelta,
         normalized.vaccine_inventory_id,
+        newBalance,
       ],
     );
 
@@ -1567,8 +1653,16 @@ router.post('/vaccine-inventory-transactions', async (req, res) => {
       lowStockThreshold: inventory.low_stock_threshold,
     });
 
-    socketService.broadcast('vaccine_inventory_transaction_created', transactionResult.rows[0]);
-    res.status(201).json(transactionResult.rows[0]);
+    const transactionResponse = {
+      ...transactionResult.rows[0],
+      performed_by_name:
+        getAuthenticatedUserDisplayName(req.user) ||
+        transactionResult.rows[0].performed_by_name ||
+        null,
+    };
+
+    socketService.broadcast('vaccine_inventory_transaction_created', transactionResponse);
+    res.status(201).json(transactionResponse);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1581,7 +1675,14 @@ router.get('/vaccine-stock-alerts', canViewVaccineInventory, async (req, res) =>
 
     const stockAlertsFacilityColumn = await getStockAlertsFacilityColumn();
     const facilityTableName = await getFacilityTableName();
-    const userTableName = await getUserTableName();
+    const acknowledgedByJoinSpec = await getUserDisplayJoinSpec(
+      'vsa.acknowledged_by',
+      'acknowledged_by_user',
+    );
+    const resolvedByJoinSpec = await getUserDisplayJoinSpec(
+      'vsa.resolved_by',
+      'resolved_by_user',
+    );
 
     const normalizedStatus = sanitizeText(status, { maxLength: 50 });
     const normalizedAlertType = sanitizeText(alert_type, { maxLength: 50 });
@@ -1601,13 +1702,13 @@ router.get('/vaccine-stock-alerts', canViewVaccineInventory, async (req, res) =>
 
     let query = `
       SELECT vsa.*, v.name as vaccine_name, v.code as vaccine_code,
-             hf.name as facility_name, acknowledged_by_user.username as acknowledged_by_name,
-             resolved_by_user.username as resolved_by_name
+             hf.name as facility_name, ${acknowledgedByJoinSpec.displayNameSql} as acknowledged_by_name,
+             ${resolvedByJoinSpec.displayNameSql} as resolved_by_name
       FROM vaccine_stock_alerts vsa
       JOIN vaccines v ON vsa.vaccine_id = v.id
       JOIN ${facilityTableName} hf ON vsa.${stockAlertsFacilityColumn} = hf.id
-      LEFT JOIN ${userTableName} acknowledged_by_user ON vsa.acknowledged_by = acknowledged_by_user.id
-      LEFT JOIN ${userTableName} resolved_by_user ON vsa.resolved_by = resolved_by_user.id
+      ${acknowledgedByJoinSpec.joins.join('\n      ')}
+      ${resolvedByJoinSpec.joins.join('\n      ')}
       WHERE 1=1
     `;
 
@@ -1936,6 +2037,135 @@ router.get('/vaccine-inventory/stats', async (req, res) => {
       recentTransactions: parseInt(recentTransactions.rows[0].count, 10),
     });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// UNIFIED INVENTORY SUMMARY ENDPOINT (Fix #2, #3, #6, #7)
+// ============================================================================
+const inventoryCalculationService = require('../services/inventoryCalculationService');
+
+router.get('/summary', async (req, res) => {
+  try {
+    const clinicId = req.user.clinic_id || req.user.facility_id;
+    
+    if (!clinicId) {
+      return res.status(400).json({ error: 'Clinic ID required' });
+    }
+
+    const summary = await inventoryCalculationService.getUnifiedSummary(clinicId);
+    const alerts = await inventoryCalculationService.getStockAlerts(clinicId);
+
+    res.json({
+      success: true,
+      data: {
+        ...summary,
+        alerts,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching inventory summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// AVAILABLE LOTS/BATCHES ENDPOINT (Fix #5)
+// ============================================================================
+router.get('/available-lots', async (req, res) => {
+  try {
+    const { vaccine_id } = req.query;
+    const clinicId = req.user.clinic_id || req.user.facility_id;
+
+    if (!vaccine_id) {
+      return res.status(400).json({ error: 'vaccine_id is required' });
+    }
+
+    if (!clinicId) {
+      return res.status(400).json({ error: 'Clinic ID required' });
+    }
+
+    const lots = await inventoryCalculationService.getAvailableLots(
+      parseInt(vaccine_id),
+      clinicId
+    );
+
+    res.json({
+      success: true,
+      data: lots,
+    });
+  } catch (error) {
+    console.error('Error fetching available lots:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// STOCK MOVEMENTS WITH CORRECT PERFORMED BY (Fix #1)
+// ============================================================================
+router.get('/stock-movements', async (req, res) => {
+  try {
+    const { vaccine_id, limit = 250 } = req.query;
+    const clinicId = req.user.clinic_id || req.user.facility_id;
+
+    if (!clinicId) {
+      return res.status(400).json({ error: 'Clinic ID required' });
+    }
+
+    const safeLimit = Math.min(parseInt(limit) || 250, 1000);
+    const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
+
+    let query = `
+      SELECT 
+        vit.id,
+        vit.transaction_type,
+        vit.quantity,
+        vit.previous_balance,
+        vit.new_balance,
+        vit.lot_number,
+        vit.batch_number,
+        vit.reference_number,
+        vit.notes,
+        vit.created_at,
+        v.name as vaccine_name,
+        v.code as vaccine_code,
+        COALESCE(
+          NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''),
+          u.username,
+          'System'
+        ) as performed_by_name,
+        u.role as performed_by_role
+      FROM vaccine_inventory_transactions vit
+      JOIN vaccines v ON vit.vaccine_id = v.id
+      LEFT JOIN users u ON vit.performed_by = u.id
+      WHERE vit.${transactionFacilityColumn} = $1
+    `;
+
+    const params = [clinicId];
+    let paramCount = 2;
+
+    if (vaccine_id) {
+      query += ` AND vit.vaccine_id = $${paramCount}`;
+      params.push(parseInt(vaccine_id));
+      paramCount++;
+    }
+
+    query += ` ORDER BY vit.created_at DESC LIMIT $${paramCount}`;
+    params.push(safeLimit);
+
+    const result = await pool.query(query, params);
+    const movements = await inventoryCalculationService.calculateStockMovements(clinicId);
+
+    res.json({
+      success: true,
+      data: {
+        movements: result.rows,
+        summary: movements,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching stock movements:', error);
     res.status(500).json({ error: error.message });
   }
 });

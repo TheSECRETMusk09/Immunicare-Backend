@@ -1,0 +1,302 @@
+{
+  "timestamp": "2026-03-28T13:23:16.543Z",
+  "healthCenter": "San Nicolas Health Center",
+  "location": "Pasig City",
+  "findings": {
+    "facility": {
+      "found": true,
+      "data": [
+        {
+          "id": 1,
+          "name": "San Nicolas Health Center",
+          "region": "NCR",
+          "address": "M.H. Del Pilar Street, San Nicolas, Pasig City, Metro Manila, 1600-1612",
+          "contact": "(02) 643-1111",
+          "created_at": "2026-01-31T06:35:41.674Z",
+          "updated_at": "2026-02-25T15:54:05.522Z"
+        },
+        {
+          "id": 203,
+          "name": "San Nicolas Health Center Pasig City",
+          "region": "NCR",
+          "address": "45 San Nicolas St, Barangay San Nicolas, Pasig City, Metro Manila, NCR 1600",
+          "contact": "+639171000101",
+          "created_at": "2026-03-12T12:59:00.492Z",
+          "updated_at": "2026-03-12T15:04:11.465Z"
+        }
+      ]
+    },
+    "schema": {
+      "facilityColumns": {
+        "admin": [
+          "clinic_id"
+        ],
+        "appointments": [
+          "clinic_id"
+        ],
+        "blocked_dates": [
+          "clinic_id"
+        ],
+        "guardians": [
+          "clinic_id"
+        ],
+        "infants": [
+          "clinic_id",
+          "health_center"
+        ],
+        "patients": [
+          "health_center",
+          "facility_id"
+        ],
+        "transfer_in_cases": [
+          "source_facility"
+        ],
+        "users": [
+          "clinic_id"
+        ],
+        "vaccine_batches": [
+          "clinic_id"
+        ],
+        "vaccine_inventory": [
+          "clinic_id"
+        ],
+        "vaccine_inventory_transactions": [
+          "clinic_id"
+        ],
+        "vaccine_stock_alerts": [
+          "clinic_id"
+        ],
+        "vaccine_supply": [
+          "clinic_id"
+        ],
+        "vaccine_waitlist": [
+          "clinic_id"
+        ]
+      }
+    },
+    "recordCounts": {
+      "admin": {
+        "column": "clinic_id",
+        "count": 2
+      },
+      "appointments": {
+        "column": "clinic_id",
+        "count": 0
+      },
+      "blocked_dates": {
+        "column": "clinic_id",
+        "count": 2
+      },
+      "guardians": {
+        "column": "clinic_id",
+        "count": 0
+      },
+      "infants": {
+        "column": "clinic_id",
+        "count": 5000
+      },
+      "patients": {
+        "column": "facility_id",
+        "count": 0
+      },
+      "users": {
+        "column": "clinic_id",
+        "count": 1
+      },
+      "vaccine_batches": {
+        "column": "clinic_id",
+        "count": 180
+      },
+      "vaccine_inventory": {
+        "column": "clinic_id",
+        "count": 0
+      },
+      "vaccine_inventory_transactions": {
+        "column": "clinic_id",
+        "count": 1185
+      },
+      "vaccine_stock_alerts": {
+        "column": "clinic_id",
+        "count": 541
+      },
+      "vaccine_supply": {
+        "column": "clinic_id",
+        "count": 0
+      },
+      "vaccine_waitlist": {
+        "column": "clinic_id",
+        "count": 320
+      }
+    },
+    "users": {
+      "count": 1,
+      "data": [
+        {
+          "id": 254551,
+          "username": "factor.123",
+          "email": null,
+          "role": "guardian",
+          "clinic_id": 1,
+          "is_active": true,
+          "created_at": "2026-03-28T11:26:39.764Z"
+        }
+      ]
+    },
+    "inventory": {
+      "count": 0,
+      "data": []
+    },
+    "appointments": {
+      "count": 0
+    },
+    "foreignKeys": [
+      {
+        "table_name": "appointments",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "guardians",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "infants",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "users",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "vaccine_batches",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "vaccine_inventory",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "vaccine_inventory_transactions",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "vaccine_stock_alerts",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "vaccine_supply",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      },
+      {
+        "table_name": "vaccine_waitlist",
+        "column_name": "clinic_id",
+        "foreign_table_name": "clinics",
+        "foreign_column_name": "id"
+      }
+    ],
+    "dataIsolation": {
+      "admin": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "appointments": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "blocked_dates": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "guardians": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "infants": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "patients": {
+        "nullRecords": 0,
+        "facilityColumn": "facility_id"
+      },
+      "users": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "vaccine_batches": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "vaccine_inventory": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "vaccine_inventory_transactions": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "vaccine_stock_alerts": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "vaccine_supply": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      },
+      "vaccine_waitlist": {
+        "nullRecords": 0,
+        "facilityColumn": "clinic_id"
+      }
+    },
+    "indexes": [
+      {
+        "table_name": "blocked_dates",
+        "index_name": "idx_blocked_dates_clinic",
+        "column_name": "clinic_id",
+        "is_unique": false
+      },
+      {
+        "table_name": "vaccine_inventory",
+        "index_name": "idx_vaccine_inventory_low_stock",
+        "column_name": "clinic_id",
+        "is_unique": false
+      },
+      {
+        "table_name": "vaccine_inventory_transactions",
+        "index_name": "idx_vaccine_inventory_transactions_clinic_created_at",
+        "column_name": "clinic_id",
+        "is_unique": false
+      },
+      {
+        "table_name": "vaccine_waitlist",
+        "index_name": "vaccine_waitlist_infant_id_vaccine_id_clinic_id_key",
+        "column_name": "clinic_id",
+        "is_unique": true
+      }
+    ],
+    "roles": [
+      {
+        "role": "guardian"
+      }
+    ]
+  },
+  "facilityId": 1,
+  "facilityName": "San Nicolas Health Center"
+}

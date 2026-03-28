@@ -50,11 +50,17 @@ const sanitizeIdentifier = (
 };
 
 const normalizeEnumValue = (value, allowedValues = [], fallback = '') => {
-  const normalized = sanitizeText(value).toLowerCase();
-  if (allowedValues.includes(normalized)) {
-    return normalized;
+  const normalized = sanitizeText(value);
+  if (!normalized || !Array.isArray(allowedValues)) {
+    return fallback;
   }
-  return fallback;
+
+  const matchedValue = allowedValues.find(
+    (allowedValue) =>
+      String(allowedValue).toLowerCase() === normalized.toLowerCase(),
+  );
+
+  return matchedValue ?? fallback;
 };
 
 const parseDateValue = (value) => {
@@ -214,13 +220,18 @@ const respondValidationError = (
   fields,
   message = 'Validation failed',
   status = 400,
-) =>
+) => {
+  console.error('\n❌ VALIDATION ERROR RESPONSE:');
+  console.error('Message:', message);
+  console.error('Fields:', JSON.stringify(fields, null, 2));
+  
   res.status(status).json({
     success: false,
     message,
     error: message,
     fields,
   });
+};
 
 module.exports = {
   hasFieldErrors,

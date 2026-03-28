@@ -550,19 +550,17 @@ const getInfantGuardianTotals = async ({ facilityId, guardianId }) => {
           SELECT COUNT(*)::int
           FROM patients p
           WHERE COALESCE(p.is_active, true) = true
-            AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
-            AND ($2::int IS NULL OR p.guardian_id = $2)
+            AND ($1::int IS NULL OR p.guardian_id = $1)
         ) AS total_infants,
         (
           SELECT COUNT(DISTINCT p.guardian_id)::int
           FROM patients p
           WHERE COALESCE(p.is_active, true) = true
             AND p.guardian_id IS NOT NULL
-            AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
-            AND ($2::int IS NULL OR p.guardian_id = $2)
+            AND ($1::int IS NULL OR p.guardian_id = $1)
         ) AS total_guardians
     `,
-    [facilityId, guardianId],
+    [guardianId],
   );
 
   return rows[0] || { total_infants: 0, total_guardians: 0 };
@@ -588,38 +586,50 @@ const getVaccinationSnapshot = async ({
     `
       SELECT
         COUNT(*) FILTER (
-          WHERE ir.admin_date = CURRENT_DATE
-            AND ${immunizationStatusExpr} IN ('completed', 'attended')
+          WHERE (
+            ir.admin_date = CURRENT_DATE
+            OR (ir.admin_date IS NULL AND ir.created_at::date = CURRENT_DATE)
+          )
+          AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS completed_today,
         COUNT(*) FILTER (
-          WHERE ir.admin_date BETWEEN $2::date AND $3::date
-            AND ${immunizationStatusExpr} IN ('completed', 'attended')
+          WHERE (
+            ir.admin_date BETWEEN $1::date AND $2::date
+            OR (ir.admin_date IS NULL AND ir.created_at::date BETWEEN $1::date AND $2::date)
+          )
+          AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS administered_in_period,
         COUNT(*) FILTER (
-          WHERE ir.next_due_date BETWEEN $2::date AND $3::date
+          WHERE ir.next_due_date BETWEEN $1::date AND $2::date
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS due_in_period,
+        COUNT(*) FILTER (
+          WHERE ir.next_due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+            AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
+        )::int AS due_soon_7_days,
         COUNT(*) FILTER (
           WHERE ir.next_due_date < CURRENT_DATE
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS overdue_count,
         COUNT(DISTINCT ir.patient_id) FILTER (
-          WHERE ir.admin_date BETWEEN $2::date AND $3::date
-            AND ${immunizationStatusExpr} IN ('completed', 'attended')
+          WHERE (
+            ir.admin_date BETWEEN $1::date AND $2::date
+            OR (ir.admin_date IS NULL AND ir.created_at::date BETWEEN $1::date AND $2::date)
+          )
+          AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS unique_infants_served
       FROM immunization_records ir
       JOIN patients p ON p.id = ir.patient_id
       WHERE COALESCE(ir.is_active, true) = true
         AND COALESCE(p.is_active, true) = true
-        AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
-        AND ($7::int IS NULL OR p.guardian_id = $7)
-        AND ($4::int[] IS NULL OR ir.vaccine_id = ANY($4::int[]))
+        AND ($6::int IS NULL OR p.guardian_id = $6)
+        AND ($3::int[] IS NULL OR ir.vaccine_id = ANY($3::int[]))
         AND (
-          $5::text[] IS NULL
-          OR ${immunizationStatusExpr} = ANY($5::text[])
+          $4::text[] IS NULL
+          OR ${immunizationStatusExpr} = ANY($4::text[])
         )
         AND (
-          $6::boolean = false
+          $5::boolean = false
           OR (
             ir.next_due_date < CURRENT_DATE
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
@@ -627,7 +637,6 @@ const getVaccinationSnapshot = async ({
         )
     `,
     [
-      facilityId,
       startDate,
       endDate,
       toNullableArray(vaccineIds),
@@ -641,6 +650,7 @@ const getVaccinationSnapshot = async ({
     completed_today: 0,
     administered_in_period: 0,
     due_in_period: 0,
+    due_soon_7_days: 0,
     overdue_count: 0,
     unique_infants_served: 0,
   };
@@ -871,7 +881,7 @@ const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
           WHERE ${stockExpr} <= ${criticalThresholdExpr}
         )::int AS critical_stock_count,
         COUNT(*) FILTER (WHERE ${stockExpr} <= 0)::int AS out_of_stock_count
-      FROM inventory vi
+      FROM vaccine_inventory vi
       WHERE ${whereConditions.join(' AND ')}
     `,
     params,
@@ -933,7 +943,7 @@ const getInventoryByVaccine = async ({ facilityId, vaccineIds, vaccineKeys }) =>
           BOOL_OR(${stockExpr} <= ${lowThresholdExpr}) AS low_stock,
           BOOL_OR(${stockExpr} <= ${criticalThresholdExpr}) AS critical_stock
         FROM vaccine_dim vd
-        LEFT JOIN inventory vi
+        LEFT JOIN vaccine_inventory vi
           ON ${joinConditions.join(' AND ')}
         WHERE vd.vaccine_key = ANY($${paramIndex}::text[])
         GROUP BY vd.vaccine_key
@@ -1560,7 +1570,7 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
         v.name AS vaccine_name,
         ${stockExpr}::int AS current_stock,
         ${lowThresholdExpr}::int AS threshold_value
-      FROM inventory vi
+      FROM vaccine_inventory vi
       LEFT JOIN vaccines v ON v.id = vi.vaccine_id
       WHERE COALESCE(vi.is_active, true) = true
         AND ($1::int[] IS NULL OR vi.vaccine_id = ANY($1::int[]))

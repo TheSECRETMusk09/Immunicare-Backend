@@ -228,8 +228,7 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
             NULLIF(TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, ''))), ''),
             'Infant'
           ) as patient_name,
-          COALESCE(NULLIF(TRIM(g.name), ''), 'Guardian unavailable') as guardian_name,
-          p.control_number
+          COALESCE(NULLIF(TRIM(g.name), ''), 'Guardian unavailable') as guardian_name
         FROM appointments a
         LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
         LEFT JOIN guardians g ON g.id = p.guardian_id
@@ -326,8 +325,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
         SELECT
           a.*,
           p.first_name,
-          p.last_name,
-          p.control_number
+          p.last_name
         FROM appointments a
         LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
         WHERE ${guardianScopeFilterSql} = $1
@@ -412,7 +410,6 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
           a.*,
           p.first_name,
           p.last_name,
-          p.control_number,
           p.dob as infant_dob,
           COALESCE(a.location, 'Main Health Center') as location,
           COALESCE(a.type, 'Vaccination Appointment') as type
@@ -493,7 +490,6 @@ router.get('/guardian/:guardianId/vaccinations', authenticateToken, async (req, 
           ir.*,
           p.first_name,
           p.last_name,
-          p.control_number,
           v.name as vaccine_name,
           ${providerValueExpression} as provider_name,
           ${providerValueExpression} as administered_by_name
@@ -697,7 +693,7 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
     const params = [];
     
     if (useClinicScope) {
-      whereClause += ' AND i.clinic_id = ANY($1::int[])';
+      whereClause += ' AND i.facility_id = ANY($1::int[])';
       params.push(scopeIds);
     }
     
@@ -751,7 +747,6 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
             'vaccination' as type,
             ir.admin_date as time,
             CONCAT(p.first_name, ' ', p.last_name) as patient,
-            p.control_number,
             v.name as detail,
             'Vaccination recorded' as action
           FROM immunization_records ir
@@ -782,7 +777,6 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
             'appointment' as type,
             a.scheduled_date as time,
             CONCAT(p.first_name, ' ', p.last_name) as patient,
-            p.control_number,
             a.type as detail,
             CASE
               WHEN LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled') THEN 'Appointment scheduled'
@@ -963,7 +957,7 @@ router.get('/guardian/:guardianId/growth/:infantId', authenticateToken, async (r
 
     const result = await db.query(
       `
-        SELECT pg.*, p.first_name, p.last_name, p.control_number
+        SELECT pg.*, p.first_name, p.last_name
         FROM patient_growth pg
         LEFT JOIN patients p ON p.id = pg.patient_id
         WHERE pg.patient_id = $1

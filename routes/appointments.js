@@ -81,13 +81,13 @@ const resolveFirstExistingColumn = async (
 };
 
 const getPatientFacilityColumn = () =>
-  resolveFirstExistingColumn('patients', ['clinic_id', 'facility_id'], 'clinic_id');
+  resolveFirstExistingColumn('patients', ['facility_id', 'clinic_id'], 'facility_id');
 
 const getAppointmentFacilityColumn = () =>
-  resolveFirstExistingColumn('appointments', ['clinic_id', 'facility_id'], 'clinic_id');
+  resolveFirstExistingColumn('appointments', ['facility_id', 'clinic_id'], 'facility_id');
 
 const getAppointmentPatientColumn = () =>
-  resolveFirstExistingColumn('appointments', ['infant_id', 'patient_id'], 'infant_id');
+  resolveFirstExistingColumn('appointments', ['patient_id', 'infant_id'], 'patient_id');
 
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 const requireAppointmentCreateAccess = (req, res, next) => {
@@ -427,6 +427,7 @@ const fetchAppointmentById = async (id) => {
     `
       SELECT
         a.*,
+        a.${appointmentPatientColumn} AS infant_id,
         p.first_name AS first_name,
         p.last_name AS last_name,
         p.control_number AS control_number,
@@ -466,6 +467,7 @@ router.get('/', async (req, res) => {
     let query = `
       SELECT
         a.*,
+        a.${appointmentPatientColumn} AS infant_id,
         p.first_name AS first_name,
         p.last_name AS last_name,
         p.control_number AS control_number,
@@ -1576,7 +1578,17 @@ router.put('/:id(\\d+)', async (req, res) => {
     res.json(normalizedAppointment);
   } catch (error) {
     console.error('Update appointment error:', error);
-    res.status(500).json({ error: 'Failed to update appointment' });
+    console.error('Error stack:', error.stack);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      appointmentId,
+    });
+    res.status(500).json({ 
+      error: 'Failed to update appointment',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
