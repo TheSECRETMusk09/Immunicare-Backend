@@ -370,6 +370,16 @@ const sanitizeNullableInt = (value) => {
   return parsed;
 };
 
+const mergeScopeIds = (...values) =>
+  Array.from(
+    new Set(
+      values
+        .flat()
+        .map((value) => sanitizeNullableInt(value))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    ),
+  );
+
 const resolveSlotClinicId = (req, payloadClinicId) => {
   if (payloadClinicId) {
     return payloadClinicId;
@@ -452,7 +462,15 @@ const fetchAppointmentById = async (id) => {
 // Get all appointments
 router.get('/', async (req, res) => {
   try {
-    const { status, date, infant_id, clinic_id, page = 1, limit = 50 } = req.query;
+    const {
+      status,
+      date,
+      infant_id,
+      clinic_id,
+      facility_id,
+      page = 1,
+      limit = 50,
+    } = req.query;
     const canonicalRole = getCanonicalRole(req);
     const patientFacilityColumn = await getPatientFacilityColumn();
     const appointmentFacilityColumn = await getAppointmentFacilityColumn();
@@ -491,9 +509,13 @@ router.get('/', async (req, res) => {
       params.push(parseInt(req.user.guardian_id, 10));
     }
 
-    if (canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && clinic_id) {
-      query += ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = $${params.length + 1}`;
-      params.push(parseInt(clinic_id, 10));
+    if (canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN) {
+      const scopeIds = mergeScopeIds(clinic_id, facility_id);
+
+      if (scopeIds.length > 0) {
+        query += ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
+        params.push(scopeIds);
+      }
     }
 
     if (status) {

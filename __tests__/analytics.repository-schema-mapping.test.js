@@ -18,6 +18,8 @@ describe('analytics repository schema column mapping', () => {
         { table_name: 'appointments', column_name: 'infant_id' },
         { table_name: 'appointments', column_name: 'facility_id' },
         { table_name: 'appointments', column_name: 'clinic_id' },
+        { table_name: 'guardians', column_name: 'facility_id' },
+        { table_name: 'guardians', column_name: 'clinic_id' },
         { table_name: 'immunization_records', column_name: 'status' },
         { table_name: 'patients', column_name: 'facility_id' },
         { table_name: 'patients', column_name: 'clinic_id' },
@@ -59,6 +61,8 @@ describe('analytics repository schema column mapping', () => {
     expect(mappings.appointmentsPatientFallback).toBe('infant_id');
     expect(mappings.appointmentsScope).toBe('facility_id');
     expect(mappings.appointmentsScopeFallback).toBe('clinic_id');
+    expect(mappings.guardiansScope).toBe('facility_id');
+    expect(mappings.guardiansScopeFallback).toBe('clinic_id');
     expect(mappings.patientsScope).toBe('facility_id');
     expect(mappings.patientsScopeFallback).toBe('clinic_id');
     expect(mappings.immunizationStatus).toBe('status');
@@ -92,6 +96,7 @@ describe('analytics repository schema column mapping', () => {
       rows: [
         { table_name: 'appointments', column_name: 'patient_id' },
         { table_name: 'appointments', column_name: 'facility_id' },
+        { table_name: 'guardians', column_name: 'clinic_id' },
         { table_name: 'patients', column_name: 'facility_id' },
       ],
     });
@@ -108,6 +113,7 @@ describe('analytics repository schema column mapping', () => {
       rows: [
         { table_name: 'appointments', column_name: 'infant_id' },
         { table_name: 'appointments', column_name: 'clinic_id' },
+        { table_name: 'guardians', column_name: 'clinic_id' },
         { table_name: 'patients', column_name: 'clinic_id' },
       ],
     });
@@ -116,6 +122,7 @@ describe('analytics repository schema column mapping', () => {
 
     expect(afterReset.appointmentsPatient).toBe('infant_id');
     expect(afterReset.appointmentsScope).toBe('clinic_id');
+    expect(afterReset.guardiansScope).toBe('clinic_id');
     expect(afterReset.patientsScope).toBe('clinic_id');
     expect(db.query).toHaveBeenCalledTimes(2);
   });

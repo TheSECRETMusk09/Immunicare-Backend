@@ -465,6 +465,14 @@ const sanitizeLimit = (value, fallback = 20, max = 200) => {
   return Math.min(parsed, max);
 };
 
+const sanitizeOffset = (value, fallback = 0) => {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+};
+
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 const guardianOwnsInfant = async (guardianId, infantId) => {
@@ -816,7 +824,8 @@ router.get('/records/infant/:infantId', async (req, res) => {
 router.get('/records', requirePermission('vaccination:view'), async (req, res) => {
   try {
     await ensureVaccinationTrackingColumns();
-    const limit = sanitizeLimit(req.query.limit, 200, 500);
+    const limit = sanitizeLimit(req.query.limit, 200, 5000);
+    const offset = sanitizeOffset(req.query.offset, 0);
     const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
     const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
     const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
@@ -862,9 +871,9 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
         WHERE ir.is_active = true
           AND p.is_active = true
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
-        LIMIT $1
+        LIMIT $1 OFFSET $2
       `,
-      [limit],
+      [limit, offset],
     );
 
     res.json(result.rows.map(normalizeVaccinationProvider));

@@ -505,6 +505,7 @@ const buildSystemUserResponse = (row = {}) => ({
   created_at: row.created_at || null,
   updated_at: row.updated_at || null,
   is_active: Boolean(row.is_active),
+  is_password_set: Boolean(row.is_password_set),
   guardian_id: row.guardian_id || null,
   is_guardian_account:
     Boolean(row.guardian_id) || String(row.role_name || '').toLowerCase() === 'guardian',
@@ -570,6 +571,7 @@ const ensureSystemUserExists = async (userId) => {
        u.created_at,
        u.updated_at,
        u.is_active,
+       (u.password_hash IS NOT NULL) AS is_password_set,
        u.guardian_id,
        u.role_id,
        r.name as role_name,
@@ -1551,6 +1553,7 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
     const result = await client.query(
       `
         SELECT u.id, u.username, u.contact, u.last_login, u.created_at, u.updated_at, u.is_active,
+               (u.password_hash IS NOT NULL) AS is_password_set,
                u.guardian_id,
                u.role_id, r.name as role_name, r.display_name, u.clinic_id, c.name as clinic_name,
                COUNT(*) OVER()::int as filtered_total

@@ -70,6 +70,8 @@ const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   appointmentsPatientFallback: null,
   appointmentsScope: 'clinic_id',
   appointmentsScopeFallback: null,
+  guardiansScope: 'clinic_id',
+  guardiansScopeFallback: null,
   patientsScope: 'facility_id',
   patientsScopeFallback: null,
   immunizationStatus: null,
@@ -129,6 +131,7 @@ const resolveSchemaColumnMappings = async () => {
       [
         [
           'appointments',
+          'guardians',
           'immunization_records',
           'patients',
           'inventory',
@@ -203,6 +206,16 @@ const resolveSchemaColumnMappings = async () => {
     } else if (available.has('patients.clinic_id')) {
       mappings.patientsScope = 'clinic_id';
       mappings.patientsScopeFallback = null;
+    }
+
+    if (available.has('guardians.facility_id')) {
+      mappings.guardiansScope = 'facility_id';
+      mappings.guardiansScopeFallback = available.has('guardians.clinic_id')
+        ? 'clinic_id'
+        : null;
+    } else if (available.has('guardians.clinic_id')) {
+      mappings.guardiansScope = 'clinic_id';
+      mappings.guardiansScopeFallback = null;
     }
 
     if (available.has('patients.sex')) {
@@ -398,6 +411,18 @@ const buildScopedColumnExpression = (alias, primaryColumn, fallbackColumn = null
   return primary || fallback || 'NULL';
 };
 
+const buildScopeMatchPredicate = (scopePlaceholder, expressions = []) => {
+  const scopedExpressions = expressions.filter((expression) => expression && expression !== 'NULL');
+
+  if (!scopedExpressions.length) {
+    return 'TRUE';
+  }
+
+  return `(${scopePlaceholder}::int IS NULL OR ${scopedExpressions
+    .map((expression) => `${expression} = ${scopePlaceholder}`)
+    .join(' OR ')})`;
+};
+
 const buildImmunizationStatusExpression = ({ alias, statusColumn }) => {
   const inferredStatus = `CASE WHEN ${alias}.admin_date IS NOT NULL THEN 'completed' ELSE 'scheduled' END`;
 
@@ -540,27 +565,34 @@ const getVaccineDimension = async () => {
 };
 
 const getInfantGuardianTotals = async ({ facilityId, guardianId }) => {
-  const { patientsScope, patientsScopeFallback } = await getSchemaColumnMappings();
+  const {
+    patientsScope,
+    patientsScopeFallback,
+    guardiansScope,
+    guardiansScopeFallback,
+  } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
+  const scopedPatientPredicate = buildScopeMatchPredicate('$1', [patientScopeExpr, guardianScopeExpr]);
 
   const rows = await mapRows(
     `
+      WITH scoped_patients AS (
+        SELECT
+          p.id,
+          p.guardian_id
+        FROM patients p
+        LEFT JOIN guardians g ON g.id = p.guardian_id
+        WHERE COALESCE(p.is_active, true) = true
+          AND ${scopedPatientPredicate}
+          AND ($2::int IS NULL OR p.guardian_id = $2)
+      )
       SELECT
-        (
-          SELECT COUNT(*)::int
-          FROM patients p
-          WHERE COALESCE(p.is_active, true) = true
-            AND ($1::int IS NULL OR p.guardian_id = $1)
-        ) AS total_infants,
-        (
-          SELECT COUNT(DISTINCT p.guardian_id)::int
-          FROM patients p
-          WHERE COALESCE(p.is_active, true) = true
-            AND p.guardian_id IS NOT NULL
-            AND ($1::int IS NULL OR p.guardian_id = $1)
-        ) AS total_guardians
+        COUNT(*)::int AS total_infants,
+        COUNT(DISTINCT guardian_id) FILTER (WHERE guardian_id IS NOT NULL)::int AS total_guardians
+      FROM scoped_patients
     `,
-    [guardianId],
+    [facilityId, guardianId],
   );
 
   return rows[0] || { total_infants: 0, total_guardians: 0 };
@@ -575,12 +607,23 @@ const getVaccinationSnapshot = async ({
   overdueOnly,
   guardianId,
 }) => {
-  const { patientsScope, patientsScopeFallback, immunizationStatus } = await getSchemaColumnMappings();
+  const {
+    patientsScope,
+    patientsScopeFallback,
+    guardiansScope,
+    guardiansScopeFallback,
+    immunizationStatus,
+  } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const immunizationStatusExpr = buildImmunizationStatusExpression({
     alias: 'ir',
     statusColumn: immunizationStatus,
   });
+  const scopedVaccinationPredicate = buildScopeMatchPredicate('$7', [
+    patientScopeExpr,
+    guardianScopeExpr,
+  ]);
 
   const rows = await mapRows(
     `
@@ -620,8 +663,10 @@ const getVaccinationSnapshot = async ({
         )::int AS unique_infants_served
       FROM immunization_records ir
       JOIN patients p ON p.id = ir.patient_id
+      LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(ir.is_active, true) = true
         AND COALESCE(p.is_active, true) = true
+        AND ${scopedVaccinationPredicate}
         AND ($6::int IS NULL OR p.guardian_id = $6)
         AND ($3::int[] IS NULL OR ir.vaccine_id = ANY($3::int[]))
         AND (
@@ -643,6 +688,7 @@ const getVaccinationSnapshot = async ({
       toNullableArray(statuses),
       Boolean(overdueOnly),
       guardianId,
+      facilityId,
     ],
   );
 
@@ -664,12 +710,23 @@ const getVaccinationStatusBreakdown = async ({
   statuses,
   guardianId,
 }) => {
-  const { patientsScope, patientsScopeFallback, immunizationStatus } = await getSchemaColumnMappings();
+  const {
+    patientsScope,
+    patientsScopeFallback,
+    guardiansScope,
+    guardiansScopeFallback,
+    immunizationStatus,
+  } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const immunizationStatusExpr = buildImmunizationStatusExpression({
     alias: 'ir',
     statusColumn: immunizationStatus,
   });
+  const scopedVaccinationPredicate = buildScopeMatchPredicate('$1', [
+    patientScopeExpr,
+    guardianScopeExpr,
+  ]);
 
   const rows = await mapRows(
     `
@@ -678,9 +735,10 @@ const getVaccinationStatusBreakdown = async ({
         COUNT(*)::int AS count
       FROM immunization_records ir
       JOIN patients p ON p.id = ir.patient_id
+      LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(ir.is_active, true) = true
         AND COALESCE(p.is_active, true) = true
-        AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+        AND ${scopedVaccinationPredicate}
         AND ($6::int IS NULL OR p.guardian_id = $6)
         AND ($2::int[] IS NULL OR ir.vaccine_id = ANY($2::int[]))
         AND (
@@ -712,6 +770,8 @@ const getAppointmentSnapshot = async ({
     appointmentsScopeFallback,
     appointmentsPatient,
     appointmentsPatientFallback,
+    guardiansScope,
+    guardiansScopeFallback,
     patientsScope,
     patientsScopeFallback,
   } = await getSchemaColumnMappings();
@@ -721,11 +781,17 @@ const getAppointmentSnapshot = async ({
     appointmentsPatientFallback,
   );
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const appointmentScopeExpr = buildScopedColumnExpression(
     'a',
     appointmentsScope,
     appointmentsScopeFallback,
   );
+  const scopedAppointmentPredicate = buildScopeMatchPredicate('$1', [
+    appointmentScopeExpr,
+    patientScopeExpr,
+    guardianScopeExpr,
+  ]);
 
   const rows = await mapRows(
     `
@@ -762,8 +828,9 @@ const getAppointmentSnapshot = async ({
         )::int AS followups_in_period
       FROM appointments a
       LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
+      LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(a.is_active, true) = true
-        AND ($1::int IS NULL OR COALESCE(${patientScopeExpr}, ${appointmentScopeExpr}) = $1)
+        AND ${scopedAppointmentPredicate}
         AND ($6::int IS NULL OR p.guardian_id = $6)
         AND (
           $4::text[] IS NULL
@@ -805,6 +872,8 @@ const getAppointmentStatusBreakdown = async ({
     appointmentsScopeFallback,
     appointmentsPatient,
     appointmentsPatientFallback,
+    guardiansScope,
+    guardiansScopeFallback,
     patientsScope,
     patientsScopeFallback,
   } = await getSchemaColumnMappings();
@@ -814,11 +883,17 @@ const getAppointmentStatusBreakdown = async ({
     appointmentsPatientFallback,
   );
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const appointmentScopeExpr = buildScopedColumnExpression(
     'a',
     appointmentsScope,
     appointmentsScopeFallback,
   );
+  const scopedAppointmentPredicate = buildScopeMatchPredicate('$1', [
+    appointmentScopeExpr,
+    patientScopeExpr,
+    guardianScopeExpr,
+  ]);
 
   const rows = await mapRows(
     `
@@ -827,8 +902,9 @@ const getAppointmentStatusBreakdown = async ({
         COUNT(*)::int AS count
       FROM appointments a
       LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
+      LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(a.is_active, true) = true
-        AND ($1::int IS NULL OR COALESCE(${patientScopeExpr}, ${appointmentScopeExpr}) = $1)
+        AND ${scopedAppointmentPredicate}
         AND ($5::int IS NULL OR p.guardian_id = $5)
         AND a.scheduled_date::date BETWEEN $2::date AND $3::date
         AND (
@@ -971,12 +1047,23 @@ const getVaccineProgress = async ({
   vaccineKeys,
   guardianId,
 }) => {
-  const { patientsScope, patientsScopeFallback, immunizationStatus } = await getSchemaColumnMappings();
+  const {
+    patientsScope,
+    patientsScopeFallback,
+    guardiansScope,
+    guardiansScopeFallback,
+    immunizationStatus,
+  } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const immunizationStatusExpr = buildImmunizationStatusExpression({
     alias: 'ir',
     statusColumn: immunizationStatus,
   });
+  const scopedVaccinationPredicate = buildScopeMatchPredicate('$1', [
+    patientScopeExpr,
+    guardianScopeExpr,
+  ]);
 
   const rows = await mapRows(
     `
@@ -996,9 +1083,10 @@ const getVaccineProgress = async ({
           ir.next_due_date::date AS next_due_date
         FROM immunization_records ir
         JOIN patients p ON p.id = ir.patient_id
+        LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE COALESCE(ir.is_active, true) = true
           AND COALESCE(p.is_active, true) = true
-          AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+          AND ${scopedVaccinationPredicate}
           AND ($7::int IS NULL OR p.guardian_id = $7)
       )
       SELECT
@@ -1051,12 +1139,23 @@ const getDailyVaccinationTrend = async ({
   statuses,
   guardianId,
 }) => {
-  const { patientsScope, patientsScopeFallback, immunizationStatus } = await getSchemaColumnMappings();
+  const {
+    patientsScope,
+    patientsScopeFallback,
+    guardiansScope,
+    guardiansScopeFallback,
+    immunizationStatus,
+  } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const immunizationStatusExpr = buildImmunizationStatusExpression({
     alias: 'ir',
     statusColumn: immunizationStatus,
   });
+  const scopedVaccinationPredicate = buildScopeMatchPredicate('$1', [
+    patientScopeExpr,
+    guardianScopeExpr,
+  ]);
 
   const rows = await mapRows(
     `
@@ -1065,10 +1164,11 @@ const getDailyVaccinationTrend = async ({
         COUNT(*)::int AS count
       FROM immunization_records ir
       JOIN patients p ON p.id = ir.patient_id
+      LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(ir.is_active, true) = true
         AND COALESCE(p.is_active, true) = true
         AND ir.admin_date BETWEEN $2::date AND $3::date
-        AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+        AND ${scopedVaccinationPredicate}
         AND ($6::int IS NULL OR p.guardian_id = $6)
         AND ($4::int[] IS NULL OR ir.vaccine_id = ANY($4::int[]))
         AND (
@@ -1090,6 +1190,8 @@ const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, status
     appointmentsScopeFallback,
     appointmentsPatient,
     appointmentsPatientFallback,
+    guardiansScope,
+    guardiansScopeFallback,
     patientsScope,
     patientsScopeFallback,
   } = await getSchemaColumnMappings();
@@ -1099,11 +1201,17 @@ const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, status
     appointmentsPatientFallback,
   );
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const appointmentScopeExpr = buildScopedColumnExpression(
     'a',
     appointmentsScope,
     appointmentsScopeFallback,
   );
+  const scopedAppointmentPredicate = buildScopeMatchPredicate('$1', [
+    appointmentScopeExpr,
+    patientScopeExpr,
+    guardianScopeExpr,
+  ]);
 
   const rows = await mapRows(
     `
@@ -1112,9 +1220,10 @@ const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, status
         COUNT(*)::int AS count
       FROM appointments a
       LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
+      LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(a.is_active, true) = true
         AND a.scheduled_date::date BETWEEN $2::date AND $3::date
-        AND ($1::int IS NULL OR COALESCE(${patientScopeExpr}, ${appointmentScopeExpr}) = $1)
+        AND ${scopedAppointmentPredicate}
         AND ($5::int IS NULL OR p.guardian_id = $5)
         AND (
           $4::text[] IS NULL
@@ -1131,14 +1240,18 @@ const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, status
 
 const getDemographics = async ({ facilityId, guardianId }) => {
   const {
+    guardiansScope,
+    guardiansScopeFallback,
     patientsScope,
     patientsScopeFallback,
     patientsSex,
     patientsGender,
   } = await getSchemaColumnMappings();
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
+  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const patientSexExpr = patientsSex ? `p.${patientsSex}` : 'NULL';
   const patientGenderExpr = patientsGender ? `p.${patientsGender}` : 'NULL';
+  const scopedPatientPredicate = buildScopeMatchPredicate('$1', [patientScopeExpr, guardianScopeExpr]);
 
   const ageRows = await mapRows(
     `
@@ -1147,8 +1260,9 @@ const getDemographics = async ({ facilityId, guardianId }) => {
           p.id,
           p.dob
         FROM patients p
+        LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE COALESCE(p.is_active, true) = true
-          AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+          AND ${scopedPatientPredicate}
           AND ($2::int IS NULL OR p.guardian_id = $2)
       )
       SELECT
@@ -1196,8 +1310,9 @@ const getDemographics = async ({ facilityId, guardianId }) => {
           ${patientSexExpr} AS sex,
           ${patientGenderExpr} AS gender
         FROM patients p
+        LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE COALESCE(p.is_active, true) = true
-          AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+          AND ${scopedPatientPredicate}
           AND ($2::int IS NULL OR p.guardian_id = $2)
       ),
       gender_counts AS (
@@ -1232,8 +1347,9 @@ const getDemographics = async ({ facilityId, guardianId }) => {
         COUNT(*)::int AS infants,
         COUNT(DISTINCT p.guardian_id)::int AS guardians
       FROM patients p
+      LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(p.is_active, true) = true
-        AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
+        AND ${scopedPatientPredicate}
         AND ($2::int IS NULL OR p.guardian_id = $2)
     `,
     [facilityId, guardianId],
@@ -1522,12 +1638,16 @@ const resetSchemaColumnMappingCache = () => {
 const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
   const mappings = await getSchemaColumnMappings();
   const {
-    inventoryScope,
-    inventoryScopeFallback,
+    inventoryAlertsScope,
+    inventoryAlertsScopeFallback,
     inventoryLowStockThreshold,
     inventoryCriticalStockThreshold,
   } = mappings;
-  const inventoryScopeExpr = inventoryScope ? buildScopedColumnExpression('vi', inventoryScope, inventoryScopeFallback) : null;
+  const inventoryAlertScopeExpr = buildScopedColumnExpression(
+    'vsa',
+    inventoryAlertsScope,
+    inventoryAlertsScopeFallback,
+  );
   const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
   const lowThresholdExpr = inventoryLowStockThreshold
     ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
@@ -1535,26 +1655,71 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
   const criticalThresholdExpr = inventoryCriticalStockThreshold
     ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
     : '5';
-
+  const activeStockAlertPredicate = buildActiveStockAlertPredicate({
+    alias: 'vsa',
+    mappings,
+  });
+  const stockAlertTimestampExpr = buildStockAlertTimestampExpression({
+    alias: 'vsa',
+    mappings,
+  });
+  const stockAlertScopePredicate = buildScopeMatchPredicate('$1', [inventoryAlertScopeExpr]);
   const stockAlertSeverityExpr = buildStockAlertSeverityExpression({
     alias: 'vsa',
     mappings,
-    stockExpr,
-    lowThresholdExpr,
-    criticalThresholdExpr,
+    stockExpr: mappings.stockAlertsCurrentStock
+      ? `COALESCE(vsa.${mappings.stockAlertsCurrentStock}, 0)`
+      : '0',
+    lowThresholdExpr: mappings.stockAlertsThresholdValue
+      ? `COALESCE(vsa.${mappings.stockAlertsThresholdValue}, 0)`
+      : '0',
+    criticalThresholdExpr: mappings.stockAlertsThresholdValue
+      ? `COALESCE(vsa.${mappings.stockAlertsThresholdValue}, 0)`
+      : '0',
   });
-
   const stockAlertMessageExpr = mappings.stockAlertsMessage
-    ? `vsa.${mappings.stockAlertsMessage}`
-    : `CONCAT(v.name, ' is low on stock (', ${stockExpr}, ' doses remaining)')`;
+    ? `COALESCE(NULLIF(vsa.${mappings.stockAlertsMessage}, ''), CONCAT(COALESCE(v.name, 'Vaccine'), ' stock alert'))`
+    : `CONCAT(COALESCE(v.name, 'Vaccine'), ' stock alert')`;
+  const stockAlertCurrentStockExpr = mappings.stockAlertsCurrentStock
+    ? `COALESCE(vsa.${mappings.stockAlertsCurrentStock}, 0)`
+    : '0';
+  const stockAlertThresholdExpr = mappings.stockAlertsThresholdValue
+    ? `COALESCE(vsa.${mappings.stockAlertsThresholdValue}, 0)`
+    : '0';
 
-  const stockAlertTimestampExpr = mappings.stockAlertsCreatedAt
-    ? `vsa.${mappings.stockAlertsCreatedAt}`
-    : 'CURRENT_TIMESTAMP';
+  const activeAlertRows = await mapRows(
+    `
+      SELECT
+        vsa.id::text AS id,
+        'inventory'::text AS type,
+        ${stockAlertSeverityExpr} AS severity,
+        ${stockAlertMessageExpr} AS message,
+        ${stockAlertTimestampExpr} AS alert_at,
+        v.id AS vaccine_id,
+        COALESCE(v.name, 'Vaccine') AS vaccine_name,
+        ${stockAlertCurrentStockExpr}::int AS current_stock,
+        ${stockAlertThresholdExpr}::int AS threshold_value
+      FROM vaccine_stock_alerts vsa
+      LEFT JOIN vaccines v ON v.id = vsa.vaccine_id
+      WHERE ${activeStockAlertPredicate}
+        AND ${stockAlertScopePredicate}
+        AND ($2::int[] IS NULL OR vsa.vaccine_id = ANY($2::int[]))
+      ORDER BY
+        CASE
+          WHEN ${stockAlertSeverityExpr} = 'critical' THEN 0
+          ELSE 1
+        END ASC,
+        ${stockAlertTimestampExpr} DESC
+      LIMIT $3
+    `,
+    [facilityId, toNullableArray(vaccineIds), limit || 50],
+  );
 
-  // Since inventory table has no facility scoping, we ignore facilityId
-  // and just query all low stock items globally
-  const rows = await mapRows(
+  if (activeAlertRows.length > 0) {
+    return activeAlertRows;
+  }
+
+  const derivedRows = await mapRows(
     `
       SELECT
         vi.id::text AS id,
@@ -1586,7 +1751,7 @@ const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
     [toNullableArray(vaccineIds), limit || 50],
   );
 
-  return rows;
+  return derivedRows;
 };
 
 const getFailedSmsCount = async ({ startDate, endDate }) => {

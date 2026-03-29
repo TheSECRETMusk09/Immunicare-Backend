@@ -499,6 +499,65 @@ const getUserDisplayJoinSpec = async (foreignKeyExpression, aliasBase) => {
   };
 };
 
+const getInventoryActorJoinSpec = async (foreignKeyExpression, aliasBase) => {
+  const usersTableName = await resolveFirstExistingTable(['users'], null);
+  const adminTableName = await resolveFirstExistingTable(['admin'], null);
+  const rolesTableName = await resolveFirstExistingTable(['roles'], null);
+  const joins = [];
+  const displayNameExpressions = [];
+  const usernameExpressions = [];
+  const roleExpressions = [];
+
+  if (usersTableName) {
+    const usersAlias = `${aliasBase}_users`;
+    joins.push(`LEFT JOIN ${usersTableName} ${usersAlias} ON ${foreignKeyExpression} = ${usersAlias}.id`);
+    displayNameExpressions.push(getUserDisplayNameExpression('users', usersAlias));
+    usernameExpressions.push(`${usersAlias}.username`);
+
+    const userRoleColumn = await resolveFirstExistingColumn(
+      'users',
+      ['role', 'role_name', 'role_type', 'role_id'],
+      null,
+    );
+
+    if (userRoleColumn === 'role_id' && rolesTableName) {
+      const rolesAlias = `${aliasBase}_users_roles`;
+      joins.push(`LEFT JOIN ${rolesTableName} ${rolesAlias} ON ${usersAlias}.role_id = ${rolesAlias}.id`);
+      roleExpressions.push(`${rolesAlias}.display_name`, `${rolesAlias}.name`);
+    } else if (userRoleColumn) {
+      roleExpressions.push(`${usersAlias}.${userRoleColumn}`);
+    }
+  }
+
+  if (adminTableName) {
+    const adminAlias = `${aliasBase}_admin`;
+    joins.push(`LEFT JOIN ${adminTableName} ${adminAlias} ON ${foreignKeyExpression} = ${adminAlias}.id`);
+    displayNameExpressions.push(getUserDisplayNameExpression('admin', adminAlias));
+    usernameExpressions.push(`${adminAlias}.username`);
+
+    const adminRoleColumn = await resolveFirstExistingColumn(
+      'admin',
+      ['role', 'role_name'],
+      null,
+    );
+
+    if (adminRoleColumn) {
+      roleExpressions.push(`${adminAlias}.${adminRoleColumn}`);
+    }
+  }
+
+  return {
+    joins,
+    displayNameSql: displayNameExpressions.length
+      ? `COALESCE(${displayNameExpressions.join(', ')})`
+      : 'NULL',
+    usernameSql: usernameExpressions.length
+      ? `COALESCE(${usernameExpressions.join(', ')})`
+      : 'NULL',
+    roleSql: roleExpressions.length ? `COALESCE(${roleExpressions.join(', ')})` : 'NULL',
+  };
+};
+
 const getAuthenticatedUserDisplayName = (user = {}) => {
   const fullName = sanitizeText(
     [user.first_name, user.last_name].filter(Boolean).join(' '),
@@ -1396,12 +1455,14 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
 
     const safeLimit = limitCheck.value || 100;
     const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
-    const performerJoinSpec = await getUserDisplayJoinSpec('vit.performed_by', 'performer');
+    const performerJoinSpec = await getInventoryActorJoinSpec('vit.performed_by', 'performer');
     const approverJoinSpec = await getUserDisplayJoinSpec('vit.approved_by', 'approver');
 
     let query = `
       SELECT vit.*, v.name as vaccine_name, v.code as vaccine_code,
              ${performerJoinSpec.displayNameSql} as performed_by_name,
+             ${performerJoinSpec.usernameSql} as performed_by_username,
+             ${performerJoinSpec.roleSql} as performed_by_role,
              ${approverJoinSpec.displayNameSql} as approved_by_name
       FROM vaccine_inventory_transactions vit
       JOIN vaccines v ON vit.vaccine_id = v.id
