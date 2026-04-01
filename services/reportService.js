@@ -6,6 +6,7 @@ const PDFDocument = require('pdfkit');
 const pool = require('../db');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 const { getAdminMetricsSummary } = require('./adminMetricsService');
+const { getDashboardAnalytics } = require('./analyticsService');
 
 const REPORT_TYPES = Object.freeze([
   'vaccination',
@@ -2472,6 +2473,50 @@ class ReportService {
       scopeIds,
     });
 
+    const analyticsQuery = {
+      period:
+        normalizedStartDate || normalizedEndDate
+          ? 'custom'
+          : 'month',
+      vaccineType: 'ALL',
+      vaccinationStatus: 'all',
+      startDate:
+        normalizedStartDate || normalizedEndDate || undefined,
+      endDate:
+        normalizedEndDate || normalizedStartDate || undefined,
+      facilityId: facilityId || scopeIds[0] || undefined,
+    };
+
+    let dashboardAnalytics = null;
+    try {
+      dashboardAnalytics = await getDashboardAnalytics({
+        query: analyticsQuery,
+        user:
+          facilityId || scopeIds.length > 0
+            ? {
+              clinic_id: facilityId || scopeIds[0],
+              facility_id: facilityId || scopeIds[0],
+            }
+            : {},
+      });
+    } catch (analyticsError) {
+      console.error('Error fetching analytics-backed report summary:', analyticsError);
+    }
+
+    const analyticsSummary = dashboardAnalytics?.summary || null;
+    const liveVaccinationCount = analyticsSummary
+      ? this.toInteger(analyticsSummary.administeredInPeriod, coreSummary.vaccination.total)
+      : coreSummary.vaccination.total;
+    const liveInfantTotal = analyticsSummary
+      ? this.toInteger(analyticsSummary.totalRegisteredInfants, coreSummary.infants.total)
+      : coreSummary.infants.total;
+    const liveGuardianTotal = analyticsSummary
+      ? this.toInteger(analyticsSummary.totalGuardians, coreSummary.guardians.total)
+      : coreSummary.guardians.total;
+    const liveLowStockCount = analyticsSummary
+      ? this.toInteger(analyticsSummary.lowStockVaccines, coreSummary.inventory.low_stock_items)
+      : coreSummary.inventory.low_stock_items;
+
     const reportActivityQuery = `
         SELECT
           COUNT(*)::int AS total_reports,
@@ -2518,11 +2563,25 @@ class ReportService {
     ]);
 
     return {
-      vaccination: coreSummary.vaccination,
-      inventory: coreSummary.inventory,
+      vaccination: {
+        ...coreSummary.vaccination,
+        total: liveVaccinationCount,
+        completed: liveVaccinationCount,
+      },
+      inventory: {
+        ...coreSummary.inventory,
+        low_stock_items: liveLowStockCount,
+      },
       appointments: coreSummary.appointments,
-      guardians: coreSummary.guardians,
-      infants: coreSummary.infants,
+      guardians: {
+        ...coreSummary.guardians,
+        total: liveGuardianTotal,
+        active: liveGuardianTotal,
+      },
+      infants: {
+        ...coreSummary.infants,
+        total: liveInfantTotal,
+      },
       reports:
           reports.rows[0] || {
             total_reports: 0,

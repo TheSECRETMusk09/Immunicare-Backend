@@ -7,8 +7,46 @@
 const express = require('express');
 const router = express.Router();
 const guardianNotificationService = require('../services/guardianNotificationService');
+const socketService = require('../services/socketService');
 const { authenticateGuardian } = require('../middleware/guardianAuth');
 const logger = require('../config/logger');
+
+const parseIntegerString = (value) => {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : null;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmedValue = value.trim();
+  if (!/^\d+$/.test(trimmedValue)) {
+    return null;
+  }
+
+  return Number(trimmedValue);
+};
+
+const parseNonNegativeInteger = (value, fieldName, defaultValue) => {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+
+  const parsedValue = parseIntegerString(value);
+  if (parsedValue === null || parsedValue < 0) {
+    return {
+      error: `${fieldName} must be a non-negative integer`,
+    };
+  }
+
+  return parsedValue;
+};
+
+const parseNotificationId = (value) => {
+  const parsedValue = parseIntegerString(value);
+  return parsedValue === null || parsedValue <= 0 ? null : parsedValue;
+};
 
 /**
  * @route GET /api/guardian/notifications
@@ -19,10 +57,25 @@ router.get('/', authenticateGuardian, async (req, res) => {
   try {
     const guardianId = req.guardian.id;
     const { limit = 50, offset = 0, unreadOnly, type, search } = req.query;
+    const parsedLimit = parseNonNegativeInteger(limit, 'limit', 50);
+    if (parsedLimit?.error) {
+      return res.status(400).json({
+        success: false,
+        message: parsedLimit.error,
+      });
+    }
+
+    const parsedOffset = parseNonNegativeInteger(offset, 'offset', 0);
+    if (parsedOffset?.error) {
+      return res.status(400).json({
+        success: false,
+        message: parsedOffset.error,
+      });
+    }
 
     const notifications = await guardianNotificationService.getGuardianNotifications(guardianId, {
-      limit: parseInt(limit, 10),
-      offset: parseInt(offset, 10),
+      limit: parsedLimit,
+      offset: parsedOffset,
       unreadOnly: unreadOnly === 'true',
       type,
       search,
@@ -74,9 +127,9 @@ router.get('/unread-count', authenticateGuardian, async (req, res) => {
 router.get('/:id', authenticateGuardian, async (req, res) => {
   try {
     const guardianId = req.guardian.id;
-    const notificationId = parseInt(req.params.id, 10);
+    const notificationId = parseNotificationId(req.params.id);
 
-    if (Number.isNaN(notificationId)) {
+    if (!notificationId) {
       return res.status(400).json({
         success: false,
         message: 'Invalid notification ID',
@@ -116,7 +169,14 @@ router.get('/:id', authenticateGuardian, async (req, res) => {
 router.patch('/:id/read', authenticateGuardian, async (req, res) => {
   try {
     const guardianId = req.guardian.id;
-    const notificationId = parseInt(req.params.id, 10);
+    const notificationId = parseNotificationId(req.params.id);
+
+    if (!notificationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid notification ID',
+      });
+    }
 
     const notification = await guardianNotificationService.markAsRead(notificationId, guardianId);
 
@@ -132,10 +192,17 @@ router.patch('/:id/read', authenticateGuardian, async (req, res) => {
       data: notification,
       message: 'Notification marked as read',
     });
+    socketService.sendToGuardian(guardianId, 'notification-updated', {
+      notificationId,
+      status: 'read',
+      isRead: true,
+      is_read: true,
+    });
   } catch (error) {
     logger.error('Error marking notification as read:', error);
 
-    if (error.message.includes('not found') || error.message.includes('not authorized')) {
+    const errorMessage = String(error?.message || '');
+    if (errorMessage.includes('not found') || errorMessage.includes('not authorized')) {
       return res.status(404).json({
         success: false,
         message: 'Notification not found or not authorized',
@@ -157,7 +224,14 @@ router.patch('/:id/read', authenticateGuardian, async (req, res) => {
 router.patch('/:id/unread', authenticateGuardian, async (req, res) => {
   try {
     const guardianId = req.guardian.id;
-    const notificationId = parseInt(req.params.id, 10);
+    const notificationId = parseNotificationId(req.params.id);
+
+    if (!notificationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid notification ID',
+      });
+    }
 
     const notification = await guardianNotificationService.markAsUnread(notificationId, guardianId);
 
@@ -172,6 +246,12 @@ router.patch('/:id/unread', authenticateGuardian, async (req, res) => {
       success: true,
       data: notification,
       message: 'Notification marked as unread',
+    });
+    socketService.sendToGuardian(guardianId, 'notification-updated', {
+      notificationId,
+      status: 'unread',
+      isRead: false,
+      is_read: false,
     });
   } catch (error) {
     logger.error('Error marking notification as unread:', error);
@@ -197,6 +277,9 @@ router.patch('/read-all', authenticateGuardian, async (req, res) => {
       message: `Marked ${count} notifications as read`,
       count,
     });
+    socketService.sendToGuardian(guardianId, 'notifications-read-all', {
+      count,
+    });
   } catch (error) {
     logger.error('Error marking all notifications as read:', error);
     res.status(500).json({
@@ -214,9 +297,9 @@ router.patch('/read-all', authenticateGuardian, async (req, res) => {
 router.delete('/:id', authenticateGuardian, async (req, res) => {
   try {
     const guardianId = req.guardian.id;
-    const notificationId = parseInt(req.params.id, 10);
+    const notificationId = parseNotificationId(req.params.id);
 
-    if (Number.isNaN(notificationId)) {
+    if (!notificationId) {
       return res.status(400).json({
         success: false,
         message: 'Invalid notification ID',
@@ -235,6 +318,9 @@ router.delete('/:id', authenticateGuardian, async (req, res) => {
     res.json({
       success: true,
       message: 'Notification deleted',
+    });
+    socketService.sendToGuardian(guardianId, 'notification-deleted', {
+      notificationId,
     });
   } catch (error) {
     logger.error('Error deleting notification:', error);

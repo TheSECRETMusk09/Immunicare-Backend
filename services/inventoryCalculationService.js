@@ -5,6 +5,78 @@
  */
 
 const pool = require('../db');
+const schemaCache = {
+  columns: new Map(),
+  tables: new Map(),
+};
+
+const resolveFirstExistingColumn = async (
+  tableName,
+  candidateColumns,
+  fallback = candidateColumns[0],
+) => {
+  const cacheKey = `${tableName}:${candidateColumns.join(',')}`;
+  if (schemaCache.columns.has(cacheKey)) {
+    return schemaCache.columns.get(cacheKey);
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = ANY($2::text[])
+      `,
+      [tableName, candidateColumns],
+    );
+
+    const availableColumns = new Set(result.rows.map((row) => row.column_name));
+    const resolvedColumn =
+      candidateColumns.find((columnName) => availableColumns.has(columnName)) ||
+      fallback;
+
+    schemaCache.columns.set(cacheKey, resolvedColumn);
+    return resolvedColumn;
+  } catch (_error) {
+    schemaCache.columns.set(cacheKey, fallback);
+    return fallback;
+  }
+};
+
+const resolveFirstExistingTable = async (
+  candidateTables,
+  fallback = candidateTables[0],
+) => {
+  const cacheKey = candidateTables.join(',');
+  if (schemaCache.tables.has(cacheKey)) {
+    return schemaCache.tables.get(cacheKey);
+  }
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = ANY($1::text[])
+      `,
+      [candidateTables],
+    );
+
+    const availableTables = new Set(result.rows.map((row) => row.table_name));
+    const resolvedTable =
+      candidateTables.find((tableName) => availableTables.has(tableName)) ||
+      fallback;
+
+    schemaCache.tables.set(cacheKey, resolvedTable);
+    return resolvedTable;
+  } catch (_error) {
+    schemaCache.tables.set(cacheKey, fallback);
+    return fallback;
+  }
+};
 
 class InventoryCalculationService {
   /**
@@ -175,6 +247,67 @@ class InventoryCalculationService {
    */
   async getAvailableLots(vaccineId, clinicId) {
     try {
+      const batchesTableName = await resolveFirstExistingTable(['vaccine_batches'], null);
+
+      if (batchesTableName) {
+        const batchFacilityColumn = await resolveFirstExistingColumn(
+          batchesTableName,
+          ['clinic_id', 'facility_id'],
+          'clinic_id',
+        );
+        const batchLotColumn = await resolveFirstExistingColumn(
+          batchesTableName,
+          ['lot_no', 'lot_number'],
+          'lot_no',
+        );
+        const batchStorageColumn = await resolveFirstExistingColumn(
+          batchesTableName,
+          ['storage_location', 'storage_conditions'],
+          'storage_conditions',
+        );
+
+        const batchResult = await pool.query(
+          `
+          SELECT
+            vb.id AS batch_id,
+            vb.vaccine_id,
+            COALESCE(
+              NULLIF(TRIM(vb.${batchLotColumn}), ''),
+              'BATCH-' || vb.id::text
+            ) AS lot_number,
+            COALESCE(vb.qty_current, 0)::int AS available_quantity,
+            vb.expiry_date,
+            NULLIF(TRIM(vb.${batchStorageColumn}), '') AS storage_location,
+            v.name AS vaccine_name,
+            v.code AS vaccine_code
+          FROM ${batchesTableName} vb
+          JOIN vaccines v ON v.id = vb.vaccine_id
+          WHERE vb.vaccine_id = $1
+            AND vb.${batchFacilityColumn} = $2
+            AND COALESCE(vb.qty_current, 0) > 0
+            AND COALESCE(vb.is_active, true) = true
+            AND (vb.expiry_date IS NULL OR vb.expiry_date >= CURRENT_DATE)
+          ORDER BY vb.expiry_date ASC NULLS LAST, vb.qty_current DESC, vb.id DESC
+          `,
+          [vaccineId, clinicId]
+        );
+
+        return batchResult.rows.map((row) => ({
+          batch_id: row.batch_id,
+          inventory_id: row.batch_id,
+          lot_number: row.lot_number,
+          batch_number: row.lot_number,
+          stock: row.available_quantity,
+          available_quantity: row.available_quantity,
+          expiry_date: row.expiry_date,
+          storage_location: row.storage_location || null,
+          vaccine_name: row.vaccine_name,
+          vaccine_code: row.vaccine_code,
+          is_low_stock: row.available_quantity <= 10,
+          is_critical: row.available_quantity <= 5,
+        }));
+      }
+
       const result = await pool.query(
         `
         SELECT 
@@ -198,11 +331,14 @@ class InventoryCalculationService {
       );
 
       return result.rows.map(row => ({
+        batch_id: row.inventory_id,
         inventory_id: row.inventory_id,
         lot_number: row.lot_batch_number || `INV-${row.inventory_id}`,
         batch_number: row.lot_batch_number,
         stock: row.stock_on_hand,
+        available_quantity: row.stock_on_hand,
         expiry_date: row.expiry_date,
+        storage_location: null,
         vaccine_name: row.vaccine_name,
         vaccine_code: row.vaccine_code,
         is_low_stock: row.stock_on_hand <= (row.low_stock_threshold || 10),

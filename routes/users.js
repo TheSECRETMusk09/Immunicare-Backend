@@ -16,6 +16,7 @@ const {
   encryptPasswordForVisibility,
   decryptPasswordVisibilityPayload,
 } = require('../utils/passwordVisibilityCrypto');
+const { resolvePrimaryUserScopeId } = require('../services/entityScopeService');
 
 const router = express.Router();
 
@@ -1093,6 +1094,7 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
   const client = await pool.connect();
   try {
     const { name, phone, email, address, relationship } = req.body;
+    const clinicId = resolvePrimaryUserScopeId(req.user);
 
     if (!name || !phone) {
       return res.status(400).json({
@@ -1110,13 +1112,14 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
          email,
          address,
          relationship,
+         clinic_id,
          is_active,
          is_password_set,
          must_change_password
        )
-       VALUES ($1, $2, $3, $4, $5, true, false, true)
+       VALUES ($1, $2, $3, $4, $5, $6, true, false, true)
        RETURNING *`,
-      [name, phone, email, address, relationship],
+      [name, phone, email, address, relationship, clinicId],
     );
 
     const guardian = result.rows[0];

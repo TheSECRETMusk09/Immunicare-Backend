@@ -88,6 +88,7 @@ describe('adminMetricsService scope handling', () => {
     const vaccinationQuery = db.query.mock.calls[1][0];
     const vaccinationParams = db.query.mock.calls[1][1];
     expect(vaccinationQuery).toContain('COALESCE(p.facility_id, p.clinic_id) = ANY');
+    expect(vaccinationQuery).toContain('g.clinic_id = ANY');
     expect(vaccinationParams[0]).toEqual([7, 9]);
 
     const inventoryQuery = db.query.mock.calls[2][0];

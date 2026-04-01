@@ -64,7 +64,7 @@ class GuardianNotificationService {
       return parseInt(result.rows[0].count, 10);
     } catch (error) {
       logger.error('Error fetching unread notification count:', error);
-      return 0;
+      throw error;
     }
   }
 
@@ -98,7 +98,7 @@ class GuardianNotificationService {
       const result = await pool.query(
         `UPDATE notifications
          SET is_read = TRUE, read_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND guardian_id = $2
+         WHERE id = $1 AND guardian_id = $2 AND target_role != 'admin'
          RETURNING *`,
         [notificationId, guardianId],
       );
@@ -117,7 +117,7 @@ class GuardianNotificationService {
       const result = await pool.query(
         `UPDATE notifications
          SET is_read = FALSE, read_at = NULL, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND guardian_id = $2
+         WHERE id = $1 AND guardian_id = $2 AND target_role != 'admin'
          RETURNING *`,
         [notificationId, guardianId],
       );
@@ -156,7 +156,7 @@ class GuardianNotificationService {
     try {
       const result = await pool.query(
         `DELETE FROM notifications
-         WHERE id = $1 AND guardian_id = $2
+         WHERE id = $1 AND guardian_id = $2 AND target_role != 'admin'
          RETURNING id`,
         [notificationId, guardianId],
       );

@@ -410,7 +410,7 @@ const collectDashboardData = async ({ filters }) => {
     infantsDueForVaccination: mapInt(vaccinationSnapshot.due_in_period),
     dueSoon7Days: mapInt(vaccinationSnapshot.due_soon_7_days),
     overdueVaccinations: mapInt(vaccinationSnapshot.overdue_count),
-    pendingAppointments: mapInt(appointmentSnapshot.pending_in_period),
+    pendingAppointments: mapInt(appointmentSnapshot.total_pending),
     lowStockVaccines: mapInt(inventorySnapshot.low_stock_count),
     totalAvailableVaccineDoses: mapInt(inventorySnapshot.total_available_doses),
     uniqueInfantsServed: mapInt(vaccinationSnapshot.unique_infants_served),

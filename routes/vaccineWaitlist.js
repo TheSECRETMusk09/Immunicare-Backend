@@ -8,6 +8,7 @@ const router = express.Router();
 const pool = require('../db');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { getCanonicalRole, CANONICAL_ROLES } = require('../middleware/rbac');
+const smsService = require('../services/smsService');
 
 // Apply authentication to all routes
 router.use(authenticateToken);
@@ -396,8 +397,19 @@ router.post('/:id/notify', requireRole(['admin', 'healthcare_worker']), async (r
 
     const entry = result.rows[0];
 
-    // TODO: Integrate with SMS service to send notification
-    // For now, just update the notified_at timestamp
+    // Send SMS notification to guardian if phone is available
+    if (entry.guardian_phone) {
+      try {
+        await smsService.sendSMS(
+          entry.guardian_phone,
+          message,
+          'vaccine_availability',
+        );
+      } catch (smsErr) {
+        // Log SMS failure but do not block the notification record update
+        console.error('SMS send failed for waitlist notification:', smsErr.message);
+      }
+    }
 
     const updateQuery = `
             UPDATE vaccine_waitlist

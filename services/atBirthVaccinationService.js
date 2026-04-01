@@ -3,6 +3,7 @@ const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 
 const AUTO_AT_BIRTH_SOURCE = 'AUTO_AT_BIRTH';
 const AT_BIRTH_VACCINE_NAMES = Object.freeze(['BCG', 'Hepa B']);
+let immunizationRecordSchemaPromise = null;
 
 const normalizeDateOnly = (value) => {
   if (!value) {
@@ -21,6 +22,43 @@ const isAutoAtBirthRecord = (record = {}) =>
   String(record?.source_facility || '').trim().toUpperCase() === AUTO_AT_BIRTH_SOURCE;
 
 const resolveClient = (client) => client || pool;
+
+const resolveImmunizationRecordSchema = async () => {
+  try {
+    const result = await pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'immunization_records'
+          AND column_name = ANY($1::text[])
+      `,
+      [['source_facility', 'is_imported', 'transfer_case_id']],
+    );
+
+    const availableColumns = new Set((result.rows || []).map((row) => row.column_name));
+    return {
+      hasSourceFacilityColumn: availableColumns.has('source_facility'),
+      hasIsImportedColumn: availableColumns.has('is_imported'),
+      hasTransferCaseIdColumn: availableColumns.has('transfer_case_id'),
+    };
+  } catch (error) {
+    console.error('Error resolving at-birth vaccination schema:', error);
+    return {
+      hasSourceFacilityColumn: false,
+      hasIsImportedColumn: false,
+      hasTransferCaseIdColumn: false,
+    };
+  }
+};
+
+const getImmunizationRecordSchema = async () => {
+  if (!immunizationRecordSchemaPromise) {
+    immunizationRecordSchemaPromise = resolveImmunizationRecordSchema();
+  }
+
+  return immunizationRecordSchemaPromise;
+};
 
 const getPatientDob = async (client, patientId) => {
   const result = await resolveClient(client).query(
@@ -54,6 +92,7 @@ const getScheduleIdForDose = async (client, vaccineId, doseNo) => {
 };
 
 const findExistingDoseRecord = async (client, { patientId, vaccineId, doseNo, scheduleId = null }) => {
+  const schema = await getImmunizationRecordSchema();
   const result = await resolveClient(client).query(
     `
       SELECT
@@ -63,9 +102,9 @@ const findExistingDoseRecord = async (client, { patientId, vaccineId, doseNo, sc
         ir.dose_no,
         ir.admin_date,
         ir.status,
-        ir.source_facility,
-        ir.is_imported,
-        ir.transfer_case_id,
+        ${schema.hasSourceFacilityColumn ? 'ir.source_facility' : 'NULL::text AS source_facility'},
+        ${schema.hasIsImportedColumn ? 'ir.is_imported' : 'false AS is_imported'},
+        ${schema.hasTransferCaseIdColumn ? 'ir.transfer_case_id' : 'NULL::int AS transfer_case_id'},
         ir.notes,
         ir.schedule_id,
         ir.is_active
@@ -122,6 +161,7 @@ const resolveVaccineRecordTarget = async (client, vaccineName, doseNo = 1) => {
 
 const ensureAtBirthVaccinationRecords = async (patientId, { patientDob = null, client = null } = {}) => {
   const dbClient = resolveClient(client);
+  const schema = await getImmunizationRecordSchema();
   const normalizedDob = normalizeDateOnly(patientDob) || (await getPatientDob(dbClient, patientId));
 
   if (!normalizedDob) {
@@ -140,24 +180,26 @@ const ensureAtBirthVaccinationRecords = async (patientId, { patientDob = null, c
     });
 
     if (!existingRecord) {
+      const insertColumns = ['patient_id', 'vaccine_id', 'dose_no', 'admin_date', 'status'];
+      const insertValues = [patientId, target.vaccineId, 1, normalizedDob, 'completed'];
+      if (schema.hasSourceFacilityColumn) {
+        insertColumns.push('source_facility');
+        insertValues.push(AUTO_AT_BIRTH_SOURCE);
+      }
+      if (schema.hasIsImportedColumn) {
+        insertColumns.push('is_imported');
+        insertValues.push(false);
+      }
+      insertColumns.push('schedule_id', 'notes', 'batch_id');
+      insertValues.push(target.scheduleId, null, null);
+
       const insertResult = await dbClient.query(
         `
-          INSERT INTO immunization_records (
-            patient_id,
-            vaccine_id,
-            dose_no,
-            admin_date,
-            status,
-            source_facility,
-            is_imported,
-            schedule_id,
-            notes,
-            batch_id
-          )
-          VALUES ($1, $2, $3, $4, 'completed', $5, false, $6, NULL, NULL)
+          INSERT INTO immunization_records (${insertColumns.join(', ')})
+          VALUES (${insertValues.map((_, index) => `$${index + 1}`).join(', ')})
           RETURNING *
         `,
-        [patientId, target.vaccineId, 1, normalizedDob, AUTO_AT_BIRTH_SOURCE, target.scheduleId],
+        insertValues,
       );
 
       results.push({ action: 'created', record: insertResult.rows[0] });
@@ -172,18 +214,31 @@ const ensureAtBirthVaccinationRecords = async (patientId, { patientDob = null, c
       continue;
     }
 
+    const updateParams = [normalizedDob];
+    const setClauses = [
+      'admin_date = COALESCE(admin_date, $1)',
+      "status = 'completed'",
+    ];
+
+    if (schema.hasSourceFacilityColumn) {
+      updateParams.push(AUTO_AT_BIRTH_SOURCE);
+      setClauses.push(`source_facility = COALESCE(source_facility, $${updateParams.length})`);
+    }
+
+    updateParams.push(target.scheduleId);
+    setClauses.push(`schedule_id = COALESCE(schedule_id, $${updateParams.length})`);
+
+    updateParams.push(existingRecord.id);
+
     const updateResult = await dbClient.query(
       `
         UPDATE immunization_records
-        SET admin_date = COALESCE(admin_date, $1),
-            status = 'completed',
-            source_facility = COALESCE(source_facility, $2),
-            schedule_id = COALESCE(schedule_id, $3),
+        SET ${setClauses.join(', ')},
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $4
+        WHERE id = $${updateParams.length}
         RETURNING *
       `,
-      [normalizedDob, AUTO_AT_BIRTH_SOURCE, target.scheduleId, existingRecord.id],
+      updateParams,
     );
 
     results.push({ action: 'normalized', record: updateResult.rows[0] });
@@ -203,6 +258,7 @@ const importVaccinationRecord = async ({
   client = null,
 }) => {
   const dbClient = resolveClient(client);
+  const schema = await getImmunizationRecordSchema();
   const normalizedAdminDate = normalizeDateOnly(adminDate);
 
   if (!normalizedAdminDate) {
@@ -218,34 +274,30 @@ const importVaccinationRecord = async ({
   });
 
   if (!existingRecord) {
+    const insertColumns = ['patient_id', 'vaccine_id', 'dose_no', 'admin_date', 'status'];
+    const insertValues = [patientId, target.vaccineId, doseNo, normalizedAdminDate, 'completed'];
+    if (schema.hasIsImportedColumn) {
+      insertColumns.push('is_imported');
+      insertValues.push(true);
+    }
+    if (schema.hasSourceFacilityColumn) {
+      insertColumns.push('source_facility');
+      insertValues.push(sourceFacility || null);
+    }
+    if (schema.hasTransferCaseIdColumn) {
+      insertColumns.push('transfer_case_id');
+      insertValues.push(transferCaseId || null);
+    }
+    insertColumns.push('notes', 'schedule_id', 'batch_id');
+    insertValues.push(notes || null, target.scheduleId, null);
+
     const insertResult = await dbClient.query(
       `
-        INSERT INTO immunization_records (
-          patient_id,
-          vaccine_id,
-          dose_no,
-          admin_date,
-          status,
-          is_imported,
-          source_facility,
-          transfer_case_id,
-          notes,
-          schedule_id,
-          batch_id
-        )
-        VALUES ($1, $2, $3, $4, 'completed', true, $5, $6, $7, $8, NULL)
+        INSERT INTO immunization_records (${insertColumns.join(', ')})
+        VALUES (${insertValues.map((_, index) => `$${index + 1}`).join(', ')})
         RETURNING *
       `,
-      [
-        patientId,
-        target.vaccineId,
-        doseNo,
-        normalizedAdminDate,
-        sourceFacility || null,
-        transferCaseId || null,
-        notes || null,
-        target.scheduleId,
-      ],
+      insertValues,
     );
 
     return {
@@ -272,28 +324,43 @@ const importVaccinationRecord = async ({
     existingStatus === 'pending' ||
     existingStatus === 'scheduled'
   ) {
+    const updateParams = [normalizedAdminDate];
+    const setClauses = [
+      'admin_date = $1',
+      "status = 'completed'",
+    ];
+
+    if (schema.hasIsImportedColumn) {
+      setClauses.push('is_imported = true');
+    }
+
+    if (schema.hasSourceFacilityColumn) {
+      updateParams.push(sourceFacility || existingRecord.source_facility || null);
+      setClauses.push(`source_facility = $${updateParams.length}`);
+    }
+
+    if (schema.hasTransferCaseIdColumn) {
+      updateParams.push(transferCaseId || existingRecord.transfer_case_id || null);
+      setClauses.push(`transfer_case_id = $${updateParams.length}`);
+    }
+
+    updateParams.push(notes || null);
+    setClauses.push(`notes = $${updateParams.length}`);
+
+    updateParams.push(target.scheduleId);
+    setClauses.push(`schedule_id = COALESCE(schedule_id, $${updateParams.length})`);
+
+    updateParams.push(existingRecord.id);
+
     const updateResult = await dbClient.query(
       `
         UPDATE immunization_records
-        SET admin_date = $1,
-            status = 'completed',
-            is_imported = true,
-            source_facility = $2,
-            transfer_case_id = $3,
-            notes = $4,
-            schedule_id = COALESCE(schedule_id, $5),
+        SET ${setClauses.join(', ')},
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $6
+        WHERE id = $${updateParams.length}
         RETURNING *
       `,
-      [
-        normalizedAdminDate,
-        sourceFacility || existingRecord.source_facility || null,
-        transferCaseId || existingRecord.transfer_case_id || null,
-        notes || null,
-        target.scheduleId,
-        existingRecord.id,
-      ],
+      updateParams,
     );
 
     return {

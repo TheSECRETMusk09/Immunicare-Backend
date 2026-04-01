@@ -981,7 +981,7 @@ router.get('/inventory/valid', requirePermission('vaccination:create'), async (r
     if (requestedClinicId && scopedClinicId && requestedClinicId !== scopedClinicId) {
       return res.status(403).json({
         error:
-          'Cross-facility vaccine inventory access is not allowed. Use your assigned Barangay San Nicolas Health Center scope.',
+          'Cross-facility vaccine inventory access is not allowed. Use your assigned facility scope.',
       });
     }
 
@@ -989,7 +989,7 @@ router.get('/inventory/valid', requirePermission('vaccination:create'), async (r
     if (!effectiveClinicId) {
       return res.status(400).json({
         error:
-          'clinic_id scope is required to load valid vaccine inventory for Barangay San Nicolas Health Center',
+          'clinic_id scope is required to load valid vaccine inventory',
       });
     }
 

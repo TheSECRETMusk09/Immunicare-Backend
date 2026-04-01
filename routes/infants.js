@@ -14,6 +14,7 @@ const { ensureAtBirthVaccinationRecords } = require('../services/atBirthVaccinat
 const {
   createGuardianChildRecord,
 } = require('../services/guardianChildRegistrationService');
+const { resolvePatientFacilityId } = require('../services/entityScopeService');
 const socketService = require('../services/socketService');
 const adminNotificationService = require('../services/adminNotificationService');
 const { calculateAgeInMonths } = require('../utils/ageCalculation');
@@ -986,6 +987,13 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       return respondInfantValidationError(res, purokErrors);
     }
 
+    const resolvedFacilityId = await resolvePatientFacilityId({
+      guardianId: guardian_id,
+      requestedFacilityId: facility_id,
+      user: req.user,
+      client: pool,
+    });
+
     const optionalFields = {
       middle_name: middle_name || null,
       national_id: national_id || null,
@@ -1008,7 +1016,7 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       nbs_done: nbs_done === undefined ? null : Boolean(nbs_done),
       nbs_date: nbs_date || null,
       cellphone_number: cellphone_number || null,
-      facility_id: facility_id || null,
+      facility_id: resolvedFacilityId,
       age_months: ageMonths, // Auto-calculated age in months
     };
 
@@ -1256,7 +1264,7 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
             nbs_done = $21,
             nbs_date = $22,
             cellphone_number = $23,
-            facility_id = $24,
+            facility_id = COALESCE($24, facility_id),
             allergy_information = $25,
             health_care_provider = $26,
             purok = COALESCE($27, purok),
@@ -1535,7 +1543,7 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
             cellphone_number = $23,
             allergy_information = $24,
             health_care_provider = $25,
-            facility_id = $26,
+            facility_id = COALESCE($26, facility_id),
             purok = COALESCE($27, purok),
             street_color = COALESCE($28, street_color),
             updated_at = CURRENT_TIMESTAMP

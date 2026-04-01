@@ -201,6 +201,16 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
     errors.expiry_date = 'expiry_date must be a valid date';
   }
 
+  const batchIdCheck = validateNumberRange(payload.batch_id, {
+    label: 'batch_id',
+    required: false,
+    min: 1,
+    integer: true,
+  });
+  if (hasOwn(payload, 'batch_id') && batchIdCheck.error) {
+    errors.batch_id = batchIdCheck.error;
+  }
+
   const transactionDateRaw = sanitizeText(payload.transaction_date);
   if (transactionDateRaw) {
     const parsedTransactionDate = parseDateValue(transactionDateRaw);
@@ -236,10 +246,19 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
     errors.notes = 'Notes must not exceed 500 characters';
   }
 
+  if (
+    ['ISSUE', 'WASTE'].includes(transactionType) &&
+    !batchIdCheck.error &&
+    !batchIdCheck.value
+  ) {
+    errors.batch_id = 'Select the exact lot/batch with available stock.';
+  }
+
   return {
     normalized: {
       vaccine_inventory_id: vaccineInventoryIdCheck.value,
       vaccine_id: vaccineIdCheck.value,
+      batch_id: batchIdCheck.value || null,
       clinic_id: clinicIdCheck.value,
       transaction_type: transactionType,
       quantity: quantityValue,
@@ -453,6 +472,19 @@ const getInventoryTransactionsFacilityColumn = () =>
     'vaccine_inventory_transactions',
     ['clinic_id', 'facility_id'],
     'clinic_id',
+  );
+
+const getVaccineBatchFacilityColumn = () =>
+  resolveFirstExistingColumn('vaccine_batches', ['clinic_id', 'facility_id'], 'clinic_id');
+
+const getVaccineBatchLotColumn = () =>
+  resolveFirstExistingColumn('vaccine_batches', ['lot_no', 'lot_number'], 'lot_no');
+
+const getVaccineBatchStorageColumn = () =>
+  resolveFirstExistingColumn(
+    'vaccine_batches',
+    ['storage_location', 'storage_conditions'],
+    'storage_conditions',
   );
 
 const getStockAlertsFacilityColumn = () =>
@@ -1504,6 +1536,8 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
 
 // Create vaccine inventory transaction
 router.post('/vaccine-inventory-transactions', async (req, res) => {
+  let client = null;
+
   try {
     const fs = require('fs');
     const debugOutput = `
@@ -1545,17 +1579,32 @@ ${JSON.stringify(errors, null, 2)}
     // Get current user ID from JWT token
     const userId = req.user.id;
 
-    const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
-    const inventoryFacilityColumn = await getInventoryFacilityColumn();
+    const [
+      transactionFacilityColumn,
+      inventoryFacilityColumn,
+      batchFacilityColumn,
+      batchLotColumn,
+      batchStorageColumn,
+    ] = await Promise.all([
+      getInventoryTransactionsFacilityColumn(),
+      getInventoryFacilityColumn(),
+      getVaccineBatchFacilityColumn(),
+      getVaccineBatchLotColumn(),
+      getVaccineBatchStorageColumn(),
+    ]);
+
+    client = await pool.connect();
+    await client.query('BEGIN');
 
     // Get current inventory record to calculate balance
     let inventoryResult = { rows: [] };
     
     // Only query if we have a valid inventory ID
     if (normalized.vaccine_inventory_id > 0) {
-      inventoryResult = await pool.query('SELECT * FROM vaccine_inventory WHERE id = $1', [
-        normalized.vaccine_inventory_id,
-      ]);
+      inventoryResult = await client.query(
+        'SELECT * FROM vaccine_inventory WHERE id = $1 FOR UPDATE',
+        [normalized.vaccine_inventory_id],
+      );
     }
 
     let inventory = null;
@@ -1566,6 +1615,7 @@ ${JSON.stringify(errors, null, 2)}
       const facilityId = normalized.clinic_id || req.user.clinic_id || req.user.facility_id;
       
       if (!facilityId) {
+        await client.query('ROLLBACK');
         return respondValidationError(res, {
           clinic_id: 'clinic_id is required to create inventory record',
         });
@@ -1576,7 +1626,7 @@ ${JSON.stringify(errors, null, 2)}
       const periodStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
       const periodEnd = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
       
-      const createResult = await pool.query(
+      const createResult = await client.query(
         `INSERT INTO vaccine_inventory (
           vaccine_id, ${inventoryFacilityColumn}, beginning_balance, received_during_period,
           transferred_in, transferred_out, expired_wasted, issuance,
@@ -1590,15 +1640,146 @@ ${JSON.stringify(errors, null, 2)}
       // Update the vaccine_inventory_id to the newly created record
       normalized.vaccine_inventory_id = inventory.id;
     } else if (inventoryResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Vaccine inventory record not found. Please save the inventory sheet first or use the Receive Stock button to auto-create the record.' });
     } else {
       inventory = inventoryResult.rows[0];
       
       if (Number(inventory.vaccine_id) !== Number(resolvedVaccineId)) {
+        await client.query('ROLLBACK');
         return respondValidationError(res, {
           vaccine_id: 'vaccine_id does not match the selected inventory record',
         });
       }
+    }
+
+    const facilityId =
+      normalized.clinic_id ||
+      inventory?.[inventoryFacilityColumn] ||
+      inventory?.clinic_id ||
+      inventory?.facility_id ||
+      req.user.clinic_id ||
+      req.user.facility_id ||
+      null;
+
+    if (!facilityId) {
+      await client.query('ROLLBACK');
+      return respondValidationError(res, {
+        clinic_id: 'clinic_id is required',
+      });
+    }
+
+    let selectedBatchSummary = null;
+    let effectiveLotNumber = normalized.batch_number || normalized.lot_number || null;
+    let effectiveExpiryDate = normalized.expiry_date || null;
+
+    if (['ISSUE', 'WASTE'].includes(normalized.transaction_type)) {
+      const batchResult = await client.query(
+        `
+          SELECT
+            vb.*,
+            COALESCE(
+              NULLIF(TRIM(vb.${batchLotColumn}), ''),
+              'BATCH-' || vb.id::text
+            ) AS resolved_lot_number,
+            NULLIF(TRIM(vb.${batchStorageColumn}), '') AS resolved_storage_location
+          FROM vaccine_batches vb
+          WHERE vb.id = $1
+          FOR UPDATE
+        `,
+        [normalized.batch_id],
+      );
+
+      if (batchResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return respondValidationError(res, {
+          batch_id: 'The selected lot/batch could not be found.',
+        });
+      }
+
+      const selectedBatch = batchResult.rows[0];
+      const batchFacilityId =
+        selectedBatch[batchFacilityColumn] ||
+        selectedBatch.clinic_id ||
+        selectedBatch.facility_id;
+      const batchStatus = String(selectedBatch.status || 'active').trim().toLowerCase();
+      const batchAvailableQuantity = Number(selectedBatch.qty_current || 0);
+      const batchExpiryDate = selectedBatch.expiry_date
+        ? new Date(selectedBatch.expiry_date)
+        : null;
+
+      if (Number(selectedBatch.vaccine_id) !== Number(resolvedVaccineId)) {
+        await client.query('ROLLBACK');
+        return respondValidationError(res, {
+          batch_id: 'The selected lot/batch does not belong to this vaccine.',
+        });
+      }
+
+      if (Number(batchFacilityId) !== Number(facilityId)) {
+        await client.query('ROLLBACK');
+        return respondValidationError(res, {
+          batch_id: 'The selected lot/batch does not belong to the active facility.',
+        });
+      }
+
+      if (!selectedBatch.is_active || batchStatus !== 'active') {
+        await client.query('ROLLBACK');
+        return respondValidationError(res, {
+          batch_id: 'The selected lot/batch is inactive and cannot be used.',
+        });
+      }
+
+      if (batchExpiryDate) {
+        batchExpiryDate.setHours(0, 0, 0, 0);
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (batchExpiryDate && batchExpiryDate < today) {
+        await client.query('ROLLBACK');
+        return respondValidationError(res, {
+          batch_id: 'Expired lot/batch records cannot be selected for this transaction.',
+        });
+      }
+
+      if (batchAvailableQuantity <= 0) {
+        await client.query('ROLLBACK');
+        return respondValidationError(res, {
+          batch_id: 'The selected lot/batch has no available stock remaining.',
+        });
+      }
+
+      if (normalized.quantity > batchAvailableQuantity) {
+        await client.query('ROLLBACK');
+        return respondValidationError(res, {
+          quantity: `Only ${batchAvailableQuantity} units are available in the selected lot/batch.`,
+        });
+      }
+
+      const updatedBatchResult = await client.query(
+        `
+          UPDATE vaccine_batches
+          SET qty_current = qty_current - $1,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2
+          RETURNING *
+        `,
+        [normalized.quantity, normalized.batch_id],
+      );
+
+      const updatedBatch = updatedBatchResult.rows[0];
+      effectiveLotNumber = selectedBatch.resolved_lot_number;
+      effectiveExpiryDate = selectedBatch.expiry_date || effectiveExpiryDate;
+      selectedBatchSummary = {
+        batch_id: selectedBatch.id,
+        lot_number: selectedBatch.resolved_lot_number,
+        batch_number: selectedBatch.resolved_lot_number,
+        previous_quantity: batchAvailableQuantity,
+        affected_quantity: normalized.quantity,
+        remaining_quantity: Number(updatedBatch?.qty_current || 0),
+        storage_location: selectedBatch.resolved_storage_location || null,
+        expiry_date: selectedBatch.expiry_date || null,
+      };
     }
 
     // Use stock_on_hand if available, otherwise calculate from components
@@ -1637,26 +1818,13 @@ ${JSON.stringify(errors, null, 2)}
 
     // Validate new balance
     if (newBalance < 0) {
+      await client.query('ROLLBACK');
       return respondValidationError(res, {
         quantity: 'Transaction quantity results in a negative stock balance',
       });
     }
 
-    // Create transaction record
-    const facilityId =
-      normalized.clinic_id ||
-      (inventory && (inventory.clinic_id || inventory.facility_id)) ||
-      req.user.clinic_id ||
-      req.user.facility_id ||
-      null;
-
-    if (!facilityId) {
-      return respondValidationError(res, {
-        clinic_id: 'clinic_id is required',
-      });
-    }
-
-    const transactionResult = await pool.query(
+    const transactionResult = await client.query(
       `INSERT INTO vaccine_inventory_transactions (
         vaccine_inventory_id, vaccine_id, ${transactionFacilityColumn}, transaction_type, quantity,
         previous_balance, new_balance, lot_number, batch_number, expiry_date,
@@ -1670,9 +1838,9 @@ ${JSON.stringify(errors, null, 2)}
         normalized.quantity,
         previousBalance,
         newBalance,
-        normalized.lot_number,
-        normalized.batch_number,
-        normalized.expiry_date,
+        effectiveLotNumber,
+        effectiveLotNumber,
+        effectiveExpiryDate,
         normalized.supplier_name,
         normalized.reference_number,
         userId,
@@ -1684,7 +1852,7 @@ ${JSON.stringify(errors, null, 2)}
       normalized.transaction_type === 'ADJUST' ? newBalance - previousBalance : 0;
 
     // Update inventory record
-    await pool.query(
+    const updatedInventoryResult = await client.query(
       `UPDATE vaccine_inventory SET
         updated_by = $1,
         beginning_balance = CASE WHEN $2 = 'ADJUST' THEN beginning_balance + $4 ELSE beginning_balance END,
@@ -1695,7 +1863,8 @@ ${JSON.stringify(errors, null, 2)}
         expired_wasted = CASE WHEN $2 IN ('EXPIRE','WASTE') THEN expired_wasted + $3 ELSE expired_wasted END,
         stock_on_hand = $6,
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $5`,
+      WHERE id = $5
+      RETURNING *`,
       [
         userId,
         normalized.transaction_type,
@@ -1706,26 +1875,55 @@ ${JSON.stringify(errors, null, 2)}
       ],
     );
 
+    await client.query('COMMIT');
+
     await safeTriggerStockNotification({
       vaccineName: vaccineValidation.vaccine.name,
       vaccineId: resolvedVaccineId,
       currentStock: newBalance,
-      lotNumber: normalized.batch_number || normalized.lot_number || inventory.lot_batch_number,
-      lowStockThreshold: inventory.low_stock_threshold,
+      lotNumber: effectiveLotNumber || inventory.lot_batch_number,
+      lowStockThreshold:
+        updatedInventoryResult.rows[0]?.low_stock_threshold || inventory.low_stock_threshold,
     });
 
     const transactionResponse = {
       ...transactionResult.rows[0],
+      batch_id: normalized.batch_id || null,
+      selected_batch: selectedBatchSummary,
+      updated_inventory: updatedInventoryResult.rows[0] || inventory,
       performed_by_name:
         getAuthenticatedUserDisplayName(req.user) ||
         transactionResult.rows[0].performed_by_name ||
         null,
     };
 
+    if (selectedBatchSummary) {
+      socketService.broadcast('vaccine_batch_updated', {
+        id: selectedBatchSummary.batch_id,
+        vaccine_id: resolvedVaccineId,
+        lot_no: selectedBatchSummary.lot_number,
+        lot_number: selectedBatchSummary.lot_number,
+        qty_current: selectedBatchSummary.remaining_quantity,
+        expiry_date: selectedBatchSummary.expiry_date,
+        storage_location: selectedBatchSummary.storage_location,
+      });
+    }
+    socketService.broadcast('vaccine_inventory_updated', updatedInventoryResult.rows[0]);
     socketService.broadcast('vaccine_inventory_transaction_created', transactionResponse);
     res.status(201).json(transactionResponse);
   } catch (error) {
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (_rollbackError) {
+        // Ignore rollback errors and surface the original failure below.
+      }
+    }
     res.status(500).json({ error: error.message });
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 });
 

@@ -663,8 +663,8 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       ? normalized.duration_minutes
       : 30;
     const normalizedLocation = hasOwn(normalized, 'location')
-      ? normalized.location || 'Main Health Center'
-      : sanitizeText(payload.location, { maxLength: 150 }) || 'Main Health Center';
+      ? normalized.location || null
+      : sanitizeText(payload.location, { maxLength: 150 }) || null;
     const sendConfirmationSms = normalizeBoolean(payload.send_confirmation_sms, true);
 
     const infant = await fetchInfantOwnership(infantId);
@@ -1061,7 +1061,7 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
           vaccineName: updatedAppointment.type || 'Vaccination',
           oldScheduledDate: appointment.scheduled_date,
           newScheduledDate: updatedAppointment.scheduled_date,
-          location: updatedAppointment.location || 'Main Health Center',
+          location: updatedAppointment.location || null,
         });
       } catch (notificationError) {
         console.error('Failed to send rescheduling notification:', notificationError.message);
@@ -1525,7 +1525,7 @@ router.put('/:id(\\d+)', async (req, res) => {
           childName: `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your Child',
           vaccineName: updatedAppointment.type || 'Vaccination',
           scheduledDate: updatedAppointment.scheduled_date,
-          location: updatedAppointment.location || 'Main Health Center',
+          location: updatedAppointment.location || null,
           id: updatedAppointment.id,
         });
 
@@ -1563,7 +1563,7 @@ router.put('/:id(\\d+)', async (req, res) => {
             newScheduledDate: updatedAppointment.scheduled_date,
             previousDate: appointment.scheduled_date,
             previous_scheduled_date: appointment.scheduled_date,
-            location: updatedAppointment.location || 'Main Health Center',
+            location: updatedAppointment.location || null,
             type: updatedAppointment.type || 'Vaccination',
           });
         } catch (notifyError) {

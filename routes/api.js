@@ -33,6 +33,7 @@ router.use('/settings', require('./settings'));
 router.use('/admin', require('./admin'));
 router.use('/guardian/notifications', require('./guardianNotifications'));
 router.use('/sms', require('./sms'));
+router.use('/sms-notifications', require('./smsNotifications'));
 router.use('/infant-allergies', require('./infantAllergies'));
 router.use('/infant-ages', require('./infant-ages'));
 router.use('/vaccine-waitlist', require('./vaccineWaitlist'));

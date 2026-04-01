@@ -196,6 +196,28 @@ const buildScopeClause = ({
     : ` AND ${scopeExpression} = ANY($${params.length}::int[])`;
 };
 
+const buildScopeMatchClause = ({
+  expressions = [],
+  scopeIds = [],
+  params,
+}) => {
+  const normalizedScopeIds = normalizeScopeIds(scopeIds);
+  const scopedExpressions = [...new Set(expressions.filter((expression) => expression && expression !== 'NULL'))];
+
+  if (scopedExpressions.length === 0 || normalizedScopeIds.length === 0) {
+    return '';
+  }
+
+  params.push(normalizedScopeIds.length === 1 ? normalizedScopeIds[0] : normalizedScopeIds);
+  const placeholder = `$${params.length}`;
+  const scopePredicate = (expression) =>
+    normalizedScopeIds.length === 1
+      ? `${expression} = ${placeholder}`
+      : `${expression} = ANY(${placeholder}::int[])`;
+
+  return ` AND (${scopedExpressions.map(scopePredicate).join(' OR ')})`;
+};
+
 const buildDateClause = (expression, startDate, endDate, params) => {
   let clause = '';
 
@@ -253,17 +275,25 @@ const executeMetricsQueries = async ({
     ? `COALESCE(vi.${schema.inventoryLowStockThresholdColumn}, 10)`
     : '10';
   const patientActiveExpression = schema.patientHasIsActive ? 'COALESCE(p.is_active, true)' : 'true';
-  const guardianActiveExpression = schema.guardianHasIsActive ? 'COALESCE(g.is_active, true)' : 'true';
   const inventoryActiveExpression = schema.inventoryHasIsActive ? 'COALESCE(vi.is_active, true)' : 'true';
   const batchActiveExpression = schema.batchHasIsActive ? 'COALESCE(vb.is_active, true)' : 'true';
   const userActiveExpression = schema.userHasIsActive ? 'COALESCE(u.is_active, true)' : 'true';
   const appointmentActiveExpression = schema.appointmentHasIsActive ? 'COALESCE(a.is_active, true)' : 'true';
+  const guardianActiveExpression = schema.guardianHasIsActive ? 'COALESCE(g.is_active, true)' : 'true';
+  const patientScopeExpression = buildScopedColumnExpression(
+    'p',
+    schema.patientScopeColumn,
+    schema.patientScopeFallbackColumn,
+  );
+  const guardianScopeExpression = buildScopedColumnExpression(
+    'g',
+    schema.guardianScopeColumn,
+    schema.guardianScopeFallbackColumn,
+  );
 
   const vaccinationParams = [];
-  const vaccinationScopeClause = buildScopeClause({
-    alias: 'p',
-    primaryColumn: schema.patientScopeColumn,
-    fallbackColumn: schema.patientScopeFallbackColumn,
+  const vaccinationScopeClause = buildScopeMatchClause({
+    expressions: [patientScopeExpression, guardianScopeExpression],
     scopeIds: resolvedScopeIds,
     params: vaccinationParams,
   });
@@ -276,6 +306,7 @@ const executeMetricsQueries = async ({
       COUNT(*) FILTER (WHERE ${immunizationStatusExpression} = 'cancelled')::int AS cancelled
     FROM immunization_records ir
     JOIN patients p ON p.id = ir.patient_id
+    LEFT JOIN guardians g ON g.id = p.guardian_id
     WHERE COALESCE(ir.is_active, true) = true
       AND ${patientActiveExpression}
       ${vaccinationScopeClause}
@@ -368,10 +399,8 @@ const executeMetricsQueries = async ({
   `;
 
   const infantParams = [];
-  const infantScopeClause = buildScopeClause({
-    alias: 'p',
-    primaryColumn: schema.patientScopeColumn,
-    fallbackColumn: schema.patientScopeFallbackColumn,
+  const infantScopeClause = buildScopeMatchClause({
+    expressions: [patientScopeExpression, guardianScopeExpression],
     scopeIds: resolvedScopeIds,
     params: infantParams,
   });
@@ -405,6 +434,7 @@ const executeMetricsQueries = async ({
         )
       )::int AS not_vaccinated
     FROM patients p
+    LEFT JOIN guardians g ON g.id = p.guardian_id
     WHERE 1 = 1
       ${infantScopeClause}
       ${infantDateClause}

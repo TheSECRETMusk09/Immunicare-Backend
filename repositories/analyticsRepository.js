@@ -807,6 +807,9 @@ const getAppointmentSnapshot = async ({
             AND a.status IN ('scheduled', 'confirmed', 'rescheduled')
         )::int AS pending_in_period,
         COUNT(*) FILTER (
+          WHERE a.status IN ('scheduled', 'confirmed', 'rescheduled')
+        )::int AS total_pending,
+        COUNT(*) FILTER (
           WHERE a.scheduled_date::date BETWEEN $2::date AND $3::date
             AND a.status = 'cancelled'
         )::int AS cancelled_in_period,
@@ -849,6 +852,7 @@ const getAppointmentSnapshot = async ({
 
   return rows[0] || {
     total_in_period: 0,
+    total_pending: 0,
     today_total: 0,
     attended_in_period: 0,
     pending_in_period: 0,
@@ -956,7 +960,8 @@ const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
         COUNT(*) FILTER (
           WHERE ${stockExpr} <= ${criticalThresholdExpr}
         )::int AS critical_stock_count,
-        COUNT(*) FILTER (WHERE ${stockExpr} <= 0)::int AS out_of_stock_count
+        COUNT(*) FILTER (WHERE ${stockExpr} <= 0)::int AS out_of_stock_count,
+        COALESCE(SUM(vi.expired_wasted), 0)::int AS wasted
       FROM vaccine_inventory vi
       WHERE ${whereConditions.join(' AND ')}
     `,
@@ -969,6 +974,7 @@ const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
     low_stock_count: 0,
     critical_stock_count: 0,
     out_of_stock_count: 0,
+    wasted: 0,
   };
 };
 

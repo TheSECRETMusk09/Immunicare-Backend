@@ -5,6 +5,10 @@ const { authenticateToken } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 const socketService = require('../services/socketService');
 const { validateApprovedVaccine } = require('../utils/approvedVaccines');
+const {
+  isAutoAtBirthRecord,
+  normalizeDateOnly,
+} = require('../services/atBirthVaccinationService');
 
 router.use(authenticateToken);
 
@@ -55,10 +59,28 @@ const getInventoryTransactionsFacilityColumn = () =>
     'clinic_id',
   );
 
+const getBatchFacilityColumn = () =>
+  resolveFirstExistingColumn('vaccine_batches', ['clinic_id', 'facility_id'], 'clinic_id');
+
+const getInventoryFacilityColumn = () =>
+  resolveFirstExistingColumn('vaccine_inventory', ['clinic_id', 'facility_id'], 'clinic_id');
+
 const ensureAppointmentLinkColumn = async (client) => {
   await client.query(
     'ALTER TABLE immunization_records ADD COLUMN IF NOT EXISTS appointment_id INTEGER',
   );
+};
+
+const getScopedFacilityId = (user = {}) =>
+  Number(user?.facility_id || user?.clinic_id || 0) || null;
+
+const toNullableString = (value) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
 };
 
 const computeInventoryBalance = (inventoryRecord) => {
@@ -70,6 +92,56 @@ const computeInventoryBalance = (inventoryRecord) => {
     Number(inventoryRecord.expired_wasted || 0) -
     Number(inventoryRecord.issuance || 0)
   );
+};
+
+const validateAdministrationDateForPatient = async (patientId, adminDate) => {
+  const normalizedAdminDate = normalizeDateOnly(adminDate);
+  if (!normalizedAdminDate) {
+    return {
+      valid: false,
+      error: 'Administration date must be a valid date',
+    };
+  }
+
+  const patientResult = await pool.query(
+    `
+      SELECT dob
+      FROM patients
+      WHERE id = $1
+        AND is_active = true
+      LIMIT 1
+    `,
+    [patientId],
+  );
+
+  if (patientResult.rows.length === 0) {
+    return {
+      valid: false,
+      error: 'Patient not found',
+    };
+  }
+
+  const normalizedDob = normalizeDateOnly(patientResult.rows[0].dob);
+  const today = normalizeDateOnly(new Date());
+
+  if (normalizedAdminDate > today) {
+    return {
+      valid: false,
+      error: 'Administration date cannot be in the future',
+    };
+  }
+
+  if (normalizedDob && normalizedAdminDate < normalizedDob) {
+    return {
+      valid: false,
+      error: "Administration date cannot be earlier than the infant's date of birth",
+    };
+  }
+
+  return {
+    valid: true,
+    normalizedAdminDate,
+  };
 };
 
 const resolveLinkedAppointmentId = async ({ client, patientId, adminDate, appointmentId }) => {
@@ -144,6 +216,18 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       });
     }
 
+    const adminDateValidation = await validateAdministrationDateForPatient(patient_id, admin_date);
+    if (!adminDateValidation.valid) {
+      return res.status(400).json({ error: adminDateValidation.error });
+    }
+
+    const normalizedAdminDate = adminDateValidation.normalizedAdminDate;
+    const scopedFacilityId = getScopedFacilityId(req.user);
+    const normalizedLotBatchNumber =
+      toNullableString(lot_batch_number) ||
+      toNullableString(lot_number) ||
+      toNullableString(batch_number);
+
     // Validate vaccine is approved
     const vaccineValidation = await validateApprovedVaccine(vaccine_id);
     if (!vaccineValidation.valid) {
@@ -174,29 +258,75 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
 
     // Check for duplicate vaccination record
     const duplicateCheck = await client.query(
-      `SELECT id FROM immunization_records
+      `SELECT * FROM immunization_records
        WHERE patient_id = $1 AND vaccine_id = $2 AND dose_no = $3 AND is_active = true
+       ORDER BY updated_at DESC NULLS LAST, created_at DESC
        LIMIT 1`,
       [patient_id, vaccine_id, dose_no],
     );
 
+    let existingPlaceholderRecord = null;
     if (duplicateCheck.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'Duplicate vaccination record for this infant and dose',
-      });
+      const existingRecord = duplicateCheck.rows[0];
+      const existingStatus = String(existingRecord.status || '').trim().toLowerCase();
+
+      if (
+        isAutoAtBirthRecord(existingRecord) ||
+        !existingRecord.admin_date ||
+        existingStatus === 'pending' ||
+        existingStatus === 'scheduled'
+      ) {
+        existingPlaceholderRecord = existingRecord;
+      } else {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'Duplicate vaccination record for this infant and dose',
+        });
+      }
     }
 
     const linkedAppointment = await resolveLinkedAppointmentId({
       client,
       patientId: patient_id,
-      adminDate: admin_date,
+      adminDate: normalizedAdminDate,
       appointmentId: appointment_id,
     });
 
     let inventoryTransactionId = null;
     let batchUpdated = false;
+    let inventoryDeducted = false;
     let updatedInventoryRecord = null;
+
+    if (skip_inventory_deduction && batch_id) {
+      const batchFacilityColumn = await getBatchFacilityColumn();
+      const batchResult = await client.query(
+        `SELECT id, vaccine_id, ${batchFacilityColumn} AS scoped_facility_id
+         FROM vaccine_batches
+         WHERE id = $1 AND is_active = true AND status = 'active'`,
+        [batch_id],
+      );
+
+      if (batchResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Selected vaccine batch not found or inactive' });
+      }
+
+      const batch = batchResult.rows[0];
+      if (Number(batch.vaccine_id) !== Number(vaccine_id)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'Selected vaccine batch does not match the vaccine being recorded',
+        });
+      }
+
+      const batchFacilityId = Number(batch.scoped_facility_id || 0) || null;
+      if (scopedFacilityId && batchFacilityId && batchFacilityId !== scopedFacilityId) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          error: 'Selected vaccine batch is outside your clinic scope',
+        });
+      }
+    }
 
     // Handle inventory deduction if not skipped
     if (!skip_inventory_deduction) {
@@ -216,9 +346,21 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       }
 
       const inventoryRecord = inventoryResult.rows[0];
+      const inventoryFacilityColumn = await getInventoryFacilityColumn();
+      const inventoryFacilityId = inventoryFacilityColumn
+        ? Number(inventoryRecord[inventoryFacilityColumn] || 0) || null
+        : null;
+
       if (Number(inventoryRecord.vaccine_id) !== Number(vaccine_id)) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Selected vaccine inventory record does not match the vaccine being recorded' });
+      }
+
+      if (scopedFacilityId && inventoryFacilityId && inventoryFacilityId !== scopedFacilityId) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          error: 'Selected vaccine inventory record is outside your clinic scope',
+        });
       }
 
       const previousBalance = computeInventoryBalance(inventoryRecord);
@@ -229,8 +371,9 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
 
       // Check batch availability
       if (batch_id) {
+        const batchFacilityColumn = await getBatchFacilityColumn();
         const batchResult = await client.query(
-          `SELECT id, qty_current, vaccine_id FROM vaccine_batches
+          `SELECT id, qty_current, vaccine_id, ${batchFacilityColumn} AS scoped_facility_id FROM vaccine_batches
            WHERE id = $1 AND is_active = true AND status = 'active'`,
           [batch_id],
         );
@@ -241,6 +384,28 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
         }
 
         const batch = batchResult.rows[0];
+
+        if (Number(batch.vaccine_id) !== Number(vaccine_id)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({
+            error: 'Selected vaccine batch does not match the vaccine being recorded',
+          });
+        }
+
+        const batchFacilityId = Number(batch.scoped_facility_id || 0) || null;
+        if (scopedFacilityId && batchFacilityId && batchFacilityId !== scopedFacilityId) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({
+            error: 'Selected vaccine batch is outside your clinic scope',
+          });
+        }
+
+        if (inventoryFacilityId && batchFacilityId && inventoryFacilityId !== batchFacilityId) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({
+            error: 'Selected vaccine batch does not belong to the same clinic as the inventory record',
+          });
+        }
 
         if (batch.qty_current < 1) {
           await client.query('ROLLBACK');
@@ -322,38 +487,77 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       );
 
       updatedInventoryRecord = inventoryUpdateResult.rows[0] || null;
+      inventoryDeducted = inventoryUpdateResult.rowCount > 0;
     }
 
-    // Create vaccination record
-    const recordResult = await client.query(
-      `INSERT INTO immunization_records (
-        patient_id, vaccine_id, dose_no, admin_date, administered_by,
-        site_of_injection, reactions, next_due_date, notes, status,
-        batch_id, is_ready_confirmed, ready_confirmed_at, ready_confirmed_by, appointment_id,
-        lot_number, batch_number
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed', $10, $11, $12, $13, $14, $15, $16)
-      RETURNING *`,
-      [
-        patient_id,
-        vaccine_id,
-        dose_no,
-        admin_date,
-        administered_by || req.user.id,
-        site_of_injection || null,
-        reactions || null,
-        next_due_date || null,
-        notes || null,
-        batch_id || null,
-        isReady,
-        isReady ? new Date() : null,
-        isReady ? req.user.id : null,
-        linkedAppointment?.id || null,
-        lot_number || lot_batch_number || batch_number || null,
-        batch_number || lot_batch_number || lot_number || null,
-      ],
-    );
+    let vaccinationRecord = null;
+    let socketEventName = 'vaccination_created';
 
-    const vaccinationRecord = recordResult.rows[0];
+    if (existingPlaceholderRecord) {
+      const updateResult = await client.query(
+        `UPDATE immunization_records
+         SET admin_date = $1,
+             administered_by = COALESCE($2, administered_by),
+             site_of_injection = $3,
+             reactions = $4,
+             next_due_date = $5,
+             notes = $6,
+             status = 'completed',
+             batch_id = COALESCE($7, batch_id),
+             appointment_id = COALESCE($8, appointment_id),
+             lot_number = COALESCE($9, lot_number),
+             batch_number = COALESCE($10, batch_number),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $11
+         RETURNING *`,
+        [
+          normalizedAdminDate,
+          administered_by || req.user.id,
+          site_of_injection || null,
+          reactions || null,
+          next_due_date || null,
+          notes || null,
+          batch_id || null,
+          linkedAppointment?.id || null,
+          normalizedLotBatchNumber,
+          normalizedLotBatchNumber,
+          existingPlaceholderRecord.id,
+        ],
+      );
+
+      vaccinationRecord = updateResult.rows[0] || null;
+      socketEventName = 'vaccination_updated';
+    } else {
+      const recordResult = await client.query(
+        `INSERT INTO immunization_records (
+          patient_id, vaccine_id, dose_no, admin_date, administered_by,
+          site_of_injection, reactions, next_due_date, notes, status,
+          batch_id, is_ready_confirmed, ready_confirmed_at, ready_confirmed_by, appointment_id,
+          lot_number, batch_number
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed', $10, $11, $12, $13, $14, $15, $16)
+        RETURNING *`,
+        [
+          patient_id,
+          vaccine_id,
+          dose_no,
+          normalizedAdminDate,
+          administered_by || req.user.id,
+          site_of_injection || null,
+          reactions || null,
+          next_due_date || null,
+          notes || null,
+          batch_id || null,
+          isReady,
+          isReady ? new Date() : null,
+          isReady ? req.user.id : null,
+          linkedAppointment?.id || null,
+          normalizedLotBatchNumber,
+          normalizedLotBatchNumber,
+        ],
+      );
+
+      vaccinationRecord = recordResult.rows[0] || null;
+    }
 
     if (linkedAppointment?.id) {
       await client.query(
@@ -370,12 +574,13 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
     await client.query(
       `INSERT INTO vaccination_audit_log (
         infant_id, vaccine_id, action_type, previous_status, new_status,
-        inventory_deducted, inventory_transaction_id, performed_by, notes
-      ) VALUES ($1, $2, 'VACCINATION_RECORDED', 'pending', 'completed', $3, $4, $5, $6)`,
+       inventory_deducted, inventory_transaction_id, performed_by, notes
+      ) VALUES ($1, $2, 'VACCINATION_RECORDED', $3, 'completed', $4, $5, $6, $7)`,
       [
         patient_id,
         vaccine_id,
-        batchUpdated,
+        existingPlaceholderRecord?.status || 'pending',
+        inventoryDeducted,
         inventoryTransactionId,
         req.user.id,
         notes || null,
@@ -385,7 +590,7 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
     await client.query('COMMIT');
 
     // Broadcast updates
-    socketService.broadcast('vaccination_created', vaccinationRecord);
+    socketService.broadcast(socketEventName, vaccinationRecord);
     if (batchUpdated) {
       socketService.broadcast('inventory_updated', {
         batchId: batch_id,
@@ -394,7 +599,7 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       });
     }
 
-    res.status(201).json({
+    res.status(existingPlaceholderRecord ? 200 : 201).json({
       success: true,
       vaccination: vaccinationRecord,
       appointment: linkedAppointment
@@ -404,7 +609,7 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
         }
         : null,
       inventory: {
-        deducted: batchUpdated,
+        deducted: inventoryDeducted,
         transactionId: inventoryTransactionId,
         batchUpdated,
         inventoryRecord: updatedInventoryRecord,
@@ -449,7 +654,6 @@ router.get('/inventory-status/:vaccineId', async (req, res) => {
        WHERE vb.vaccine_id = $1
          AND vb.clinic_id = $2
          AND vb.is_active = true
-         AND vb.status = 'active'
          AND vb.qty_current > 0
          AND vb.expiry_date > CURRENT_DATE
        ORDER BY vb.expiry_date ASC`,

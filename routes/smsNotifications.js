@@ -10,7 +10,7 @@
 const express = require('express');
 const router = express.Router();
 const smsNotificationController = require('../controllers/smsNotificationController');
-const { authenticateToken, authorizeRole } = require('../middleware/auth');
+const { authenticateToken, requireRole } = require('../middleware/auth');
 
 /**
  * @route POST /api/sms/otp/phone-verification
@@ -50,7 +50,7 @@ router.post(
 router.post(
   '/appointments/confirmation',
   authenticateToken,
-  authorizeRole(['admin', 'nurse', 'staff']),
+  requireRole(['admin', 'nurse', 'staff']),
   smsNotificationController.sendAppointmentConfirmation,
 );
 
@@ -62,7 +62,7 @@ router.post(
 router.post(
   '/appointments/reminder',
   authenticateToken,
-  authorizeRole(['admin', 'nurse', 'staff']),
+  requireRole(['admin', 'nurse', 'staff']),
   smsNotificationController.sendAppointmentReminder,
 );
 
@@ -74,7 +74,7 @@ router.post(
 router.post(
   '/appointments/bulk-reminders',
   authenticateToken,
-  authorizeRole(['admin']),
+  requireRole(['admin']),
   smsNotificationController.bulkSendAppointmentReminders,
 );
 
@@ -86,7 +86,7 @@ router.post(
 router.post(
   '/vaccinations/due-reminder',
   authenticateToken,
-  authorizeRole(['admin', 'nurse', 'staff']),
+  requireRole(['admin', 'nurse', 'staff']),
   smsNotificationController.sendVaccinationDueReminder,
 );
 
@@ -98,7 +98,7 @@ router.post(
 router.get(
   '/config-status',
   authenticateToken,
-  authorizeRole(['admin']),
+  requireRole(['admin']),
   smsNotificationController.getSMSConfigStatus,
 );
 

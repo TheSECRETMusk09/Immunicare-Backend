@@ -237,6 +237,9 @@ router.get('/admin/summary', requirePermission('report:view'), async (req, res) 
       scopeIds: requestedScope === 'system' ? [] : scopeIds,
     });
 
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+
     return res.json({
       success: true,
       data: summary,

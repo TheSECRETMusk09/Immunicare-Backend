@@ -6,22 +6,7 @@ const {
   generateControlNumber: generateInfantControlNumber,
   resolveOrCreateInfantPatient,
 } = require('./infantControlNumberService');
-
-const PH_FIXED_HOLIDAYS = [
-  { month: 1, day: 1, name: 'New Year\'s Day' },
-  { month: 4, day: 9, name: 'Araw ng Kagitingan' },
-  { month: 5, day: 1, name: 'Labor Day' },
-  { month: 6, day: 12, name: 'Independence Day' },
-  { month: 8, day: 21, name: 'Ninoy Aquino Day' },
-  { month: 8, day: 31, name: 'National Heroes Day' },
-  { month: 11, day: 1, name: 'All Saints Day' },
-  { month: 11, day: 30, name: 'Bonifacio Day' },
-  { month: 12, day: 8, name: 'Feast of the Immaculate Conception' },
-  { month: 12, day: 24, name: 'Christmas Eve' },
-  { month: 12, day: 25, name: 'Christmas Day' },
-  { month: 12, day: 30, name: 'Rizal Day' },
-  { month: 12, day: 31, name: 'New Year\'s Eve' },
-];
+const { getHolidayInfo: getHolidayInfoFromConfig } = require('../config/holidays');
 
 const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   appointmentsPatient: 'infant_id',
@@ -218,9 +203,7 @@ const getHolidayInfo = (value) => {
     return null;
   }
 
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  return PH_FIXED_HOLIDAYS.find((holiday) => holiday.month === month && holiday.day === day) || null;
+  return getHolidayInfoFromConfig(date);
 };
 
 const resolveDateRange = ({ month, startDate, endDate }) => {
@@ -359,8 +342,8 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
 
     const totalStock = parseInt(vaccineStock.available_stock || 0, 10);
 
-    // Block booking when stock drops to critical level (10 or below)
-    if (totalStock <= 10) {
+    // Block booking only when stock is actually depleted
+    if (totalStock <= 0) {
       return {
         available: false,
         code: 'SELECTED_VACCINE_OUT_OF_STOCK',
@@ -499,8 +482,8 @@ const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clini
       const selected = stock.vaccines.find((row) => parseInt(row.vaccine_id, 10) === parseInt(vaccineId, 10));
       const selectedStock = parseInt(selected?.available_stock || 0, 10);
 
-      // Block booking when stock drops to critical level (10 or below)
-      if (selectedStock <= 10) {
+      // Block booking only when stock is actually depleted
+      if (selectedStock <= 0) {
         return {
           available: false,
           code: 'SELECTED_VACCINE_OUT_OF_STOCK',
@@ -623,7 +606,7 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
       const dateKey = toDateKey(cursor);
       const weekend = isWeekend(cursor);
       const holiday = getHolidayInfo(cursor);
-      const noVaccineAvailability = stock.totalAvailableStock <= 10;
+      const noVaccineAvailability = stock.totalAvailableStock <= 0;
 
       let blockedReason = null;
       const adminBlocked = adminBlockedDates[dateKey];
@@ -709,9 +692,10 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
 
     query += ' ORDER BY a.scheduled_date ASC';
 
-    const [appointmentsResult, availability] = await Promise.all([
+    const [appointmentsResult, availability, stock] = await Promise.all([
       pool.query(query, params),
       checkBookingAvailability({ scheduledDate: dateKey, clinicId }),
+      getVaccineStockSummary(clinicId),
     ]);
 
     const appointments = appointmentsResult.rows || [];
@@ -733,6 +717,11 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
       availability,
       summary,
       appointments,
+      inventory: {
+        totalAvailableStock: stock.totalAvailableStock,
+        availableVaccines: stock.availableVaccines,
+        vaccines: stock.vaccines,
+      },
     };
   } catch (error) {
     console.error('Error in getCalendarDateDetails:', error);

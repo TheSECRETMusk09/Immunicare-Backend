@@ -483,6 +483,11 @@ class SocketService {
 
   // Send notification to a guardian specifically
   sendToGuardian(guardianId, event, data) {
+    if (!this.io) {
+      logger.warn('Socket.io not initialized');
+      return false;
+    }
+
     // Guardians use the same user ID system but with a 'guardian:' prefix for rooms
     this.io.to(`user:${guardianId}`).emit(event, {
       ...data,

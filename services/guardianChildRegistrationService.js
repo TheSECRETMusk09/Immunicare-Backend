@@ -7,6 +7,7 @@ const {
   isValidPurok,
   isValidStreetColorForPurok,
 } = require('../utils/purokOptions');
+const { resolvePatientFacilityId } = require('./entityScopeService');
 
 let ensurePatientLocationColumnsPromise = null;
 
@@ -286,6 +287,11 @@ const createGuardianChildRecord = async ({
   }
 
   const infantData = validationResult.data;
+  const resolvedFacilityId = await resolvePatientFacilityId({
+    guardianId,
+    requestedFacilityId: infantData.facility_id,
+    client,
+  });
   let resolved;
 
   try {
@@ -318,7 +324,7 @@ const createGuardianChildRecord = async ({
           nbs_done: infantData.nbs_done,
           nbs_date: infantData.nbs_date,
           cellphone_number: infantData.cellphone_number,
-          facility_id: infantData.facility_id,
+          facility_id: resolvedFacilityId,
         },
       },
       client,
@@ -379,7 +385,7 @@ const createGuardianChildRecord = async ({
       nbs_done: infantData.nbs_done,
       nbs_date: infantData.nbs_date,
       cellphone_number: infantData.cellphone_number,
-      facility_id: infantData.facility_id,
+      facility_id: resolvedFacilityId,
     });
 
     if (backfillUpdates.length > 0) {
