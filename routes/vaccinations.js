@@ -22,6 +22,10 @@ const {
 } = require('../services/atBirthVaccinationService');
 const vaccineEligibilityService = require('../services/vaccineEligibilityService');
 const immunizationScheduleService = require('../services/immunizationScheduleService');
+const {
+  isScopeRequestAllowed,
+  resolveEffectiveScope,
+} = require('../services/entityScopeService');
 
 const reminderService = new VaccinationReminderService();
 
@@ -94,138 +98,7 @@ const resolveLotBatchValue = (...values) => {
 
 const ensureVaccinationTrackingColumns = async () => {
   if (!vaccinationTrackingColumnsPromise) {
-    vaccinationTrackingColumnsPromise = (async () => {
-      await pool.query(`
-        ALTER TABLE immunization_records
-        ADD COLUMN IF NOT EXISTS lot_number VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS batch_number VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS health_care_provider VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS site_of_injection VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS reactions TEXT,
-        ADD COLUMN IF NOT EXISTS next_due_date DATE
-      `);
-
-      await pool.query(`
-        ALTER TABLE vaccination_schedules
-        ADD COLUMN IF NOT EXISTS description TEXT,
-        ADD COLUMN IF NOT EXISTS age_description VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS age_months NUMERIC
-      `);
-
-      await pool.query(`
-        UPDATE vaccination_schedules
-        SET description = COALESCE(
-              description,
-              CONCAT(COALESCE(vaccine_name, 'Vaccine'), ' dose ', COALESCE(dose_number, 1))
-            ),
-            age_description = COALESCE(
-              age_description,
-              CASE
-                WHEN age_in_months IS NOT NULL THEN CONCAT(age_in_months, ' month schedule')
-                ELSE description
-              END
-            ),
-            age_months = COALESCE(age_months, age_in_months)
-        WHERE description IS NULL
-           OR age_description IS NULL
-           OR age_months IS NULL
-      `);
-
-      await pool.query(`
-        ALTER TABLE vaccine_batches
-        ADD COLUMN IF NOT EXISTS lot_no VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS lot_number VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS supplier_id INTEGER,
-        ADD COLUMN IF NOT EXISTS manufacture_date DATE,
-        ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE
-      `);
-
-      await pool.query(`
-        UPDATE vaccine_batches
-        SET lot_no = COALESCE(NULLIF(TRIM(lot_no), ''), NULLIF(TRIM(lot_number), ''))
-        WHERE lot_no IS NULL
-           OR TRIM(lot_no) = ''
-      `);
-
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS suppliers (
-          id SERIAL PRIMARY KEY,
-          name VARCHAR(255) NOT NULL,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-
-      const scheduleCountResult = await pool.query(
-        `
-          SELECT COUNT(*)::INT AS count
-          FROM vaccination_schedules
-          WHERE is_active = true
-        `,
-      );
-
-      if ((scheduleCountResult.rows[0]?.count || 0) === 0) {
-        for (const [
-          vaccineName,
-          doseNumber,
-          totalDoses,
-          ageInMonths,
-          minimumAgeDays,
-          ageDescription,
-          description,
-        ] of DEFAULT_VACCINATION_SCHEDULE_SEEDS) {
-          await pool.query(
-            `
-              INSERT INTO vaccination_schedules (
-                vaccine_id,
-                vaccine_name,
-                vaccine_code,
-                dose_number,
-                total_doses,
-                age_in_months,
-                minimum_age_days,
-                age_months,
-                age_description,
-                description,
-                is_active
-              )
-              SELECT
-                v.id,
-                v.name,
-                v.code,
-                $2::INT,
-                $3::INT,
-                $4::INT,
-                $5::INT,
-                $4::NUMERIC,
-                $6::TEXT,
-                $7::TEXT,
-                true
-              FROM vaccines v
-              WHERE v.name = $1
-                AND NOT EXISTS (
-                  SELECT 1
-                  FROM vaccination_schedules existing_schedule
-                  WHERE existing_schedule.vaccine_id = v.id
-                    AND existing_schedule.dose_number = $2
-                )
-            `,
-            [
-              vaccineName,
-              doseNumber,
-              totalDoses,
-              ageInMonths,
-              minimumAgeDays,
-              ageDescription,
-              description,
-            ],
-          );
-        }
-      }
-    })().catch((error) => {
-      vaccinationTrackingColumnsPromise = null;
-      throw error;
-    });
+    vaccinationTrackingColumnsPromise = Promise.resolve();
   }
 
   return vaccinationTrackingColumnsPromise;
@@ -471,6 +344,23 @@ const sanitizeOffset = (value, fallback = 0) => {
     return fallback;
   }
   return parsed;
+};
+
+const resolveVaccinationScopeContext = (req) => {
+  const scope = resolveEffectiveScope({
+    query: req.query,
+    user: req.user,
+    canonicalRole: getCanonicalRole(req),
+  });
+
+  if (!isScopeRequestAllowed(scope)) {
+    return {
+      error: 'Cross-facility vaccination access is not allowed. Use your assigned facility scope.',
+      status: 403,
+    };
+  }
+
+  return scope;
 };
 
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
@@ -825,10 +715,44 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
   try {
     await ensureVaccinationTrackingColumns();
     const limit = sanitizeLimit(req.query.limit, 200, 5000);
-    const offset = sanitizeOffset(req.query.offset, 0);
+    const page = sanitizeLimit(req.query.page, 1, 100000);
+    const offset = req.query.page !== undefined
+      ? (page - 1) * limit
+      : sanitizeOffset(req.query.offset, 0);
+    const searchTerm = sanitizeOptionalText(req.query.search || req.query.query);
     const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
     const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
     const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
+    const scopeContext = resolveVaccinationScopeContext(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({ error: scopeContext.error });
+    }
+
+    const params = [];
+    let whereClause = `
+      WHERE ir.is_active = true
+        AND p.is_active = true
+    `;
+
+    if (scopeContext.useScope) {
+      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopeContext.scopeIds);
+    }
+
+    if (searchTerm) {
+      whereClause += `
+        AND (
+          COALESCE(p.first_name, '') ILIKE $${params.length + 1}
+          OR COALESCE(p.last_name, '') ILIKE $${params.length + 1}
+          OR COALESCE(g.name, '') ILIKE $${params.length + 1}
+          OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
+          OR COALESCE(v.name, '') ILIKE $${params.length + 1}
+          OR COALESCE(ir.status::text, '') ILIKE $${params.length + 1}
+          OR COALESCE(${providerValueExpression}, '') ILIKE $${params.length + 1}
+        )
+      `;
+      params.push(`%${searchTerm}%`);
+    }
 
     const result = await pool.query(
       `
@@ -868,15 +792,46 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
         LEFT JOIN guardians g ON g.id = p.guardian_id
         LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
-        WHERE ir.is_active = true
-          AND p.is_active = true
+        ${whereClause}
         ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
-        LIMIT $1 OFFSET $2
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
-      [limit, offset],
+      [...params, limit, offset],
     );
+    const countResult = await pool.query(
+      `
+        SELECT
+          COUNT(*)::INT AS total,
+          COUNT(*) FILTER (
+            WHERE COALESCE(LOWER(TRIM(ir.status::text)), '') IN ('completed', 'attended')
+              OR ir.admin_date IS NOT NULL
+          )::INT AS completed
+        FROM immunization_records ir
+        JOIN vaccines v ON v.id = ir.vaccine_id
+        LEFT JOIN patients p ON p.id = ir.patient_id
+        LEFT JOIN guardians g ON g.id = p.guardian_id
+        LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
+        ${providerJoinsSql}
+        ${whereClause}
+      `,
+      params,
+    );
+    const metadata = countResult.rows[0] || {};
 
-    res.json(result.rows.map(normalizeVaccinationProvider));
+    res.json({
+      records: result.rows.map(normalizeVaccinationProvider),
+      metadata: {
+        page,
+        limit,
+        offset,
+        total: parseInt(metadata.total, 10) || 0,
+        totalPages:
+          limit > 0 ? Math.ceil((parseInt(metadata.total, 10) || 0) / limit) : 0,
+        completed: parseInt(metadata.completed, 10) || 0,
+        hasNext: offset + limit < (parseInt(metadata.total, 10) || 0),
+        hasPrev: offset > 0,
+      },
+    });
   } catch (error) {
     console.error('Error fetching vaccination records:', error);
     res.status(500).json({ error: 'Failed to fetch vaccination records' });

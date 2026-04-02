@@ -2,6 +2,7 @@ const request = require('supertest');
 const pool = require('../../db');
 const { app } = require('../helpers/testApp');
 const { loginAdmin, loginGuardian } = require('../helpers/authHelper');
+const { getHolidayInfo } = require('../../config/holidays');
 
 describe('Appointments Module API Integration Tests', () => {
   let adminToken;
@@ -16,19 +17,22 @@ describe('Appointments Module API Integration Tests', () => {
   const collectionFrom = (body) => (Array.isArray(body) ? body : body?.data || []);
   const toManilaDateKey = (value) =>
     new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(new Date(value));
+  const appointmentDateTime = (date, time = '09:00:00') => `${date}T${time}`;
   const futureBusinessDate = (businessDaysAhead = 1) => {
     const date = new Date();
+    date.setHours(12, 0, 0, 0);
     let added = 0;
 
     while (added < businessDaysAhead) {
       date.setDate(date.getDate() + 1);
       const day = date.getDay();
-      if (day !== 0 && day !== 6) {
+      const holiday = getHolidayInfo(date);
+      if (day !== 0 && day !== 6 && !holiday) {
         added += 1;
       }
     }
 
-    return date.toISOString().split('T')[0];
+    return toManilaDateKey(date);
   };
 
   beforeAll(async () => {
@@ -177,7 +181,7 @@ describe('Appointments Module API Integration Tests', () => {
 
       const newAppointment = {
         infant_id: testInfantId,
-        scheduled_date: tomorrowDate,
+        scheduled_date: appointmentDateTime(tomorrowDate),
         type: 'Vaccination',
         duration_minutes: 30,
         notes: 'Test appointment',
@@ -202,7 +206,7 @@ describe('Appointments Module API Integration Tests', () => {
 
       const newAppointment = {
         infant_id: guardianInfantId,
-        scheduled_date: tomorrowDate,
+        scheduled_date: appointmentDateTime(tomorrowDate),
         type: 'Check-up',
         duration_minutes: 30,
         notes: 'Guardian created appointment',
@@ -331,7 +335,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${guardianToken}`)
         .send({
           infant_id: testInfantId,
-          scheduled_date: tomorrowDate,
+          scheduled_date: appointmentDateTime(tomorrowDate),
           type: 'Vaccination',
         });
 
@@ -384,7 +388,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${guardianToken}`)
         .send({
           infant_id: guardianInfantId,
-          scheduled_date: tomorrowDate,
+          scheduled_date: appointmentDateTime(tomorrowDate),
           type: 'Check-up',
           duration_minutes: 30,
         });
@@ -440,7 +444,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${guardianToken}`)
         .send({
           infant_id: guardianInfantId,
-          scheduled_date: tomorrowDate,
+          scheduled_date: appointmentDateTime(tomorrowDate),
           type: 'Cancellation Test',
         });
 
@@ -469,7 +473,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           infant_id: testInfantId,
-          scheduled_date: tomorrowDate,
+          scheduled_date: appointmentDateTime(tomorrowDate),
           type: 'Completion Test',
           duration_minutes: 30,
         });
@@ -570,7 +574,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           infant_id: testInfantId,
-          scheduled_date: tomorrowDate,
+          scheduled_date: appointmentDateTime(tomorrowDate),
           type: 'Deletion Test',
         });
 
@@ -582,7 +586,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(deleteResponse.status).toBe(200);
-      expect(deleteResponse.body.message).toEqual('Appointment deleted successfully');
+      expect(deleteResponse.body.message).toEqual('Appointment archived successfully');
     });
 
     test('should return 404 for non-existent appointment', async () => {

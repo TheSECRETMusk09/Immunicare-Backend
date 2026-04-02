@@ -635,7 +635,7 @@ router.get('/:id/download', requirePermission('report:export'), async (req, res)
 });
 
 // DELETE /api/reports/:id - Delete report metadata and stored file
-router.delete('/:id', requirePermission('report:export'), async (req, res) => {
+router.delete('/:id', requirePermission('report:delete'), async (req, res) => {
   try {
     const reportId = safeInteger(req.params.id, 0);
     if (reportId <= 0) {

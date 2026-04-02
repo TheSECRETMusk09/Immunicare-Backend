@@ -207,7 +207,8 @@ describe('Vaccinations Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
+      expect(Array.isArray(response.body?.records)).toBe(true);
+      expect(response.body?.metadata).toBeDefined();
     });
 
     test('should return 403 for non-admin', async () => {

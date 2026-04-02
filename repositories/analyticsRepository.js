@@ -430,7 +430,7 @@ const buildImmunizationStatusExpression = ({ alias, statusColumn }) => {
     return inferredStatus;
   }
 
-  return `COALESCE(NULLIF(LOWER(${alias}.${statusColumn}::text), ''), ${inferredStatus})`;
+  return `COALESCE(NULLIF(TRIM(LOWER(${alias}.${statusColumn}::text)), ''), ${inferredStatus})`;
 };
 
 const buildInventoryStockExpression = ({ alias, mappings }) => {

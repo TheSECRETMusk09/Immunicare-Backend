@@ -689,6 +689,9 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
     const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
     const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
     
+    const limit = sanitizeLimit(req.query.limit, 100, 1000);
+    const page = sanitizeLimit(req.query.page, 1, 100000);
+    const offset = (page - 1) * limit;
     let whereClause = 'WHERE i.is_active = true';
     const params = [];
     
@@ -704,11 +707,33 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
         LEFT JOIN guardians g ON i.guardian_id = g.id
         ${whereClause}
         ORDER BY i.created_at DESC
-        LIMIT 100
+        LIMIT $${params.length + 1}
+        OFFSET $${params.length + 2}
+      `,
+      [...params, limit, offset],
+    );
+    const countResult = await db.query(
+      `
+        SELECT COUNT(*)::INT AS total
+        FROM patients i
+        LEFT JOIN guardians g ON i.guardian_id = g.id
+        ${whereClause}
       `,
       params,
     );
-    res.json({ data: result.rows });
+
+    const total = Number.parseInt(countResult.rows[0]?.total, 10) || 0;
+    res.json({
+      data: result.rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: limit > 0 ? Math.ceil(total / limit) : 0,
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    });
   } catch (error) {
     console.error('Dashboard infants error:', error);
     next(error);
@@ -733,11 +758,12 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
     const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
     const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
     
+    const patientColumn = await resolvePatientColumn();
     let scopeFilter = '';
     const vaccinationParams = [days];
     
     if (useClinicScope) {
-      scopeFilter = ' AND p.clinic_id = ANY($2::int[])';
+      scopeFilter = ` AND p.${patientColumn} = ANY($2::int[])`;
       vaccinationParams.push(scopeIds);
     }
 
@@ -763,7 +789,6 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
     );
     vaccinations.rows.forEach((item) => activity.push(item));
 
-    const patientColumn = await resolvePatientColumn();
     const patientTable = await resolvePatientTable();
     
     const appointmentParams = [days];

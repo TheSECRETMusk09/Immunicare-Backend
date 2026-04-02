@@ -14,7 +14,13 @@ const { ensureAtBirthVaccinationRecords } = require('../services/atBirthVaccinat
 const {
   createGuardianChildRecord,
 } = require('../services/guardianChildRegistrationService');
-const { resolvePatientFacilityId } = require('../services/entityScopeService');
+const {
+  isScopeRequestAllowed,
+  parsePositiveInt,
+  resolveEffectiveScope,
+  resolvePatientFacilityId,
+} = require('../services/entityScopeService');
+require('../services/infantRuntimeSchemaService');
 const socketService = require('../services/socketService');
 const adminNotificationService = require('../services/adminNotificationService');
 const { calculateAgeInMonths } = require('../utils/ageCalculation');
@@ -74,47 +80,54 @@ const toNullableString = (value) => {
   return normalized.length > 0 ? normalized : null;
 };
 
-let ensurePatientLocationColumnsPromise = null;
 let importedVaccinationPredicatePromise = null;
 
-const ensurePatientLocationColumnsExist = async () => {
-  if (!ensurePatientLocationColumnsPromise) {
-    ensurePatientLocationColumnsPromise = (async () => {
-      await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS purok VARCHAR(50)');
-      await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS street_color VARCHAR(255)');
-      await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS allergy_information TEXT');
-      await pool.query('ALTER TABLE patients ADD COLUMN IF NOT EXISTS health_care_provider VARCHAR(255)');
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS infant_allergies (
-          id SERIAL PRIMARY KEY,
-          infant_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
-          allergy_type VARCHAR(100),
-          allergen VARCHAR(255),
-          severity VARCHAR(50),
-          reaction_description TEXT,
-          onset_date DATE,
-          is_active BOOLEAN NOT NULL DEFAULT TRUE,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS transfer_in_cases (
-          id SERIAL PRIMARY KEY,
-          infant_id INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
-          validation_status VARCHAR(50),
-          source_facility VARCHAR(255),
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-    })().catch((error) => {
-      ensurePatientLocationColumnsPromise = null;
-      throw error;
-    });
+const requirePatientReadAccess = (req, res, next) => {
+  const canonicalRole = getCanonicalRole(req);
+  if (canonicalRole === CANONICAL_ROLES.GUARDIAN) {
+    return next();
   }
 
-  return ensurePatientLocationColumnsPromise;
+  return requirePermission('patient:view')(req, res, next);
+};
+
+const sanitizeLimit = (value, fallback = 10000, max = 10000) => {
+  const parsed = parsePositiveInt(value);
+  if (!parsed) {
+    return fallback;
+  }
+
+  return Math.min(parsed, max);
+};
+
+const sanitizeOffset = (value, fallback = 0) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+
+  return parsed;
+};
+
+const resolveScopedFacilityContext = (req) => {
+  const canonicalRole = getCanonicalRole(req);
+  const scope = resolveEffectiveScope({
+    query: req.query,
+    user: req.user,
+    canonicalRole,
+  });
+
+  if (
+    canonicalRole !== CANONICAL_ROLES.GUARDIAN &&
+    !isScopeRequestAllowed(scope)
+  ) {
+    return {
+      error: 'Cross-facility patient access is not allowed. Use your assigned facility scope.',
+      status: 403,
+    };
+  }
+
+  return scope;
 };
 
 const getImportedVaccinationPredicate = async () => {
@@ -356,9 +369,8 @@ const validateInfantPayloadExtended = (payload = {}, options = {}) => {
 };
 
 // Get infants by guardian
-router.get('/guardian/:guardianId', async (req, res) => {
+router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) => {
   try {
-    await ensurePatientLocationColumnsExist();
     const importedVaccinationPredicate = await getImportedVaccinationPredicate();
 
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -368,6 +380,18 @@ router.get('/guardian/:guardianId', async (req, res) => {
 
     if (isGuardian(req) && parseInt(req.user.guardian_id, 10) !== guardianId) {
       return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    if (scopedFacilityContext.error) {
+      return res.status(scopedFacilityContext.status).json({ error: scopedFacilityContext.error });
+    }
+
+    const params = [guardianId];
+    let facilityFilterClause = '';
+    if (scopedFacilityContext.useScope) {
+      facilityFilterClause = ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopedFacilityContext.scopeIds);
     }
 
     const result = await pool.query(
@@ -451,9 +475,10 @@ router.get('/guardian/:guardianId', async (req, res) => {
         FROM patients p
         WHERE p.guardian_id = $1
           AND p.is_active = true
+          ${facilityFilterClause}
         ORDER BY p.created_at DESC
       `,
-      [guardianId],
+      params,
     );
 
     res.json({ success: true, data: result.rows || [] });
@@ -466,18 +491,51 @@ router.get('/guardian/:guardianId', async (req, res) => {
 // Get all infants
 router.get('/', requirePermission('patient:view'), async (req, res) => {
   try {
-    await ensurePatientLocationColumnsExist();
+    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    if (scopedFacilityContext.error) {
+      return res.status(scopedFacilityContext.status).json({ success: false, error: scopedFacilityContext.error });
+    }
 
-    console.log('[Infants API] Fetching all infants - User:', req.user?.id, 'Role:', req.user?.role, 'Role Type:', req.user?.role_type);
+    const limit = sanitizeLimit(req.query.limit, 10000, 10000);
+    const page = sanitizeLimit(req.query.page, 1, 100000);
+    const offset = req.query.page !== undefined
+      ? (page - 1) * limit
+      : sanitizeOffset(req.query.offset, 0);
+    const searchTerm = toNullableString(req.query.search || req.query.query);
+    const dobFilter = toNullableString(req.query.dob || req.query.date || req.query.date_of_birth);
+    if (dobFilter && Number.isNaN(Date.parse(dobFilter))) {
+      return res.status(400).json({ success: false, error: 'Invalid date filter format. Expected YYYY-MM-DD.' });
+    }
 
-    const limit = parseInt(req.query.limit, 10) || 10000;
-    const offset = parseInt(req.query.offset, 10) || 0;
     const importedVaccinationPredicate = await getImportedVaccinationPredicate();
+    const params = [];
+    let whereClause = 'WHERE p.is_active = true';
 
-    // Ensure age_months column exists and update ages
-    await pool.query(`
-      ALTER TABLE patients ADD COLUMN IF NOT EXISTS age_months INTEGER
-    `);
+    if (scopedFacilityContext.useScope) {
+      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopedFacilityContext.scopeIds);
+    }
+
+    if (searchTerm) {
+      whereClause += `
+        AND (
+          p.first_name ILIKE $${params.length + 1}
+          OR p.last_name ILIKE $${params.length + 1}
+          OR COALESCE(g.name, '') ILIKE $${params.length + 1}
+          OR COALESCE(p.mother_name, '') ILIKE $${params.length + 1}
+          OR COALESCE(p.father_name, '') ILIKE $${params.length + 1}
+          OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
+          OR COALESCE(p.cellphone_number, '') ILIKE $${params.length + 1}
+          OR COALESCE(g.phone, '') ILIKE $${params.length + 1}
+        )
+      `;
+      params.push(`%${searchTerm}%`);
+    }
+
+    if (dobFilter) {
+      whereClause += ` AND DATE(p.dob) = $${params.length + 1}`;
+      params.push(dobFilter);
+    }
 
     const result = await pool.query(
       `
@@ -566,20 +624,68 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
           ) as allergies
         FROM patients p
         LEFT JOIN guardians g ON g.id = p.guardian_id
-        WHERE p.is_active = true
+        ${whereClause}
         ORDER BY p.created_at DESC
-        LIMIT $1 OFFSET $2
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
-      [limit, offset],
+      [...params, limit, offset],
     );
 
-    const totalResult = await pool.query('SELECT COUNT(*) FROM patients WHERE is_active = true');
-    const total = parseInt(totalResult.rows[0].count, 10);
+    const countResult = await pool.query(
+      `
+        SELECT COUNT(*)::INT AS total
+        FROM patients p
+        LEFT JOIN guardians g ON g.id = p.guardian_id
+        ${whereClause}
+      `,
+      params,
+    );
+    const total = parseInt(countResult.rows[0]?.total, 10) || 0;
 
-    console.log(`[Infants API] Found ${result.rows.length} infants`);
-    if (result.rows.length > 0) {
-      console.log('[Infants API] First infant sample:', { id: result.rows[0].id, name: result.rows[0].first_name + ' ' + result.rows[0].last_name });
-    }
+    const summaryResult = await pool.query(
+      `
+        SELECT
+          COUNT(*)::INT AS total,
+          COUNT(*) FILTER (
+            WHERE latest_transfer_case_status IN ('for_validation', 'needs_clarification', 'pending_validation')
+          )::INT AS needs_review,
+          COUNT(*) FILTER (
+            WHERE latest_transfer_case_id IS NOT NULL
+          )::INT AS with_imported_history,
+          COALESCE(SUM(COALESCE(pending_vaccinations, 0)), 0)::INT AS pending_vaccinations
+        FROM (
+          SELECT
+            p.id,
+            (
+              SELECT COUNT(*)
+              FROM immunization_records ir
+              WHERE ir.patient_id = p.id
+                AND COALESCE(ir.is_active, true) = true
+                AND COALESCE(LOWER(TRIM(ir.status)), 'pending') IN ('scheduled', 'pending')
+                AND ir.admin_date IS NULL
+            ) AS pending_vaccinations,
+            (
+              SELECT tic.id
+              FROM transfer_in_cases tic
+              WHERE tic.infant_id = p.id
+              ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+              LIMIT 1
+            ) AS latest_transfer_case_id,
+            (
+              SELECT tic.validation_status
+              FROM transfer_in_cases tic
+              WHERE tic.infant_id = p.id
+              ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+              LIMIT 1
+            ) AS latest_transfer_case_status
+          FROM patients p
+          LEFT JOIN guardians g ON g.id = p.guardian_id
+          ${whereClause}
+        ) filtered_patients
+      `,
+      params,
+    );
+    const summary = summaryResult.rows[0] || {};
 
     res.json({
       success: true,
@@ -588,8 +694,14 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
         total,
         limit,
         offset,
-        page: Math.floor(offset / limit) + 1,
-        totalPages: Math.ceil(total / limit),
+        page: limit > 0 ? Math.floor(offset / limit) + 1 : 1,
+        totalPages: limit > 0 ? Math.ceil(total / limit) : 0,
+      },
+      summary: {
+        total: parseInt(summary.total, 10) || total,
+        needsReview: parseInt(summary.needs_review, 10) || 0,
+        withImportedHistory: parseInt(summary.with_imported_history, 10) || 0,
+        pendingVaccinations: parseInt(summary.pending_vaccinations, 10) || 0,
       },
     });
   } catch (error) {
@@ -599,25 +711,42 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
 });
 
 // Get infant statistics
-router.get('/stats/overview', requirePermission('patient:view'), async (_req, res) => {
+router.get('/stats/overview', requirePermission('patient:view'), async (req, res) => {
   try {
+    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    if (scopedFacilityContext.error) {
+      return res.status(scopedFacilityContext.status).json({
+        success: false,
+        error: scopedFacilityContext.error,
+      });
+    }
+
+    const params = [];
+    let whereClause = 'WHERE p.is_active = true';
+    if (scopedFacilityContext.useScope) {
+      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopedFacilityContext.scopeIds);
+    }
+
     const [totalInfants, thisMonth, bySex] = await Promise.all([
-      pool.query('SELECT COUNT(*) as count FROM patients WHERE is_active = true'),
+      pool.query(`SELECT COUNT(*) as count FROM patients p ${whereClause}`, params),
       pool.query(
         `
           SELECT COUNT(*) as count
-          FROM patients
-          WHERE is_active = true
-            AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)
+          FROM patients p
+          ${whereClause}
+            AND DATE_TRUNC('month', p.created_at) = DATE_TRUNC('month', CURRENT_DATE)
         `,
+        params,
       ),
       pool.query(
         `
           SELECT sex, COUNT(*) as count
-          FROM patients
-          WHERE is_active = true
+          FROM patients p
+          ${whereClause}
           GROUP BY sex
         `,
+        params,
       ),
     ]);
 
@@ -643,8 +772,28 @@ router.get('/stats/overview', requirePermission('patient:view'), async (_req, re
 // Get infants with upcoming vaccinations
 router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit, 10) || 50;
-    const offset = parseInt(req.query.offset, 10) || 0;
+    const limit = sanitizeLimit(req.query.limit, 50, 200);
+    const offset = sanitizeOffset(req.query.offset, 0);
+    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    if (scopedFacilityContext.error) {
+      return res.status(scopedFacilityContext.status).json({
+        success: false,
+        error: scopedFacilityContext.error,
+      });
+    }
+
+    const params = [];
+    let whereClause = `
+      WHERE p.is_active = true
+        AND vr.next_due_date IS NOT NULL
+        AND vr.next_due_date <= CURRENT_DATE + INTERVAL '30 days'
+        AND vr.is_active = true
+    `;
+
+    if (scopedFacilityContext.useScope) {
+      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopedFacilityContext.scopeIds);
+    }
 
     const result = await pool.query(
       `
@@ -657,14 +806,11 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (r
         FROM patients p
         LEFT JOIN guardians g ON g.id = p.guardian_id
         LEFT JOIN immunization_records vr ON vr.patient_id = p.id
-        WHERE p.is_active = true
-          AND vr.next_due_date IS NOT NULL
-          AND vr.next_due_date <= CURRENT_DATE + INTERVAL '30 days'
-          AND vr.is_active = true
+        ${whereClause}
         ORDER BY vr.next_due_date ASC
-        LIMIT $1 OFFSET $2
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
-      [limit, offset],
+      [...params, limit, offset],
     );
 
     res.json({ success: true, data: result.rows || [] });
@@ -675,16 +821,20 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (r
 });
 
 // Get infant by control number
-router.get('/control-number/:controlNumber', async (req, res) => {
+router.get('/control-number/:controlNumber', requirePatientReadAccess, async (req, res) => {
   try {
-    await ensurePatientLocationColumnsExist();
-
     const canonicalRole = getCanonicalRole(req);
     if (
       canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
+      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER &&
       canonicalRole !== CANONICAL_ROLES.GUARDIAN
     ) {
       return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+
+    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    if (scopedFacilityContext.error) {
+      return res.status(scopedFacilityContext.status).json({ success: false, error: scopedFacilityContext.error });
     }
 
     const rawControlNumber = String(req.params.controlNumber || '').trim().toUpperCase();
@@ -701,7 +851,6 @@ router.get('/control-number/:controlNumber', async (req, res) => {
 
     const params = [rawControlNumber];
     let guardianFilterClause = '';
-
     if (canonicalRole === CANONICAL_ROLES.GUARDIAN) {
       const guardianId = parseInt(req.user.guardian_id, 10);
       if (Number.isNaN(guardianId) || guardianId <= 0) {
@@ -710,8 +859,14 @@ router.get('/control-number/:controlNumber', async (req, res) => {
           .json({ success: false, error: 'Guardian account mapping is missing' });
       }
 
-      guardianFilterClause = ' AND p.guardian_id = $2';
+      guardianFilterClause = ` AND p.guardian_id = $${params.length + 1}`;
       params.push(guardianId);
+    }
+
+    let facilityFilterClause = '';
+    if (scopedFacilityContext.useScope) {
+      facilityFilterClause = ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopedFacilityContext.scopeIds);
     }
 
     const result = await pool.query(
@@ -741,6 +896,7 @@ router.get('/control-number/:controlNumber', async (req, res) => {
         WHERE p.control_number = $1
           AND p.is_active = true
           ${guardianFilterClause}
+          ${facilityFilterClause}
         LIMIT 1
       `,
       params,
@@ -758,22 +914,37 @@ router.get('/control-number/:controlNumber', async (req, res) => {
 });
 
 // Get infant by ID
-router.get('/:id(\\d+)', async (req, res) => {
+router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
   try {
-    await ensurePatientLocationColumnsExist();
-
     const infantId = parseInt(req.params.id, 10);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
     }
 
     const importedVaccinationPredicate = await getImportedVaccinationPredicate();
+    const canonicalRole = getCanonicalRole(req);
+    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    if (scopedFacilityContext.error) {
+      return res.status(scopedFacilityContext.status).json({ success: false, error: scopedFacilityContext.error });
+    }
 
     if (isGuardian(req)) {
       const isOwner = await guardianOwnsInfant(parseInt(req.user.guardian_id, 10), infantId);
       if (!isOwner) {
         return res.status(403).json({ success: false, error: 'Access denied' });
       }
+    } else if (
+      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
+      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER
+    ) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+
+    const params = [infantId];
+    let facilityFilterClause = '';
+    if (scopedFacilityContext.useScope) {
+      facilityFilterClause = ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopedFacilityContext.scopeIds);
     }
 
     const result = await pool.query(
@@ -860,8 +1031,9 @@ router.get('/:id(\\d+)', async (req, res) => {
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE p.id = $1
           AND p.is_active = true
+          ${facilityFilterClause}
       `,
-      [infantId],
+      params,
     );
 
     if (result.rows.length === 0) {
@@ -878,8 +1050,6 @@ router.get('/:id(\\d+)', async (req, res) => {
 // Create infant (SYSTEM_ADMIN)
 router.post('/', requirePermission('patient:create'), async (req, res) => {
   try {
-    await ensurePatientLocationColumnsExist();
-
     const {
       first_name,
       last_name,
@@ -1191,8 +1361,6 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
 // Update infant (GUARDIAN own)
 router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async (req, res) => {
   try {
-    await ensurePatientLocationColumnsExist();
-
     if (!isGuardian(req)) {
       return res.status(403).json({
         success: false,
@@ -1370,13 +1538,22 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
 
     // Get count of appointments to be deleted
     const appointmentCountResult = await client.query(
-      'SELECT COUNT(*) as count FROM appointments WHERE infant_id = $1',
+      'SELECT COUNT(*) as count FROM appointments WHERE infant_id = $1 AND COALESCE(is_active, true) = true',
       [infantId],
     );
     const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
 
-    // Permanently delete all associated appointments
-    await client.query('DELETE FROM appointments WHERE infant_id = $1', [infantId]);
+    // Preserve appointment history by soft-deactivating linked appointments.
+    await client.query(
+      `
+        UPDATE appointments
+        SET is_active = false,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE infant_id = $1
+          AND COALESCE(is_active, true) = true
+      `,
+      [infantId],
+    );
 
     // Soft delete the infant (set is_active = false)
     const deleteResult = await client.query(
@@ -1394,7 +1571,7 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
     // Send admin notification about the deletion
     const deletionTimestamp = new Date().toISOString();
     const adminNotificationTitle = 'Child Profile Deleted by Guardian';
-    const adminNotificationMessage = `Guardian "${guardian.name}" (ID: ${guardian.id}) has deleted a child profile. Child: ${infant.first_name} ${infant.last_name} (Control Number: ${infant.control_number || 'N/A'}). ${appointmentCount} associated appointment record(s) have been permanently removed. Deletion timestamp: ${deletionTimestamp}. Guardian contact: ${guardian.phone || 'N/A'}, ${guardian.email || 'N/A'}`;
+    const adminNotificationMessage = `Guardian "${guardian.name}" (ID: ${guardian.id}) has deleted a child profile. Child: ${infant.first_name} ${infant.last_name} (Control Number: ${infant.control_number || 'N/A'}). ${appointmentCount} associated appointment record(s) were archived. Deletion timestamp: ${deletionTimestamp}. Guardian contact: ${guardian.phone || 'N/A'}, ${guardian.email || 'N/A'}`;
 
     // Send notification to admins
     try {
@@ -1422,7 +1599,7 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
 
     return res.json({
       success: true,
-      message: 'Child removed successfully. All associated appointments have been deleted.',
+      message: 'Child removed successfully. Associated appointments were archived.',
       deletedInfant: {
         id: infant.id,
         name: `${infant.first_name} ${infant.last_name}`,
@@ -1430,7 +1607,7 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
         deletedByGuardian: guardian.id,
         guardianName: guardian.name,
         deletedAt: deletionTimestamp,
-        appointmentsPermanentlyRemoved: appointmentCount,
+        appointmentsArchived: appointmentCount,
       },
     });
   } catch (error) {
@@ -1445,8 +1622,6 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
 // Update infant (SYSTEM_ADMIN)
 router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) => {
   try {
-    await ensurePatientLocationColumnsExist();
-
     const infantId = parseInt(req.params.id, 10);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
@@ -1633,13 +1808,22 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
 
     // Get count of appointments to be deleted
     const appointmentCountResult = await client.query(
-      'SELECT COUNT(*) as count FROM appointments WHERE infant_id = $1',
+      'SELECT COUNT(*) as count FROM appointments WHERE infant_id = $1 AND COALESCE(is_active, true) = true',
       [infantId],
     );
     const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
 
-    // Permanently delete all associated appointments
-    await client.query('DELETE FROM appointments WHERE infant_id = $1', [infantId]);
+    // Preserve appointment history by soft-deactivating linked appointments.
+    await client.query(
+      `
+        UPDATE appointments
+        SET is_active = false,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE infant_id = $1
+          AND COALESCE(is_active, true) = true
+      `,
+      [infantId],
+    );
 
     // Soft delete the infant (set is_active = false)
     const deleteResult = await client.query(
@@ -1657,7 +1841,7 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
     // Send admin notification about the deletion
     const deletionTimestamp = new Date().toISOString();
     const adminNotificationTitle = 'Child Profile Deleted by System Admin';
-    const adminNotificationMessage = `System Admin has deleted a child profile. Child: ${infant.first_name} ${infant.last_name} (Control Number: ${infant.control_number || 'N/A'}). ${appointmentCount} associated appointment record(s) have been permanently removed. Deletion timestamp: ${deletionTimestamp}. ${guardian ? `Guardian: ${guardian.name} (ID: ${guardian.id}), Contact: ${guardian.phone || 'N/A'}, ${guardian.email || 'N/A'}` : 'No guardian information available'}`;
+    const adminNotificationMessage = `System Admin has deleted a child profile. Child: ${infant.first_name} ${infant.last_name} (Control Number: ${infant.control_number || 'N/A'}). ${appointmentCount} associated appointment record(s) were archived. Deletion timestamp: ${deletionTimestamp}. ${guardian ? `Guardian: ${guardian.name} (ID: ${guardian.id}), Contact: ${guardian.phone || 'N/A'}, ${guardian.email || 'N/A'}` : 'No guardian information available'}`;
 
     // Send notification to admins
     try {
@@ -1685,7 +1869,7 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
 
     res.json({
       success: true,
-      message: 'Infant deactivated successfully. All associated appointments have been deleted.',
+      message: 'Infant deactivated successfully. Associated appointments were archived.',
       deletedInfant: {
         id: infant.id,
         name: `${infant.first_name} ${infant.last_name}`,
@@ -1694,7 +1878,7 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
         guardianId: infant.guardian_id,
         guardianName: guardian?.name,
         deletedAt: deletionTimestamp,
-        appointmentsPermanentlyRemoved: appointmentCount,
+        appointmentsArchived: appointmentCount,
       },
     });
   } catch (error) {
@@ -1710,8 +1894,32 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
 router.get('/search/:query', requirePermission('patient:view'), async (req, res) => {
   try {
     const { query } = req.params;
-    const limit = parseInt(req.query.limit, 10) || 50;
-    const offset = parseInt(req.query.offset, 10) || 0;
+    const limit = sanitizeLimit(req.query.limit, 50, 200);
+    const offset = sanitizeOffset(req.query.offset, 0);
+    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    if (scopedFacilityContext.error) {
+      return res.status(scopedFacilityContext.status).json({
+        success: false,
+        error: scopedFacilityContext.error,
+      });
+    }
+
+    const params = [`%${query}%`];
+    let whereClause = `
+      WHERE p.is_active = true
+        AND (
+          p.first_name ILIKE $1 OR
+          p.last_name ILIKE $1 OR
+          p.national_id ILIKE $1 OR
+          p.control_number ILIKE $1 OR
+          g.name ILIKE $1
+        )
+    `;
+
+    if (scopedFacilityContext.useScope) {
+      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopedFacilityContext.scopeIds);
+    }
 
     const result = await pool.query(
       `
@@ -1734,18 +1942,11 @@ router.get('/search/:query', requirePermission('patient:view'), async (req, res)
           ) as allergies
         FROM patients p
         LEFT JOIN guardians g ON g.id = p.guardian_id
-        WHERE p.is_active = true
-          AND (
-            p.first_name ILIKE $1 OR
-            p.last_name ILIKE $1 OR
-            p.national_id ILIKE $1 OR
-            p.control_number ILIKE $1 OR
-            g.name ILIKE $1
-          )
+        ${whereClause}
         ORDER BY p.created_at DESC
-        LIMIT $2 OFFSET $3
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
-      [`%${query}%`, limit, offset],
+      [...params, limit, offset],
     );
 
     res.json({ success: true, data: result.rows || [] });
@@ -1760,9 +1961,27 @@ router.get('/age-range/:minAge/:maxAge', requirePermission('patient:view'), asyn
   try {
     const minAge = parseInt(req.params.minAge, 10);
     const maxAge = parseInt(req.params.maxAge, 10);
+    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    if (scopedFacilityContext.error) {
+      return res.status(scopedFacilityContext.status).json({
+        success: false,
+        error: scopedFacilityContext.error,
+      });
+    }
 
     if (Number.isNaN(minAge) || Number.isNaN(maxAge)) {
       return res.status(400).json({ success: false, error: 'Invalid age range values' });
+    }
+
+    const params = [minAge, maxAge];
+    let whereClause = `
+      WHERE p.is_active = true
+        AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.dob)) BETWEEN $1 AND $2
+    `;
+
+    if (scopedFacilityContext.useScope) {
+      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopedFacilityContext.scopeIds);
     }
 
     const result = await pool.query(
@@ -1774,11 +1993,10 @@ router.get('/age-range/:minAge/:maxAge', requirePermission('patient:view'), asyn
           g.phone as guardian_phone
         FROM patients p
         LEFT JOIN guardians g ON g.id = p.guardian_id
-        WHERE p.is_active = true
-          AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.dob)) BETWEEN $1 AND $2
+        ${whereClause}
         ORDER BY p.dob DESC
       `,
-      [minAge, maxAge],
+      params,
     );
 
     res.json({ success: true, data: result.rows || [] });

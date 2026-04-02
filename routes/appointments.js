@@ -90,6 +90,13 @@ const getAppointmentPatientColumn = () =>
   resolveFirstExistingColumn('appointments', ['patient_id', 'infant_id'], 'patient_id');
 
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
+const requireAppointmentReadAccess = (req, res, next) => {
+  if (isGuardian(req)) {
+    return requirePermission('appointment:view:own')(req, res, next);
+  }
+
+  return requirePermission('appointment:view')(req, res, next);
+};
 const requireAppointmentCreateAccess = (req, res, next) => {
   if (isGuardian(req)) {
     return requirePermission('appointment:create:own')(req, res, next);
@@ -380,6 +387,53 @@ const mergeScopeIds = (...values) =>
     ),
   );
 
+const resolveAppointmentScopeContext = (req, explicitScopeIds = []) => {
+  const canonicalRole = getCanonicalRole(req);
+  const userScopeIds = mergeScopeIds(req.user?.clinic_id, req.user?.facility_id);
+  const requestedScopeIds = mergeScopeIds(explicitScopeIds);
+  const requestedScope = String(req.query?.scope || '').trim().toLowerCase();
+  const allowSystemScope =
+    canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
+
+  if (
+    canonicalRole !== CANONICAL_ROLES.GUARDIAN &&
+    !allowSystemScope &&
+    requestedScopeIds.length > 0 &&
+    userScopeIds.length > 0 &&
+    requestedScopeIds.some((scopeId) => !userScopeIds.includes(scopeId))
+  ) {
+    return {
+      error: 'Cross-facility appointment access is not allowed. Use your assigned facility scope.',
+      status: 403,
+    };
+  }
+
+  if (canonicalRole === CANONICAL_ROLES.GUARDIAN || allowSystemScope) {
+    return {
+      canonicalRole,
+      scopeIds: [],
+      useScope: false,
+    };
+  }
+
+  const scopeIds = requestedScopeIds.length > 0 ? requestedScopeIds : userScopeIds;
+  return {
+    canonicalRole,
+    scopeIds,
+    useScope: scopeIds.length > 0,
+  };
+};
+
+const APPOINTMENT_LIST_SORT_COLUMNS = Object.freeze({
+  scheduled_date: 'a.scheduled_date',
+  first_name: 'p.first_name',
+  status: 'COALESCE(a.status::text, \'\')',
+  type: 'COALESCE(a.type::text, \'\')',
+});
+
+const sanitizeSortDirection = (value, fallback = 'desc') =>
+  String(value || fallback).trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
 const resolveSlotClinicId = (req, payloadClinicId) => {
   if (payloadClinicId) {
     return payloadClinicId;
@@ -460,26 +514,56 @@ const fetchAppointmentById = async (id) => {
 };
 
 // Get all appointments
-router.get('/', async (req, res) => {
+router.get('/', requireAppointmentReadAccess, async (req, res) => {
   try {
     const {
       status,
       date,
+      search,
+      query: searchQuery,
+      start_date,
+      startDate,
+      end_date,
+      endDate,
       infant_id,
       clinic_id,
       facility_id,
       page = 1,
       limit = 50,
+      sort_field,
+      sortField,
+      sort_direction,
+      sortDirection,
     } = req.query;
     const canonicalRole = getCanonicalRole(req);
     const patientFacilityColumn = await getPatientFacilityColumn();
     const appointmentFacilityColumn = await getAppointmentFacilityColumn();
     const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const requestedScopeIds = mergeScopeIds(clinic_id, facility_id);
+    const scopeContext = resolveAppointmentScopeContext(req, requestedScopeIds);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({ error: scopeContext.error });
+    }
 
     // Validate pagination
-    const pageNum = Math.max(1, parseInt(page));
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.max(1, Math.min(200, parseInt(limit)));
     const offset = (pageNum - 1) * limitNum;
+    const normalizedSearch = sanitizeText(search ?? searchQuery);
+    const normalizedStartDate = sanitizeText(start_date ?? startDate);
+    const normalizedEndDate = sanitizeText(end_date ?? endDate);
+    const normalizedSortField = APPOINTMENT_LIST_SORT_COLUMNS[sort_field || sortField]
+      ? (sort_field || sortField)
+      : 'scheduled_date';
+    const normalizedSortDirection = sanitizeSortDirection(sort_direction || sortDirection);
+
+    if (normalizedStartDate && Number.isNaN(Date.parse(normalizedStartDate))) {
+      return res.status(400).json({ error: 'start_date must be a valid date' });
+    }
+
+    if (normalizedEndDate && Number.isNaN(Date.parse(normalizedEndDate))) {
+      return res.status(400).json({ error: 'end_date must be a valid date' });
+    }
 
     const params = [];
     let query = `
@@ -509,13 +593,12 @@ router.get('/', async (req, res) => {
       params.push(parseInt(req.user.guardian_id, 10));
     }
 
-    if (canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN) {
-      const scopeIds = mergeScopeIds(clinic_id, facility_id);
-
-      if (scopeIds.length > 0) {
+    if (
+      canonicalRole !== CANONICAL_ROLES.GUARDIAN &&
+      scopeContext.useScope
+    ) {
         query += ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
-        params.push(scopeIds);
-      }
+        params.push(scopeContext.scopeIds);
     }
 
     if (status) {
@@ -536,9 +619,34 @@ router.get('/', async (req, res) => {
       params.push(date);
     }
 
+    if (normalizedStartDate) {
+      query += ` AND DATE(a.scheduled_date) >= $${params.length + 1}`;
+      params.push(normalizedStartDate);
+    }
+
+    if (normalizedEndDate) {
+      query += ` AND DATE(a.scheduled_date) <= $${params.length + 1}`;
+      params.push(normalizedEndDate);
+    }
+
     if (infant_id) {
       query += ` AND a.${appointmentPatientColumn} = $${params.length + 1}`;
       params.push(parseInt(infant_id, 10));
+    }
+
+    if (normalizedSearch) {
+      query += `
+        AND (
+          COALESCE(p.first_name, '') ILIKE $${params.length + 1}
+          OR COALESCE(p.last_name, '') ILIKE $${params.length + 1}
+          OR COALESCE(g.name, '') ILIKE $${params.length + 1}
+          OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
+          OR COALESCE(g.phone, '') ILIKE $${params.length + 1}
+          OR COALESCE(a.type, '') ILIKE $${params.length + 1}
+          OR COALESCE(a.status::text, '') ILIKE $${params.length + 1}
+        )
+      `;
+      params.push(`%${normalizedSearch}%`);
     }
 
     // Get total count for pagination metadata
@@ -547,7 +655,7 @@ router.get('/', async (req, res) => {
     const total = parseInt(countResult.rows[0].count);
 
     // Add pagination
-    query += ' ORDER BY a.scheduled_date ASC LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
+    query += ` ORDER BY ${APPOINTMENT_LIST_SORT_COLUMNS[normalizedSortField]} ${normalizedSortDirection} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limitNum, offset);
 
     const result = await pool.query(query, params);
@@ -856,7 +964,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
 });
 
 // Check booking availability (GUARDIAN and SYSTEM_ADMIN)
-router.get('/availability/check', async (req, res) => {
+router.get('/availability/check', requireAppointmentReadAccess, async (req, res) => {
   try {
     const { scheduled_date, vaccine_id, clinic_id } = req.query;
 
@@ -880,7 +988,7 @@ router.get('/availability/check', async (req, res) => {
 });
 
 // Check vaccine stock for specific date/time (for appointment suggestions)
-router.post('/check-stock', async (req, res) => {
+router.post('/check-stock', requireAppointmentReadAccess, async (req, res) => {
   try {
     const { date, time, vaccine_id, clinic_id } = req.body;
 
@@ -936,7 +1044,10 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       if (!guardianId || guardianId !== parseInt(appointment.owner_guardian_id, 10)) {
         return res.status(403).json({ error: 'You can only reschedule your own appointment requests' });
       }
-    } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
+    } else if (
+      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
+      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER
+    ) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -1078,7 +1189,7 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
 });
 
 // Available time slots for a selected date
-router.get('/availability/slots', async (req, res) => {
+router.get('/availability/slots', requireAppointmentReadAccess, async (req, res) => {
   try {
     const { scheduled_date, vaccine_id, clinic_id, exclude_appointment_id } = req.query;
 
@@ -1107,7 +1218,7 @@ router.get('/availability/slots', async (req, res) => {
 });
 
 // Calendar availability with per-date counts and block markers
-router.get('/availability/calendar', async (req, res) => {
+router.get('/availability/calendar', requireAppointmentReadAccess, async (req, res) => {
   try {
     const canonicalRole = getCanonicalRole(req);
     const guardianId =
@@ -1170,7 +1281,7 @@ router.get('/availability/calendar', async (req, res) => {
 });
 
 // Date drill-down details for calendar click panel/modal
-router.get('/availability/date/:date', async (req, res) => {
+router.get('/availability/date/:date', requireAppointmentReadAccess, async (req, res) => {
   try {
     const canonicalRole = getCanonicalRole(req);
     const guardianId =
@@ -1207,11 +1318,25 @@ router.get('/availability/date/:date', async (req, res) => {
   }
 });
 
-// Get appointments for a specific date (SYSTEM_ADMIN)
+// Get appointments for a specific date
 router.get('/date/:date', requirePermission('appointment:view'), async (req, res) => {
   try {
     const { date } = req.params;
+    const patientFacilityColumn = await getPatientFacilityColumn();
+    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
     const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const scopeContext = resolveAppointmentScopeContext(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({ error: scopeContext.error });
+    }
+
+    const params = [date];
+    let scopeClause = '';
+    if (scopeContext.useScope) {
+      scopeClause = ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
+      params.push(scopeContext.scopeIds);
+    }
+
     const result = await pool.query(
       `
         SELECT
@@ -1219,6 +1344,7 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
           p.first_name AS first_name,
           p.last_name AS last_name,
           p.control_number AS control_number,
+          COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) AS resolved_clinic_id,
           g.name AS guardian_name,
           g.phone AS guardian_phone
         FROM appointments a
@@ -1226,9 +1352,10 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE DATE(a.scheduled_date) = $1
           AND a.is_active = true AND p.is_active = true
+          ${scopeClause}
         ORDER BY a.scheduled_date ASC
       `,
-      [date],
+      params,
     );
 
     res.json({ data: result.rows });
@@ -1242,7 +1369,21 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
 router.get('/upcoming', requirePermission('appointment:view'), async (req, res) => {
   try {
     const limit = sanitizeLimit(req.query.limit, 10, 100);
+    const patientFacilityColumn = await getPatientFacilityColumn();
+    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
     const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const scopeContext = resolveAppointmentScopeContext(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({ error: scopeContext.error });
+    }
+
+    const params = [];
+    let scopeClause = '';
+    if (scopeContext.useScope) {
+      scopeClause = ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
+      params.push(scopeContext.scopeIds);
+    }
+
     const result = await pool.query(
       `
         SELECT
@@ -1250,6 +1391,7 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
           p.first_name AS first_name,
           p.last_name AS last_name,
           p.control_number AS control_number,
+          COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) AS resolved_clinic_id,
           g.name AS guardian_name,
           g.phone AS guardian_phone
         FROM appointments a
@@ -1258,10 +1400,11 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
         WHERE a.scheduled_date >= CURRENT_DATE
           AND a.status = 'scheduled'
           AND a.is_active = true AND p.is_active = true
+          ${scopeClause}
         ORDER BY a.scheduled_date ASC
-        LIMIT $1
+        LIMIT $${params.length + 1}
       `,
-      [limit],
+      [...params, limit],
     );
 
     res.json({ data: result.rows });
@@ -1272,7 +1415,7 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
 });
 
 // Generate appointment suggestions based on vaccine due dates
-router.get('/suggestions/:infantId', async (req, res) => {
+router.get('/suggestions/:infantId', requireAppointmentReadAccess, async (req, res) => {
   try {
     const { infantId } = req.params;
     const { guardianId, clinicId } = req.query;
@@ -1306,16 +1449,77 @@ router.get('/suggestions/:infantId', async (req, res) => {
   }
 });
 
-// Get appointment statistics (SYSTEM_ADMIN)
+// Get appointment statistics
 router.get('/stats/overview', requirePermission('appointment:view'), async (req, res) => {
   try {
+    const patientFacilityColumn = await getPatientFacilityColumn();
+    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+    const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const scopeContext = resolveAppointmentScopeContext(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({ error: scopeContext.error });
+    }
+
+    const params = [];
+    let baseWhere = `
+      WHERE a.is_active = true
+        AND p.is_active = true
+    `;
+    if (scopeContext.useScope) {
+      baseWhere += ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
+      params.push(scopeContext.scopeIds);
+    }
+
     const [today, scheduled, completed, cancelled, thisMonth] = await Promise.all([
-      pool.query('SELECT COUNT(*) as count FROM appointments WHERE DATE(scheduled_date) = CURRENT_DATE'),
-      pool.query('SELECT COUNT(*) as count FROM appointments WHERE status = \'scheduled\''),
-      pool.query('SELECT COUNT(*) as count FROM appointments WHERE status = \'attended\''),
-      pool.query('SELECT COUNT(*) as count FROM appointments WHERE status = \'cancelled\''),
       pool.query(
-        'SELECT COUNT(*) as count FROM appointments WHERE DATE_TRUNC(\'month\', scheduled_date) = DATE_TRUNC(\'month\', CURRENT_DATE)',
+        `
+          SELECT COUNT(*) as count
+          FROM appointments a
+          LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
+          ${baseWhere}
+            AND DATE(a.scheduled_date) = CURRENT_DATE
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          SELECT COUNT(*) as count
+          FROM appointments a
+          LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
+          ${baseWhere}
+            AND a.status = 'scheduled'
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          SELECT COUNT(*) as count
+          FROM appointments a
+          LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
+          ${baseWhere}
+            AND a.status = 'attended'
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          SELECT COUNT(*) as count
+          FROM appointments a
+          LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
+          ${baseWhere}
+            AND a.status = 'cancelled'
+        `,
+        params,
+      ),
+      pool.query(
+        `
+          SELECT COUNT(*) as count
+          FROM appointments a
+          LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
+          ${baseWhere}
+            AND DATE_TRUNC('month', a.scheduled_date) = DATE_TRUNC('month', CURRENT_DATE)
+        `,
+        params,
       ),
     ]);
 
@@ -1352,7 +1556,7 @@ router.get('/types', requirePermission('appointment:view'), async (req, res) => 
 });
 
 // Get appointment by ID (SYSTEM_ADMIN full, GUARDIAN own)
-router.get('/:id(\\d+)', async (req, res) => {
+router.get('/:id(\\d+)', requireAppointmentReadAccess, async (req, res) => {
   try {
     const appointmentId = parseInt(req.params.id, 10);
     if (Number.isNaN(appointmentId)) {
@@ -1369,6 +1573,19 @@ router.get('/:id(\\d+)', async (req, res) => {
       if (!guardianId || guardianId !== parseInt(appointment.owner_guardian_id, 10)) {
         return res.status(403).json({ error: 'Access denied for this appointment' });
       }
+    } else {
+      const scopeContext = resolveAppointmentScopeContext(req);
+      if (scopeContext.error) {
+        return res.status(scopeContext.status).json({ error: scopeContext.error });
+      }
+
+      const resolvedClinicId = sanitizeNullableInt(appointment.resolved_clinic_id);
+      if (
+        scopeContext.useScope &&
+        (!resolvedClinicId || !scopeContext.scopeIds.includes(resolvedClinicId))
+      ) {
+        return res.status(403).json({ error: 'Access denied for this appointment scope' });
+      }
     }
 
     res.json(appointment);
@@ -1380,8 +1597,9 @@ router.get('/:id(\\d+)', async (req, res) => {
 
 // Update appointment (SYSTEM_ADMIN)
 router.put('/:id(\\d+)', async (req, res) => {
+  let appointmentId = null;
   try {
-    const appointmentId = parseInt(req.params.id, 10);
+    appointmentId = parseInt(req.params.id, 10);
     if (Number.isNaN(appointmentId)) {
       return res.status(400).json({ error: 'Invalid appointment ID' });
     }
@@ -1405,7 +1623,10 @@ router.put('/:id(\\d+)', async (req, res) => {
       if (APPOINTMENT_EDIT_LOCKED_STATUSES.includes(normalizeAppointmentStatus(appointment.status))) {
         return res.status(400).json({ error: 'This appointment can no longer be edited' });
       }
-    } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
+    } else if (
+      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
+      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER
+    ) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -1635,7 +1856,10 @@ router.put('/:id(\\d+)/cancel', async (req, res) => {
       if (!guardianId || guardianId !== parseInt(appointment.owner_guardian_id, 10)) {
         return res.status(403).json({ error: 'You can only cancel your own appointment requests' });
       }
-    } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
+    } else if (
+      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
+      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER
+    ) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -1840,7 +2064,17 @@ router.delete('/:id(\\d+)', requirePermission('appointment:delete'), async (req,
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
-    const result = await pool.query('DELETE FROM appointments WHERE id = $1 RETURNING id', [appointmentId]);
+    const result = await pool.query(
+      `
+        UPDATE appointments
+        SET is_active = false,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+          AND COALESCE(is_active, true) = true
+        RETURNING id
+      `,
+      [appointmentId],
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Appointment not found' });
@@ -1853,13 +2087,14 @@ router.delete('/:id(\\d+)', requirePermission('appointment:delete'), async (req,
       oldValues: normalizeAppointmentRecord(existingAppointment),
       newValues: {
         id: appointmentId,
+        is_active: false,
         is_deleted: true,
       },
       severity: 'WARNING',
     });
 
     socketService.broadcast('appointment_deleted', { id: appointmentId });
-    res.json({ message: 'Appointment deleted successfully' });
+    res.json({ message: 'Appointment archived successfully' });
   } catch (error) {
     console.error('Delete appointment error:', error);
     res.status(500).json({ error: 'Failed to delete appointment' });
@@ -2001,7 +2236,7 @@ router.delete('/blocked-dates/:id', requirePermission('appointment:delete'), asy
 });
 
 // Check if a specific date is blocked (for guardians)
-router.get('/blocked-dates/check', async (req, res) => {
+router.get('/blocked-dates/check', requireAppointmentReadAccess, async (req, res) => {
   try {
     const { date, clinic_id } = req.query;
 
