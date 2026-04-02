@@ -27,9 +27,87 @@ const IMMUNIZATION_STATUS_MAP = Object.freeze({
   all: null,
 });
 
+const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MONTH_ABBREVIATIONS = Object.freeze([
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+]);
+
 const mapInt = (value) => {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const padDatePart = (value) => String(value).padStart(2, '0');
+
+const buildLocalDate = (year, monthIndex, day) => {
+  const date = new Date(year, monthIndex, day);
+  if (
+    Number.isNaN(date.getTime())
+    || date.getFullYear() !== year
+    || date.getMonth() !== monthIndex
+    || date.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+};
+
+const parseLocalDateValue = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return buildLocalDate(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  const text = String(value).trim();
+  const dateOnlyMatch = text.match(DATE_ONLY_PATTERN);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    return buildLocalDate(Number(year), Number(month) - 1, Number(day));
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return buildLocalDate(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+};
+
+const toLocalDateKey = (value) => {
+  const date = parseLocalDateValue(value);
+  if (!date) {
+    return null;
+  }
+
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+};
+
+const toMonthDayLabel = (value) => {
+  const dateKey = toLocalDateKey(value);
+  const match = dateKey ? dateKey.match(DATE_ONLY_PATTERN) : null;
+
+  if (!match) {
+    return '';
+  }
+
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  return `${MONTH_ABBREVIATIONS[monthIndex] || ''} ${day}`.trim();
 };
 
 const normalizeAlertSeverity = (value) => {
@@ -88,38 +166,15 @@ const calculateRate = (numerator, denominator) => {
 };
 
 const toChartPointDate = (dateLike) => {
-  const date = new Date(dateLike);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  return date.toISOString().slice(0, 10);
+  return toLocalDateKey(dateLike);
 };
 
 const toChartPointLabel = (dateLike) => {
-  const date = new Date(dateLike);
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
-
-  return date.toLocaleDateString('en-PH', {
-    month: 'short',
-    day: 'numeric',
-  });
+  return toMonthDayLabel(dateLike);
 };
 
 const parseDateOrNull = (value) => {
-  if (!value) {
-    return null;
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  date.setHours(0, 0, 0, 0);
-  return date;
+  return parseLocalDateValue(value);
 };
 
 const buildDateSpine = (startDate, endDate) => {
@@ -134,7 +189,7 @@ const buildDateSpine = (startDate, endDate) => {
   const cursor = new Date(start);
 
   while (cursor <= end) {
-    const dateIso = cursor.toISOString().slice(0, 10);
+    const dateIso = toLocalDateKey(cursor);
     points.push({
       date: dateIso,
       label: toChartPointLabel(dateIso),
@@ -637,15 +692,15 @@ const getInventoryAnalytics = async ({ query, user }) => {
 const getTrendsAnalytics = async ({ query, user }) => {
   const monthsValue = Number.parseInt(query.months, 10);
   const hasMonthOverride = Number.isFinite(monthsValue);
+  const overrideStartDate = new Date();
+  overrideStartDate.setDate(overrideStartDate.getDate() - Math.max(7, monthsValue * 30 || 0));
 
   const normalizedQuery = hasMonthOverride
     ? {
       ...query,
       period: 'custom',
-      startDate: new Date(new Date().setDate(new Date().getDate() - Math.max(7, monthsValue * 30)))
-        .toISOString()
-        .slice(0, 10),
-      endDate: new Date().toISOString().slice(0, 10),
+      startDate: toLocalDateKey(overrideStartDate),
+      endDate: toLocalDateKey(new Date()),
     }
     : query;
 

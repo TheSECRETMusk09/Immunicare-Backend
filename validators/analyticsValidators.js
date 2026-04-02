@@ -1,4 +1,5 @@
 const PERIOD_OPTIONS = new Set(['today', 'week', 'month', 'custom']);
+const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 const VACCINE_KEYS = Object.freeze([
   'ALL',
@@ -22,14 +23,28 @@ const VACCINATION_STATUS_OPTIONS = new Set([
   'no_show',
 ]);
 
+const padDatePart = (value) => String(value).padStart(2, '0');
+
+const buildLocalDate = (year, monthIndex, day) => {
+  const date = new Date(year, monthIndex, day);
+  if (
+    Number.isNaN(date.getTime())
+    || date.getFullYear() !== year
+    || date.getMonth() !== monthIndex
+    || date.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+};
+
 const toDateString = (value) => {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
     return null;
   }
 
-  const copy = new Date(value);
-  copy.setHours(0, 0, 0, 0);
-  return copy.toISOString().slice(0, 10);
+  return `${value.getFullYear()}-${padDatePart(value.getMonth() + 1)}-${padDatePart(value.getDate())}`;
 };
 
 const parseDateInput = (value) => {
@@ -37,13 +52,23 @@ const parseDateInput = (value) => {
     return null;
   }
 
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
+  if (value instanceof Date) {
+    return buildLocalDate(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  const text = String(value).trim();
+  const dateOnlyMatch = text.match(DATE_ONLY_PATTERN);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    return buildLocalDate(Number(year), Number(month) - 1, Number(day));
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
     return null;
   }
 
-  date.setHours(0, 0, 0, 0);
-  return date;
+  return buildLocalDate(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 };
 
 const clampNumber = (value, { min, max, fallback }) => {
@@ -90,8 +115,7 @@ const normalizeVaccinationStatus = (input) => {
 };
 
 const resolveDateRange = ({ period, startDateInput, endDateInput }) => {
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
+  const now = parseDateInput(new Date());
 
   if (period === 'today') {
     const date = toDateString(now);
