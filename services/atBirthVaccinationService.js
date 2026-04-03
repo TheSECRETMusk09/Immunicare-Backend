@@ -4,6 +4,7 @@ const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 const AUTO_AT_BIRTH_SOURCE = 'AUTO_AT_BIRTH';
 const AT_BIRTH_VACCINE_NAMES = Object.freeze(['BCG', 'Hepa B']);
 let immunizationRecordSchemaPromise = null;
+let globalAtBirthBackfillPromise = null;
 
 const normalizeDateOnly = (value) => {
   if (!value) {
@@ -247,6 +248,50 @@ const ensureAtBirthVaccinationRecords = async (patientId, { patientDob = null, c
   return results;
 };
 
+const backfillAtBirthVaccinationRecordsForAllPatients = async ({
+  client = null,
+} = {}) => {
+  const dbClient = resolveClient(client);
+  const patientResult = await dbClient.query(
+    `
+      SELECT id, dob
+      FROM patients
+      WHERE is_active = true
+      ORDER BY id ASC
+    `,
+  );
+
+  for (const patient of patientResult.rows || []) {
+    // Keep the same normalization logic used during create/transfer/readiness,
+    // but apply it uniformly to all active infants.
+    // Sequential processing avoids spiking DB load on startup.
+    // eslint-disable-next-line no-await-in-loop
+    await ensureAtBirthVaccinationRecords(patient.id, {
+      patientDob: patient.dob,
+      client: dbClient,
+    });
+  }
+
+  return patientResult.rows?.length || 0;
+};
+
+const ensureGlobalAtBirthVaccinationBackfillInitialized = async () => {
+  if (!globalAtBirthBackfillPromise) {
+    globalAtBirthBackfillPromise = backfillAtBirthVaccinationRecordsForAllPatients().catch((error) => {
+      globalAtBirthBackfillPromise = null;
+      throw error;
+    });
+  }
+
+  return globalAtBirthBackfillPromise;
+};
+
+if (process.env.NODE_ENV !== 'test') {
+  ensureGlobalAtBirthVaccinationBackfillInitialized().catch((error) => {
+    console.error('Failed to initialize at-birth vaccination backfill:', error);
+  });
+}
+
 const importVaccinationRecord = async ({
   patientId,
   vaccineName,
@@ -383,5 +428,7 @@ module.exports = {
   isAutoAtBirthRecord,
   normalizeDateOnly,
   ensureAtBirthVaccinationRecords,
+  backfillAtBirthVaccinationRecordsForAllPatients,
+  ensureGlobalAtBirthVaccinationBackfillInitialized,
   importVaccinationRecord,
 };

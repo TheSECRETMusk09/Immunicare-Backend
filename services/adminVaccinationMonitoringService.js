@@ -3,6 +3,7 @@ const pool = require('../db');
 const getAdminInfantVaccinationMonitoring = async ({
   infantId = null,
   clinicId = null,
+  scopeIds = [],
   guardianId = null,
   status = null,
   dateFrom = null,
@@ -28,7 +29,21 @@ const getAdminInfantVaccinationMonitoring = async ({
 
   if (clinicId) {
     params.push(clinicId);
-    whereParts.push(`ib.clinic_id = $${params.length}`);
+    whereParts.push(`ib.scope_id = $${params.length}`);
+  } else {
+    const normalizedScopeIds = [...new Set(
+      (Array.isArray(scopeIds) ? scopeIds : [scopeIds])
+        .map((value) => Number.parseInt(value, 10))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    )];
+
+    if (normalizedScopeIds.length === 1) {
+      params.push(normalizedScopeIds[0]);
+      whereParts.push(`ib.scope_id = $${params.length}`);
+    } else if (normalizedScopeIds.length > 1) {
+      params.push(normalizedScopeIds);
+      whereParts.push(`ib.scope_id = ANY($${params.length}::int[])`);
+    }
   }
 
   if (dateFrom) {
@@ -73,6 +88,7 @@ const getAdminInfantVaccinationMonitoring = async ({
           p.control_number,
           p.dob,
           p.guardian_id,
+          COALESCE(p.facility_id, g.clinic_id) AS scope_id,
           g.clinic_id,
           p.is_active,
           g.name AS guardian_name,

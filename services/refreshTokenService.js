@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const logger = require('../config/logger');
 const db = require('../db');
-const { normalizeRole, CANONICAL_ROLES } = require('../middleware/rbac');
+const { normalizeRole, CANONICAL_ROLES, getRolePermissions } = require('../middleware/rbac');
 
 const FATAL_DB_CONFIG_ERROR_CODES = new Set([
   '28P01',
@@ -40,18 +40,25 @@ const generateAccessToken = (user) => {
   return jwt.sign(
     {
       id: user.id,
+      username: user.username || null,
       email: user.email || user.username || null,
       role: canonicalRole,
       role_type: canonicalRole,
       runtime_role: canonicalRole,
       legacy_role: user.role,
       clinic_id: user.clinic_id,
+      facility_id: user.facility_id || user.clinic_id || null,
       guardian_id: user.guardian_id || null,
+      permissions: getRolePermissions(canonicalRole),
       ...BARANGAY_SCOPE,
       type: 'access',
     },
     process.env.JWT_SECRET,
-    { expiresIn: ACCESS_TOKEN_EXPIRATION },
+    {
+      expiresIn: ACCESS_TOKEN_EXPIRATION,
+      issuer: 'immunicare-system',
+      audience: 'immunicare-users',
+    },
   );
 };
 
@@ -391,7 +398,7 @@ const refreshAccessToken = async (refreshToken, userAgent, ipAddress) => {
 
       // Verify user still exists and is active
       const userQuery = `
-        SELECT u.id, u.email, u.username, r.name as role, u.clinic_id, u.guardian_id, u.is_active
+        SELECT u.id, u.email, u.username, r.name as role, u.clinic_id, u.facility_id, u.guardian_id, u.is_active
         FROM users u
         LEFT JOIN roles r ON u.role_id = r.id
         WHERE u.id = $1 AND u.is_active = true
@@ -420,6 +427,8 @@ const refreshAccessToken = async (refreshToken, userAgent, ipAddress) => {
           role: resolveCanonicalRole(user.role),
           legacy_role: user.role,
           clinic_id: user.clinic_id,
+          facility_id: user.facility_id || user.clinic_id || null,
+          permissions: getRolePermissions(resolveCanonicalRole(user.role)),
         },
       };
     }
@@ -433,7 +442,7 @@ const refreshAccessToken = async (refreshToken, userAgent, ipAddress) => {
 
   // Verify user still exists and is active
   const userQuery = `
-    SELECT u.id, u.email, u.username, r.name as role, u.clinic_id, u.guardian_id, u.is_active
+    SELECT u.id, u.email, u.username, r.name as role, u.clinic_id, u.facility_id, u.guardian_id, u.is_active
     FROM users u
     LEFT JOIN roles r ON u.role_id = r.id
     WHERE u.id = $1 AND u.is_active = true
@@ -471,6 +480,8 @@ const refreshAccessToken = async (refreshToken, userAgent, ipAddress) => {
       role: resolveCanonicalRole(user.role),
       legacy_role: user.role,
       clinic_id: user.clinic_id,
+      facility_id: user.facility_id || user.clinic_id || null,
+      permissions: getRolePermissions(resolveCanonicalRole(user.role)),
     },
   };
 };

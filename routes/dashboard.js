@@ -4,8 +4,16 @@ const db = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { requirePermission, getCanonicalRole, CANONICAL_ROLES } = require('../middleware/rbac');
 const { getDashboardMetrics } = require('../services/adminMetricsService');
-const { resolvePatientColumn, resolvePatientTable } = require('../utils/schemaHelpers');
+const {
+  resolvePatientColumn,
+  resolvePatientTable,
+  resolvePatientScopeExpression,
+} = require('../utils/schemaHelpers');
 const { resolveGuardianId } = require('../middleware/guardianScope');
+const {
+  resolveEffectiveScope,
+  resolveUserScopeIds,
+} = require('../services/entityScopeService');
 
 const noCache = (res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -174,11 +182,7 @@ router.get('/stats', authenticateToken, requirePermission('dashboard:analytics')
   try {
     noCache(res);
     const canonicalRole = getCanonicalRole(req);
-    const scopeIds = [...new Set(
-      [req.user?.clinic_id, req.user?.facility_id]
-        .map((value) => Number.parseInt(value, 10))
-        .filter((value) => Number.isInteger(value) && value > 0),
-    )];
+    const scopeIds = resolveUserScopeIds(req.user);
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
     const allowSystemScope =
       canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
@@ -212,6 +216,25 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
     const limit = sanitizeLimit(req.query.limit, 20, 100);
     const patientColumn = await resolvePatientColumn();
     const patientTable = await resolvePatientTable();
+    const patientScopeExpression = await resolvePatientScopeExpression('p');
+    const canonicalRole = getCanonicalRole(req);
+    const scopeIds = resolveUserScopeIds(req.user);
+    const requestedScope = String(req.query.scope || '').trim().toLowerCase();
+    const allowSystemScope =
+      canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
+    const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
+
+    const params = [];
+    let scopeClause = '';
+
+    if (useClinicScope && patientScopeExpression) {
+      scopeClause = `
+        AND ${patientScopeExpression} = ANY($1::int[])
+      `;
+      params.push(scopeIds);
+    }
+
+    params.push(limit);
 
     const result = await db.query(
       `
@@ -235,10 +258,11 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
         WHERE a.scheduled_date >= CURRENT_DATE
           AND a.is_active = true
           AND p.is_active = true
+          ${scopeClause}
         ORDER BY a.scheduled_date
-        LIMIT $1
+        LIMIT $${params.length}
       `,
-      [limit],
+      params,
     );
 
     res.json({ data: result.rows });
@@ -645,11 +669,7 @@ router.get('/guardian/:guardianId/notifications', authenticateToken, async (req,
 router.get('/guardians', authenticateToken, requirePermission('user:view'), async (req, res, next) => {
   try {
     // Apply facility scoping to prevent data leakage
-    const scopeIds = [...new Set(
-      [req.user?.clinic_id, req.user?.facility_id]
-        .map((value) => Number.parseInt(value, 10))
-        .filter((value) => Number.isInteger(value) && value > 0),
-    )];
+    const scopeIds = resolveUserScopeIds(req.user);
     
     const canonicalRole = getCanonicalRole(req);
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
@@ -660,7 +680,7 @@ router.get('/guardians', authenticateToken, requirePermission('user:view'), asyn
     const params = [];
     
     if (useClinicScope) {
-      query += ' WHERE clinic_id = ANY($1::int[])';
+      query += ' WHERE COALESCE(facility_id, clinic_id) = ANY($1::int[])';
       params.push(scopeIds);
     }
     
@@ -678,11 +698,7 @@ router.get('/guardians', authenticateToken, requirePermission('user:view'), asyn
 router.get('/infants', authenticateToken, requirePermission('patient:view'), async (req, res, next) => {
   try {
     // Apply facility scoping to prevent data leakage
-    const scopeIds = [...new Set(
-      [req.user?.clinic_id, req.user?.facility_id]
-        .map((value) => Number.parseInt(value, 10))
-        .filter((value) => Number.isInteger(value) && value > 0),
-    )];
+    const scopeIds = resolveUserScopeIds(req.user);
     
     const canonicalRole = getCanonicalRole(req);
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
@@ -692,18 +708,20 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
     const limit = sanitizeLimit(req.query.limit, 100, 1000);
     const page = sanitizeLimit(req.query.page, 1, 100000);
     const offset = (page - 1) * limit;
+    const patientTable = await resolvePatientTable();
+    const patientScopeExpression = await resolvePatientScopeExpression('i');
     let whereClause = 'WHERE i.is_active = true';
     const params = [];
     
-    if (useClinicScope) {
-      whereClause += ' AND i.facility_id = ANY($1::int[])';
+    if (useClinicScope && patientScopeExpression) {
+      whereClause += ` AND ${patientScopeExpression} = ANY($1::int[])`;
       params.push(scopeIds);
     }
     
     const result = await db.query(
       `
         SELECT i.*, g.name as guardian_name
-        FROM patients i
+        FROM ${patientTable} i
         LEFT JOIN guardians g ON i.guardian_id = g.id
         ${whereClause}
         ORDER BY i.created_at DESC
@@ -715,7 +733,7 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
     const countResult = await db.query(
       `
         SELECT COUNT(*)::INT AS total
-        FROM patients i
+        FROM ${patientTable} i
         LEFT JOIN guardians g ON i.guardian_id = g.id
         ${whereClause}
       `,
@@ -747,11 +765,7 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
     const activity = [];
     
     // Apply facility scoping to prevent data leakage
-    const scopeIds = [...new Set(
-      [req.user?.clinic_id, req.user?.facility_id]
-        .map((value) => Number.parseInt(value, 10))
-        .filter((value) => Number.isInteger(value) && value > 0),
-    )];
+    const scopeIds = resolveUserScopeIds(req.user);
     
     const canonicalRole = getCanonicalRole(req);
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
@@ -835,10 +849,18 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
 router.get('/admin/vaccination-monitoring', authenticateToken, requirePermission('dashboard:analytics'), async (req, res, next) => {
   try {
     noCache(res);
+    const canonicalRole = getCanonicalRole(req);
+    const effectiveScope = resolveEffectiveScope({
+      query: req.query,
+      user: req.user,
+      canonicalRole,
+    });
+    const monitoringScopeIds = effectiveScope.useScope ? effectiveScope.scopeIds : [];
 
     const data = await getAdminInfantVaccinationMonitoring({
       infantId: req.query.infant_id ? parseInt(req.query.infant_id, 10) : null,
-      clinicId: req.query.clinic_id ? parseInt(req.query.clinic_id, 10) : null,
+      clinicId: null,
+      scopeIds: monitoringScopeIds,
       guardianId: req.query.guardian_id ? parseInt(req.query.guardian_id, 10) : null,
       status: req.query.status || null,
       dateFrom: req.query.date_from || null,

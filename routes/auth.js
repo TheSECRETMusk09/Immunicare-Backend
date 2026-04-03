@@ -1970,7 +1970,7 @@ router.post('/refresh', async (req, res) => {
 
     // Get user details
     const userResult = await pool.query(
-      `SELECT u.id, u.username, u.role_id, u.clinic_id, u.guardian_id, u.email,
+      `SELECT u.id, u.username, u.role_id, u.clinic_id, u.facility_id, u.guardian_id, u.email,
               u.force_password_change, r.name as role_name, c.name as clinic_name
        FROM users u
        JOIN roles r ON u.role_id = r.id
@@ -2000,9 +2000,13 @@ router.post('/refresh', async (req, res) => {
       legacy_role: user.role_name,
       clinic: user.clinic_name,
       clinic_id: user.clinic_id,
+      facility_id: user.facility_id || user.clinic_id || null,
       ...BARANGAY_SCOPE,
       force_password_change: user.force_password_change || false,
       forcePasswordChange: user.force_password_change || false,
+      permissions: getRolePermissions(canonicalRole),
+      dashboardRoute: canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN ? '/dashboard' : '/guardian/dashboard',
+      layout: canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN ? 'AdminLayout' : 'GuardianLayout',
     };
 
     if (canonicalRole === CANONICAL_ROLES.GUARDIAN && user.guardian_id) {
@@ -2024,6 +2028,7 @@ router.post('/refresh', async (req, res) => {
       refreshToken: refreshResult.refreshToken,
       user: userResponse,
       expiresIn: process.env.JWT_ACCESS_EXPIRATION || '15m',
+      permissions: getRolePermissions(canonicalRole),
     });
   } catch (error) {
     console.error('Refresh error:', error);
@@ -2086,7 +2091,7 @@ router.get('/verify', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT u.id, u.username, u.role_id, u.clinic_id, u.guardian_id, u.last_login, u.email,
+      `SELECT u.id, u.username, u.role_id, u.clinic_id, u.facility_id, u.guardian_id, u.last_login, u.email,
               u.force_password_change, r.name as role_name, r.display_name, c.name as clinic_name
        FROM users u
        JOIN roles r ON u.role_id = r.id
@@ -2117,10 +2122,14 @@ router.get('/verify', async (req, res) => {
       legacy_role: user.role_name,
       clinic: user.clinic_name,
       clinic_id: user.clinic_id,
+      facility_id: user.facility_id || user.clinic_id || null,
       ...BARANGAY_SCOPE,
       last_login: user.last_login,
       force_password_change: user.force_password_change || false,
       forcePasswordChange: user.force_password_change || false,
+      permissions: getRolePermissions(canonicalRole),
+      dashboardRoute: canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN ? '/dashboard' : '/guardian/dashboard',
+      layout: canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN ? 'AdminLayout' : 'GuardianLayout',
     };
 
     if (canonicalRole === CANONICAL_ROLES.GUARDIAN && user.guardian_id) {
@@ -2134,6 +2143,7 @@ router.get('/verify', async (req, res) => {
       authenticated: true,
       user: userResponse,
       expiresIn: process.env.JWT_ACCESS_EXPIRATION || '15m',
+      permissions: getRolePermissions(canonicalRole),
     });
   } catch (error) {
     console.error('Session verification error:', error);

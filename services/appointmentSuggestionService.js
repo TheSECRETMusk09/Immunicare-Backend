@@ -254,8 +254,14 @@ const resolveNextVaccineFromReadiness = (readiness = {}) => {
 
   return {
     vaccineId: prioritizedVaccine.vaccineId || null,
+    vaccineCode: prioritizedVaccine.vaccineCode || null,
     label: prioritizedVaccine.label || 'Due vaccine',
-    doseNumber: doseMatch ? parseInt(doseMatch[1], 10) : null,
+    doseNumber:
+      Number.isInteger(prioritizedVaccine.doseNumber)
+        ? prioritizedVaccine.doseNumber
+        : doseMatch
+          ? parseInt(doseMatch[1], 10)
+          : null,
     earliestDate:
       prioritizedVaccine.earliestDate ||
       readiness?.nextAppointmentPrediction?.date ||

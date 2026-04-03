@@ -20,6 +20,11 @@ const {
   sendLowStockAlert,
   sendOutOfStockAlert,
 } = require('../services/adminNotificationService');
+const {
+  isScopeRequestAllowed,
+  resolveRequestedScopeIds,
+  resolveUserScopeIds,
+} = require('../services/entityScopeService');
 
 const router = express.Router();
 
@@ -44,6 +49,22 @@ const VACCINE_INVENTORY_TRANSACTION_TYPES = [
 ];
 
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
+
+const resolveInventoryScopeIds = (req, requestedScopeId = null) => {
+  const requestedScopeIds =
+    requestedScopeId !== null && requestedScopeId !== undefined && requestedScopeId !== ''
+      ? resolveRequestedScopeIds({ clinic_id: requestedScopeId })
+      : resolveRequestedScopeIds(req.query || {});
+  const userScopeIds = resolveUserScopeIds(req.user);
+
+  if (!isScopeRequestAllowed({ requestedScopeIds, userScopeIds })) {
+    const error = new Error('Requested clinic scope is not available for this account.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  return requestedScopeIds.length > 0 ? requestedScopeIds : userScopeIds;
+};
 
 // Helper function to validate that a vaccine is approved
 const validateVaccineApproved = async (vaccineId, _res) => {
@@ -1165,13 +1186,13 @@ router.get('/vaccine-inventory', async (req, res) => {
     }
 
     if (normalizedPeriodStart) {
-      query += ` AND vi.period_start >= $${paramCount}`;
+      query += ` AND vi.period_end >= $${paramCount}`;
       params.push(normalizedPeriodStart);
       paramCount++;
     }
 
     if (normalizedPeriodEnd) {
-      query += ` AND vi.period_end <= $${paramCount}`;
+      query += ` AND vi.period_start <= $${paramCount}`;
       params.push(normalizedPeriodEnd);
       paramCount++;
     }
@@ -1486,6 +1507,7 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
     }
 
     const safeLimit = limitCheck.value || 100;
+    const scopeIds = resolveInventoryScopeIds(req, clinicIdCheck.value);
     const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
     const performerJoinSpec = await getInventoryActorJoinSpec('vit.performed_by', 'performer');
     const approverJoinSpec = await getUserDisplayJoinSpec('vit.approved_by', 'approver');
@@ -1512,9 +1534,13 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
       paramCount++;
     }
 
-    if (clinicIdCheck.value) {
+    if (scopeIds.length === 1) {
       query += ` AND vit.${transactionFacilityColumn} = $${paramCount}`;
-      params.push(clinicIdCheck.value);
+      params.push(scopeIds[0]);
+      paramCount++;
+    } else if (scopeIds.length > 1) {
+      query += ` AND vit.${transactionFacilityColumn} = ANY($${paramCount}::int[])`;
+      params.push(scopeIds);
       paramCount++;
     }
 
@@ -1530,7 +1556,7 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
@@ -2366,9 +2392,9 @@ router.get('/available-lots', async (req, res) => {
 router.get('/stock-movements', async (req, res) => {
   try {
     const { vaccine_id, limit = 250 } = req.query;
-    const clinicId = req.user.clinic_id || req.user.facility_id;
+    const scopeIds = resolveInventoryScopeIds(req);
 
-    if (!clinicId) {
+    if (scopeIds.length === 0) {
       return res.status(400).json({ error: 'Clinic ID required' });
     }
 
@@ -2398,11 +2424,21 @@ router.get('/stock-movements', async (req, res) => {
       FROM vaccine_inventory_transactions vit
       JOIN vaccines v ON vit.vaccine_id = v.id
       LEFT JOIN users u ON vit.performed_by = u.id
-      WHERE vit.${transactionFacilityColumn} = $1
+      WHERE 1=1
     `;
 
-    const params = [clinicId];
-    let paramCount = 2;
+    const params = [];
+    let paramCount = 1;
+
+    if (scopeIds.length === 1) {
+      query += ` AND vit.${transactionFacilityColumn} = $${paramCount}`;
+      params.push(scopeIds[0]);
+      paramCount++;
+    } else {
+      query += ` AND vit.${transactionFacilityColumn} = ANY($${paramCount}::int[])`;
+      params.push(scopeIds);
+      paramCount++;
+    }
 
     if (vaccine_id) {
       query += ` AND vit.vaccine_id = $${paramCount}`;
@@ -2414,7 +2450,7 @@ router.get('/stock-movements', async (req, res) => {
     params.push(safeLimit);
 
     const result = await pool.query(query, params);
-    const movements = await inventoryCalculationService.calculateStockMovements(clinicId);
+    const movements = await inventoryCalculationService.calculateStockMovements(scopeIds[0]);
 
     res.json({
       success: true,
@@ -2425,7 +2461,7 @@ router.get('/stock-movements', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching stock movements:', error);
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 

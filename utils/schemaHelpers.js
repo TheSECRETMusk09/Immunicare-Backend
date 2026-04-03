@@ -10,6 +10,7 @@ const db = require('../db');
 // Cache for resolved schema information
 const schemaCache = {
   patientColumn: null,
+  patientScopeColumns: null,
   lastChecked: null,
   cacheDuration: 3600000, // 1 hour in milliseconds
 };
@@ -69,6 +70,68 @@ const resolvePatientTable = async () => {
 };
 
 /**
+ * Resolve which scope columns exist on the active patient table.
+ *
+ * Supports schemas that expose either `facility_id`, `clinic_id`, or both.
+ *
+ * @returns {Promise<Set<string>>}
+ */
+const resolvePatientScopeColumns = async () => {
+  const now = Date.now();
+  if (schemaCache.patientScopeColumns && schemaCache.lastChecked) {
+    if (now - schemaCache.lastChecked < schemaCache.cacheDuration) {
+      return schemaCache.patientScopeColumns;
+    }
+  }
+
+  try {
+    const patientTable = await resolvePatientTable();
+    const result = await db.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name IN ('facility_id', 'clinic_id')
+      `,
+      [patientTable],
+    );
+
+    const availableColumns = new Set((result.rows || []).map((row) => row.column_name));
+    schemaCache.patientScopeColumns = availableColumns;
+    schemaCache.lastChecked = now;
+    return availableColumns;
+  } catch (error) {
+    console.error('Error resolving patient scope columns:', error);
+    return new Set();
+  }
+};
+
+/**
+ * Build a schema-safe patient scope expression for SQL filters.
+ *
+ * @param {string} alias - SQL table alias for the patient table
+ * @returns {Promise<string|null>}
+ */
+const resolvePatientScopeExpression = async (alias = 'p') => {
+  const columns = await resolvePatientScopeColumns();
+
+  if (columns.has('facility_id') && columns.has('clinic_id')) {
+    return `COALESCE(${alias}.facility_id, ${alias}.clinic_id)`;
+  }
+
+  if (columns.has('facility_id')) {
+    return `${alias}.facility_id`;
+  }
+
+  if (columns.has('clinic_id')) {
+    return `${alias}.clinic_id`;
+  }
+
+  return null;
+};
+
+/**
  * Build a JOIN clause for appointments with patients/infants
  * 
  * @param {string} appointmentAlias - Alias for appointments table (default: 'a')
@@ -99,12 +162,14 @@ const buildAppointmentPatientFilter = async (appointmentAlias = 'a', parameterIn
  */
 const clearSchemaCache = () => {
   schemaCache.patientColumn = null;
+  schemaCache.patientScopeColumns = null;
   schemaCache.lastChecked = null;
 };
 
 module.exports = {
   resolvePatientColumn,
   resolvePatientTable,
+  resolvePatientScopeExpression,
   buildAppointmentPatientJoin,
   buildAppointmentPatientFilter,
   clearSchemaCache,

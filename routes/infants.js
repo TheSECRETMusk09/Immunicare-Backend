@@ -389,7 +389,7 @@ router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) =
 
     const params = [guardianId];
     let facilityFilterClause = '';
-    if (scopedFacilityContext.useScope) {
+    if (!isGuardian(req) && scopedFacilityContext.useScope) {
       facilityFilterClause = ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
       params.push(scopedFacilityContext.scopeIds);
     }
@@ -696,6 +696,8 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
         offset,
         page: limit > 0 ? Math.floor(offset / limit) + 1 : 1,
         totalPages: limit > 0 ? Math.ceil(total / limit) : 0,
+        hasNext: limit > 0 ? offset + limit < total : false,
+        hasPrev: offset > 0,
       },
       summary: {
         total: parseInt(summary.total, 10) || total,

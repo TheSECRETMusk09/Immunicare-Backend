@@ -12,6 +12,9 @@ const appointmentControlNumberService = require('../services/appointmentControlN
 const appointmentSuggestionService = require('../services/appointmentSuggestionService');
 const blockedDatesService = require('../services/blockedDatesService');
 const {
+  ensureAppointmentRuntimeSchemaInitialized,
+} = require('../services/appointmentRuntimeSchemaService');
+const {
   notifyAdminsOfGuardianAppointmentEvent,
 } = require('../services/appointmentEventNotificationService');
 const {
@@ -683,6 +686,7 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
 router.post('/', requireAppointmentCreateAccess, async (req, res) => {
   try {
     console.log('[DEBUG] Create appointment request:', JSON.stringify(req.body, null, 2));
+    await ensureAppointmentRuntimeSchemaInitialized();
     const payload = req.body || {};
     const { normalized, errors } = sanitizeAppointmentMutablePayload(payload, {
       allowStatus: true,

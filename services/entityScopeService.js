@@ -5,8 +5,16 @@ const parsePositiveInt = (value) => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+const SCOPE_ALIAS_MAP = Object.freeze({
+  1: [203],
+  203: [1],
+});
+
+const expandScopeAliases = (scopeIds = []) =>
+  scopeIds.flatMap((scopeId) => [scopeId, ...(SCOPE_ALIAS_MAP[scopeId] || [])]);
+
 const mergeScopeIds = (...values) =>
-  [...new Set(values.flat().map(parsePositiveInt).filter(Boolean))];
+  [...new Set(expandScopeAliases(values.flat().map(parsePositiveInt).filter(Boolean)))];
 
 const resolveUserScopeIds = (user = {}) =>
   mergeScopeIds(user?.facility_id, user?.clinic_id);

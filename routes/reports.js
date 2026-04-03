@@ -6,6 +6,7 @@ const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 const ReportService = require('../services/reportService');
+const { resolveUserScopeIds } = require('../services/entityScopeService');
 const {
   hasFieldErrors,
   isBlank,
@@ -213,11 +214,7 @@ router.get('/admin/summary', requirePermission('report:view'), async (req, res) 
   try {
     const { startDate, endDate } = req.query;
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
-    const scopeIds = [...new Set(
-      [req.user?.clinic_id, req.user?.facility_id]
-        .map((value) => Number.parseInt(value, 10))
-        .filter((value) => Number.isInteger(value) && value > 0),
-    )];
+    const scopeIds = resolveUserScopeIds(req.user);
     const { normalizedStartDate, normalizedEndDate, dateErrors } = normalizeDateFilters({
       startDate,
       endDate,
