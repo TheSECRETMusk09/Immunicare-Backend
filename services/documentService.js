@@ -2,18 +2,23 @@ const PDFGenerator = require('./pdfGenerator');
 const path = require('path');
 const fs = require('fs').promises;
 const pool = require('../db');
+const { resolveStorageRoot } = require('../utils/runtimeStorage');
 
 class DocumentService {
   constructor() {
     this.pdfGenerator = new PDFGenerator();
-    this.documentDir = path.join(__dirname, '../uploads/documents');
+    this.documentDir = resolveStorageRoot('uploads', 'documents');
   }
 
   async ensureDocumentDirectory() {
     try {
       await fs.access(this.documentDir);
     } catch (_error) {
-      await fs.mkdir(this.documentDir, { recursive: true });
+      try {
+        await fs.mkdir(this.documentDir, { recursive: true });
+      } catch (_mkdirError) {
+        // Ignore directory bootstrap failures in read-only/serverless runtimes.
+      }
     }
   }
 

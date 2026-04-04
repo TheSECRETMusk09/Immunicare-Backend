@@ -4,14 +4,19 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 const { authenticateToken } = require('../middleware/auth');
+const { resolveStorageRoot } = require('../utils/runtimeStorage');
 
 // Ensure upload directory exists
-const uploadDir = path.join(__dirname, '../uploads');
+const uploadDir = resolveStorageRoot('uploads');
 const ensureUploadDirectory = async () => {
   try {
     await fs.access(uploadDir);
   } catch (error) {
-    await fs.mkdir(uploadDir, { recursive: true });
+    try {
+      await fs.mkdir(uploadDir, { recursive: true });
+    } catch (_mkdirError) {
+      // Ignore directory bootstrap failures in read-only/serverless runtimes.
+    }
   }
 };
 ensureUploadDirectory();

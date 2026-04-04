@@ -7,6 +7,7 @@ const pool = require('../db');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 const { getAdminMetricsSummary } = require('./adminMetricsService');
 const { getDashboardAnalytics } = require('./analyticsService');
+const { resolveStorageRoot } = require('../utils/runtimeStorage');
 
 const REPORT_TYPES = Object.freeze([
   'vaccination',
@@ -280,7 +281,7 @@ class ReportService {
   constructor(options = {}) {
     this.pool = options.pool || pool;
     this.reportDir =
-        options.reportDir || path.join(__dirname, '..', 'uploads', 'reports');
+        options.reportDir || resolveStorageRoot('uploads', 'reports');
     this.schemaCache = {
       columns: new Map(),
       tables: new Map(),
@@ -479,7 +480,11 @@ class ReportService {
   }
 
   async ensureReportDirectory() {
-    await fs.mkdir(this.reportDir, { recursive: true });
+    try {
+      await fs.mkdir(this.reportDir, { recursive: true });
+    } catch (_mkdirError) {
+      // Ignore directory bootstrap failures in read-only/serverless runtimes.
+    }
   }
 
   getReportFileCandidates(storedPath = '') {

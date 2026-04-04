@@ -266,12 +266,12 @@ const calculateVaccineReadiness = async (infantId) => {
       `SELECT ir.vaccine_id, ir.dose_no, ir.admin_date, v.code AS vaccine_code
        FROM immunization_records ir
        LEFT JOIN vaccines v ON v.id = ir.vaccine_id
-       WHERE patient_id = $1
-         AND is_active = true
-         AND (
-           status = 'completed'
-           OR admin_date IS NOT NULL
-         )`,
+       WHERE ir.patient_id = $1
+          AND ir.is_active = true
+          AND (
+           LOWER(COALESCE(ir.status, '')) = 'completed'
+           OR ir.admin_date IS NOT NULL
+          )`,
       [infantId],
     );
 

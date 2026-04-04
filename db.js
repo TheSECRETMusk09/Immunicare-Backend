@@ -3,9 +3,11 @@ const loadBackendEnv = require('./config/loadEnv');
 loadBackendEnv();
 const { getPrimaryDbPassword, getPrimaryDbUser } = require('./config/dbCredentials');
 const logger = require('./config/logger');
+const { isReadOnlyRuntime } = require('./utils/runtimeStorage');
 
 const runtimeEnv = process.env.NODE_ENV || 'development';
 const isProductionLikeEnv = runtimeEnv === 'production' || runtimeEnv === 'hostinger';
+const isServerlessRuntime = isReadOnlyRuntime();
 const connectionString = String(process.env.DATABASE_URL || '').trim();
 
 const parseConnectionString = (value) => {
@@ -132,13 +134,20 @@ const database =
   process.env.DB_NAME || parsedConnectionDatabase || (isProductionLikeEnv ? '' : 'immunicare_dev');
 const user = getPrimaryDbUser() || parsedConnectionUser || (isProductionLikeEnv ? '' : 'postgres');
 
-const maxPoolSize = parseInteger(process.env.DB_POOL_MAX, isProductionLikeEnv ? 30 : 20);
-const minPoolSize = parseInteger(process.env.DB_POOL_MIN, isProductionLikeEnv ? 2 : 0);
-const idleTimeoutMillis = parseInteger(process.env.DB_IDLE_TIMEOUT, 60000);
-const connectionTimeoutMillis = parseInteger(process.env.DB_CONNECTION_TIMEOUT, 15000);
+const maxPoolSize = parseInteger(process.env.DB_POOL_MAX, isServerlessRuntime ? 3 : isProductionLikeEnv ? 30 : 20);
+const minPoolSize = parseInteger(process.env.DB_POOL_MIN, isServerlessRuntime ? 0 : isProductionLikeEnv ? 2 : 0);
+const idleTimeoutMillis = parseInteger(process.env.DB_IDLE_TIMEOUT, isServerlessRuntime ? 10000 : 60000);
+const connectionTimeoutMillis = parseInteger(process.env.DB_CONNECTION_TIMEOUT, isServerlessRuntime ? 20000 : 15000);
 const queryTimeoutMillis = parseInteger(process.env.DB_QUERY_TIMEOUT, 60000);
 const statementTimeoutMillis = parseInteger(process.env.DB_STATEMENT_TIMEOUT, 60000);
 const acquireTimeoutMillis = parseInteger(process.env.DB_ACQUIRE_TIMEOUT, 30000);
+
+if (isServerlessRuntime && ['127.0.0.1', 'localhost', '::1'].includes(String(host || '').trim().toLowerCase())) {
+  logger.warn(
+    'Detected a loopback database host in a serverless runtime. Use a publicly reachable database host or DATABASE_URL for Vercel/Functions deployments.',
+    { host },
+  );
+}
 
 if (isProductionLikeEnv) {
   const invalidPoolBounds = minPoolSize < 0 || maxPoolSize <= 0 || minPoolSize > maxPoolSize;
@@ -172,6 +181,9 @@ const poolConfig = {
   evictionRunIntervalMillis: 30000, // Run eviction every 30s
   numTestsPerEvictionRun: 3, // Test up to 3 connections per eviction
   application_name: 'immunicare-api',
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
+  allowExitOnIdle: isServerlessRuntime,
 };
 
 const pool = new Pool(poolConfig);

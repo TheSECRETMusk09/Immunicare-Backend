@@ -3,6 +3,7 @@ const logger = require('./logger');
 const loadBackendEnv = require('./loadEnv');
 loadBackendEnv();
 const { getPrimaryDbPassword, getPrimaryDbUser } = require('./dbCredentials');
+const { isReadOnlyRuntime } = require('../utils/runtimeStorage');
 
 const FATAL_DB_CONFIG_ERROR_CODES = new Set([
   '28P01',
@@ -15,29 +16,77 @@ const FATAL_DB_CONFIG_ERROR_CODES = new Set([
 const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
 
 const runtimeEnv = process.env.NODE_ENV || 'development';
+const isServerlessRuntime = isReadOnlyRuntime();
 const parseInteger = (value, fallback) => {
   const parsed = Number.parseInt(String(value || ''), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-const host = process.env.DB_HOST || (runtimeEnv === 'production' ? '' : 'localhost');
+const connectionString = String(process.env.DATABASE_URL || '').trim();
+const parseConnectionString = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+};
+
+const parsedConnectionString = parseConnectionString(connectionString);
+const parsedConnectionPassword = parsedConnectionString
+  ? decodeURIComponent(parsedConnectionString.password || '')
+  : '';
+const parsedConnectionUser = parsedConnectionString
+  ? decodeURIComponent(parsedConnectionString.username || '')
+  : '';
+const parsedConnectionHost = parsedConnectionString?.hostname || '';
+const parsedConnectionPort = parsedConnectionString?.port || '';
+const parsedConnectionDatabase = parsedConnectionString?.pathname
+  ? decodeURIComponent(parsedConnectionString.pathname.replace(/^\//, ''))
+  : '';
+
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  return String(value).trim().toLowerCase() === 'true';
+};
+
+const dbSslEnabled = parseBoolean(process.env.DB_SSL, false);
+const sslConfig = dbSslEnabled
+  ? {
+      rejectUnauthorized: parseBoolean(
+        process.env.DB_SSL_REJECT_UNAUTHORIZED,
+        runtimeEnv === 'production' || runtimeEnv === 'hostinger',
+      ),
+      ca: process.env.DB_SSL_CA ? Buffer.from(process.env.DB_SSL_CA, 'base64').toString() : undefined,
+      cert: process.env.DB_SSL_CERT ? Buffer.from(process.env.DB_SSL_CERT, 'base64').toString() : undefined,
+      key: process.env.DB_SSL_KEY ? Buffer.from(process.env.DB_SSL_KEY, 'base64').toString() : undefined,
+    }
+  : false;
+
+const host = process.env.DB_HOST || parsedConnectionHost || (runtimeEnv === 'production' ? '' : 'localhost');
 const port = parseInteger(process.env.DB_PORT, 5432);
-const database = process.env.DB_NAME || (runtimeEnv === 'production' ? '' : 'immunicare_dev');
-const user = getPrimaryDbUser() || (runtimeEnv === 'production' ? '' : 'postgres');
-const password = getPrimaryDbPassword();
+const database = process.env.DB_NAME || parsedConnectionDatabase || (runtimeEnv === 'production' ? '' : 'immunicare_dev');
+const user = getPrimaryDbUser() || parsedConnectionUser || (runtimeEnv === 'production' ? '' : 'postgres');
+const password = getPrimaryDbPassword() || parsedConnectionPassword;
 
 if (runtimeEnv === 'production') {
   const missing = [];
-  if (!host) {
+  if (!connectionString && !host) {
     missing.push('DB_HOST');
   }
-  if (!database) {
+  if (!connectionString && !database) {
     missing.push('DB_NAME');
   }
-  if (!user) {
+  if (!connectionString && !user) {
     missing.push('DB_USER');
   }
-  if (!password) {
+  if (!connectionString && !password) {
     missing.push('DB_PASSWORD');
   }
 
@@ -48,14 +97,19 @@ if (runtimeEnv === 'production') {
 
 // PostgreSQL connection for cache
 const cachePool = new Pool({
+  ...(connectionString ? { connectionString } : {}),
   host,
-  port,
+  port: parseInteger(process.env.DB_PORT || parsedConnectionPort, port),
   database,
   user,
   password,
-  max: parseInteger(process.env.DB_POOL_MAX, 20),
-  idleTimeoutMillis: parseInteger(process.env.DB_IDLE_TIMEOUT, 30000),
-  connectionTimeoutMillis: parseInteger(process.env.DB_CONNECTION_TIMEOUT, 10000),
+  ssl: sslConfig,
+  max: parseInteger(process.env.DB_POOL_MAX, isServerlessRuntime ? 2 : 20),
+  idleTimeoutMillis: parseInteger(process.env.DB_IDLE_TIMEOUT, isServerlessRuntime ? 10000 : 30000),
+  connectionTimeoutMillis: parseInteger(process.env.DB_CONNECTION_TIMEOUT, isServerlessRuntime ? 20000 : 10000),
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
+  allowExitOnIdle: isServerlessRuntime,
 });
 
 let cacheDisabled = false;
@@ -470,21 +524,23 @@ const postgresCache = {
   },
 };
 
-// Initialize cache connection
-postgresCache.connect().then((connected) => {
-  if (connected) {
-    logger.info('PostgreSQL cache initialized successfully');
-  } else {
-    logger.warn('PostgreSQL cache initialization failed, using fallback');
-  }
-});
+if (!isServerlessRuntime) {
+  // Initialize cache connection
+  postgresCache.connect().then((connected) => {
+    if (connected) {
+      logger.info('PostgreSQL cache initialized successfully');
+    } else {
+      logger.warn('PostgreSQL cache initialization failed, using fallback');
+    }
+  });
 
-// Schedule periodic cleanup of expired cache entries (every hour)
-setInterval(
-  () => {
-    postgresCache.cleanup();
-  },
-  60 * 60 * 1000,
-);
+  // Schedule periodic cleanup of expired cache entries (every hour)
+  setInterval(
+    () => {
+      postgresCache.cleanup();
+    },
+    60 * 60 * 1000,
+  );
+}
 
 module.exports = postgresCache;

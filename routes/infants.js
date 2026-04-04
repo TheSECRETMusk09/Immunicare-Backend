@@ -944,7 +944,7 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
 
     const params = [infantId];
     let facilityFilterClause = '';
-    if (scopedFacilityContext.useScope) {
+    if (!isGuardian(req) && scopedFacilityContext.useScope) {
       facilityFilterClause = ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
       params.push(scopedFacilityContext.scopeIds);
     }

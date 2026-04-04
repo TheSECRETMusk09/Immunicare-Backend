@@ -19,17 +19,22 @@ const fs = require('fs').promises;
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { getUserNameExpressions } = require('../utils/queryCompatibility');
+const { resolveStorageRoot } = require('../utils/runtimeStorage');
 
 // Middleware to authenticate all infant document routes
 router.use(authenticateToken);
 
 // Ensure infant_documents upload directory exists
-const infantDocsDir = path.join(__dirname, '../uploads/infant_documents');
+const infantDocsDir = resolveStorageRoot('uploads', 'infant_documents');
 const ensureInfantDocsDirectory = async () => {
   try {
     await fs.access(infantDocsDir);
   } catch (error) {
-    await fs.mkdir(infantDocsDir, { recursive: true });
+    try {
+      await fs.mkdir(infantDocsDir, { recursive: true });
+    } catch (_mkdirError) {
+      // Ignore directory bootstrap failures in read-only/serverless runtimes.
+    }
   }
 };
 ensureInfantDocsDirectory();
