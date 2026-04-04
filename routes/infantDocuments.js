@@ -77,6 +77,56 @@ const uploadInfantDoc = multer({
 // Valid document types
 const VALID_DOCUMENT_TYPES = ['vaccination_card', 'birth_certificate', 'medical_record', 'image', 'other'];
 
+const normalizeRuntimeRole = (role) => String(role || '').trim().toLowerCase();
+
+const ADMIN_DOCUMENT_ROLES = new Set([
+  'system_admin',
+  'super_admin',
+  'admin',
+  'healthcare_worker',
+  'clinic_manager',
+]);
+
+const fetchInfantOwner = async (infantId) => {
+  const patientResult = await pool.query(
+    'SELECT id, guardian_id FROM patients WHERE id = $1 AND is_active = true',
+    [infantId],
+  );
+
+  if (patientResult.rows.length > 0) {
+    return {
+      source: 'patients',
+      ...patientResult.rows[0],
+    };
+  }
+
+  const infantResult = await pool.query(
+    'SELECT id, guardian_id FROM infants WHERE id = $1',
+    [infantId],
+  );
+
+  if (infantResult.rows.length > 0) {
+    return {
+      source: 'infants',
+      ...infantResult.rows[0],
+    };
+  }
+
+  return null;
+};
+
+const isGuardianOwner = (reqUser, recordGuardianId) => {
+  const normalizedRole = normalizeRuntimeRole(reqUser?.role || reqUser?.role_type);
+  if (normalizedRole !== 'guardian') {
+    return false;
+  }
+
+  return Number(recordGuardianId) === Number(reqUser?.guardian_id || reqUser?.id);
+};
+
+const hasAdminDocumentAccess = (reqUser) =>
+  ADMIN_DOCUMENT_ROLES.has(normalizeRuntimeRole(reqUser?.role || reqUser?.role_type));
+
 // POST /api/infant-documents/:infantId - Upload document for infant
 router.post('/:infantId', uploadInfantDoc.single('file'), async (req, res) => {
   try {
@@ -94,22 +144,20 @@ router.post('/:infantId', uploadInfantDoc.single('file'), async (req, res) => {
     }
 
     // Check if infant exists and user has access
-    const infantResult = await pool.query(
-      'SELECT guardian_id FROM infants WHERE id = $1',
-      [infantIdNum],
-    );
+    const infant = await fetchInfantOwner(infantIdNum);
 
-    if (infantResult.rows.length === 0) {
+    if (!infant) {
       return res.status(404).json({
         success: false,
         message: 'Infant not found',
       });
     }
 
-    const infant = infantResult.rows[0];
-
     // Check permissions
-    if (role === 'guardian' && infant.guardian_id !== (guardian_id || userId)) {
+    if (
+      normalizeRuntimeRole(role) === 'guardian' &&
+      !isGuardianOwner({ id: userId, guardian_id, role }, infant.guardian_id)
+    ) {
       return res.status(403).json({
         success: false,
         message: 'Access denied - not the guardian of this infant',
@@ -192,22 +240,20 @@ router.get('/:infantId', async (req, res) => {
     }
 
     // Check if infant exists and user has access
-    const infantResult = await pool.query(
-      'SELECT guardian_id FROM infants WHERE id = $1',
-      [infantIdNum],
-    );
+    const infant = await fetchInfantOwner(infantIdNum);
 
-    if (infantResult.rows.length === 0) {
+    if (!infant) {
       return res.status(404).json({
         success: false,
         message: 'Infant not found',
       });
     }
 
-    const infant = infantResult.rows[0];
-
     // Check permissions
-    if (role === 'guardian' && infant.guardian_id !== (guardian_id || userId)) {
+    if (
+      normalizeRuntimeRole(role) === 'guardian' &&
+      !isGuardianOwner({ id: userId, guardian_id, role }, infant.guardian_id)
+    ) {
       return res.status(403).json({
         success: false,
         message: 'Access denied - not the guardian of this infant',
@@ -307,22 +353,20 @@ router.get('/file/:documentId', async (req, res) => {
     const doc = docResult.rows[0];
 
     // Check if infant exists and user has access
-    const infantResult = await pool.query(
-      'SELECT guardian_id FROM infants WHERE id = $1',
-      [doc.infant_id],
-    );
+    const infant = await fetchInfantOwner(doc.infant_id);
 
-    if (infantResult.rows.length === 0) {
+    if (!infant) {
       return res.status(404).json({
         success: false,
         message: 'Infant not found',
       });
     }
 
-    const infant = infantResult.rows[0];
-
     // Check permissions
-    if (role === 'guardian' && infant.guardian_id !== (guardian_id || userId)) {
+    if (
+      normalizeRuntimeRole(role) === 'guardian' &&
+      !isGuardianOwner({ id: userId, guardian_id, role }, infant.guardian_id)
+    ) {
       return res.status(403).json({
         success: false,
         message: 'Access denied',
@@ -394,22 +438,20 @@ router.get('/info/:documentId', async (req, res) => {
     const doc = docResult.rows[0];
 
     // Check if infant exists and user has access
-    const infantResult = await pool.query(
-      'SELECT guardian_id FROM infants WHERE id = $1',
-      [doc.infant_id],
-    );
+    const infant = await fetchInfantOwner(doc.infant_id);
 
-    if (infantResult.rows.length === 0) {
+    if (!infant) {
       return res.status(404).json({
         success: false,
         message: 'Infant not found',
       });
     }
 
-    const infant = infantResult.rows[0];
-
     // Check permissions
-    if (role === 'guardian' && infant.guardian_id !== (guardian_id || userId)) {
+    if (
+      normalizeRuntimeRole(role) === 'guardian' &&
+      !isGuardianOwner({ id: userId, guardian_id, role }, infant.guardian_id)
+    ) {
       return res.status(403).json({
         success: false,
         message: 'Access denied',
@@ -461,25 +503,20 @@ router.put('/:documentId', async (req, res) => {
     const doc = docResult.rows[0];
 
     // Check if infant exists and user has access
-    const infantResult = await pool.query(
-      'SELECT guardian_id FROM infants WHERE id = $1',
-      [doc.infant_id],
-    );
+    const infant = await fetchInfantOwner(doc.infant_id);
 
-    if (infantResult.rows.length === 0) {
+    if (!infant) {
       return res.status(404).json({
         success: false,
         message: 'Infant not found',
       });
     }
 
-    const infant = infantResult.rows[0];
-
     // Check permissions - allow update if guardian or healthcare worker
     let hasPermission = false;
-    if (role === 'super_admin' || role === 'admin' || role === 'healthcare_worker' || role === 'clinic_manager') {
+    if (hasAdminDocumentAccess({ role })) {
       hasPermission = true;
-    } else if (role === 'guardian' && infant.guardian_id === (guardian_id || userId)) {
+    } else if (isGuardianOwner({ id: userId, guardian_id, role }, infant.guardian_id)) {
       hasPermission = true;
     }
 
@@ -554,25 +591,20 @@ router.delete('/:documentId', async (req, res) => {
     const doc = docResult.rows[0];
 
     // Check if infant exists and user has access
-    const infantResult = await pool.query(
-      'SELECT guardian_id FROM infants WHERE id = $1',
-      [doc.infant_id],
-    );
+    const infant = await fetchInfantOwner(doc.infant_id);
 
-    if (infantResult.rows.length === 0) {
+    if (!infant) {
       return res.status(404).json({
         success: false,
         message: 'Infant not found',
       });
     }
 
-    const infant = infantResult.rows[0];
-
     // Check permissions - allow delete if guardian, healthcare worker, or uploader
     let hasPermission = false;
-    if (role === 'super_admin' || role === 'admin' || role === 'healthcare_worker' || role === 'clinic_manager') {
+    if (hasAdminDocumentAccess({ role })) {
       hasPermission = true;
-    } else if (role === 'guardian' && infant.guardian_id === (guardian_id || userId)) {
+    } else if (isGuardianOwner({ id: userId, guardian_id, role }, infant.guardian_id)) {
       hasPermission = true;
     } else if (doc.uploaded_by === userId) {
       hasPermission = true;

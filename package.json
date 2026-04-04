@@ -30,7 +30,9 @@
     "deploy:vps": "node deploy-vps.js",
     "deploy:vps:full": "node deploy-vps.js --full-deploy",
     "cleanup:synthetic": "node cleanup_synthetic_data.js",
-    "seed:defense-demo": "node reseed_defense_demo_dataset.js"
+    "seed:defense-demo": "node reseed_defense_demo_dataset.js",
+    "seed:platform-expansion": "node expand_immunicare_platform_data.js",
+    "validate:platform-expansion": "node verify_platform_data_consistency.js"
   },
   "keywords": [],
   "author": "",
