@@ -42,8 +42,8 @@ const EMAIL_CONFIG = {
 
   // Email sender configuration
   from: {
-    address: process.env.MAIL_FROM_EMAIL || '',
-    name: process.env.MAIL_FROM_NAME || 'Immunicare',
+    address: process.env.EMAIL_FROM || process.env.MAIL_FROM_EMAIL || '',
+    name: process.env.EMAIL_FROM_NAME || process.env.MAIL_FROM_NAME || 'Immunicare',
   },
 
   // Resend API Configuration (optional)
