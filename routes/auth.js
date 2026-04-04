@@ -28,6 +28,7 @@ const {
   getAccessTokenCookieOptions,
   getRefreshTokenCookieOptions,
 } = require('../utils/authCookies');
+const { resolveAuthSchemaCompatibility } = require('../utils/schemaHelpers');
 
 const router = express.Router();
 
@@ -262,6 +263,24 @@ const buildPendingRegistrationPayload = (pendingRegistration, formattedPhone) =>
   ),
 });
 
+const ensureUsersBackedAuthSchema = async (routeLabel) => {
+  const compatibility = await resolveAuthSchemaCompatibility();
+  if (compatibility.compatible) {
+    return compatibility;
+  }
+
+  const error = new Error(
+    compatibility.reason || 'Authentication schema is incompatible with this deployment.',
+  );
+  error.code = 'SCHEMA_MISMATCH';
+  error.statusCode = 503;
+  error.details = {
+    route: routeLabel,
+    accountTable: compatibility.accountTable,
+  };
+  throw error;
+};
+
 const getNormalizedPendingRegistrationEmail = (pendingRegistration) =>
   String(
     parsePendingRegistrationData(pendingRegistration?.registration_data)?.email || '',
@@ -478,6 +497,8 @@ const validateLoginInput = (req, res, next) => {
  */
 router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
   try {
+    await ensureUsersBackedAuthSchema('/auth/register/guardian');
+
     const rawRegistrationPayload = req.body || {};
     const synthesizedAddress =
       rawRegistrationPayload.address ||
@@ -673,10 +694,13 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
     });
   } catch (error) {
     console.error('Guardian registration error:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       error: 'Registration failed',
-      code: 'REGISTRATION_ERROR',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      code: error.code || 'REGISTRATION_ERROR',
+      message:
+        process.env.NODE_ENV === 'development' || error.code === 'SCHEMA_MISMATCH'
+          ? error.message
+          : undefined,
     });
   }
 });
@@ -686,6 +710,8 @@ router.post(
   registrationResendRateLimiter,
   async (req, res) => {
     try {
+      await ensureUsersBackedAuthSchema('/auth/register/guardian/resend-otp');
+
       const normalizedEmail = String(req.body?.email || '').trim().toLowerCase();
       const formattedPhone = smsService.formatPhoneNumber(req.body?.phone);
 
@@ -799,10 +825,14 @@ router.post(
       });
     } catch (error) {
       console.error('Guardian registration resend error:', error);
-      return res.status(500).json({
+      return res.status(error.statusCode || 500).json({
         success: false,
         error: 'Failed to resend verification code',
-        code: 'OTP_RESEND_ERROR',
+        code: error.code || 'OTP_RESEND_ERROR',
+        message:
+          process.env.NODE_ENV === 'development' || error.code === 'SCHEMA_MISMATCH'
+            ? error.message
+            : undefined,
       });
     }
   },
@@ -840,6 +870,8 @@ router.post(
   async (req, res) => {
     const client = await pool.connect();
     try {
+      await ensureUsersBackedAuthSchema('/auth/register/guardian/verify');
+
       const { phone, otp } = req.body;
 
       // Format phone number to E.164 for consistent verification
@@ -924,7 +956,14 @@ router.post(
     } catch (error) {
       await client.query('ROLLBACK');
       console.error('Registration verification error:', error);
-      res.status(500).json({ error: 'Registration failed', code: 'SERVER_ERROR' });
+      res.status(error.statusCode || 500).json({
+        error: 'Registration failed',
+        code: error.code || 'SERVER_ERROR',
+        message:
+          process.env.NODE_ENV === 'development' || error.code === 'SCHEMA_MISMATCH'
+            ? error.message
+            : undefined,
+      });
     } finally {
       client.release();
     }
@@ -1019,6 +1058,8 @@ router.post(
   bruteForceProtection(),
   async (req, res) => {
     try {
+      await ensureUsersBackedAuthSchema('/auth/login');
+
       const { username, password, email, expectedRole } = req.body;
       const loginIdentifier = normalizeLoginIdentifier(username || email);
 
@@ -1271,9 +1312,13 @@ router.post(
       });
     } catch (error) {
       console.error('Login error:', error);
-      res.status(500).json({
+      res.status(error.statusCode || 500).json({
         error: 'Login failed',
-        code: 'LOGIN_ERROR',
+        code: error.code || 'LOGIN_ERROR',
+        message:
+          process.env.NODE_ENV === 'development' || error.code === 'SCHEMA_MISMATCH'
+            ? error.message
+            : undefined,
       });
     }
   },

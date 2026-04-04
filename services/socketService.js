@@ -99,21 +99,20 @@ class SocketService {
       path: socketPath,
       cors: {
         origin: (origin, callback) => {
-          // Debug log for Socket.IO CORS
-          console.log('[SocketIO CORS] Checking origin:', origin);
+          logger.info('[SocketIO CORS] Checking origin', { origin });
 
           // Allow requests with no origin (like server-to-server or proxy)
           if (!origin) {
-            console.log('[SocketIO CORS] No origin, allowing request');
+            logger.info('[SocketIO CORS] No origin, allowing request');
             return callback(null, true);
           }
 
           const normalizedOrigin = normalizeOrigin(origin);
-          console.log('[SocketIO CORS] Normalized origin:', normalizedOrigin);
-          console.log('[SocketIO CORS] Allowed origins:', allowedOrigins);
+          logger.info('[SocketIO CORS] Normalized origin', { origin, normalizedOrigin });
+          logger.info('[SocketIO CORS] Allowed origins', { allowedOrigins });
 
           if (normalizedOrigin && allowedOrigins.indexOf(normalizedOrigin) !== -1) {
-            console.log('[SocketIO CORS] Origin allowed:', normalizedOrigin);
+            logger.info('[SocketIO CORS] Origin allowed', { origin, normalizedOrigin });
             callback(null, true);
           } else {
             // Allow any localhost origin for development
@@ -121,10 +120,14 @@ class SocketService {
               !isProductionLikeEnv &&
               (origin.includes('localhost') || origin.includes('127.0.0.1'))
             ) {
-              console.log('[SocketIO CORS] Localhost origin allowed (dev mode)');
+              logger.info('[SocketIO CORS] Localhost origin allowed (dev mode)', { origin });
               return callback(null, true);
             }
-            console.warn('[SocketIO CORS] Origin NOT allowed:', origin);
+            logger.warn('[SocketIO CORS] Origin NOT allowed', {
+              origin,
+              normalizedOrigin,
+              allowedOrigins,
+            });
             callback(new Error('Not allowed by CORS'));
           }
         },

@@ -206,25 +206,24 @@ if (isProductionLikeEnv) {
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Debug log for CORS issues
-    console.log('[CORS] Checking origin:', origin);
+    logger.info('[CORS] Checking origin', { origin });
 
     // In production, require a valid origin - no origin allowed (blocks curl, mobile apps without origin)
     if (isProductionLikeEnv) {
       if (!origin) {
-        console.warn('[CORS] No origin rejected in production');
+        logger.warn('[CORS] No origin rejected in production');
         return callback(new Error('Not allowed by CORS: Origin header required in production'));
       }
 
       const normalizedOrigin = normalizeOrigin(origin);
-      console.log('[CORS] Normalized origin:', normalizedOrigin);
-      console.log('[CORS] Allowed origins:', allowedOrigins);
+      logger.info('[CORS] Normalized origin', { origin, normalizedOrigin });
+      logger.info('[CORS] Allowed origins', { allowedOrigins });
 
       if (normalizedOrigin && allowedOrigins.includes(normalizedOrigin)) {
-        console.log('[CORS] Origin allowed:', normalizedOrigin);
+        logger.info('[CORS] Origin allowed', { origin, normalizedOrigin });
         callback(null, true);
       } else {
-        console.warn('[CORS] Origin NOT allowed:', origin);
+        logger.warn('[CORS] Origin NOT allowed', { origin, normalizedOrigin, allowedOrigins });
         callback(new Error('Not allowed by CORS'));
       }
       return;
@@ -232,29 +231,29 @@ const corsOptions = {
 
     // Development mode: allow requests with no origin
     if (!origin) {
-      console.log('[CORS] No origin, allowing request (development mode)');
+      logger.info('[CORS] No origin, allowing request (development mode)');
       return callback(null, true);
     }
 
     const normalizedOrigin = normalizeOrigin(origin);
-    console.log('[CORS] Normalized origin:', normalizedOrigin);
-    console.log('[CORS] Allowed origins:', allowedOrigins);
+    logger.info('[CORS] Normalized origin', { origin, normalizedOrigin });
+    logger.info('[CORS] Allowed origins', { allowedOrigins });
 
     if (normalizedOrigin && allowedOrigins.includes(normalizedOrigin)) {
-      console.log('[CORS] Origin allowed:', normalizedOrigin);
+      logger.info('[CORS] Origin allowed', { origin, normalizedOrigin });
       callback(null, true);
     } else if (
       /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
     ) {
-      console.log('[CORS] Localhost origin allowed (dev mode)');
+      logger.info('[CORS] Localhost origin allowed (dev mode)', { origin });
       callback(null, true);
     } else if (
       /^https?:\/\/192\.168\.\d+\.\d+(\:\d+)?$/i.test(origin)
     ) {
-      console.log('[CORS] Private network origin allowed (dev mode)');
+      logger.info('[CORS] Private network origin allowed (dev mode)', { origin });
       callback(null, true);
     } else {
-      console.warn('[CORS] Origin NOT allowed:', origin);
+      logger.warn('[CORS] Origin NOT allowed', { origin, normalizedOrigin, allowedOrigins });
       callback(new Error('Not allowed by CORS'));
     }
   },

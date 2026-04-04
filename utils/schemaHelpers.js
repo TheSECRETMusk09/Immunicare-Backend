@@ -11,6 +11,8 @@ const db = require('../db');
 const schemaCache = {
   patientColumn: null,
   patientScopeColumns: null,
+  systemAccountTable: null,
+  authSchemaCompatibility: null,
   lastChecked: null,
   cacheDuration: 3600000, // 1 hour in milliseconds
 };
@@ -163,7 +165,78 @@ const buildAppointmentPatientFilter = async (appointmentAlias = 'a', parameterIn
 const clearSchemaCache = () => {
   schemaCache.patientColumn = null;
   schemaCache.patientScopeColumns = null;
+  schemaCache.systemAccountTable = null;
+  schemaCache.authSchemaCompatibility = null;
   schemaCache.lastChecked = null;
+};
+
+const resolveSystemAccountTable = async () => {
+  const now = Date.now();
+  if (schemaCache.systemAccountTable && schemaCache.lastChecked) {
+    if (now - schemaCache.lastChecked < schemaCache.cacheDuration) {
+      return schemaCache.systemAccountTable;
+    }
+  }
+
+  try {
+    const result = await db.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = current_schema()
+        AND table_name IN ('users', 'admin')
+      ORDER BY CASE table_name
+        WHEN 'users' THEN 1
+        WHEN 'admin' THEN 2
+      END
+      LIMIT 1
+    `);
+
+    const tableName = result.rows[0]?.table_name || null;
+    schemaCache.systemAccountTable = tableName;
+    schemaCache.lastChecked = now;
+    return tableName;
+  } catch (error) {
+    console.error('Error resolving system account table:', error);
+    return null;
+  }
+};
+
+const resolveAuthSchemaCompatibility = async () => {
+  const now = Date.now();
+  if (schemaCache.authSchemaCompatibility && schemaCache.lastChecked) {
+    if (now - schemaCache.lastChecked < schemaCache.cacheDuration) {
+      return schemaCache.authSchemaCompatibility;
+    }
+  }
+
+  const accountTable = await resolveSystemAccountTable();
+
+  let compatibility;
+  if (accountTable === 'users') {
+    compatibility = {
+      compatible: true,
+      accountTable,
+      reason: null,
+    };
+  } else if (accountTable === 'admin') {
+    compatibility = {
+      compatible: false,
+      accountTable,
+      reason:
+        'Legacy admin-only account schema detected. This backend deployment expects a users table for guardian authentication and account linkage.',
+    };
+  } else {
+    compatibility = {
+      compatible: false,
+      accountTable: null,
+      reason:
+        'No supported account table was found in the active schema. Expected users for the current backend.',
+    };
+  }
+
+  schemaCache.authSchemaCompatibility = compatibility;
+  schemaCache.lastChecked = now;
+  return compatibility;
 };
 
 module.exports = {
@@ -172,5 +245,7 @@ module.exports = {
   resolvePatientScopeExpression,
   buildAppointmentPatientJoin,
   buildAppointmentPatientFilter,
+  resolveSystemAccountTable,
+  resolveAuthSchemaCompatibility,
   clearSchemaCache,
 };
