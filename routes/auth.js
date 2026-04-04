@@ -262,35 +262,74 @@ const buildPendingRegistrationPayload = (pendingRegistration, formattedPhone) =>
   ),
 });
 
-const findLatestPendingRegistration = async (db, { formattedPhone, email } = {}) => {
+const getNormalizedPendingRegistrationEmail = (pendingRegistration) =>
+  String(
+    parsePendingRegistrationData(pendingRegistration?.registration_data)?.email || '',
+  )
+    .trim()
+    .toLowerCase();
+
+const findPendingRegistrations = async (db, { formattedPhone, email } = {}) => {
   const normalizedEmail = String(email || '').trim().toLowerCase();
-  const conditions = [];
-  const params = [];
+  const candidateRows = [];
 
   if (formattedPhone) {
-    conditions.push(`phone_number = $${params.length + 1}`);
-    params.push(formattedPhone);
+    const result = await db.query(
+      `SELECT *
+       FROM pending_registrations
+       WHERE phone_number = $1
+       ORDER BY created_at DESC
+       LIMIT 25`,
+      [formattedPhone],
+    );
+    candidateRows.push(...result.rows);
   }
 
-  if (normalizedEmail) {
-    conditions.push(`LOWER(COALESCE(registration_data::jsonb ->> 'email', '')) = $${params.length + 1}`);
-    params.push(normalizedEmail);
+  if (candidateRows.length === 0 && normalizedEmail) {
+    const result = await db.query(
+      `SELECT *
+       FROM pending_registrations
+       ORDER BY created_at DESC
+       LIMIT 250`,
+    );
+    candidateRows.push(...result.rows);
   }
 
-  if (conditions.length === 0) {
-    return null;
-  }
-
-  const result = await db.query(
-    `SELECT *
-     FROM pending_registrations
-     WHERE ${conditions.join(' OR ')}
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    params,
+  const uniqueRows = Array.from(
+    new Map(candidateRows.map((row) => [row.id, row])).values(),
   );
 
-  return result.rows[0] || null;
+  return uniqueRows.filter((row) => {
+    const matchesPhone = formattedPhone
+      ? row.phone_number === formattedPhone
+      : false;
+    const matchesEmail = normalizedEmail
+      ? getNormalizedPendingRegistrationEmail(row) === normalizedEmail
+      : false;
+
+    if (formattedPhone && normalizedEmail) {
+      return matchesPhone || matchesEmail;
+    }
+
+    if (formattedPhone) {
+      return matchesPhone;
+    }
+
+    if (normalizedEmail) {
+      return matchesEmail;
+    }
+
+    return false;
+  });
+};
+
+const findLatestPendingRegistration = async (db, criteria = {}) => {
+  const matches = await findPendingRegistrations(db, criteria);
+  matches.sort(
+    (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime(),
+  );
+
+  return matches[0] || null;
 };
 
 /**
@@ -439,7 +478,29 @@ const validateLoginInput = (req, res, next) => {
  */
 router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
   try {
-    const registrationPayload = req.body || {};
+    const rawRegistrationPayload = req.body || {};
+    const synthesizedAddress =
+      rawRegistrationPayload.address ||
+      [rawRegistrationPayload.purok, rawRegistrationPayload.streetColor]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .join(', ') ||
+      undefined;
+    const synthesizedInfantName =
+      rawRegistrationPayload.infantName ||
+      [
+        rawRegistrationPayload.infantFirstName,
+        rawRegistrationPayload.infantLastName,
+      ]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .join(' ') ||
+      undefined;
+    const registrationPayload = {
+      ...rawRegistrationPayload,
+      address: synthesizedAddress,
+      infantName: synthesizedInfantName,
+    };
 
     // Validate input
     const validationResult = validation.validateGuardianRegistration(registrationPayload);
@@ -559,12 +620,17 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       });
     }
 
-    await pool.query(
-      `DELETE FROM pending_registrations
-       WHERE phone_number = $1
-          OR LOWER(COALESCE(registration_data::jsonb ->> 'email', '')) = $2`,
-      [formattedPhone, email],
-    );
+    const matchingPendingRegistrations = await findPendingRegistrations(pool, {
+      formattedPhone,
+      email,
+    });
+
+    if (matchingPendingRegistrations.length > 0) {
+      await pool.query(
+        'DELETE FROM pending_registrations WHERE id = ANY($1::int[])',
+        [matchingPendingRegistrations.map((row) => row.id)],
+      );
+    }
 
     // Store pending registration with formatted phone number
     await pool.query(
@@ -578,12 +644,16 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       await smsService.sendVerificationSMS(formattedPhone, otp);
     } catch (smsError) {
       console.error('Failed to send OTP SMS:', smsError);
-      await pool.query(
-        `DELETE FROM pending_registrations
-         WHERE phone_number = $1
-            OR LOWER(COALESCE(registration_data::jsonb ->> 'email', '')) = $2`,
-        [formattedPhone, email],
-      );
+      const persistedPendingRegistrations = await findPendingRegistrations(pool, {
+        formattedPhone,
+        email,
+      });
+      if (persistedPendingRegistrations.length > 0) {
+        await pool.query(
+          'DELETE FROM pending_registrations WHERE id = ANY($1::int[])',
+          [persistedPendingRegistrations.map((row) => row.id)],
+        );
+      }
       return res.status(503).json({
         success: false,
         error: 'Unable to send verification code at this time. Please try again.',
