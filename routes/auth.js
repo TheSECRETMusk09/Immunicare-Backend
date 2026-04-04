@@ -2206,8 +2206,12 @@ router.get('/verify', async (req, res) => {
       userResponse.guardian_id = user.guardian_id;
     }
 
-    // Update session activity
-    await sessionService.updateSessionActivity(token);
+    // Session bookkeeping should never invalidate an otherwise valid session.
+    try {
+      await sessionService.updateSessionActivity(token);
+    } catch (sessionError) {
+      console.warn('Session activity update failed during verify:', sessionError.message);
+    }
 
     res.json({
       authenticated: true,

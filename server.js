@@ -44,6 +44,7 @@ const authRateLimiter = rateLimit({
 const { register } = require('./config/monitoring');
 const logger = require('./config/logger');
 const WebSocketMetrics = require('./monitoring/websocketMetrics');
+const { isReadOnlyRuntime, resolveStorageRoot } = require('./utils/runtimeStorage');
 
 // Initialize Socket.io service
 const socketService = require('./services/socketService');
@@ -78,7 +79,9 @@ const PORT = process.env.PORT || 5000;
 const HTTPS_PORT = process.env.HTTPS_PORT || 5443;
 const ENABLE_HTTPS = process.env.ENABLE_HTTPS === 'true';
 const SERVE_FRONTEND = String(process.env.SERVE_FRONTEND || '').trim().toLowerCase() === 'true';
-const runtimeStateDir = path.join(__dirname, '.runtime');
+const runtimeStateDir = isReadOnlyRuntime()
+  ? resolveStorageRoot('.runtime')
+  : path.join(__dirname, '.runtime');
 const runtimePortStateFile = path.join(runtimeStateDir, 'active-port.json');
 
 const writeRuntimePortState = (port, status = 'running') => {
