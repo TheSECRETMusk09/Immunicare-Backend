@@ -85,8 +85,23 @@ const logLevel =
 // Create logs directory if it doesn't exist
 const fs = require('fs');
 const logsDir = path.join(__dirname, '..', 'logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
+const isReadOnlyRuntime = Boolean(
+  process.env.VERCEL ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.FUNCTION_TARGET ||
+  process.env.K_SERVICE,
+);
+
+let fileLoggingEnabled = !isReadOnlyRuntime;
+
+if (fileLoggingEnabled) {
+  try {
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+    }
+  } catch (error) {
+    fileLoggingEnabled = false;
+  }
 }
 
 const logger = winston.createLogger({
@@ -104,46 +119,54 @@ const logger = winston.createLogger({
       handleRejections: true,
     }),
     // Error log file - for errors only
-    new winston.transports.File({
-      filename: path.join(logsDir, 'error.log'),
-      level: 'error',
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
-      handleExceptions: true,
-      handleRejections: true,
-    }),
-    // Combined log file - all levels
-    new winston.transports.File({
-      filename: path.join(logsDir, 'combined.log'),
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
-    }),
-    // Debug log file - for development
-    ...(process.env.NODE_ENV !== 'production'
+    ...(fileLoggingEnabled
       ? [
         new winston.transports.File({
-          filename: path.join(logsDir, 'debug.log'),
-          level: 'debug',
+          filename: path.join(logsDir, 'error.log'),
+          level: 'error',
           maxsize: 5242880, // 5MB
-          maxFiles: 3,
+          maxFiles: 5,
+          handleExceptions: true,
+          handleRejections: true,
         }),
+        // Combined log file - all levels
+        new winston.transports.File({
+          filename: path.join(logsDir, 'combined.log'),
+          maxsize: 5242880, // 5MB
+          maxFiles: 5,
+        }),
+        // Debug log file - for development
+        ...(process.env.NODE_ENV !== 'production'
+          ? [
+            new winston.transports.File({
+              filename: path.join(logsDir, 'debug.log'),
+              level: 'debug',
+              maxsize: 5242880, // 5MB
+              maxFiles: 3,
+            }),
+          ]
+          : []),
       ]
       : []),
   ],
-  exceptionHandlers: [
-    new winston.transports.File({
-      filename: path.join(logsDir, 'exceptions.log'),
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
-    }),
-  ],
-  rejectionHandlers: [
-    new winston.transports.File({
-      filename: path.join(logsDir, 'rejections.log'),
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
-    }),
-  ],
+  exceptionHandlers: fileLoggingEnabled
+    ? [
+      new winston.transports.File({
+        filename: path.join(logsDir, 'exceptions.log'),
+        maxsize: 5242880, // 5MB
+        maxFiles: 5,
+      }),
+    ]
+    : [],
+  rejectionHandlers: fileLoggingEnabled
+    ? [
+      new winston.transports.File({
+        filename: path.join(logsDir, 'rejections.log'),
+        maxsize: 5242880, // 5MB
+        maxFiles: 5,
+      }),
+    ]
+    : [],
   exitOnError: false, // Do not exit on handled exceptions
 });
 
