@@ -1,5 +1,7 @@
 const PERIOD_OPTIONS = new Set(['today', 'week', 'month', 'custom']);
-const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const {
+  resolveClinicDateRange,
+} = require('../utils/clinicCalendar');
 
 const VACCINE_KEYS = Object.freeze([
   'ALL',
@@ -22,54 +24,6 @@ const VACCINATION_STATUS_OPTIONS = new Set([
   'cancelled',
   'no_show',
 ]);
-
-const padDatePart = (value) => String(value).padStart(2, '0');
-
-const buildLocalDate = (year, monthIndex, day) => {
-  const date = new Date(year, monthIndex, day);
-  if (
-    Number.isNaN(date.getTime())
-    || date.getFullYear() !== year
-    || date.getMonth() !== monthIndex
-    || date.getDate() !== day
-  ) {
-    return null;
-  }
-
-  return date;
-};
-
-const toDateString = (value) => {
-  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
-    return null;
-  }
-
-  return `${value.getFullYear()}-${padDatePart(value.getMonth() + 1)}-${padDatePart(value.getDate())}`;
-};
-
-const parseDateInput = (value) => {
-  if (!value) {
-    return null;
-  }
-
-  if (value instanceof Date) {
-    return buildLocalDate(value.getFullYear(), value.getMonth(), value.getDate());
-  }
-
-  const text = String(value).trim();
-  const dateOnlyMatch = text.match(DATE_ONLY_PATTERN);
-  if (dateOnlyMatch) {
-    const [, year, month, day] = dateOnlyMatch;
-    return buildLocalDate(Number(year), Number(month) - 1, Number(day));
-  }
-
-  const parsed = new Date(text);
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-
-  return buildLocalDate(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
-};
 
 const clampNumber = (value, { min, max, fallback }) => {
   const parsed = Number.parseInt(value, 10);
@@ -115,52 +69,11 @@ const normalizeVaccinationStatus = (input) => {
 };
 
 const resolveDateRange = ({ period, startDateInput, endDateInput }) => {
-  const now = parseDateInput(new Date());
-
-  if (period === 'today') {
-    const date = toDateString(now);
-    return { startDate: date, endDate: date, errors: [] };
-  }
-
-  if (period === 'week') {
-    const startDate = new Date(now);
-    startDate.setDate(startDate.getDate() - 6);
-    return {
-      startDate: toDateString(startDate),
-      endDate: toDateString(now),
-      errors: [],
-    };
-  }
-
-  if (period === 'month') {
-    const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    return {
-      startDate: toDateString(startDate),
-      endDate: toDateString(now),
-      errors: [],
-    };
-  }
-
-  const startDate = parseDateInput(startDateInput);
-  const endDate = parseDateInput(endDateInput);
-
-  const errors = [];
-  if (!startDate) {
-    errors.push('startDate is required and must be a valid date for custom period');
-  }
-  if (!endDate) {
-    errors.push('endDate is required and must be a valid date for custom period');
-  }
-
-  if (startDate && endDate && startDate > endDate) {
-    errors.push('startDate cannot be later than endDate');
-  }
-
-  return {
-    startDate: toDateString(startDate),
-    endDate: toDateString(endDate),
-    errors,
-  };
+  return resolveClinicDateRange({
+    period,
+    startDateInput,
+    endDateInput,
+  });
 };
 
 const normalizeFacilityId = (query, user) => {

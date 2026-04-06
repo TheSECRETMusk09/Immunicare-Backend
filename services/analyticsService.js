@@ -4,15 +4,19 @@ const {
 } = require('../validators/analyticsValidators');
 const analyticsRepository = require('../repositories/analyticsRepository');
 const { getAdminMetricsSummary } = require('./adminMetricsService');
+const {
+  getClinicTodayDateKey,
+  shiftClinicDateKey,
+} = require('../utils/clinicCalendar');
 
 const APPOINTMENT_STATUS_MAP = Object.freeze({
   completed: ['attended'],
   attended: ['attended'],
   pending: ['scheduled', 'confirmed', 'rescheduled'],
   scheduled: ['scheduled', 'confirmed', 'rescheduled'],
-  overdue: ['scheduled', 'confirmed', 'rescheduled', 'no-show', 'no_show'],
+  overdue: ['scheduled', 'confirmed', 'rescheduled', 'no_show'],
   cancelled: ['cancelled'],
-  no_show: ['no-show', 'no_show'],
+  no_show: ['no_show'],
   all: null,
 });
 
@@ -244,6 +248,15 @@ const getStatusFilters = (vaccinationStatus) => ({
   overdueOnly: vaccinationStatus === 'overdue',
 });
 
+const mergeScopedIds = (...values) => Array.from(
+  new Set(
+    values
+      .flat()
+      .map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isInteger(value) && value > 0),
+  ),
+);
+
 const resolveScopedFacilityId = (reqUser = {}, fallbackFacilityId = null) => {
   if (reqUser && Number.isFinite(Number.parseInt(reqUser.clinic_id, 10))) {
     return Number.parseInt(reqUser.clinic_id, 10);
@@ -259,6 +272,9 @@ const resolveScopedFacilityId = (reqUser = {}, fallbackFacilityId = null) => {
 
   return null;
 };
+
+const resolveAppointmentScopeIds = (reqUser = {}, fallbackFacilityId = null) =>
+  mergeScopedIds(reqUser?.clinic_id, reqUser?.facility_id, fallbackFacilityId);
 
 const buildDimensionAndLookup = async ({ vaccineType }) => {
   const dimension = await analyticsRepository.getVaccineDimension();
@@ -354,7 +370,10 @@ const collectDashboardData = async ({ filters }) => {
     failedSmsCount,
   ] = await Promise.all([
     getAdminMetricsSummary({
+      startDate: filters.startDate,
+      endDate: filters.endDate,
       facilityId: filters.facilityId,
+      scopeIds: filters.appointmentScopeIds,
     }),
     analyticsRepository.getInfantGuardianTotals({
       facilityId: filters.facilityId,
@@ -378,7 +397,7 @@ const collectDashboardData = async ({ filters }) => {
       guardianId: filters.guardianId,
     }),
     analyticsRepository.getAppointmentSnapshot({
-      facilityId: filters.facilityId,
+      scopeIds: filters.appointmentScopeIds,
       startDate: filters.startDate,
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
@@ -386,7 +405,7 @@ const collectDashboardData = async ({ filters }) => {
       guardianId: filters.guardianId,
     }),
     analyticsRepository.getAppointmentStatusBreakdown({
-      facilityId: filters.facilityId,
+      scopeIds: filters.appointmentScopeIds,
       startDate: filters.startDate,
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
@@ -419,7 +438,7 @@ const collectDashboardData = async ({ filters }) => {
       guardianId: filters.guardianId,
     }),
     analyticsRepository.getDailyAppointmentTrend({
-      facilityId: filters.facilityId,
+      scopeIds: filters.appointmentScopeIds,
       startDate: filters.startDate,
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
@@ -454,6 +473,44 @@ const collectDashboardData = async ({ filters }) => {
 
   const totalInfants = mapInt(totals.total_infants);
   const totalGuardians = mapInt(totals.total_guardians);
+  const normalizedInventoryByVaccine = inventoryByVaccine.map((item) => ({
+    vaccineKey: item.vaccine_key,
+    vaccineName: item.vaccine_name,
+    availableDoses: mapInt(item.available_doses),
+    lowStock: Boolean(item.low_stock),
+    criticalStock: Boolean(item.critical_stock),
+  }));
+  const inventoryTotals = normalizedInventoryByVaccine.reduce(
+    (accumulator, item) => {
+      const availableDoses = mapInt(item.availableDoses);
+      const isOutOfStock = availableDoses <= 0;
+      const isCriticalStock = !isOutOfStock && Boolean(item.criticalStock);
+      const isLowStock =
+        !isOutOfStock &&
+        !isCriticalStock &&
+        Boolean(item.lowStock);
+
+      return {
+        totalAvailableDoses:
+          accumulator.totalAvailableDoses + availableDoses,
+        lowStockCount: accumulator.lowStockCount + (isLowStock ? 1 : 0),
+        criticalStockCount:
+          accumulator.criticalStockCount + (isCriticalStock ? 1 : 0),
+        outOfStockCount:
+          accumulator.outOfStockCount + (isOutOfStock ? 1 : 0),
+        needsReplenishmentCount:
+          accumulator.needsReplenishmentCount +
+          (isLowStock || isCriticalStock || isOutOfStock ? 1 : 0),
+      };
+    },
+    {
+      totalAvailableDoses: 0,
+      lowStockCount: 0,
+      criticalStockCount: 0,
+      outOfStockCount: 0,
+      needsReplenishmentCount: 0,
+    },
+  );
 
   const vaccinationCoverage = normalizeCoverageFromProgress(vaccineProgress, totalInfants);
 
@@ -465,9 +522,9 @@ const collectDashboardData = async ({ filters }) => {
     infantsDueForVaccination: mapInt(vaccinationSnapshot.due_in_period),
     dueSoon7Days: mapInt(vaccinationSnapshot.due_soon_7_days),
     overdueVaccinations: mapInt(vaccinationSnapshot.overdue_count),
-    pendingAppointments: mapInt(appointmentSnapshot.total_pending),
-    lowStockVaccines: mapInt(inventorySnapshot.low_stock_count),
-    totalAvailableVaccineDoses: mapInt(inventorySnapshot.total_available_doses),
+    pendingAppointments: mapInt(appointmentSnapshot.pending_in_period),
+    lowStockVaccines: inventoryTotals.needsReplenishmentCount,
+    totalAvailableVaccineDoses: inventoryTotals.totalAvailableDoses,
     uniqueInfantsServed: mapInt(vaccinationSnapshot.unique_infants_served),
   };
 
@@ -488,18 +545,12 @@ const collectDashboardData = async ({ filters }) => {
   };
 
   const inventory = {
-    totalItems: mapInt(inventorySnapshot.total_items),
-    totalAvailableDoses: mapInt(inventorySnapshot.total_available_doses),
-    lowStockCount: mapInt(inventorySnapshot.low_stock_count),
-    criticalStockCount: mapInt(inventorySnapshot.critical_stock_count),
-    outOfStockCount: mapInt(inventorySnapshot.out_of_stock_count),
-    byVaccine: inventoryByVaccine.map((item) => ({
-      vaccineKey: item.vaccine_key,
-      vaccineName: item.vaccine_name,
-      availableDoses: mapInt(item.available_doses),
-      lowStock: Boolean(item.low_stock),
-      criticalStock: Boolean(item.critical_stock),
-    })),
+    totalItems: normalizedInventoryByVaccine.length,
+    totalAvailableDoses: inventoryTotals.totalAvailableDoses,
+    lowStockCount: inventoryTotals.lowStockCount,
+    criticalStockCount: inventoryTotals.criticalStockCount,
+    outOfStockCount: inventoryTotals.outOfStockCount,
+    byVaccine: normalizedInventoryByVaccine,
   };
 
   const reminders = {
@@ -632,10 +683,15 @@ const validateFilters = (query, user) => {
         : null);
   }
 
+  const appointmentScopeIds = isGuardian
+    ? []
+    : resolveAppointmentScopeIds(user, validation.filters.facilityId);
+
   return {
     ...validation.filters,
     facilityId: scopedFacilityId,
     guardianId,
+    appointmentScopeIds,
   };
 };
 
@@ -692,15 +748,17 @@ const getInventoryAnalytics = async ({ query, user }) => {
 const getTrendsAnalytics = async ({ query, user }) => {
   const monthsValue = Number.parseInt(query.months, 10);
   const hasMonthOverride = Number.isFinite(monthsValue);
-  const overrideStartDate = new Date();
-  overrideStartDate.setDate(overrideStartDate.getDate() - Math.max(7, monthsValue * 30 || 0));
+  const todayKey = getClinicTodayDateKey();
+  const overrideStartDate = todayKey
+    ? shiftClinicDateKey(todayKey, -Math.max(7, monthsValue * 30 || 0))
+    : null;
 
   const normalizedQuery = hasMonthOverride
     ? {
       ...query,
       period: 'custom',
-      startDate: toLocalDateKey(overrideStartDate),
-      endDate: toLocalDateKey(new Date()),
+      startDate: overrideStartDate,
+      endDate: todayKey,
     }
     : query;
 

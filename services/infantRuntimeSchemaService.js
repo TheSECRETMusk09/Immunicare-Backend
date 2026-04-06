@@ -85,8 +85,12 @@ const initializeInfantRuntimeSchema = async () => {
 
   const missingColumns = requiredPatientColumns.filter((columnName) => !patientColumns.has(columnName));
   const missingTables = [];
-  if (!hasInfantAllergies) missingTables.push('infant_allergies');
-  if (!hasTransferInCases) missingTables.push('transfer_in_cases');
+  if (!hasInfantAllergies) {
+    missingTables.push('infant_allergies');
+  }
+  if (!hasTransferInCases) {
+    missingTables.push('transfer_in_cases');
+  }
 
   if (missingColumns.length === 0 && missingTables.length === 0) {
     return true;

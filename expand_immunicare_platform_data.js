@@ -2,6 +2,10 @@ require('dotenv').config();
 
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const {
+  MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+  getClinicTodayDateKey,
+} = require('./utils/clinicCalendar');
 
 process.env.DB_QUERY_TIMEOUT = process.env.DB_QUERY_TIMEOUT || '0';
 process.env.DB_STATEMENT_TIMEOUT = process.env.DB_STATEMENT_TIMEOUT || '0';
@@ -21,7 +25,6 @@ const {
 const MARKER = 'EXP95000';
 const RNG_SEED = 20260404;
 const TARGET_INFANTS = 95000;
-const TARGET_TRANSACTIONS = 1000000;
 const WINDOW_START = new Date('2025-08-01T00:00:00.000Z');
 const WINDOW_END = new Date('2030-07-31T23:59:59.999Z');
 const DEFAULT_GUARDIAN_PASSWORD = 'GuardianExpand2026!';
@@ -29,10 +32,28 @@ const DEMO_CITY = 'Pasig City';
 const DEMO_REGION = 'NCR';
 const DEMO_POSTAL_CODE = '1600';
 const DEFAULT_HEALTH_CENTER = 'San Nicolas Health Center';
+const countWeekdaysInWindow = (start, end) => {
+  let count = 0;
+  const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+
+  while (cursor <= end) {
+    const dow = cursor.getUTCDay();
+    if (dow !== 0 && dow !== 6) {
+      count += 1;
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return count;
+};
+
+const WINDOW_WEEKDAY_VACCINATION_DAYS = countWeekdaysInWindow(WINDOW_START, WINDOW_END);
+const WINDOW_WEEKDAY_VACCINATION_CAPACITY =
+  WINDOW_WEEKDAY_VACCINATION_DAYS * MAX_VACCINATION_APPOINTMENTS_PER_DAY;
 
 const TRANSACTION_TARGETS = Object.freeze({
   immunization_records: 280000,
-  appointments: 220000,
+  appointments: WINDOW_WEEKDAY_VACCINATION_CAPACITY,
   vaccine_inventory_transactions: 25000,
   notifications: 320000,
   reports: 15000,
@@ -41,6 +62,11 @@ const TRANSACTION_TARGETS = Object.freeze({
   transfer_in_cases: 10000,
   document_downloads: 10000,
 });
+
+const TARGET_TRANSACTIONS = Object.values(TRANSACTION_TARGETS).reduce(
+  (sum, value) => sum + value,
+  0,
+);
 
 const SESSION_TARGET = 50000;
 
@@ -159,6 +185,21 @@ const dailySeries = (start, end) => {
   return values;
 };
 
+const isWeekendDay = (value) => {
+  const dow = value.getUTCDay();
+  return dow === 0 || dow === 6;
+};
+
+const rollForwardToWeekday = (value) => {
+  let cursor = cloneDate(value);
+  while (isWeekendDay(cursor)) {
+    cursor = addDays(cursor, 1);
+  }
+  return cursor;
+};
+
+const weekdaySeries = (start, end) => dailySeries(start, end).filter((day) => !isWeekendDay(day));
+
 const monthSeries = (start, end) => {
   const values = [];
   let cursor = startOfMonth(start);
@@ -210,6 +251,79 @@ const distributeByDay = (total, days, { minPerDay = 1, category = 'generic' } = 
   }
 
   return base;
+};
+
+const rebalanceCappedDistribution = (counts, maxPerDay, category) => {
+  const rebalanced = [...counts];
+  let overflow = 0;
+
+  for (let index = 0; index < rebalanced.length; index += 1) {
+    if (rebalanced[index] > maxPerDay) {
+      overflow += rebalanced[index] - maxPerDay;
+      rebalanced[index] = maxPerDay;
+    }
+  }
+
+  if (overflow === 0) {
+    return rebalanced;
+  }
+
+  const candidates = rebalanced
+    .map((count, index) => ({ index, count }))
+    .sort((left, right) => left.count - right.count);
+
+  for (const candidate of candidates) {
+    if (overflow === 0) {
+      break;
+    }
+
+    const spare = maxPerDay - rebalanced[candidate.index];
+    if (spare <= 0) {
+      continue;
+    }
+
+    const allocation = Math.min(spare, overflow);
+    rebalanced[candidate.index] += allocation;
+    overflow -= allocation;
+  }
+
+  if (overflow > 0) {
+    throw new Error(
+      `Unable to rebalance ${category} within the ${maxPerDay}/day weekday capacity.`,
+    );
+  }
+
+  return rebalanced;
+};
+
+const distributeByWeekdayCapacity = (
+  total,
+  days,
+  {
+    category = 'vaccination appointments',
+    maxPerDay = MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+  } = {},
+) => {
+  const weekdays = days.filter((day) => !isWeekendDay(day));
+  const maxCapacity = weekdays.length * maxPerDay;
+
+  if (total > maxCapacity) {
+    throw new Error(
+      `Cannot distribute ${total} ${category}; weekday capacity is only ${maxCapacity}.`,
+    );
+  }
+
+  const rawCounts = distributeByDay(total, weekdays, {
+    minPerDay: 0,
+    category,
+  });
+  const counts = rebalanceCappedDistribution(rawCounts, maxPerDay, category);
+
+  return {
+    days: weekdays,
+    counts,
+    maxCapacity,
+  };
 };
 
 const buildInsertQuery = (tableName, columns, rows, returningColumns = []) => {
@@ -852,7 +966,8 @@ const generateImmunizationData = ({
         : visitCode === 'VISIT_1M'
           ? addDays(addMonths(child.dob, 1), randomInt(-3, 8))
           : addDays(addMonths(child.dob, 2), randomInt(-3, 10));
-      const safeAdminDate = adminDate > WINDOW_END ? cloneDate(WINDOW_END) : adminDate;
+      const boundedAdminDate = adminDate > WINDOW_END ? cloneDate(WINDOW_END) : adminDate;
+      const safeAdminDate = rollForwardToWeekday(boundedAdminDate);
       const recordCreatedAt = safeAdminDate < child.createdAt ? child.createdAt : safeAdminDate;
       const nextTemplateIndex = VISIT_TEMPLATES.findIndex((entry) => entry.code === visitCode) + 1;
       const nextDueDate = nextTemplateIndex < VISIT_TEMPLATES.length
@@ -1168,51 +1283,21 @@ const createAppointments = ({
   staffUsers,
   scopeIds,
 }) => {
-  const days = dailySeries(WINDOW_START, WINDOW_END);
-  const counts = distributeByDay(TRANSACTION_TARGETS.appointments, days, { minPerDay: 1, category: 'appointments' });
+  const days = weekdaySeries(WINDOW_START, WINDOW_END);
+  const { counts } = distributeByWeekdayCapacity(TRANSACTION_TARGETS.appointments, days, {
+    category: 'appointments',
+  });
   const appointments = [];
   let sequence = 1;
-
-  visitAppointmentSeeds.forEach((seed) => {
-    appointments.push({
-      infant_id: appointmentInfantIdsByControlNumber.get(seed.child.controlNumber),
-      patient_id: seed.child.patientId,
-      guardian_id: guardianIdsBySequence.get(seed.child.sequence),
-      scheduled_date: toIsoDate(seed.appointmentDate),
-      type: seed.type,
-      status: 'attended',
-      notes: seed.notes,
-      completion_notes: `${MARKER} completed visit`,
-      duration_minutes: 35,
-      created_by: pick(staffUsers).id,
-      clinic_id: scopeIds.clinicId,
-      facility_id: scopeIds.facilityId,
-      is_active: true,
-      created_at: addDays(seed.appointmentDate, -randomInt(1, 12)),
-      updated_at: seed.appointmentDate,
-      location: 'San Nicolas Health Center Vaccination Room',
-      confirmation_status: 'confirmed',
-      confirmed_at: addDays(seed.appointmentDate, -1),
-      confirmation_method: weightedPick([
-        { value: 'sms', weight: 42 },
-        { value: 'portal', weight: 36 },
-        { value: 'sms+portal', weight: 22 },
-      ]),
-      sms_confirmation_sent: true,
-      sms_confirmation_sent_at: addDays(seed.appointmentDate, -2),
-      control_number: buildAppointmentControlNumber(sequence),
-      reminder_sent_24h: true,
-      reminder_sent_48h: chance(0.55),
-      sms_missed_notification_sent: false,
-    });
-    sequence += 1;
-  });
-
-  let remaining = TRANSACTION_TARGETS.appointments - appointments.length;
+  const todayKey = getClinicTodayDateKey();
   let childCursor = 0;
   days.forEach((day, dayIndex) => {
     let dayCount = counts[dayIndex];
-    while (dayCount > 0 && remaining > 0) {
+    const scheduledDateKey = toIsoDate(day);
+    const inPast = scheduledDateKey < todayKey;
+    const isToday = scheduledDateKey === todayKey;
+
+    while (dayCount > 0) {
       const child = children[childCursor % children.length];
       childCursor += 1;
       const nextVisitIndex = Math.min(
@@ -1220,35 +1305,56 @@ const createAppointments = ({
         VISIT_TEMPLATES.length - 1,
       );
       const nextVisit = VISIT_TEMPLATES[nextVisitIndex];
-      const status = weightedPick([
-        { value: 'scheduled', weight: 46 },
-        { value: 'confirmed', weight: 24 },
-        { value: 'rescheduled', weight: 15 },
-        { value: 'no-show', weight: 9 },
-        { value: 'cancelled', weight: 6 },
-      ]);
-      const createdAt = addDays(day, -randomInt(1, 21));
+      const status = weightedPick(
+        inPast
+          ? [
+            { value: 'attended', weight: 54 },
+            { value: 'no-show', weight: 13 },
+            { value: 'cancelled', weight: 8 },
+            { value: 'rescheduled', weight: 14 },
+            { value: 'confirmed', weight: 6 },
+            { value: 'scheduled', weight: 5 },
+          ]
+          : isToday
+            ? [
+              { value: 'scheduled', weight: 44 },
+              { value: 'confirmed', weight: 24 },
+              { value: 'rescheduled', weight: 16 },
+              { value: 'attended', weight: 10 },
+              { value: 'cancelled', weight: 6 },
+            ]
+            : [
+              { value: 'scheduled', weight: 49 },
+              { value: 'confirmed', weight: 28 },
+              { value: 'rescheduled', weight: 15 },
+              { value: 'cancelled', weight: 8 },
+            ],
+      );
+      const createdAt = addDays(day, -randomInt(1, inPast ? 21 : 35));
+      const normalizedCreatedAt = createdAt > day ? addDays(day, -1) : createdAt;
+      const isAttended = status === 'attended';
+      const isConfirmed = status === 'confirmed' || status === 'rescheduled' || isAttended;
 
       appointments.push({
         infant_id: appointmentInfantIdsByControlNumber.get(child.controlNumber),
         patient_id: child.patientId,
         guardian_id: guardianIdsBySequence.get(child.sequence),
-        scheduled_date: toIsoDate(day),
+        scheduled_date: scheduledDateKey,
         type: 'Vaccination',
         status,
-        notes: `${MARKER} follow-up appointment for ${nextVisit.code}`,
+        notes: `${MARKER} weekday vaccination appointment for ${nextVisit.code}`,
         cancellation_reason: status === 'cancelled' ? 'Guardian requested a date change.' : null,
-        completion_notes: null,
+        completion_notes: isAttended ? `${MARKER} weekday vaccination visit completed` : null,
         duration_minutes: 35,
         created_by: pick(staffUsers).id,
         clinic_id: scopeIds.clinicId,
         facility_id: scopeIds.facilityId,
         is_active: true,
-        created_at: createdAt,
-        updated_at: createdAt,
+        created_at: normalizedCreatedAt,
+        updated_at: isAttended ? day : normalizedCreatedAt,
         location: 'San Nicolas Health Center Vaccination Room',
-        confirmation_status: status === 'confirmed' ? 'confirmed' : 'pending',
-        confirmed_at: status === 'confirmed' ? addDays(day, -1) : null,
+        confirmation_status: isConfirmed ? 'confirmed' : 'pending',
+        confirmed_at: isConfirmed ? addDays(day, -1) : null,
         confirmation_method: weightedPick([
           { value: 'sms', weight: 51 },
           { value: 'portal', weight: 29 },
@@ -1264,9 +1370,14 @@ const createAppointments = ({
 
       sequence += 1;
       dayCount -= 1;
-      remaining -= 1;
     }
   });
+
+  if (visitAppointmentSeeds.length > WINDOW_WEEKDAY_VACCINATION_CAPACITY) {
+    console.warn(
+      `[${MARKER}] Historical visit seeds (${visitAppointmentSeeds.length}) exceed weekday appointment capacity (${WINDOW_WEEKDAY_VACCINATION_CAPACITY}); synthetic appointment output is now generated from the weekday allocator instead of mirroring every completed visit.`,
+    );
+  }
 
   if (appointments.length !== TRANSACTION_TARGETS.appointments) {
     throw new Error(`Expected ${TRANSACTION_TARGETS.appointments} appointments, generated ${appointments.length}`);
@@ -1721,12 +1832,17 @@ async function expandImmunicarePlatformData() {
 }
 
 module.exports = {
+  createAppointments,
+  distributeByWeekdayCapacity,
+  generateImmunizationData,
   expandImmunicarePlatformData,
   TRANSACTION_TARGETS,
   TARGET_INFANTS,
   TARGET_TRANSACTIONS,
   WINDOW_START,
   WINDOW_END,
+  rollForwardToWeekday,
+  weekdaySeries,
   MARKER,
 };
 

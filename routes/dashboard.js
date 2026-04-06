@@ -14,6 +14,12 @@ const {
   resolveEffectiveScope,
   resolveUserScopeIds,
 } = require('../services/entityScopeService');
+const immunizationScheduleService = require('../services/immunizationScheduleService');
+const {
+  CLINIC_TODAY_SQL,
+  getClinicTodayDateKey,
+  parseClinicDate,
+} = require('../utils/clinicCalendar');
 
 const noCache = (res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -47,6 +53,7 @@ const guardianScopeFilterSql = `
 const PROVIDER_FALLBACK_LABEL = 'Provider unavailable';
 const PROVIDER_FALLBACK_LABEL_SQL = PROVIDER_FALLBACK_LABEL.replace(/'/g, '\'\'');
 const PROVIDER_NAME_COLUMNS = ['full_name', 'name', 'username', 'email'];
+const GUARDIAN_READINESS_TIMEOUT_MS = 4000;
 
 let providerSchemaPromise = null;
 
@@ -154,6 +161,166 @@ const normalizeVaccinationProvider = (record) => {
     ...record,
     provider_name: providerName,
     administered_by_name: record?.administered_by_name || providerName,
+  };
+};
+
+const normalizeGuardianChildRow = (record = {}) => ({
+  ...record,
+  completed_vaccinations: Number.parseInt(record.completed_vaccinations, 10) || 0,
+  pending_vaccinations: Number.parseInt(record.pending_vaccinations, 10) || 0,
+  upcoming_appointments: Number.parseInt(record.upcoming_appointments, 10) || 0,
+});
+
+const mergeGuardianScheduleSummaries = (children = [], summaryMap = new Map()) =>
+  children.map((child) => {
+    const summary = summaryMap.get(Number.parseInt(child?.id, 10));
+    if (!summary) {
+      return normalizeGuardianChildRow(child);
+    }
+
+    return normalizeGuardianChildRow({
+      ...child,
+      completed_vaccinations: summary.completed,
+      pending_vaccinations: summary.pendingActionCount,
+    });
+  });
+
+const buildDueVaccineIdentity = (childId, vaccine = {}, dueDate = '') => {
+  const vaccineId =
+    vaccine?.vaccineId ||
+    vaccine?.vaccine_id ||
+    vaccine?.vaccineCode ||
+    vaccine?.vaccine_code ||
+    vaccine?.label ||
+    'vaccine';
+  const doseNumber = vaccine?.doseNumber || vaccine?.dose_number || 'dose';
+  return `${childId || 'child'}-${vaccineId}-${doseNumber}-${dueDate || 'no-date'}`;
+};
+
+const withTimeout = (promise, timeoutMs, message) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+
+    Promise.resolve(promise)
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+
+const collectGuardianDueVaccines = async (
+  children = [],
+  limit = 5,
+  readinessTimeoutMs = GUARDIAN_READINESS_TIMEOUT_MS,
+) => {
+  if (!Array.isArray(children) || children.length === 0) {
+    return {
+      allDueVaccines: [],
+      visibleDueVaccines: [],
+      readinessFailures: 0,
+      readinessProcessed: 0,
+    };
+  }
+
+  const clinicTodayKey = getClinicTodayDateKey();
+  const today = clinicTodayKey ? parseClinicDate(clinicTodayKey) : new Date();
+  const dueVaccinesList = [];
+  const seenDueVaccines = new Set();
+  let readinessFailures = 0;
+
+  const readinessResults = await Promise.allSettled(
+    children.map((child) =>
+      withTimeout(
+        immunizationScheduleService.getGuardianScheduleProjection(child.id),
+        readinessTimeoutMs,
+        `Guardian schedule projection timed out for child ${child.id}`,
+      ),
+    ),
+  );
+
+  readinessResults.forEach((result, index) => {
+    const child = children[index];
+    if (!child?.id) {
+      return;
+    }
+
+    if (
+      result.status !== 'fulfilled' ||
+      result.value?.error
+    ) {
+      readinessFailures += 1;
+      return;
+    }
+
+    const scheduleProjection = result.value;
+    const candidateVaccines = (Array.isArray(scheduleProjection?.schedules)
+      ? scheduleProjection.schedules
+      : [])
+      .filter(
+        (scheduleItem) =>
+          !scheduleItem.isCompleted &&
+          scheduleItem.isNextDueDose &&
+          scheduleItem.dueDate,
+      )
+      .map((scheduleItem) => {
+        const dueDateKey = String(scheduleItem.dueDateKey || '').trim();
+        const dueDate = parseClinicDate(dueDateKey) || new Date(`${dueDateKey}T00:00:00`);
+        const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+
+        return {
+          id: buildDueVaccineIdentity(child.id, scheduleItem, dueDateKey),
+          childId: child.id,
+          childName:
+            String(
+              child.name ||
+                `${child.first_name || ''} ${child.last_name || ''}`.trim() ||
+                'Child',
+            ).trim(),
+          vaccineName: `${scheduleItem.vaccineName} (Dose ${scheduleItem.doseNumber})`,
+          dueDate: dueDateKey,
+          daysUntilDue,
+          status:
+            daysUntilDue < 0 ? 'overdue' : daysUntilDue <= 7 ? 'due_soon' : 'upcoming',
+        };
+      });
+
+    candidateVaccines.forEach((vaccine) => {
+      if (!vaccine?.dueDate) {
+        return;
+      }
+
+      const identity = vaccine.id || buildDueVaccineIdentity(child.id, vaccine, vaccine.dueDate);
+      if (seenDueVaccines.has(identity)) {
+        return;
+      }
+
+      seenDueVaccines.add(identity);
+
+      dueVaccinesList.push({
+        id: identity,
+        childId: vaccine.childId,
+        childName: vaccine.childName,
+        vaccineName: vaccine.vaccineName,
+        dueDate: vaccine.dueDate,
+        daysUntilDue: vaccine.daysUntilDue,
+        status: vaccine.status,
+      });
+    });
+  });
+
+  dueVaccinesList.sort((left, right) => left.daysUntilDue - right.daysUntilDue);
+
+  return {
+    allDueVaccines: dueVaccinesList,
+    visibleDueVaccines: dueVaccinesList.slice(0, limit),
+    readinessFailures,
+    readinessProcessed: Math.max(children.length - readinessFailures, 0),
   };
 };
 
@@ -288,57 +455,19 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
 
     const childrenResult = await db.query(
       `
-        SELECT COUNT(*) as count
+        SELECT id, first_name, last_name, dob
         FROM patients
-        WHERE guardian_id = $1 AND is_active = true
+        WHERE guardian_id = $1
+          AND is_active = true
+        ORDER BY created_at DESC
       `,
       [guardianId],
     );
 
-    const childrenCount = parseInt(childrenResult.rows?.[0]?.count || 0, 10);
-
-    const completedVaccinationsResult = await db.query(
-      `
-        SELECT COUNT(*) as count
-        FROM immunization_records ir
-        LEFT JOIN patients p ON p.id = ir.patient_id
-        WHERE ${guardianScopeFilterSql} = $1
-          AND (
-            ir.status = 'completed'
-            OR ir.admin_date IS NOT NULL
-          )
-          AND ir.is_active = true
-          AND p.is_active = true
-      `,
-      [guardianId],
-    );
-
-    const pendingVaccinationsResult = await db.query(
-      `
-        SELECT COUNT(*) as count
-        FROM immunization_records ir
-        LEFT JOIN patients p ON p.id = ir.patient_id
-        WHERE ${guardianScopeFilterSql} = $1
-          AND COALESCE(ir.status, 'pending') IN ('scheduled', 'pending')
-          AND ir.admin_date IS NULL
-          AND ir.is_active = true
-          AND p.is_active = true
-      `,
-      [guardianId],
-    );
-
-    const upcomingVaccinesResult = await db.query(
-      `
-        SELECT COUNT(*) as count
-        FROM immunization_records ir
-        LEFT JOIN patients p ON p.id = ir.patient_id
-        WHERE ${guardianScopeFilterSql} = $1
-          AND ir.next_due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
-          AND ir.status = 'scheduled'
-          AND ir.is_active = true
-          AND p.is_active = true
-      `,
-      [guardianId],
+    const children = childrenResult.rows || [];
+    const childrenCount = children.length;
+    const guardianSummaryMap = await immunizationScheduleService.getGuardianScheduleSummariesForPatients(
+      children,
     );
 
     const patientColumn = await resolvePatientColumn();
@@ -353,7 +482,7 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
         FROM appointments a
         LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
         WHERE ${guardianScopeFilterSql} = $1
-          AND a.scheduled_date >= CURRENT_DATE
+          AND (a.scheduled_date AT TIME ZONE 'Asia/Manila')::date >= ${CLINIC_TODAY_SQL}
           AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
           AND a.is_active = true
           AND p.is_active = true
@@ -365,13 +494,163 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
 
     res.json({
       childrenCount,
-      completedVaccinations: parseInt(completedVaccinationsResult.rows[0].count || 0, 10),
-      pendingVaccinations: parseInt(pendingVaccinationsResult.rows[0].count || 0, 10),
-      upcomingVaccines: parseInt(upcomingVaccinesResult.rows[0].count || 0, 10),
+      completedVaccinations: Array.from(guardianSummaryMap.values()).reduce(
+        (total, summary) => total + Number(summary?.completed || 0),
+        0,
+      ),
+      pendingVaccinations: Array.from(guardianSummaryMap.values()).reduce(
+        (total, summary) => total + Number(summary?.pendingActionCount || 0),
+        0,
+      ),
+      upcomingVaccines: Array.from(guardianSummaryMap.values()).reduce(
+        (total, summary) => total + Number(summary?.upcoming || 0),
+        0,
+      ),
+      overdueVaccinations: Array.from(guardianSummaryMap.values()).reduce(
+        (total, summary) => total + Number(summary?.overdue || 0),
+        0,
+      ),
       nextAppointment: nextAppointmentResult.rows[0] || null,
     });
   } catch (error) {
     console.error('Guardian stats error:', error);
+    next(error);
+  }
+});
+
+// Guardian dashboard overview
+router.get('/guardian/:guardianId/overview', authenticateToken, async (req, res, next) => {
+  try {
+    const guardianId = parseInt(req.params.guardianId, 10);
+    if (Number.isNaN(guardianId)) {
+      return res.status(400).json({ error: 'Invalid guardian ID' });
+    }
+
+    if (!canAccessGuardian(req, guardianId)) {
+      return res.status(403).json({ error: 'Access denied for guardian scope' });
+    }
+
+    const appointmentLimit = sanitizeLimit(req.query.appointmentLimit, 5, 20);
+    const dueLimit = sanitizeLimit(req.query.dueLimit, 5, 20);
+    noCache(res);
+
+    const patientColumn = await resolvePatientColumn();
+    const patientTable = await resolvePatientTable();
+
+    const [childrenResult, appointmentsResult] = await Promise.all([
+      db.query(
+        `
+          SELECT
+            p.*,
+            p.control_number,
+            (
+              SELECT COUNT(*)
+              FROM appointments a
+              WHERE a.${patientColumn} = p.id
+                AND (a.scheduled_date AT TIME ZONE 'Asia/Manila')::date >= ${CLINIC_TODAY_SQL}
+                AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
+                AND a.is_active = true
+            ) AS upcoming_appointments,
+            (
+              SELECT tic.id
+              FROM transfer_in_cases tic
+              WHERE tic.infant_id = p.id
+              ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+              LIMIT 1
+            ) AS latest_transfer_case_id,
+            (
+              SELECT tic.validation_status
+              FROM transfer_in_cases tic
+              WHERE tic.infant_id = p.id
+              ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+              LIMIT 1
+            ) AS latest_transfer_case_status
+          FROM patients p
+          WHERE p.guardian_id = $1
+            AND p.is_active = true
+          ORDER BY p.created_at DESC
+        `,
+        [guardianId],
+      ),
+      db.query(
+        `
+          SELECT
+            a.*,
+            p.first_name,
+            p.last_name,
+            p.dob as infant_dob,
+            COALESCE(a.location, 'Main Health Center') as location,
+            COALESCE(a.type, 'Vaccination Appointment') as type
+          FROM appointments a
+          LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
+          WHERE ${guardianScopeFilterSql} = $1
+            AND (a.scheduled_date AT TIME ZONE 'Asia/Manila')::date >= ${CLINIC_TODAY_SQL}
+            AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
+            AND a.is_active = true
+            AND p.is_active = true
+          ORDER BY a.scheduled_date ASC
+          LIMIT $2
+        `,
+        [guardianId, appointmentLimit],
+      ),
+    ]);
+
+    const guardianSummaryMap = await immunizationScheduleService.getGuardianScheduleSummariesForPatients(
+      childrenResult.rows || [],
+    );
+    const children = mergeGuardianScheduleSummaries(childrenResult.rows || [], guardianSummaryMap);
+    const appointments = appointmentsResult.rows || [];
+    const {
+      allDueVaccines,
+      visibleDueVaccines,
+      readinessFailures,
+      readinessProcessed,
+    } = await collectGuardianDueVaccines(children, dueLimit);
+
+    const warnings = [];
+    if (readinessFailures > 0) {
+      warnings.push(
+        `${readinessFailures} child readiness record${readinessFailures === 1 ? ' was' : 's were'} unavailable during this refresh. Due-vaccine cards may be incomplete.`,
+      );
+    }
+
+    const stats = {
+      childrenCount: children.length,
+      completedVaccinations: Array.from(guardianSummaryMap.values()).reduce(
+        (total, summary) => total + Number(summary?.completed || 0),
+        0,
+      ),
+      pendingVaccinations: Array.from(guardianSummaryMap.values()).reduce(
+        (total, summary) => total + Number(summary?.pendingActionCount || 0),
+        0,
+      ),
+      upcomingVaccines: Array.from(guardianSummaryMap.values()).reduce(
+        (total, summary) => total + Number(summary?.upcoming || 0),
+        0,
+      ),
+      overdueVaccinations: Array.from(guardianSummaryMap.values()).reduce(
+        (total, summary) => total + Number(summary?.overdue || 0),
+        0,
+      ),
+      nextAppointment: appointments[0] || null,
+    };
+
+    res.json({
+      success: true,
+      data: {
+        stats,
+        children,
+        appointments,
+        dueVaccines: visibleDueVaccines,
+        diagnostics: {
+          readinessProcessed,
+          readinessFailures,
+          warnings,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Guardian overview error:', error);
     next(error);
   }
 });
@@ -402,7 +681,7 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
 
     if (statusFilter === 'upcoming') {
       whereClause += `
-        AND a.scheduled_date >= CURRENT_DATE
+        AND (a.scheduled_date AT TIME ZONE 'Asia/Manila')::date >= ${CLINIC_TODAY_SQL}
         AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
       `;
       orderClause = 'ORDER BY a.scheduled_date ASC';
@@ -473,9 +752,14 @@ router.get('/guardian/:guardianId/children', authenticateToken, async (req, res,
       `
         SELECT
           p.*,
-           (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND (status = 'completed' OR admin_date IS NOT NULL) AND is_active = true) as completed_vaccinations,
-           (SELECT COUNT(*) FROM immunization_records WHERE patient_id = p.id AND COALESCE(status, 'pending') IN ('scheduled', 'pending') AND admin_date IS NULL AND is_active = true) as pending_vaccinations,
-           (SELECT COUNT(*) FROM appointments WHERE ${patientColumn} = p.id AND scheduled_date >= CURRENT_DATE AND LOWER(REPLACE(COALESCE(status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled') AND is_active = true) as upcoming_appointments
+           (
+             SELECT COUNT(*)
+             FROM appointments
+             WHERE ${patientColumn} = p.id
+               AND (scheduled_date AT TIME ZONE 'Asia/Manila')::date >= ${CLINIC_TODAY_SQL}
+               AND LOWER(REPLACE(COALESCE(status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
+               AND is_active = true
+           ) as upcoming_appointments
         FROM patients p
         WHERE p.guardian_id = $1
           AND p.is_active = true
@@ -484,7 +768,13 @@ router.get('/guardian/:guardianId/children', authenticateToken, async (req, res,
       [guardianId],
     );
 
-    res.json({ data: infantsResult.rows });
+    const guardianSummaryMap = await immunizationScheduleService.getGuardianScheduleSummariesForPatients(
+      infantsResult.rows || [],
+    );
+
+    res.json({
+      data: mergeGuardianScheduleSummaries(infantsResult.rows || [], guardianSummaryMap),
+    });
   } catch (error) {
     console.error('Guardian children error:', error);
     next(error);
@@ -645,6 +935,7 @@ router.get('/guardian/:guardianId/notifications', authenticateToken, async (req,
         SELECT *
         FROM notifications
         WHERE guardian_id = $1
+          AND target_role IS DISTINCT FROM 'admin'
         ORDER BY created_at DESC
         LIMIT $2
       `,
@@ -1024,3 +1315,7 @@ router.get('/guardian/:guardianId/growth/:infantId', authenticateToken, async (r
 router.use('/analytics', require('./analytics'));
 
 module.exports = router;
+module.exports.__testables = {
+  collectGuardianDueVaccines,
+  withTimeout,
+};

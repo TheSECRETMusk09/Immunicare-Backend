@@ -242,6 +242,8 @@ describe('Reports routes contract', () => {
     expect(mockReportService.getAdminSummary).toHaveBeenCalledWith({
       startDate: '2026-03-01',
       endDate: '2026-03-08',
+      facilityId: null,
+      scopeIds: [],
     });
   });
 

@@ -5,10 +5,89 @@
  */
 
 const pool = require('../db');
+const { CLINIC_TODAY_SQL, getClinicTodayDateKey } = require('../utils/clinicCalendar');
 const schemaCache = {
   columns: new Map(),
   tables: new Map(),
 };
+
+const normalizeScopeIds = (value) => {
+  const rawValues = Array.isArray(value) ? value : [value];
+  return [...new Set(
+    rawValues
+      .map((entry) => Number.parseInt(entry, 10))
+      .filter((entry) => Number.isInteger(entry) && entry > 0),
+  )];
+};
+
+const CORE_VACCINE_KEY_CASE_SQL = `
+  CASE
+    WHEN (
+        UPPER(COALESCE(v.code, '')) = 'BCG'
+        OR (
+          UPPER(COALESCE(v.name, '')) LIKE 'BCG%'
+          AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+        )
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+      THEN 'BCG'
+    WHEN (
+        REGEXP_REPLACE(UPPER(COALESCE(v.code, '')), '[^A-Z0-9]', '', 'g') IN ('HEPB', 'HEPATITISB')
+        OR UPPER(COALESCE(v.name, '')) LIKE '%HEPA%B%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%HEPATITIS%B%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+      THEN 'HEPB'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) LIKE 'PENTA%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%PENTA%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+      THEN 'PENTA'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) LIKE 'OPV%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%ORAL%POLIO%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%OPV%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+      THEN 'OPV'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) LIKE 'IPV%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%INACTIVATED%POLIO%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%IPV%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+      THEN 'IPV'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) LIKE 'PCV%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%PNEUMOCOCCAL%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%PCV%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+      THEN 'PCV'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) IN ('MMR', 'MR')
+        OR UPPER(COALESCE(v.name, '')) LIKE '%MMR%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%MEASLES%RUBELLA%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+      THEN 'MMR'
+    ELSE NULL
+  END
+`;
+
+const CORE_VACCINE_NAME_SQL = `
+  CASE ${CORE_VACCINE_KEY_CASE_SQL}
+    WHEN 'BCG' THEN 'BCG'
+    WHEN 'HEPB' THEN 'Hepatitis B'
+    WHEN 'PENTA' THEN 'Pentavalent'
+    WHEN 'OPV' THEN 'Oral Polio Vaccine'
+    WHEN 'IPV' THEN 'Inactivated Polio Vaccine'
+    WHEN 'PCV' THEN 'Pneumococcal Conjugate Vaccine'
+    WHEN 'MMR' THEN 'MMR'
+    ELSE v.name
+  END
+`;
 
 const resolveFirstExistingColumn = async (
   tableName,
@@ -79,62 +158,310 @@ const resolveFirstExistingTable = async (
 };
 
 class InventoryCalculationService {
+  async getInventoryAggregateRows(clinicScope) {
+    const scopeIds = normalizeScopeIds(clinicScope);
+    if (scopeIds.length === 0) {
+      return [];
+    }
+
+    const inventoryFacilityColumn = await resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['clinic_id', 'facility_id'],
+      'clinic_id',
+    );
+    const scopeParam = scopeIds.length === 1 ? scopeIds[0] : scopeIds;
+    const scopeClause = scopeIds.length === 1
+      ? `vi.${inventoryFacilityColumn} = $1`
+      : `vi.${inventoryFacilityColumn} = ANY($1::int[])`;
+
+    const result = await pool.query(
+      `
+        WITH scoped_inventory AS (
+          SELECT
+            vi.id,
+            vi.vaccine_id,
+            ${CORE_VACCINE_KEY_CASE_SQL} AS vaccine_key,
+            ${CORE_VACCINE_NAME_SQL} AS vaccine_name,
+            COALESCE(vi.beginning_balance, 0)::int AS beginning_balance,
+            COALESCE(vi.received_during_period, 0)::int AS received,
+            COALESCE(vi.transferred_in, 0)::int AS transferred_in,
+            COALESCE(vi.transferred_out, 0)::int AS transferred_out,
+            COALESCE(vi.issuance, 0)::int AS issued,
+            COALESCE(vi.expired_wasted, 0)::int AS wasted_expired,
+            COALESCE(vi.stock_on_hand, 0)::int AS stock_on_hand,
+            COALESCE(vi.low_stock_threshold, 10)::int AS low_stock_threshold,
+            COALESCE(vi.critical_stock_threshold, 5)::int AS critical_stock_threshold,
+            vi.lot_batch_number,
+            vi.expiry_date,
+            ROW_NUMBER() OVER (
+              PARTITION BY ${CORE_VACCINE_KEY_CASE_SQL}
+              ORDER BY
+                COALESCE(vi.period_end, vi.updated_at::date, vi.created_at::date) DESC,
+                vi.updated_at DESC,
+                vi.id DESC
+            ) AS row_rank
+          FROM vaccine_inventory vi
+          JOIN vaccines v ON v.id = vi.vaccine_id
+          WHERE ${scopeClause}
+            AND COALESCE(vi.is_active, true) = true
+        )
+        SELECT
+          MAX(vaccine_id)::int AS vaccine_id,
+          vaccine_name,
+          vaccine_key AS vaccine_code,
+          COALESCE(SUM(beginning_balance), 0)::int AS beginning_balance,
+          COALESCE(SUM(received), 0)::int AS received,
+          COALESCE(SUM(transferred_in), 0)::int AS transferred_in,
+          COALESCE(SUM(transferred_out), 0)::int AS transferred_out,
+          COALESCE(SUM(issued), 0)::int AS issued,
+          COALESCE(SUM(wasted_expired), 0)::int AS wasted_expired,
+          COALESCE(SUM(stock_on_hand), 0)::int AS stock_on_hand,
+          COALESCE(SUM(
+            beginning_balance
+            + received
+            + transferred_in
+            - transferred_out
+            - issued
+            - wasted_expired
+          ), 0)::int AS calculated_total_stock,
+          MAX(low_stock_threshold)::int AS low_stock_threshold,
+          MAX(critical_stock_threshold)::int AS critical_stock_threshold,
+          MAX(CASE WHEN row_rank = 1 THEN id END)::int AS representative_inventory_id,
+          MAX(CASE WHEN row_rank = 1 THEN lot_batch_number END) AS lot_batch_number,
+          MAX(CASE WHEN row_rank = 1 THEN expiry_date END) AS expiry_date
+        FROM scoped_inventory
+        WHERE vaccine_key IS NOT NULL
+        GROUP BY vaccine_key, vaccine_name
+        ORDER BY vaccine_name ASC
+      `,
+      [scopeParam],
+    );
+
+    return result.rows || [];
+  }
+
+  buildAggregateAlertMetadata(row = {}) {
+    const currentStock = Number.parseInt(row.stock_on_hand, 10) || 0;
+    const lowThreshold = Number.parseInt(row.low_stock_threshold, 10) || 10;
+    const criticalThreshold = Number.parseInt(row.critical_stock_threshold, 10) || 5;
+
+    if (currentStock <= 0) {
+      return {
+        alert_type: 'OUT_OF_STOCK',
+        priority: 'URGENT',
+        threshold_value: criticalThreshold,
+        message: `${row.vaccine_name} is out of stock (${currentStock} remaining).`,
+      };
+    }
+
+    if (currentStock <= criticalThreshold) {
+      return {
+        alert_type: 'CRITICAL_STOCK',
+        priority: 'URGENT',
+        threshold_value: criticalThreshold,
+        message: `${row.vaccine_name} is at critical stock (${currentStock} remaining).`,
+      };
+    }
+
+    if (currentStock <= lowThreshold) {
+      return {
+        alert_type: 'LOW_STOCK',
+        priority: 'HIGH',
+        threshold_value: lowThreshold,
+        message: `${row.vaccine_name} is low on stock (${currentStock} remaining).`,
+      };
+    }
+
+    return null;
+  }
+
+  async syncStockAlerts(clinicScope) {
+    const scopeIds = normalizeScopeIds(clinicScope);
+    if (scopeIds.length === 0) {
+      return [];
+    }
+
+    const stockAlertsFacilityColumn = await resolveFirstExistingColumn(
+      'vaccine_stock_alerts',
+      ['clinic_id', 'facility_id'],
+      'clinic_id',
+    );
+    const scopeParam = scopeIds.length === 1 ? scopeIds[0] : scopeIds;
+    const scopeClause = scopeIds.length === 1
+      ? `${stockAlertsFacilityColumn} = $1`
+      : `${stockAlertsFacilityColumn} = ANY($1::int[])`;
+
+    const [aggregateRows, activeAlertsResult] = await Promise.all([
+      this.getInventoryAggregateRows(scopeIds),
+      pool.query(
+        `
+          SELECT *
+          FROM vaccine_stock_alerts
+          WHERE ${scopeClause}
+            AND status <> 'RESOLVED'
+          ORDER BY updated_at DESC, id DESC
+        `,
+        [scopeParam],
+      ),
+    ]);
+
+    const activeAlertsByVaccine = new Map();
+    for (const alert of activeAlertsResult.rows || []) {
+      const vaccineId = Number.parseInt(alert.vaccine_id, 10);
+      if (!Number.isInteger(vaccineId)) {
+        continue;
+      }
+
+      if (!activeAlertsByVaccine.has(vaccineId)) {
+        activeAlertsByVaccine.set(vaccineId, []);
+      }
+
+      activeAlertsByVaccine.get(vaccineId).push(alert);
+    }
+
+    for (const row of aggregateRows) {
+      const alertMetadata = this.buildAggregateAlertMetadata(row);
+      const vaccineId = Number.parseInt(row.vaccine_id, 10);
+      const existingAlerts = activeAlertsByVaccine.get(vaccineId) || [];
+
+      if (!alertMetadata) {
+        for (const alert of existingAlerts) {
+          await pool.query(
+            `
+              UPDATE vaccine_stock_alerts
+              SET status = 'RESOLVED',
+                  resolved_at = CURRENT_TIMESTAMP,
+                  resolution_notes = COALESCE(resolution_notes, 'Auto-resolved by inventory reconciliation'),
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = $1
+            `,
+            [alert.id],
+          );
+        }
+        continue;
+      }
+
+      const primaryAlert = existingAlerts[0] || null;
+      const nextStatus =
+        primaryAlert && String(primaryAlert.status || '').toUpperCase() === 'ACKNOWLEDGED'
+          && primaryAlert.alert_type === alertMetadata.alert_type
+          ? 'ACKNOWLEDGED'
+          : 'ACTIVE';
+
+      if (primaryAlert) {
+        await pool.query(
+          `
+            UPDATE vaccine_stock_alerts
+            SET vaccine_inventory_id = $1,
+                alert_type = $2,
+                current_stock = $3,
+                threshold_value = $4,
+                status = $5,
+                message = $6,
+                priority = $7,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $8
+          `,
+          [
+            row.representative_inventory_id,
+            alertMetadata.alert_type,
+            row.stock_on_hand,
+            alertMetadata.threshold_value,
+            nextStatus,
+            alertMetadata.message,
+            alertMetadata.priority,
+            primaryAlert.id,
+          ],
+        );
+
+        for (const duplicateAlert of existingAlerts.slice(1)) {
+          await pool.query(
+            `
+              UPDATE vaccine_stock_alerts
+              SET status = 'RESOLVED',
+                  resolved_at = CURRENT_TIMESTAMP,
+                  resolution_notes = COALESCE(resolution_notes, 'Merged into current inventory alert'),
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = $1
+            `,
+            [duplicateAlert.id],
+          );
+        }
+        continue;
+      }
+
+      await pool.query(
+        `
+          INSERT INTO vaccine_stock_alerts (
+            vaccine_inventory_id,
+            vaccine_id,
+            ${stockAlertsFacilityColumn},
+            alert_type,
+            current_stock,
+            threshold_value,
+            status,
+            message,
+            priority
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', $7, $8)
+        `,
+        [
+          row.representative_inventory_id,
+          row.vaccine_id,
+          scopeIds[0],
+          alertMetadata.alert_type,
+          row.stock_on_hand,
+          alertMetadata.threshold_value,
+          alertMetadata.message,
+          alertMetadata.priority,
+        ],
+      );
+    }
+
+    return aggregateRows;
+  }
+
   /**
    * Calculate comprehensive inventory totals for a facility
    * @param {number} clinicId - Facility/clinic ID
    * @returns {Object} Complete inventory summary
    */
-  async calculateInventoryTotals(clinicId) {
+  async calculateInventoryTotals(clinicScope) {
     try {
-      const result = await pool.query(
-        `
-        SELECT 
-          -- Unique vaccine count (actual vaccine types, not inventory rows)
-          COUNT(DISTINCT vi.vaccine_id) as total_vaccines,
-          
-          -- Stock component totals
-          COALESCE(SUM(vi.beginning_balance), 0)::int as beginning_balance,
-          COALESCE(SUM(vi.received_during_period), 0)::int as received,
-          COALESCE(SUM(vi.transferred_in), 0)::int as transferred_in,
-          COALESCE(SUM(vi.transferred_out), 0)::int as transferred_out,
-          COALESCE(SUM(vi.issuance), 0)::int as issued,
-          COALESCE(SUM(vi.expired_wasted), 0)::int as wasted_expired,
-          COALESCE(SUM(vi.stock_on_hand), 0)::int as stock_on_hand,
-          
-          -- Total stock calculation (should match stock_on_hand)
-          COALESCE(SUM(
-            vi.beginning_balance + 
-            vi.received_during_period + 
-            vi.transferred_in - 
-            vi.transferred_out - 
-            vi.issuance - 
-            vi.expired_wasted
-          ), 0)::int as calculated_total_stock,
-          
-          -- Alert counts based on thresholds
-          COUNT(*) FILTER (
-            WHERE vi.stock_on_hand <= COALESCE(vi.critical_stock_threshold, 5)
-            AND vi.stock_on_hand > 0
-          )::int as critical_count,
-          
-          COUNT(*) FILTER (
-            WHERE vi.stock_on_hand <= COALESCE(vi.low_stock_threshold, 10)
-            AND vi.stock_on_hand > COALESCE(vi.critical_stock_threshold, 5)
-          )::int as low_stock_count,
-          
-          COUNT(*) FILTER (WHERE vi.stock_on_hand = 0)::int as out_of_stock_count,
-          
-          -- Total inventory records
-          COUNT(*)::int as total_inventory_records
-          
-        FROM vaccine_inventory vi
-        WHERE vi.clinic_id = $1 
-          AND COALESCE(vi.is_active, true) = true
-        `,
-        [clinicId]
-      );
+      const aggregateRows = await this.getInventoryAggregateRows(clinicScope);
+      if (aggregateRows.length === 0) {
+        return this.getEmptyTotals();
+      }
 
-      return result.rows[0] || this.getEmptyTotals();
+      return aggregateRows.reduce(
+        (summary, row) => {
+          const stockOnHand = Number.parseInt(row.stock_on_hand, 10) || 0;
+          const criticalThreshold = Number.parseInt(row.critical_stock_threshold, 10) || 5;
+          const lowThreshold = Number.parseInt(row.low_stock_threshold, 10) || 10;
+
+          return {
+            total_vaccines: summary.total_vaccines + 1,
+            beginning_balance: summary.beginning_balance + (Number.parseInt(row.beginning_balance, 10) || 0),
+            received: summary.received + (Number.parseInt(row.received, 10) || 0),
+            transferred_in: summary.transferred_in + (Number.parseInt(row.transferred_in, 10) || 0),
+            transferred_out: summary.transferred_out + (Number.parseInt(row.transferred_out, 10) || 0),
+            issued: summary.issued + (Number.parseInt(row.issued, 10) || 0),
+            wasted_expired: summary.wasted_expired + (Number.parseInt(row.wasted_expired, 10) || 0),
+            stock_on_hand: summary.stock_on_hand + stockOnHand,
+            calculated_total_stock:
+              summary.calculated_total_stock + (Number.parseInt(row.calculated_total_stock, 10) || 0),
+            critical_count:
+              summary.critical_count + (stockOnHand > 0 && stockOnHand <= criticalThreshold ? 1 : 0),
+            low_stock_count:
+              summary.low_stock_count + (
+                stockOnHand > criticalThreshold && stockOnHand > 0 && stockOnHand <= lowThreshold ? 1 : 0
+              ),
+            out_of_stock_count: summary.out_of_stock_count + (stockOnHand <= 0 ? 1 : 0),
+            total_inventory_records: summary.total_inventory_records + 1,
+          };
+        },
+        this.getEmptyTotals(),
+      );
     } catch (error) {
       console.error('Error calculating inventory totals:', error);
       throw error;
@@ -146,8 +473,79 @@ class InventoryCalculationService {
    * @param {number} clinicId - Facility/clinic ID
    * @returns {Object} Stock movement summary
    */
-  async calculateStockMovements(clinicId) {
+  async calculateStockMovements(clinicScope) {
     try {
+      const options =
+        clinicScope &&
+        typeof clinicScope === 'object' &&
+        !Array.isArray(clinicScope)
+          ? clinicScope
+          : { clinicScope };
+      const scopeIds = normalizeScopeIds(options.clinicScope);
+      if (scopeIds.length === 0) {
+        return this.getEmptyMovements();
+      }
+
+      const [
+        transactionFacilityColumn,
+        transactionDateColumn,
+      ] = await Promise.all([
+        resolveFirstExistingColumn(
+          'vaccine_inventory_transactions',
+          ['clinic_id', 'facility_id'],
+          'clinic_id',
+        ),
+        resolveFirstExistingColumn(
+          'vaccine_inventory_transactions',
+          ['transaction_date'],
+          null,
+        ),
+      ]);
+      const scopeParam = scopeIds.length === 1 ? scopeIds[0] : scopeIds;
+      const scopeClause = scopeIds.length === 1
+        ? `vit.${transactionFacilityColumn} = $1`
+        : `vit.${transactionFacilityColumn} = ANY($1::int[])`;
+      const movementDateExpr = transactionDateColumn
+        ? `COALESCE(vit.${transactionDateColumn}::date, vit.created_at::date)`
+        : 'vit.created_at::date';
+      const whereClauses = [scopeClause];
+      const params = [scopeParam];
+      let paramIndex = 2;
+
+      if (Number.isInteger(Number.parseInt(options.vaccineId, 10))) {
+        whereClauses.push(`vit.vaccine_id = $${paramIndex}`);
+        params.push(Number.parseInt(options.vaccineId, 10));
+        paramIndex += 1;
+      }
+
+      const normalizedVaccineName = String(options.vaccineName || '').trim().toLowerCase();
+      if (normalizedVaccineName) {
+        whereClauses.push(`LOWER(TRIM(COALESCE(v.name, ''))) = $${paramIndex}`);
+        params.push(normalizedVaccineName);
+        paramIndex += 1;
+      }
+
+      const normalizedTransactionType = String(options.transactionType || '')
+        .trim()
+        .toUpperCase();
+      if (normalizedTransactionType) {
+        whereClauses.push(`UPPER(COALESCE(vit.transaction_type::text, '')) = $${paramIndex}`);
+        params.push(normalizedTransactionType);
+        paramIndex += 1;
+      }
+
+      if (options.startDate) {
+        whereClauses.push(`${movementDateExpr} >= $${paramIndex}::date`);
+        params.push(options.startDate);
+        paramIndex += 1;
+      }
+
+      if (options.endDate) {
+        whereClauses.push(`${movementDateExpr} <= $${paramIndex}::date`);
+        params.push(options.endDate);
+        paramIndex += 1;
+      }
+
       const result = await pool.query(
         `
         SELECT 
@@ -155,32 +553,41 @@ class InventoryCalculationService {
           
           -- Stock In (additions)
           COALESCE(SUM(
-            CASE WHEN transaction_type IN ('RECEIVE', 'TRANSFER_IN', 'ADJUST') 
-                 AND quantity > 0
-            THEN quantity ELSE 0 END
+            CASE
+              WHEN UPPER(COALESCE(vit.transaction_type::text, '')) IN ('RECEIVE', 'RECEIPT', 'TRANSFER_IN')
+              THEN ABS(COALESCE(vit.quantity, 0))
+              ELSE 0
+            END
           ), 0)::int as stock_in,
           
           -- Stock Out (deductions)
           COALESCE(SUM(
-            CASE WHEN transaction_type IN ('ISSUE', 'TRANSFER_OUT', 'WASTE', 'EXPIRE') 
-            THEN quantity ELSE 0 END
+            CASE
+              WHEN UPPER(COALESCE(vit.transaction_type::text, '')) IN ('ISSUE', 'TRANSFER_OUT')
+              THEN ABS(COALESCE(vit.quantity, 0))
+              ELSE 0
+            END
           ), 0)::int as stock_out,
           
           -- Wasted/Expired specifically
           COALESCE(SUM(
-            CASE WHEN transaction_type IN ('WASTE', 'EXPIRE') 
-            THEN quantity ELSE 0 END
+            CASE
+              WHEN UPPER(COALESCE(vit.transaction_type::text, '')) IN ('WASTE', 'WASTAGE', 'EXPIRE')
+              THEN ABS(COALESCE(vit.quantity, 0))
+              ELSE 0
+            END
           ), 0)::int as wasted_expired,
           
           -- Count of waste/expire transactions
           COUNT(*) FILTER (
-            WHERE transaction_type IN ('WASTE', 'EXPIRE')
+            WHERE UPPER(COALESCE(vit.transaction_type::text, '')) IN ('WASTE', 'WASTAGE', 'EXPIRE')
           )::int as wasted_expired_count
           
-        FROM vaccine_inventory_transactions
-        WHERE clinic_id = $1
+        FROM vaccine_inventory_transactions vit
+        JOIN vaccines v ON v.id = vit.vaccine_id
+        WHERE ${whereClauses.join(' AND ')}
         `,
-        [clinicId]
+        params
       );
 
       return result.rows[0] || this.getEmptyMovements();
@@ -286,7 +693,7 @@ class InventoryCalculationService {
             AND vb.${batchFacilityColumn} = $2
             AND COALESCE(vb.qty_current, 0) > 0
             AND COALESCE(vb.is_active, true) = true
-            AND (vb.expiry_date IS NULL OR vb.expiry_date >= CURRENT_DATE)
+            AND (vb.expiry_date IS NULL OR vb.expiry_date >= ${CLINIC_TODAY_SQL})
           ORDER BY vb.expiry_date ASC NULLS LAST, vb.qty_current DESC, vb.id DESC
           `,
           [vaccineId, clinicId]
@@ -357,47 +764,9 @@ class InventoryCalculationService {
    */
   async getStockAlerts(clinicId) {
     try {
-      const result = await pool.query(
-        `
-        SELECT 
-          vi.id,
-          v.name as vaccine_name,
-          v.code as vaccine_code,
-          vi.stock_on_hand,
-          vi.low_stock_threshold,
-          vi.critical_stock_threshold,
-          vi.expiry_date,
-          vi.lot_batch_number,
-          CASE 
-            WHEN vi.stock_on_hand = 0 THEN 'OUT_OF_STOCK'
-            WHEN vi.stock_on_hand <= COALESCE(vi.critical_stock_threshold, 5) THEN 'CRITICAL'
-            WHEN vi.stock_on_hand <= COALESCE(vi.low_stock_threshold, 10) THEN 'LOW'
-            ELSE 'NORMAL'
-          END as alert_level,
-          CASE 
-            WHEN vi.expiry_date IS NOT NULL 
-            THEN EXTRACT(DAY FROM (vi.expiry_date::timestamp - CURRENT_DATE::timestamp))::int
-            ELSE NULL
-          END as days_until_expiry
-        FROM vaccine_inventory vi
-        JOIN vaccines v ON v.id = vi.vaccine_id
-        WHERE vi.clinic_id = $1
-          AND COALESCE(vi.is_active, true) = true
-          AND (
-            vi.stock_on_hand <= COALESCE(vi.low_stock_threshold, 10)
-            OR (vi.expiry_date IS NOT NULL AND vi.expiry_date <= CURRENT_DATE + INTERVAL '30 days')
-          )
-        ORDER BY 
-          CASE 
-            WHEN vi.stock_on_hand = 0 THEN 0
-            WHEN vi.stock_on_hand <= COALESCE(vi.critical_stock_threshold, 5) THEN 1
-            WHEN vi.stock_on_hand <= COALESCE(vi.low_stock_threshold, 10) THEN 2
-            ELSE 3
-          END,
-          vi.stock_on_hand ASC
-        `,
-        [clinicId]
-      );
+      const aggregateRows = await this.getInventoryAggregateRows(clinicId);
+      const clinicToday = getClinicTodayDateKey();
+      const clinicTodayDate = clinicToday ? new Date(`${clinicToday}T00:00:00.000Z`) : new Date();
 
       const alerts = {
         critical: [],
@@ -406,26 +775,35 @@ class InventoryCalculationService {
         expiring_soon: [],
       };
 
-      result.rows.forEach(row => {
+      aggregateRows.forEach((row) => {
+        const currentStock = Number.parseInt(row.stock_on_hand, 10) || 0;
+        const lowThreshold = Number.parseInt(row.low_stock_threshold, 10) || 10;
+        const criticalThreshold = Number.parseInt(row.critical_stock_threshold, 10) || 5;
+        const daysUntilExpiry = row.expiry_date
+          ? Math.floor(
+            (new Date(`${row.expiry_date}T00:00:00.000Z`).getTime() - clinicTodayDate.getTime()) /
+              (24 * 60 * 60 * 1000),
+          )
+          : null;
         const alert = {
-          id: row.id,
+          id: row.representative_inventory_id,
           vaccine_name: row.vaccine_name,
           vaccine_code: row.vaccine_code,
-          stock: row.stock_on_hand,
+          stock: currentStock,
           lot_number: row.lot_batch_number,
           expiry_date: row.expiry_date,
-          days_until_expiry: row.days_until_expiry,
+          days_until_expiry: daysUntilExpiry,
         };
 
-        if (row.alert_level === 'OUT_OF_STOCK') {
+        if (currentStock <= 0) {
           alerts.out_of_stock.push(alert);
-        } else if (row.alert_level === 'CRITICAL') {
+        } else if (currentStock <= criticalThreshold) {
           alerts.critical.push(alert);
-        } else if (row.alert_level === 'LOW') {
+        } else if (currentStock <= lowThreshold) {
           alerts.low.push(alert);
         }
 
-        if (row.days_until_expiry !== null && row.days_until_expiry <= 30 && row.days_until_expiry >= 0) {
+        if (daysUntilExpiry !== null && daysUntilExpiry <= 30 && daysUntilExpiry >= 0) {
           alerts.expiring_soon.push(alert);
         }
       });

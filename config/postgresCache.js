@@ -59,14 +59,14 @@ const parseBoolean = (value, fallback = false) => {
 const dbSslEnabled = parseBoolean(process.env.DB_SSL, false);
 const sslConfig = dbSslEnabled
   ? {
-      rejectUnauthorized: parseBoolean(
-        process.env.DB_SSL_REJECT_UNAUTHORIZED,
-        runtimeEnv === 'production' || runtimeEnv === 'hostinger',
-      ),
-      ca: process.env.DB_SSL_CA ? Buffer.from(process.env.DB_SSL_CA, 'base64').toString() : undefined,
-      cert: process.env.DB_SSL_CERT ? Buffer.from(process.env.DB_SSL_CERT, 'base64').toString() : undefined,
-      key: process.env.DB_SSL_KEY ? Buffer.from(process.env.DB_SSL_KEY, 'base64').toString() : undefined,
-    }
+    rejectUnauthorized: parseBoolean(
+      process.env.DB_SSL_REJECT_UNAUTHORIZED,
+      runtimeEnv === 'production' || runtimeEnv === 'hostinger',
+    ),
+    ca: process.env.DB_SSL_CA ? Buffer.from(process.env.DB_SSL_CA, 'base64').toString() : undefined,
+    cert: process.env.DB_SSL_CERT ? Buffer.from(process.env.DB_SSL_CERT, 'base64').toString() : undefined,
+    key: process.env.DB_SSL_KEY ? Buffer.from(process.env.DB_SSL_KEY, 'base64').toString() : undefined,
+  }
   : false;
 
 const host = process.env.DB_HOST || parsedConnectionHost || (runtimeEnv === 'production' ? '' : 'localhost');

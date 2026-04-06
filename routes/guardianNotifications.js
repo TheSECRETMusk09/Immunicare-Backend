@@ -339,37 +339,18 @@ router.delete('/:id', authenticateGuardian, async (req, res) => {
 router.get('/stats/summary', authenticateGuardian, async (req, res) => {
   try {
     const guardianId = req.guardian.id;
-    const pool = require('../db');
-
-    // Get various stats
-    const statsResult = await pool.query(
-      `SELECT
-        COUNT(*) as total,
-        COUNT(*) FILTER (WHERE is_read = FALSE OR is_read IS NULL) as unread,
-        COUNT(*) FILTER (WHERE priority = 'urgent' AND (is_read = FALSE OR is_read IS NULL)) as urgent_unread,
-        COUNT(*) FILTER (WHERE priority = 'high' AND (is_read = FALSE OR is_read IS NULL)) as high_unread,
-        COUNT(*) FILTER (WHERE notification_type = 'appointment_reminder' AND (is_read = FALSE OR is_read IS NULL)) as appointment_reminders,
-        COUNT(*) FILTER (WHERE notification_type = 'vaccination_reminder' AND (is_read = FALSE OR is_read IS NULL)) as vaccination_reminders,
-        COUNT(*) FILTER (WHERE notification_type = 'health_alert' AND (is_read = FALSE OR is_read IS NULL)) as health_alerts
-       FROM notifications
-       WHERE guardian_id = $1
-       AND target_role != 'admin'
-       AND notification_type NOT IN ('inventory_alert', 'supplier_update', 'analytics_alert', 'staff_action', 'system_alert', 'low_stock_alert', 'critical_stock_alert', 'expiry_alert')`,
-      [guardianId],
-    );
-
-    const stats = statsResult.rows[0];
+    const stats = await guardianNotificationService.getNotificationStats(guardianId);
 
     res.json({
       success: true,
       data: {
-        total: parseInt(stats.total, 10),
-        unread: parseInt(stats.unread, 10),
-        urgentUnread: parseInt(stats.urgent_unread, 10),
-        highUnread: parseInt(stats.high_unread, 10),
-        appointmentReminders: parseInt(stats.appointment_reminders, 10),
-        vaccinationReminders: parseInt(stats.vaccination_reminders, 10),
-        healthAlerts: parseInt(stats.health_alerts, 10),
+        total: parseInt(stats.total, 10) || 0,
+        unread: parseInt(stats.unread, 10) || 0,
+        urgentUnread: parseInt(stats.urgent_unread, 10) || 0,
+        highUnread: parseInt(stats.high_unread, 10) || 0,
+        appointmentReminders: parseInt(stats.appointment_reminders, 10) || 0,
+        vaccinationReminders: parseInt(stats.vaccination_reminders, 10) || 0,
+        healthAlerts: parseInt(stats.health_alerts, 10) || 0,
       },
     });
   } catch (error) {

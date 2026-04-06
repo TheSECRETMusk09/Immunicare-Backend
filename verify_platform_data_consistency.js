@@ -231,45 +231,77 @@ async function verifyPlatformDataConsistency() {
     `, [`${MARKER}%`]);
 
     logCheck('Patients added', patientCount === TARGET_INFANTS, `${patientCount}/${TARGET_INFANTS}`);
-    if (patientCount !== TARGET_INFANTS) failures += 1;
+    if (patientCount !== TARGET_INFANTS) {
+      failures += 1;
+    }
     logCheck('Guardians added', guardianCount === TARGET_INFANTS, `${guardianCount}/${TARGET_INFANTS}`);
-    if (guardianCount !== TARGET_INFANTS) failures += 1;
+    if (guardianCount !== TARGET_INFANTS) {
+      failures += 1;
+    }
     logCheck('Guardian users added', guardianUserCount === TARGET_INFANTS, `${guardianUserCount}/${TARGET_INFANTS}`);
-    if (guardianUserCount !== TARGET_INFANTS) failures += 1;
+    if (guardianUserCount !== TARGET_INFANTS) {
+      failures += 1;
+    }
 
     Object.keys(TRANSACTION_TARGETS).forEach((key) => {
       const passed = txCounts[key] === TRANSACTION_TARGETS[key];
       logCheck(`Transaction count: ${key}`, passed, `${txCounts[key]}/${TRANSACTION_TARGETS[key]}`);
-      if (!passed) failures += 1;
+      if (!passed) {
+        failures += 1;
+      }
     });
 
     logCheck('Total generated transactions', totalTransactions === TARGET_TRANSACTIONS, `${totalTransactions}/${TARGET_TRANSACTIONS}`);
-    if (totalTransactions !== TARGET_TRANSACTIONS) failures += 1;
+    if (totalTransactions !== TARGET_TRANSACTIONS) {
+      failures += 1;
+    }
 
     logCheck('Patient -> guardian linkage', linkageChecks[0].rows[0].count === 0, `${linkageChecks[0].rows[0].count} orphan patients`);
-    if (linkageChecks[0].rows[0].count !== 0) failures += 1;
+    if (linkageChecks[0].rows[0].count !== 0) {
+      failures += 1;
+    }
     logCheck('Guardian user -> guardian linkage', linkageChecks[1].rows[0].count === 0, `${linkageChecks[1].rows[0].count} orphan guardian users`);
-    if (linkageChecks[1].rows[0].count !== 0) failures += 1;
+    if (linkageChecks[1].rows[0].count !== 0) {
+      failures += 1;
+    }
     logCheck('Immunization -> patient linkage', linkageChecks[2].rows[0].count === 0, `${linkageChecks[2].rows[0].count} orphan immunization rows`);
-    if (linkageChecks[2].rows[0].count !== 0) failures += 1;
+    if (linkageChecks[2].rows[0].count !== 0) {
+      failures += 1;
+    }
     logCheck('Appointment -> guardian linkage', linkageChecks[3].rows[0].count === 0, `${linkageChecks[3].rows[0].count} orphan appointments`);
-    if (linkageChecks[3].rows[0].count !== 0) failures += 1;
+    if (linkageChecks[3].rows[0].count !== 0) {
+      failures += 1;
+    }
     logCheck('Duplicate control numbers', linkageChecks[4].rows.length === 0, `${linkageChecks[4].rows.length} duplicates`);
-    if (linkageChecks[4].rows.length !== 0) failures += 1;
+    if (linkageChecks[4].rows.length !== 0) {
+      failures += 1;
+    }
 
     logCheck('Registration daily gaps', gapChecks[0].rows[0].count === 0, `${gapChecks[0].rows[0].count} missing days`);
-    if (gapChecks[0].rows[0].count !== 0) failures += 1;
+    if (gapChecks[0].rows[0].count !== 0) {
+      failures += 1;
+    }
     logCheck('Vaccination daily gaps', gapChecks[1].rows[0].count === 0, `${gapChecks[1].rows[0].count} missing days`);
-    if (gapChecks[1].rows[0].count !== 0) failures += 1;
+    if (gapChecks[1].rows[0].count !== 0) {
+      failures += 1;
+    }
     logCheck('Appointment daily gaps', gapChecks[2].rows[0].count === 0, `${gapChecks[2].rows[0].count} missing days`);
-    if (gapChecks[2].rows[0].count !== 0) failures += 1;
+    if (gapChecks[2].rows[0].count !== 0) {
+      failures += 1;
+    }
     logCheck('Notification daily gaps', gapChecks[3].rows[0].count === 0, `${gapChecks[3].rows[0].count} missing days`);
-    if (gapChecks[3].rows[0].count !== 0) failures += 1;
+    if (gapChecks[3].rows[0].count !== 0) {
+      failures += 1;
+    }
 
     logCheck('Inventory reconciliation', inventoryCheck.rows[0].count === 0, `${inventoryCheck.rows[0].count} mismatched rows`);
-    if (inventoryCheck.rows[0].count !== 0) failures += 1;
+    if (inventoryCheck.rows[0].count !== 0) {
+      failures += 1;
+    }
     logCheck('Duplicate vaccine dose records', scheduleMismatch.rows[0].count === 0, `${scheduleMismatch.rows[0].count} duplicate patient/vaccine/dose groups`);
-    if (scheduleMismatch.rows[0].count !== 0) failures += 1;
+    if (scheduleMismatch.rows[0].count !== 0) {
+      failures += 1;
+    }
 
     console.log('='.repeat(72));
     if (failures > 0) {

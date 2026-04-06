@@ -7,12 +7,25 @@ const {
   resolveOrCreateInfantPatient,
 } = require('./infantControlNumberService');
 const { getHolidayInfo: getHolidayInfoFromConfig } = require('../config/holidays');
+const {
+  CLINIC_TODAY_SQL,
+  CLINIC_TIMEZONE,
+  MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+  endOfClinicMonthKey,
+  getClinicTodayDateKey,
+  isVaccinationAppointmentType,
+  isWeekendDateKey,
+  parseClinicDate,
+  startOfClinicMonthKey,
+  toClinicDateKey,
+} = require('../utils/clinicCalendar');
 
 const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   appointmentsPatient: 'infant_id',
   appointmentsScope: 'clinic_id',
   patientsScope: 'clinic_id',
   vaccineBatchesScope: 'clinic_id',
+  appointmentsVaccine: null,
 });
 
 const notificationService = new NotificationService();
@@ -36,7 +49,7 @@ const resolveSchemaColumnMappings = async () => {
       `,
       [
         ['appointments', 'patients', 'vaccine_batches'],
-        ['patient_id', 'infant_id', 'facility_id', 'clinic_id'],
+        ['patient_id', 'infant_id', 'facility_id', 'clinic_id', 'vaccine_id'],
       ],
     );
 
@@ -54,6 +67,10 @@ const resolveSchemaColumnMappings = async () => {
       mappings.appointmentsScope = 'facility_id';
     } else if (available.has('appointments.clinic_id')) {
       mappings.appointmentsScope = 'clinic_id';
+    }
+
+    if (available.has('appointments.vaccine_id')) {
+      mappings.appointmentsVaccine = 'vaccine_id';
     }
 
     if (available.has('patients.facility_id')) {
@@ -83,29 +100,11 @@ const getSchemaColumnMappings = async () => {
 };
 
 const toDateKey = (value) => {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return toClinicDateKey(value);
 };
 
 const parseDate = (value) => {
-  if (!value) {
-    return null;
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  date.setHours(0, 0, 0, 0);
-  return date;
+  return parseClinicDate(value);
 };
 
 const getNotificationColumns = async () => {
@@ -188,33 +187,27 @@ const buildDailyTimeSlots = () => {
 };
 
 const isWeekend = (value) => {
-  const date = value instanceof Date ? value : parseDate(value);
-  if (!date) {
-    return false;
-  }
-
-  const day = date.getDay();
-  return day === 0 || day === 6;
+  return isWeekendDateKey(value);
 };
 
 const getHolidayInfo = (value) => {
-  const date = value instanceof Date ? value : parseDate(value);
-  if (!date) {
+  const dateKey = toDateKey(value);
+  if (!dateKey) {
     return null;
   }
 
-  return getHolidayInfoFromConfig(date);
+  return getHolidayInfoFromConfig(new Date(`${dateKey}T12:00:00`));
 };
 
 const resolveDateRange = ({ month, startDate, endDate }) => {
   if (month && /^\d{4}-\d{2}$/.test(month)) {
-    const firstDay = parseDate(`${month}-01`);
-    if (!firstDay) {
+    const firstDayKey = startOfClinicMonthKey(`${month}-01`);
+    const lastDayKey = endOfClinicMonthKey(`${month}-01`);
+    const firstDay = parseDate(firstDayKey);
+    const lastDay = parseDate(lastDayKey);
+    if (!firstDay || !lastDay) {
       return null;
     }
-
-    const lastDay = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0);
-    lastDay.setHours(0, 0, 0, 0);
     return { start: firstDay, end: lastDay };
   }
 
@@ -225,13 +218,30 @@ const resolveDateRange = ({ month, startDate, endDate }) => {
     return { start, end };
   }
 
-  const now = new Date();
-  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  firstDay.setHours(0, 0, 0, 0);
-  lastDay.setHours(0, 0, 0, 0);
+  const todayKey = getClinicTodayDateKey();
+  const firstDay = parseDate(startOfClinicMonthKey(todayKey));
+  const lastDay = parseDate(endOfClinicMonthKey(todayKey));
 
   return { start: firstDay, end: lastDay };
+};
+
+const toMonthKey = (value) => {
+  const dateKey = toDateKey(value);
+  return dateKey ? dateKey.slice(0, 7) : null;
+};
+
+const buildVaccinationAppointmentPredicate = (mappings, alias = 'a') => {
+  const textPredicates = [
+    `LOWER(COALESCE(${alias}.type::text, '')) LIKE '%vacc%'`,
+    `LOWER(COALESCE(${alias}.type::text, '')) LIKE '%immun%'`,
+    `LOWER(COALESCE(${alias}.type::text, '')) LIKE '%follow%'`,
+  ];
+
+  if (mappings.appointmentsVaccine) {
+    textPredicates.unshift(`${alias}.${mappings.appointmentsVaccine} IS NOT NULL`);
+  }
+
+  return `(${textPredicates.join(' OR ')})`;
 };
 
 const getVaccineStockSummary = async (clinicId = null) => {
@@ -250,9 +260,9 @@ const getVaccineStockSummary = async (clinicId = null) => {
           COALESCE(SUM(vb.qty_current), 0)::int AS available_stock
         FROM vaccines v
         LEFT JOIN vaccine_batches vb
-          ON vb.vaccine_id = v.id
+         ON vb.vaccine_id = v.id
          AND vb.status = 'active'
-         AND (vb.expiry_date IS NULL OR vb.expiry_date >= CURRENT_DATE)
+         AND (vb.expiry_date IS NULL OR vb.expiry_date >= ${CLINIC_TODAY_SQL})
          AND vb.${vaccineBatchesScope} = $1
         WHERE v.is_active = true
         GROUP BY v.id, v.name
@@ -267,9 +277,9 @@ const getVaccineStockSummary = async (clinicId = null) => {
           COALESCE(SUM(vb.qty_current), 0)::int AS available_stock
         FROM vaccines v
         LEFT JOIN vaccine_batches vb
-          ON vb.vaccine_id = v.id
+         ON vb.vaccine_id = v.id
          AND vb.status = 'active'
-         AND (vb.expiry_date IS NULL OR vb.expiry_date >= CURRENT_DATE)
+         AND (vb.expiry_date IS NULL OR vb.expiry_date >= ${CLINIC_TODAY_SQL})
         WHERE v.is_active = true
         GROUP BY v.id, v.name
         ORDER BY v.name ASC
@@ -353,19 +363,29 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
     }
 
     // Check how many appointments are already scheduled for this vaccine at this date/time
-    const { appointmentsPatient, appointmentsScope } = await getSchemaColumnMappings();
+    const {
+      appointmentsPatient,
+      appointmentsScope,
+      appointmentsVaccine,
+      patientsScope,
+    } = await getSchemaColumnMappings();
+    const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
+    const appointmentTimeExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::time`;
+    const appointmentVaccineFilter = appointmentsVaccine
+      ? `AND a.${appointmentsVaccine} = $3`
+      : `AND ${buildVaccinationAppointmentPredicate({ appointmentsVaccine: null }, 'a')}`;
 
     const appointmentCountResult = await pool.query(
       `
         SELECT COUNT(*) as count
         FROM appointments a
         LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
-        WHERE DATE(a.scheduled_date) = $1
-          AND TIME(a.scheduled_date) = $2
-          AND a.vaccine_id = $3
+        WHERE ${appointmentDateExpr} = $1::date
+          AND ${appointmentTimeExpr} = $2::time
+          ${appointmentVaccineFilter}
           AND a.is_active = true
           AND a.status NOT IN ('cancelled', 'completed')
-          ${clinicId ? `AND COALESCE(p.${appointmentsScope}, a.${appointmentsScope}) = $4` : ''}
+          ${clinicId ? `AND COALESCE(p.${patientsScope}, a.${appointmentsScope}) = $4` : ''}
       `,
       clinicId
         ? [date, time, vaccineId, clinicId]
@@ -383,7 +403,7 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
         : `No stock available for ${vaccineStock.vaccine_name} at ${date} ${time}. ${appointmentCount} appointment(s) already scheduled.`,
       stock: totalStock,
       booked: appointmentCount,
-      available: availableSlots,
+      availableSlots,
     };
   } catch (error) {
     console.error('Error in checkVaccineStockForDateTime:', error);
@@ -395,7 +415,61 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
   }
 };
 
-const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clinicId = null, time = null }) => {
+const getDailyVaccinationAppointmentCount = async ({
+  scheduledDate,
+  clinicId = null,
+  excludeAppointmentId = null,
+} = {}) => {
+  const dateKey = toDateKey(scheduledDate);
+  if (!dateKey) {
+    return 0;
+  }
+
+  const {
+    appointmentsPatient,
+    appointmentsScope,
+    patientsScope,
+    appointmentsVaccine,
+  } = await getSchemaColumnMappings();
+
+  const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
+  const vaccinationPredicate = buildVaccinationAppointmentPredicate(
+    { appointmentsVaccine },
+    'a',
+  );
+  const params = [dateKey];
+  let query = `
+    SELECT COUNT(*)::int AS count
+    FROM appointments a
+    LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
+    WHERE ${appointmentDateExpr} = $1::date
+      AND COALESCE(a.is_active, true) = true
+      AND ${vaccinationPredicate}
+      AND LOWER(COALESCE(a.status::text, '')) NOT IN ('cancelled')
+  `;
+
+  if (excludeAppointmentId) {
+    query += ` AND a.id <> $${params.length + 1}`;
+    params.push(excludeAppointmentId);
+  }
+
+  if (clinicId) {
+    query += ` AND COALESCE(p.${patientsScope}, a.${appointmentsScope}) = $${params.length + 1}`;
+    params.push(clinicId);
+  }
+
+  const result = await pool.query(query, params);
+  return Number.parseInt(result.rows[0]?.count, 10) || 0;
+};
+
+const checkBookingAvailability = async ({
+  scheduledDate,
+  vaccineId = null,
+  clinicId = null,
+  time = null,
+  appointmentType = null,
+  excludeAppointmentId = null,
+}) => {
   try {
     const dateOnly = parseDate(scheduledDate);
     if (!dateOnly) {
@@ -406,8 +480,8 @@ const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clini
       };
     }
 
-    const todayManila = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(new Date());
-    const scheduledManila = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(dateOnly);
+    const todayManila = getClinicTodayDateKey();
+    const scheduledManila = toDateKey(dateOnly);
 
     if (scheduledManila < todayManila) {
       return {
@@ -457,10 +531,34 @@ const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clini
       // Continue with availability check if blocked date check fails
     }
 
+    if (
+      isVaccinationAppointmentType(appointmentType, { treatMissingTypeAsVaccination: Boolean(vaccineId) })
+      || Number.isInteger(Number.parseInt(vaccineId, 10))
+    ) {
+      const vaccinationCount = await getDailyVaccinationAppointmentCount({
+        scheduledDate: scheduledManila,
+        clinicId,
+        excludeAppointmentId,
+      });
+
+      if (vaccinationCount >= MAX_VACCINATION_APPOINTMENTS_PER_DAY) {
+        return {
+          available: false,
+          code: 'DAILY_CAPACITY_REACHED',
+          message: `Daily vaccination capacity is limited to ${MAX_VACCINATION_APPOINTMENTS_PER_DAY} appointments on active weekdays.`,
+          capacity: {
+            current: vaccinationCount,
+            maximum: MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+            remaining: 0,
+          },
+        };
+      }
+    }
+
     // If time is provided, use stock-aware checking for specific date/time
     if (time && vaccineId) {
       const stockCheck = await checkVaccineStockForDateTime({
-        date: scheduledDate,
+        date: scheduledManila,
         time,
         vaccineId,
         clinicId,
@@ -472,7 +570,7 @@ const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clini
         message: stockCheck.message,
         stock: stockCheck.stock,
         booked: stockCheck.booked,
-        availableSlots: stockCheck.available,
+        availableSlots: stockCheck.availableSlots,
       };
     }
 
@@ -512,15 +610,16 @@ const checkBookingAvailability = async ({ scheduledDate, vaccineId = null, clini
 const getDailyAppointmentCounts = async ({ startDate, endDate, guardianId = null, clinicId = null }) => {
   try {
     const { appointmentsPatient, appointmentsScope, patientsScope } = await getSchemaColumnMappings();
+    const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
 
     const params = [toDateKey(startDate), toDateKey(endDate)];
     let query = `
       SELECT
-        DATE(a.scheduled_date) AS schedule_date,
+        ${appointmentDateExpr} AS schedule_date,
         COUNT(*)::int AS total_appointments
       FROM appointments a
       LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
-      WHERE DATE(a.scheduled_date) BETWEEN $1::date AND $2::date
+      WHERE ${appointmentDateExpr} BETWEEN $1::date AND $2::date
         AND a.is_active = true
         AND a.status <> 'cancelled'
     `;
@@ -535,7 +634,7 @@ const getDailyAppointmentCounts = async ({ startDate, endDate, guardianId = null
       params.push(clinicId);
     }
 
-    query += ' GROUP BY DATE(a.scheduled_date)';
+    query += ` GROUP BY ${appointmentDateExpr}`;
 
     const result = await pool.query(query, params);
     const counts = {};
@@ -665,6 +764,7 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
 
     const dateKey = toDateKey(parsedDate);
     const params = [dateKey];
+    const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
     let query = `
       SELECT
         a.*,
@@ -676,7 +776,7 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
       FROM appointments a
       LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
       LEFT JOIN guardians g ON g.id = p.guardian_id
-      WHERE DATE(a.scheduled_date) = $1::date
+      WHERE ${appointmentDateExpr} = $1::date
         AND a.is_active = true
     `;
 
@@ -738,11 +838,12 @@ const getBookedTimeSlots = async ({ scheduledDate, clinicId = null, excludeAppoi
     }
 
     const params = [dateKey];
+    const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
     let query = `
       SELECT a.id, a.scheduled_date
       FROM appointments a
       LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
-      WHERE DATE(a.scheduled_date) = $1::date
+      WHERE ${appointmentDateExpr} = $1::date
         AND a.is_active = true
         AND a.status <> 'cancelled'
     `;
@@ -761,11 +862,25 @@ const getBookedTimeSlots = async ({ scheduledDate, clinicId = null, excludeAppoi
 
     return (result.rows || [])
       .map((row) => {
-        const date = new Date(row.scheduled_date);
-        if (Number.isNaN(date.getTime())) {
+        if (!row.scheduled_date) {
           return null;
         }
-        return date.toTimeString().slice(0, 5);
+
+        const value = row.scheduled_date instanceof Date
+          ? row.scheduled_date
+          : new Date(row.scheduled_date);
+        if (Number.isNaN(value.getTime())) {
+          return null;
+        }
+
+        const timeValue = new Intl.DateTimeFormat('en-GB', {
+          timeZone: CLINIC_TIMEZONE,
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }).format(value);
+
+        return timeValue || null;
       })
       .filter(Boolean);
   } catch (error) {
@@ -796,6 +911,7 @@ const getAvailableTimeSlots = async ({
       scheduledDate,
       vaccineId,
       clinicId,
+      excludeAppointmentId,
     });
 
     if (!availability.available) {
@@ -818,14 +934,19 @@ const getAvailableTimeSlots = async ({
 
     let availableSlots = slots.filter((slot) => !bookedSlots.includes(slot));
 
-    const todayKey = toDateKey(new Date());
+    const todayKey = getClinicTodayDateKey();
     const selectedKey = toDateKey(dateOnly);
     if (todayKey && selectedKey && todayKey === selectedKey) {
-      const now = new Date();
-      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+      const currentTimeInManila = new Intl.DateTimeFormat('en-GB', {
+        timeZone: CLINIC_TIMEZONE,
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(new Date());
+      const currentMinutes = timeToMinutes(currentTimeInManila);
       availableSlots = availableSlots.filter((slot) => {
         const slotMinutes = timeToMinutes(slot);
-        return slotMinutes !== null && slotMinutes > currentMinutes;
+        return slotMinutes !== null && currentMinutes !== null && slotMinutes > currentMinutes;
       });
     }
 
@@ -862,7 +983,7 @@ const getAvailableTimeSlots = async ({
  */
 const getAppointmentsByGuardian = async (guardianId, limit = 5) => {
   try {
-    const query = `
+  const query = `
       SELECT
         a.id,
         a.scheduled_date,
@@ -876,7 +997,7 @@ const getAppointmentsByGuardian = async (guardianId, limit = 5) => {
       LEFT JOIN vaccines v ON a.vaccine_id = v.id
       LEFT JOIN clinics c ON a.clinic_id = c.id
       WHERE p.guardian_id = $1
-      AND a.scheduled_date >= CURRENT_DATE
+      AND (a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date >= (CURRENT_TIMESTAMP AT TIME ZONE '${CLINIC_TIMEZONE}')::date
       AND a.status NOT IN ('cancelled', 'completed')
       ORDER BY a.scheduled_date ASC
       LIMIT $2
@@ -905,7 +1026,7 @@ const findConflictingActiveAppointment = async ({
     SELECT id, scheduled_date, status
     FROM appointments
     WHERE ${appointmentsPatient} = $1
-      AND DATE(scheduled_date) = $2::date
+      AND (scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date = $2::date
       AND is_active = true
       AND status IN ('pending', 'scheduled')
   `;
@@ -1478,7 +1599,10 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
     }
 
     // Find earliest valid date for the vaccine
-    const earliestValidDate = findEarliestValidDate(new Date().toISOString().split('T')[0], appointment.resolved_clinic_id);
+    const earliestValidDate = findEarliestValidDate(
+      getClinicTodayDateKey(),
+      appointment.resolved_clinic_id,
+    );
 
     if (!earliestValidDate) {
       return {
@@ -1589,7 +1713,7 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
       `SELECT id FROM appointments
        WHERE infant_id = $1 AND is_active = true
        AND status IN ('scheduled', 'pending')
-       AND DATE(scheduled_date) = DATE($2)`,
+       AND (scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date = $2::date`,
       [infant_id, scheduled_date],
     );
 
@@ -1602,9 +1726,16 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
     }
 
     // Step 3: Check vaccine stock availability
+    const scheduledDateKey = toDateKey(scheduled_date);
+    const scheduledTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: CLINIC_TIMEZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(scheduled_date));
     const stockCheck = await checkVaccineStockForDateTime({
-      date: new Date(scheduled_date).toISOString().split('T')[0],
-      time: new Date(scheduled_date).toTimeString().slice(0, 5),
+      date: scheduledDateKey,
+      time: scheduledTime,
       vaccineId: vaccine_id,
       clinicId: clinic_id,
     });
@@ -1670,6 +1801,7 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
 
 module.exports = {
   checkBookingAvailability,
+  getDailyVaccinationAppointmentCount,
   getAvailableTimeSlots,
   getCalendarAvailability,
   getCalendarDateDetails,

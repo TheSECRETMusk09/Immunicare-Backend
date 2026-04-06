@@ -6,7 +6,6 @@ const PDFDocument = require('pdfkit');
 const pool = require('../db');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 const { getAdminMetricsSummary } = require('./adminMetricsService');
-const { getDashboardAnalytics } = require('./analyticsService');
 const { resolveStorageRoot } = require('../utils/runtimeStorage');
 
 const REPORT_TYPES = Object.freeze([
@@ -36,6 +35,20 @@ const FILE_EXTENSION_BY_FORMAT = Object.freeze({
   csv: 'csv',
   excel: 'xlsx',
 });
+
+const APPOINTMENT_STATUS_FILTER_VALUES = Object.freeze({
+  pending: ['pending'],
+  scheduled: ['scheduled', 'confirmed', 'rescheduled'],
+  confirmed: ['confirmed'],
+  rescheduled: ['rescheduled'],
+  attended: ['attended', 'completed'],
+  completed: ['attended', 'completed'],
+  cancelled: ['cancelled'],
+  no_show: ['no_show', 'no-show'],
+});
+
+const normalizeAppointmentStatusFilterKey = (value) =>
+  String(value || '').trim().toLowerCase().replace(/-/g, '_');
 
 const MIME_TYPE_BY_FORMAT = Object.freeze({
   pdf: 'application/pdf',
@@ -2478,50 +2491,6 @@ class ReportService {
       scopeIds,
     });
 
-    const analyticsQuery = {
-      period:
-        normalizedStartDate || normalizedEndDate
-          ? 'custom'
-          : 'month',
-      vaccineType: 'ALL',
-      vaccinationStatus: 'all',
-      startDate:
-        normalizedStartDate || normalizedEndDate || undefined,
-      endDate:
-        normalizedEndDate || normalizedStartDate || undefined,
-      facilityId: facilityId || scopeIds[0] || undefined,
-    };
-
-    let dashboardAnalytics = null;
-    try {
-      dashboardAnalytics = await getDashboardAnalytics({
-        query: analyticsQuery,
-        user:
-          facilityId || scopeIds.length > 0
-            ? {
-              clinic_id: facilityId || scopeIds[0],
-              facility_id: facilityId || scopeIds[0],
-            }
-            : {},
-      });
-    } catch (analyticsError) {
-      console.error('Error fetching analytics-backed report summary:', analyticsError);
-    }
-
-    const analyticsSummary = dashboardAnalytics?.summary || null;
-    const liveVaccinationCount = analyticsSummary
-      ? this.toInteger(analyticsSummary.administeredInPeriod, coreSummary.vaccination.total)
-      : coreSummary.vaccination.total;
-    const liveInfantTotal = analyticsSummary
-      ? this.toInteger(analyticsSummary.totalRegisteredInfants, coreSummary.infants.total)
-      : coreSummary.infants.total;
-    const liveGuardianTotal = analyticsSummary
-      ? this.toInteger(analyticsSummary.totalGuardians, coreSummary.guardians.total)
-      : coreSummary.guardians.total;
-    const liveLowStockCount = analyticsSummary
-      ? this.toInteger(analyticsSummary.lowStockVaccines, coreSummary.inventory.low_stock_items)
-      : coreSummary.inventory.low_stock_items;
-
     const reportActivityQuery = `
         SELECT
           COUNT(*)::int AS total_reports,
@@ -2544,7 +2513,7 @@ class ReportService {
             )::int AS open_cases,
             ROUND(
               AVG(
-                EXTRACT(EPOCH FROM (COALESCE(updated_at, created_at) - created_at)) / 86400.0
+                EXTRACT(EPOCH FROM (COALESCE(validated_at, updated_at, created_at) - created_at)) / 86400.0
               ) FILTER (WHERE validation_status IN ('approved', 'rejected')),
               2
             ) AS avg_turnaround_days
@@ -2568,25 +2537,11 @@ class ReportService {
     ]);
 
     return {
-      vaccination: {
-        ...coreSummary.vaccination,
-        total: liveVaccinationCount,
-        completed: liveVaccinationCount,
-      },
-      inventory: {
-        ...coreSummary.inventory,
-        low_stock_items: liveLowStockCount,
-      },
+      vaccination: coreSummary.vaccination,
+      inventory: coreSummary.inventory,
       appointments: coreSummary.appointments,
-      guardians: {
-        ...coreSummary.guardians,
-        total: liveGuardianTotal,
-        active: liveGuardianTotal,
-      },
-      infants: {
-        ...coreSummary.infants,
-        total: liveInfantTotal,
-      },
+      guardians: coreSummary.guardians,
+      infants: coreSummary.infants,
       reports:
           reports.rows[0] || {
             total_reports: 0,
@@ -2800,8 +2755,12 @@ class ReportService {
     }
 
     if (filters.status) {
-      query += ` AND LOWER(COALESCE(a.status::text, '')) = $${paramIndex}`;
-      params.push(filters.status);
+      const normalizedStatus = normalizeAppointmentStatusFilterKey(filters.status);
+      const statusFilterValues =
+        APPOINTMENT_STATUS_FILTER_VALUES[normalizedStatus] || [normalizedStatus];
+
+      query += ` AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) = ANY($${paramIndex}::text[])`;
+      params.push(statusFilterValues);
       paramIndex += 1;
     }
 

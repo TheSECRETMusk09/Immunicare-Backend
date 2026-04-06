@@ -9,6 +9,7 @@ const {
 } = require('../middleware/rbac');
 const socketService = require('../services/socketService');
 const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
+const immunizationScheduleService = require('../services/immunizationScheduleService');
 
 // Middleware to authenticate all routes
 router.use(authenticateToken);
@@ -21,6 +22,75 @@ const guardianOwnsInfant = async (guardianId, infantId) => {
 
   return result.rows.length > 0;
 };
+
+const formatIsoDateTime = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+};
+
+const formatGuardianProjectionInfant = (projection = {}) => ({
+  id: projection?.infantInfo?.id || null,
+  first_name: projection?.infantInfo?.firstName || null,
+  last_name: projection?.infantInfo?.lastName || null,
+  dob: formatIsoDateTime(projection?.infantInfo?.dateOfBirth),
+});
+
+const formatReadinessManagerSchedules = (projection = {}) =>
+  (Array.isArray(projection?.schedules) ? projection.schedules : []).map((scheduleItem) => ({
+    id: scheduleItem.id,
+    vaccineId: scheduleItem.vaccineId,
+    vaccineName: scheduleItem.vaccineName,
+    vaccineCode: scheduleItem.vaccineCode,
+    doseNumber: scheduleItem.doseNumber,
+    totalDoses: scheduleItem.totalDoses,
+    dosesCompleted: scheduleItem.dosesCompleted,
+    isComplete: scheduleItem.isCompleted,
+    isNextDueDose: scheduleItem.isNextDueDose,
+    ageInMonths: scheduleItem.ageMonths,
+    minimumAgeDays: scheduleItem.minimumAgeDays,
+    dueDate: formatIsoDateTime(scheduleItem.dueDate),
+    adminDate: formatIsoDateTime(scheduleItem.adminDate),
+    recordId: scheduleItem.recordId || null,
+    isOverdue: Boolean(scheduleItem.isPastDue),
+    isDueSoon: Boolean(scheduleItem.isDueToday),
+    isReady: Boolean(scheduleItem.isReady),
+    readinessConfirmedBy: scheduleItem.readinessConfirmedBy || null,
+    readinessConfirmedAt: scheduleItem.readinessConfirmedAt || null,
+    status: scheduleItem.status,
+    canBeAdministered: Boolean(scheduleItem.canBeAdministered),
+  }));
+
+const formatGuardianChartSchedules = (projection = {}) =>
+  (Array.isArray(projection?.schedules) ? projection.schedules : []).map((scheduleItem) => ({
+    vaccine: {
+      id: scheduleItem.vaccineId,
+      name: scheduleItem.vaccineName,
+      code: scheduleItem.vaccineCode,
+    },
+    dose: {
+      number: scheduleItem.doseNumber,
+      total: scheduleItem.totalDoses,
+      completed: scheduleItem.dosesCompleted,
+    },
+    schedule: {
+      ageInMonths: scheduleItem.ageMonths,
+      minimumAgeDays: scheduleItem.minimumAgeDays,
+      dueDate: formatIsoDateTime(scheduleItem.dueDate),
+      isOverdue: Boolean(scheduleItem.isPastDue),
+      isDueSoon: Boolean(scheduleItem.isDueToday),
+      description: scheduleItem.description || null,
+    },
+    status: scheduleItem.status,
+    isReady: Boolean(scheduleItem.isReady),
+    isNextDueDose: scheduleItem.isNextDueDose,
+    recordId: scheduleItem.recordId || null,
+    lastAdministered: formatIsoDateTime(scheduleItem.adminDate),
+    canBeAdministered: Boolean(scheduleItem.canBeAdministered),
+  }));
 
 /**
  * Get infant vaccine readiness status
@@ -42,138 +112,19 @@ router.get('/infant/:infantId', async (req, res) => {
       }
     }
 
-    // Verify infant exists
-    const infantResult = await pool.query(
-      'SELECT id, first_name, last_name, dob FROM patients WHERE id = $1 AND is_active = true',
-      [infantId],
-    );
-
-    if (infantResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Infant not found' });
+    const projection = await immunizationScheduleService.getGuardianScheduleProjection(infantId);
+    if (projection?.error) {
+      return res.status(404).json({ error: projection.error });
     }
 
-    // Get all vaccination schedules
-    const schedulesResult = await pool.query(
-      `SELECT vs.*, v.name as vaccine_name, v.code as vaccine_code
-       FROM vaccination_schedules vs
-       JOIN vaccines v ON vs.vaccine_id = v.id
-       WHERE vs.is_active = true
-       ORDER BY vs.age_in_months ASC, vs.vaccine_name ASC`,
-    );
-
-    // Get readiness status for this infant
-    const readinessResult = await pool.query(
-      `SELECT ivr.*, v.name as vaccine_name
-       FROM infant_vaccine_readiness ivr
-       JOIN vaccines v ON ivr.vaccine_id = v.id
-       WHERE ivr.infant_id = $1 AND ivr.is_active = true`,
-      [infantId],
-    );
-
-    // Get completed vaccinations
-    const completedResult = await pool.query(
-      `SELECT ir.vaccine_id, ir.dose_no, ir.admin_date
-        FROM immunization_records ir
-        WHERE patient_id = $1
-          AND is_active = true
-          AND (
-            status = 'completed'
-            OR admin_date IS NOT NULL
-          )
-        ORDER BY ir.admin_date DESC`,
-      [infantId],
-    );
-
-    const completedVaccines = {};
-    const completedDoseMap = new Map();
-    completedResult.rows.forEach(record => {
-      const vaccineId = parseInt(record.vaccine_id, 10);
-      const doseNumber = parseInt(record.dose_no, 10);
-      completedVaccines[vaccineId] = Math.max(completedVaccines[vaccineId] || 0, doseNumber);
-      completedDoseMap.set(`${vaccineId}:${doseNumber}`, record);
-    });
-
-    const readinessMap = {};
-    readinessResult.rows.forEach(record => {
-      readinessMap[record.vaccine_id] = {
-        isReady: record.is_ready,
-        confirmedBy: record.ready_confirmed_by,
-        confirmedAt: record.ready_confirmed_at,
-        notes: record.notes,
-      };
-    });
-
-    const infantDob = new Date(infantResult.rows[0].dob);
-    const today = new Date();
-    const ageInDays = Math.floor((today - infantDob) / (1000 * 60 * 60 * 24));
-
-    // Build response with status
-    const schedules = schedulesResult.rows.map(schedule => {
-      const dosesCompleted = completedVaccines[schedule.vaccine_id] || 0;
-      const doseNumber = parseInt(schedule.dose_number, 10);
-      const matchingDose = completedDoseMap.get(`${schedule.vaccine_id}:${doseNumber}`) || null;
-      const isComplete = Boolean(matchingDose);
-      const isNextDueDose = doseNumber === dosesCompleted + 1;
-      const readiness = readinessMap[schedule.vaccine_id] || { isReady: false };
-
-      // Calculate due date based on schedule
-      const dueDate = new Date(infantDob);
-      dueDate.setDate(dueDate.getDate() + (schedule.minimum_age_days || schedule.age_in_months * 30));
-
-      const isOverdue = !isComplete && isNextDueDose && dueDate < today;
-      const isDueSoon =
-        !isComplete &&
-        isNextDueDose &&
-        !isOverdue &&
-        dueDate <= new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000);
-
-      // Determine status based on age and readiness
-      let status;
-      if (isComplete) {
-        status = 'completed';
-      } else if (!isNextDueDose) {
-        status = 'upcoming';
-      } else if (ageInDays < (schedule.minimum_age_days || schedule.age_in_months * 30)) {
-        status = 'upcoming'; // Not yet eligible due to age
-      } else if (!readiness.isReady) {
-        status = 'pending_confirmation'; // Age is right but admin hasn't confirmed
-      } else if (isOverdue) {
-        status = 'overdue';
-      } else if (isDueSoon) {
-        status = 'due_soon';
-      } else {
-        status = 'ready'; // Ready to receive
-      }
-
-      return {
-        id: schedule.id,
-        vaccineId: schedule.vaccine_id,
-        vaccineName: schedule.vaccine_name,
-        vaccineCode: schedule.vaccine_code,
-        doseNumber: doseNumber,
-        totalDoses: schedule.total_doses,
-        dosesCompleted,
-        isComplete,
-        isNextDueDose,
-        ageInMonths: schedule.age_in_months,
-        minimumAgeDays: schedule.minimum_age_days || schedule.age_in_months * 30,
-        dueDate: dueDate.toISOString(),
-        adminDate: matchingDose?.admin_date || null,
-        recordId: matchingDose?.id || null,
-        isOverdue,
-        isDueSoon,
-        isReady: readiness.isReady,
-        readinessConfirmedBy: readiness.confirmedBy,
-        readinessConfirmedAt: readiness.confirmedAt,
-        status,
-        canBeAdministered: readiness.isReady && !isComplete && isNextDueDose,
-      };
-    });
-
     res.json({
-      infant: infantResult.rows[0],
-      ageInDays,
-      schedules,
+      infant: formatGuardianProjectionInfant(projection),
+      ageInDays: projection?.currentAge?.days || 0,
+      ageInWeeks: Math.floor((projection?.currentAge?.days || 0) / 7),
+      ageInMonths: projection?.currentAge?.months || 0,
+      schedules: formatReadinessManagerSchedules(projection),
+      summary: projection.summary || null,
+      readiness: projection.readiness || null,
     });
   } catch (error) {
     console.error('Error fetching infant vaccine readiness:', error);
@@ -388,6 +339,7 @@ router.post('/infant/:infantId/batch', requirePermission('vaccination:create'), 
 router.get('/:childId', async (req, res) => {
   try {
     const infantId = parseInt(req.params.childId, 10);
+    const scheduledDate = String(req.query.scheduled_date || '').trim() || null;
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
     }
@@ -402,7 +354,9 @@ router.get('/:childId', async (req, res) => {
     }
 
     // Use the vaccine rules engine to calculate readiness
-    const readinessResult = await calculateVaccineReadiness(infantId);
+    const readinessResult = await calculateVaccineReadiness(infantId, {
+      scheduledDate,
+    });
 
     if (!readinessResult.success) {
       return res.status(500).json(readinessResult);
@@ -414,6 +368,9 @@ router.get('/:childId', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching vaccine readiness:', error);
+    if (res.headersSent) {
+      return;
+    }
     res.status(500).json({ success: false, error: 'Failed to fetch vaccine readiness' });
   }
 });
@@ -423,10 +380,8 @@ router.get('/:childId', async (req, res) => {
  * GET /api/vaccination-readiness/schedule/:infantId
  */
 router.get('/schedule/:infantId', async (req, res) => {
-  console.log('[DEBUG] Vaccination schedule request for infant:', req.params.infantId);
   try {
     const infantId = parseInt(req.params.infantId, 10);
-    console.log('[DEBUG] Parsed infantId:', infantId);
     if (Number.isNaN(infantId)) {
       return res.status(400).json({ error: 'Invalid infant ID' });
     }
@@ -440,161 +395,31 @@ router.get('/schedule/:infantId', async (req, res) => {
       }
     }
 
-    // This endpoint returns the same data as /infant/:infantId but formatted for guardian display
-    const infantResult = await pool.query(
-      'SELECT id, first_name, last_name, dob FROM patients WHERE id = $1 AND is_active = true',
-      [infantId],
-    );
-
-    if (infantResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Infant not found' });
+    const projection = await immunizationScheduleService.getGuardianScheduleProjection(infantId);
+    if (projection?.error) {
+      return res.status(404).json({ error: projection.error });
     }
 
-    const infantDob = new Date(infantResult.rows[0].dob);
-    const today = new Date();
-    const ageInDays = Math.floor((today - infantDob) / (1000 * 60 * 60 * 24));
-    const ageInWeeks = Math.floor(ageInDays / 7);
-    const ageInMonths = Math.floor(ageInDays / 30);
-
-    // Get completed vaccinations
-    const completedResult = await pool.query(
-      `SELECT ir.vaccine_id, ir.dose_no, ir.admin_date, v.name as vaccine_name
-       FROM immunization_records ir
-       JOIN vaccines v ON ir.vaccine_id = v.id
-       WHERE ir.patient_id = $1
-         AND ir.is_active = true
-         AND (
-           LOWER(COALESCE(ir.status, '')) = 'completed'
-           OR ir.admin_date IS NOT NULL
-         )
-       ORDER BY ir.admin_date DESC`,
-      [infantId],
-    );
-
-    // Get readiness status
-    const readinessResult = await pool.query(
-      `SELECT ivr.vaccine_id, ivr.is_ready, ivr.ready_confirmed_at
-       FROM infant_vaccine_readiness ivr
-       WHERE ivr.infant_id = $1 AND ivr.is_active = true AND ivr.is_ready = true`,
-      [infantId],
-    );
-
-    const readyVaccines = new Set(readinessResult.rows.map(r => r.vaccine_id));
-
-    // Get all schedules
-    const schedulesResult = await pool.query(
-      `SELECT vs.*, v.name as vaccine_name, v.code as vaccine_code
-       FROM vaccination_schedules vs
-       JOIN vaccines v ON vs.vaccine_id = v.id
-       WHERE vs.is_active = true
-       ORDER BY vs.age_in_months ASC`,
-    );
-
-    // Map completed vaccinations
-    const completedMap = {};
-    const completedDoseMap = new Map();
-    completedResult.rows.forEach(record => {
-      const vaccineId = parseInt(record.vaccine_id, 10);
-      const doseNumber = parseInt(record.dose_no, 10);
-      if (!completedMap[vaccineId]) {
-        completedMap[vaccineId] = [];
-      }
-      completedMap[vaccineId].push(record);
-      completedDoseMap.set(`${vaccineId}:${doseNumber}`, record);
-    });
-
-    // Build guardian-friendly response
-    const scheduleData = schedulesResult.rows.map(schedule => {
-      const completedDoses = completedMap[schedule.vaccine_id] || [];
-      const doseNumber = parseInt(schedule.dose_number, 10);
-      const matchingDose = completedDoseMap.get(`${schedule.vaccine_id}:${doseNumber}`) || null;
-      const isComplete = Boolean(matchingDose);
-      const isReady = readyVaccines.has(schedule.vaccine_id);
-      const completedDoseCount = completedDoses.length;
-      const isNextDueDose = doseNumber === completedDoseCount + 1;
-
-      const dueDate = new Date(infantDob);
-      dueDate.setDate(dueDate.getDate() + (schedule.minimum_age_days || schedule.age_in_months * 30));
-
-      const isOverdue = !isComplete && isNextDueDose && dueDate < today;
-      const isDueSoon =
-        !isComplete &&
-        isNextDueDose &&
-        !isOverdue &&
-        dueDate <= new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000);
-      const ageRequirementMet = ageInDays >= (schedule.minimum_age_days || schedule.age_in_months * 30);
-
-      // Status logic:
-      // - completed: all doses administered
-      // - upcoming: infant too young for this vaccine
-      // - pending_confirmation: age is right but admin hasn't confirmed readiness
-      // - ready: admin confirmed and ready to receive
-      // - overdue: past due date and not complete
-      let status;
-      if (isComplete) {
-        status = 'completed';
-      } else if (!ageRequirementMet || !isNextDueDose) {
-        status = 'upcoming';
-      } else if (!isReady) {
-        status = 'pending_confirmation';
-      } else if (isOverdue) {
-        status = 'overdue';
-      } else if (isDueSoon) {
-        status = 'due_soon';
-      } else {
-        status = 'ready';
-      }
-
-      const lastDose = matchingDose || (completedDoses.length > 0 ? completedDoses[0] : null);
-
-      return {
-        vaccine: {
-          id: schedule.vaccine_id,
-          name: schedule.vaccine_name,
-          code: schedule.vaccine_code,
-        },
-        dose: {
-          number: doseNumber,
-          total: schedule.total_doses,
-          completed: completedDoseCount,
-        },
-        schedule: {
-          ageInMonths: schedule.age_in_months,
-          minimumAgeDays: schedule.minimum_age_days || schedule.age_in_months * 30,
-          dueDate: dueDate.toISOString(),
-          isOverdue,
-          isDueSoon,
-        },
-        status,
-        isReady,
-        isNextDueDose,
-        recordId: matchingDose?.id || null,
-        lastAdministered: lastDose ? lastDose.admin_date : null,
-        canBeAdministered: isReady && !isComplete && isNextDueDose,
-      };
-    });
-
     res.json({
-      infant: infantResult.rows[0],
+      infant: formatGuardianProjectionInfant(projection),
       age: {
-        days: ageInDays,
-        weeks: ageInWeeks,
-        months: ageInMonths,
+        days: projection?.currentAge?.days || 0,
+        weeks: Math.floor((projection?.currentAge?.days || 0) / 7),
+        months: projection?.currentAge?.months || 0,
       },
-      schedule: scheduleData,
-      summary: {
-        totalVaccines: scheduleData.length,
-        completed: scheduleData.filter(s => s.status === 'completed').length,
-        ready: scheduleData.filter(s => s.status === 'ready').length,
-        dueSoon: scheduleData.filter(s => s.status === 'due_soon').length,
-        upcoming: scheduleData.filter(s => s.status === 'upcoming').length,
-        overdue: scheduleData.filter(s => s.status === 'overdue').length,
-        pendingConfirmation: scheduleData.filter(s => s.status === 'pending_confirmation').length,
+      schedule: formatGuardianChartSchedules(projection),
+      summary: projection.summary || {
+        totalVaccines: 0,
+        completed: 0,
+        ready: 0,
+        pendingConfirmation: 0,
+        upcoming: 0,
+        overdue: 0,
       },
+      readiness: projection.readiness || null,
     });
   } catch (error) {
-    console.error('[DEBUG] Error fetching vaccination schedule:', error);
-    console.error('[DEBUG] Error stack:', error.stack);
+    console.error('Error fetching vaccination schedule:', error);
     res.status(500).json({ error: 'Failed to fetch vaccination schedule' });
   }
 });

@@ -1,4 +1,12 @@
 const db = require('../db');
+const {
+  CLINIC_TODAY_SQL,
+  excludeWeekendVaccinationAppointmentsSql,
+  rollForwardWeekendDateSql,
+  toClinicDateSql,
+  weekdayPredicateSql,
+  weekendPredicateSql,
+} = require('../utils/clinicCalendar');
 
 const REQUIRED_VACCINE_KEYS = Object.freeze([
   'BCG',
@@ -12,33 +20,55 @@ const REQUIRED_VACCINE_KEYS = Object.freeze([
 
 const VACCINE_KEY_CASE_SQL = `
   CASE
-    WHEN UPPER(COALESCE(v.code, '')) = 'BCG'
-      OR (
-        UPPER(COALESCE(v.name, '')) LIKE 'BCG%'
-        AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
-      ) THEN 'BCG'
-    WHEN REGEXP_REPLACE(UPPER(COALESCE(v.code, '')), '[^A-Z0-9]', '', 'g') IN ('HEPB', 'HEPATITISB')
-      OR UPPER(COALESCE(v.name, '')) LIKE '%HEPA%B%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%HEPATITIS%B%'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) = 'BCG'
+        OR (
+          UPPER(COALESCE(v.name, '')) LIKE 'BCG%'
+          AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+        )
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
+      THEN 'BCG'
+    WHEN (
+        REGEXP_REPLACE(UPPER(COALESCE(v.code, '')), '[^A-Z0-9]', '', 'g') IN ('HEPB', 'HEPATITISB')
+        OR UPPER(COALESCE(v.name, '')) LIKE '%HEPA%B%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%HEPATITIS%B%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
       THEN 'HEPB'
-    WHEN UPPER(COALESCE(v.code, '')) LIKE 'PENTA%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%PENTA%'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) LIKE 'PENTA%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%PENTA%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
       THEN 'PENTA'
-    WHEN UPPER(COALESCE(v.code, '')) LIKE 'OPV%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%ORAL%POLIO%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%OPV%'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) LIKE 'OPV%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%ORAL%POLIO%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%OPV%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
       THEN 'OPV'
-    WHEN UPPER(COALESCE(v.code, '')) LIKE 'IPV%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%INACTIVATED%POLIO%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%IPV%'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) LIKE 'IPV%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%INACTIVATED%POLIO%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%IPV%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
       THEN 'IPV'
-    WHEN UPPER(COALESCE(v.code, '')) LIKE 'PCV%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%PNEUMOCOCCAL%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%PCV%'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) LIKE 'PCV%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%PNEUMOCOCCAL%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%PCV%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
       THEN 'PCV'
-    WHEN UPPER(COALESCE(v.code, '')) IN ('MMR', 'MR')
-      OR UPPER(COALESCE(v.name, '')) LIKE '%MMR%'
-      OR UPPER(COALESCE(v.name, '')) LIKE '%MEASLES%RUBELLA%'
+    WHEN (
+        UPPER(COALESCE(v.code, '')) IN ('MMR', 'MR')
+        OR UPPER(COALESCE(v.name, '')) LIKE '%MMR%'
+        OR UPPER(COALESCE(v.name, '')) LIKE '%MEASLES%RUBELLA%'
+      )
+      AND UPPER(COALESCE(v.name, '')) NOT LIKE '%DILUENT%'
       THEN 'MMR'
     ELSE NULL
   END
@@ -56,6 +86,26 @@ const vaccineNameCaseFromKeyExpression = (expression) => `
     ELSE ${expression}
   END
 `;
+
+const buildVaccinationCompletionDateExpression = (alias = 'ir') => `
+  COALESCE(
+    ${toClinicDateSql(`${alias}.admin_date`)},
+    ${toClinicDateSql(`${alias}.created_at`)}
+  )
+`;
+
+const buildVaccinationAdjustedDueDateExpression = (alias = 'ir') =>
+  rollForwardWeekendDateSql(`(${alias}.next_due_date)::date`);
+
+const buildVaccinationStatusDateExpression = (statusExpression, alias = 'ir') => `
+  CASE
+    WHEN ${statusExpression} IN ('completed', 'attended')
+      THEN ${buildVaccinationCompletionDateExpression(alias)}
+    ELSE ${buildVaccinationAdjustedDueDateExpression(alias)}
+  END
+`;
+
+const buildAppointmentLocalDateExpression = (alias = 'a') => toClinicDateSql(`${alias}.scheduled_date`);
 
 const toNullableArray = (value) => {
   if (!Array.isArray(value) || value.length === 0) {
@@ -433,15 +483,55 @@ const buildImmunizationStatusExpression = ({ alias, statusColumn }) => {
   return `COALESCE(NULLIF(TRIM(LOWER(${alias}.${statusColumn}::text)), ''), ${inferredStatus})`;
 };
 
+const buildNormalizedAppointmentStatusExpression = (alias = 'a') => `
+  CASE
+    WHEN LOWER(REPLACE(COALESCE(${alias}.status::text, ''), '-', '_')) = 'completed' THEN 'attended'
+    ELSE LOWER(REPLACE(COALESCE(${alias}.status::text, ''), '-', '_'))
+  END
+`;
+
+const buildAppointmentResolvedScopeExpression = ({
+  patientScopeExpr,
+  appointmentScopeExpr,
+}) => {
+  const scopedExpressions = [patientScopeExpr, appointmentScopeExpr].filter(
+    (expression) => expression && expression !== 'NULL',
+  );
+
+  if (scopedExpressions.length === 0) {
+    return 'NULL';
+  }
+
+  if (scopedExpressions.length === 1) {
+    return scopedExpressions[0];
+  }
+
+  return `COALESCE(${scopedExpressions.join(', ')})`;
+};
+
+const buildScopeArrayMatchPredicate = (scopePlaceholder, expressions) => {
+  const scopedExpressions = (Array.isArray(expressions) ? expressions : [expressions]).filter(
+    (expression) => expression && expression !== 'NULL',
+  );
+
+  if (!scopedExpressions.length) {
+    return 'TRUE';
+  }
+
+  return `(${scopePlaceholder}::int[] IS NULL OR ${scopedExpressions
+    .map((expression) => `${expression} = ANY(${scopePlaceholder}::int[])`)
+    .join(' OR ')})`;
+};
+
 const buildInventoryStockExpression = ({ alias, mappings }) => {
   // Prefer quantity column (used by inventory table)
   if (mappings.inventoryQuantity) {
-    return `GREATEST(COALESCE(${alias}.${mappings.inventoryQuantity}, 0), 0)`;
+    return `COALESCE(${alias}.${mappings.inventoryQuantity}, 0)`;
   }
   
   // Then check for stock_on_hand (used by vaccine_inventory table)
   if (mappings.inventoryStockOnHand) {
-    return `GREATEST(COALESCE(${alias}.${mappings.inventoryStockOnHand}, 0), 0)`;
+    return `COALESCE(${alias}.${mappings.inventoryStockOnHand}, 0)`;
   }
 
   // Calculate from additions and deductions
@@ -469,10 +559,70 @@ const buildInventoryStockExpression = ({ alias, mappings }) => {
   }
 
   if (!deductions.length) {
-    return `GREATEST(${additionExpression}, 0)`;
+    return `${additionExpression}`;
   }
 
-  return `GREATEST((${additionExpression}) - (${deductions.join(' + ')}), 0)`;
+  return `((${additionExpression}) - (${deductions.join(' + ')}))`;
+};
+
+const buildInventoryRollupCte = ({
+  mappings,
+  facilityPlaceholder,
+  vaccineIdsPlaceholder,
+}) => {
+  const {
+    inventoryScope,
+    inventoryScopeFallback,
+    inventoryLowStockThreshold,
+    inventoryCriticalStockThreshold,
+  } = mappings;
+  const inventoryScopeExpr = buildScopedColumnExpression(
+    'vi',
+    inventoryScope,
+    inventoryScopeFallback,
+  );
+  const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
+  const lowThresholdExpr = inventoryLowStockThreshold
+    ? `COALESCE(vi.${inventoryLowStockThreshold}, 10)`
+    : '10';
+  const criticalThresholdExpr = inventoryCriticalStockThreshold
+    ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 5)`
+    : '5';
+
+  const whereConditions = ['COALESCE(vi.is_active, true) = true'];
+
+  if (inventoryScopeExpr !== 'NULL' && facilityPlaceholder) {
+    whereConditions.push(buildScopeMatchPredicate(facilityPlaceholder, [inventoryScopeExpr]));
+  }
+
+  if (vaccineIdsPlaceholder) {
+    whereConditions.push(
+      `(${vaccineIdsPlaceholder}::int[] IS NULL OR vi.vaccine_id = ANY(${vaccineIdsPlaceholder}::int[]))`,
+    );
+  }
+
+  return `
+    inventory_rows AS (
+      SELECT
+        ${VACCINE_KEY_CASE_SQL} AS vaccine_key,
+        ${stockExpr}::int AS stock_on_hand,
+        ${lowThresholdExpr}::int AS low_threshold,
+        ${criticalThresholdExpr}::int AS critical_threshold
+      FROM vaccine_inventory vi
+      JOIN vaccines v ON v.id = vi.vaccine_id
+      WHERE ${whereConditions.join(' AND ')}
+    ),
+    inventory_rollup AS (
+      SELECT
+        vaccine_key,
+        COALESCE(SUM(stock_on_hand), 0)::int AS available_doses,
+        MAX(low_threshold)::int AS low_threshold,
+        MAX(critical_threshold)::int AS critical_threshold
+      FROM inventory_rows
+      WHERE vaccine_key IS NOT NULL
+      GROUP BY vaccine_key
+    )
+  `;
 };
 
 const buildStockAlertSeverityExpression = ({ alias, mappings, stockExpr, lowThresholdExpr, criticalThresholdExpr }) => {
@@ -620,6 +770,8 @@ const getVaccinationSnapshot = async ({
     alias: 'ir',
     statusColumn: immunizationStatus,
   });
+  const completionDateExpr = buildVaccinationCompletionDateExpression('ir');
+  const adjustedDueDateExpr = buildVaccinationAdjustedDueDateExpression('ir');
   const scopedVaccinationPredicate = buildScopeMatchPredicate('$7', [
     patientScopeExpr,
     guardianScopeExpr,
@@ -629,36 +781,30 @@ const getVaccinationSnapshot = async ({
     `
       SELECT
         COUNT(*) FILTER (
-          WHERE (
-            ir.admin_date = CURRENT_DATE
-            OR (ir.admin_date IS NULL AND ir.created_at::date = CURRENT_DATE)
-          )
+          WHERE ${completionDateExpr} = ${CLINIC_TODAY_SQL}
+            AND ${weekdayPredicateSql(completionDateExpr)}
           AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS completed_today,
         COUNT(*) FILTER (
-          WHERE (
-            ir.admin_date BETWEEN $1::date AND $2::date
-            OR (ir.admin_date IS NULL AND ir.created_at::date BETWEEN $1::date AND $2::date)
-          )
+          WHERE ${completionDateExpr} BETWEEN $1::date AND $2::date
+            AND ${weekdayPredicateSql(completionDateExpr)}
           AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS administered_in_period,
         COUNT(*) FILTER (
-          WHERE ir.next_due_date BETWEEN $1::date AND $2::date
+          WHERE ${adjustedDueDateExpr} BETWEEN $1::date AND $2::date
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS due_in_period,
         COUNT(*) FILTER (
-          WHERE ir.next_due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
+          WHERE ${adjustedDueDateExpr} BETWEEN ${CLINIC_TODAY_SQL} AND (${CLINIC_TODAY_SQL} + INTERVAL '7 days')::date
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS due_soon_7_days,
         COUNT(*) FILTER (
-          WHERE ir.next_due_date < CURRENT_DATE
+          WHERE ${adjustedDueDateExpr} < ${CLINIC_TODAY_SQL}
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS overdue_count,
         COUNT(DISTINCT ir.patient_id) FILTER (
-          WHERE (
-            ir.admin_date BETWEEN $1::date AND $2::date
-            OR (ir.admin_date IS NULL AND ir.created_at::date BETWEEN $1::date AND $2::date)
-          )
+          WHERE ${completionDateExpr} BETWEEN $1::date AND $2::date
+            AND ${weekdayPredicateSql(completionDateExpr)}
           AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS unique_infants_served
       FROM immunization_records ir
@@ -676,7 +822,7 @@ const getVaccinationSnapshot = async ({
         AND (
           $5::boolean = false
           OR (
-            ir.next_due_date < CURRENT_DATE
+            ${adjustedDueDateExpr} < ${CLINIC_TODAY_SQL}
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
           )
         )
@@ -723,6 +869,8 @@ const getVaccinationStatusBreakdown = async ({
     alias: 'ir',
     statusColumn: immunizationStatus,
   });
+  const completionDateExpr = buildVaccinationCompletionDateExpression('ir');
+  const statusDateExpr = buildVaccinationStatusDateExpression(immunizationStatusExpr, 'ir');
   const scopedVaccinationPredicate = buildScopeMatchPredicate('$1', [
     patientScopeExpr,
     guardianScopeExpr,
@@ -741,8 +889,10 @@ const getVaccinationStatusBreakdown = async ({
         AND ${scopedVaccinationPredicate}
         AND ($6::int IS NULL OR p.guardian_id = $6)
         AND ($2::int[] IS NULL OR ir.vaccine_id = ANY($2::int[]))
+        AND ${statusDateExpr} BETWEEN $3::date AND $4::date
         AND (
-          COALESCE(ir.admin_date, ir.next_due_date, ir.created_at::date) BETWEEN $3::date AND $4::date
+          ${immunizationStatusExpr} NOT IN ('completed', 'attended')
+          OR ${weekdayPredicateSql(completionDateExpr)}
         )
         AND (
           $5::text[] IS NULL
@@ -758,7 +908,7 @@ const getVaccinationStatusBreakdown = async ({
 };
 
 const getAppointmentSnapshot = async ({
-  facilityId,
+  scopeIds,
   startDate,
   endDate,
   statuses,
@@ -770,8 +920,6 @@ const getAppointmentSnapshot = async ({
     appointmentsScopeFallback,
     appointmentsPatient,
     appointmentsPatientFallback,
-    guardiansScope,
-    guardiansScopeFallback,
     patientsScope,
     patientsScopeFallback,
   } = await getSchemaColumnMappings();
@@ -781,73 +929,79 @@ const getAppointmentSnapshot = async ({
     appointmentsPatientFallback,
   );
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
-  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const appointmentScopeExpr = buildScopedColumnExpression(
     'a',
     appointmentsScope,
     appointmentsScopeFallback,
   );
-  const scopedAppointmentPredicate = buildScopeMatchPredicate('$1', [
+  const normalizedStatusExpr = buildNormalizedAppointmentStatusExpression('a');
+  const appointmentLocalDateExpr = buildAppointmentLocalDateExpression('a');
+  const activeAppointmentPredicate = excludeWeekendVaccinationAppointmentsSql(
+    'a',
+    appointmentLocalDateExpr,
+  );
+  const scopedAppointmentPredicate = buildScopeArrayMatchPredicate('$1', [
     appointmentScopeExpr,
     patientScopeExpr,
-    guardianScopeExpr,
   ]);
 
   const rows = await mapRows(
     `
       SELECT
-        COUNT(*) FILTER (WHERE a.scheduled_date::date BETWEEN $2::date AND $3::date)::int AS total_in_period,
-        COUNT(*) FILTER (WHERE a.scheduled_date::date = CURRENT_DATE)::int AS today_total,
+        COUNT(*) FILTER (WHERE ${appointmentLocalDateExpr} BETWEEN $2::date AND $3::date)::int AS total_in_period,
+        COUNT(*) FILTER (WHERE ${appointmentLocalDateExpr} = ${CLINIC_TODAY_SQL})::int AS today_total,
         COUNT(*) FILTER (
-          WHERE a.scheduled_date::date BETWEEN $2::date AND $3::date
-            AND a.status = 'attended'
+          WHERE ${appointmentLocalDateExpr} BETWEEN $2::date AND $3::date
+            AND ${normalizedStatusExpr} = 'attended'
         )::int AS attended_in_period,
         COUNT(*) FILTER (
-          WHERE a.scheduled_date::date BETWEEN $2::date AND $3::date
-            AND a.status IN ('scheduled', 'confirmed', 'rescheduled')
+          WHERE ${appointmentLocalDateExpr} BETWEEN $2::date AND $3::date
+            AND ${normalizedStatusExpr} IN ('scheduled', 'confirmed', 'rescheduled')
         )::int AS pending_in_period,
         COUNT(*) FILTER (
-          WHERE a.status IN ('scheduled', 'confirmed', 'rescheduled')
+          WHERE ${normalizedStatusExpr} IN ('scheduled', 'confirmed', 'rescheduled')
         )::int AS total_pending,
         COUNT(*) FILTER (
-          WHERE a.scheduled_date::date BETWEEN $2::date AND $3::date
-            AND a.status = 'cancelled'
+          WHERE ${appointmentLocalDateExpr} BETWEEN $2::date AND $3::date
+            AND ${normalizedStatusExpr} = 'cancelled'
         )::int AS cancelled_in_period,
         COUNT(*) FILTER (
-          WHERE a.scheduled_date::date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-            AND a.status IN ('scheduled', 'confirmed', 'rescheduled')
+          WHERE ${appointmentLocalDateExpr} BETWEEN ${CLINIC_TODAY_SQL} AND (${CLINIC_TODAY_SQL} + INTERVAL '7 days')::date
+            AND ${normalizedStatusExpr} IN ('scheduled', 'confirmed', 'rescheduled')
         )::int AS upcoming_7_days,
         COUNT(*) FILTER (
-          WHERE a.scheduled_date::date < CURRENT_DATE
-            AND a.status IN ('scheduled', 'confirmed', 'rescheduled', 'no-show')
+          WHERE ${appointmentLocalDateExpr} < ${CLINIC_TODAY_SQL}
+            AND ${normalizedStatusExpr} IN ('scheduled', 'confirmed', 'rescheduled', 'no_show')
         )::int AS overdue_followups,
         COUNT(*) FILTER (
-          WHERE a.scheduled_date::date = CURRENT_DATE
+          WHERE ${appointmentLocalDateExpr} = ${CLINIC_TODAY_SQL}
             AND LOWER(COALESCE(a.type, '')) LIKE '%follow%'
         )::int AS followups_today,
         COUNT(*) FILTER (
-          WHERE a.scheduled_date::date BETWEEN $2::date AND $3::date
+          WHERE ${appointmentLocalDateExpr} BETWEEN $2::date AND $3::date
             AND LOWER(COALESCE(a.type, '')) LIKE '%follow%'
         )::int AS followups_in_period
       FROM appointments a
       LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(a.is_active, true) = true
+        AND COALESCE(p.is_active, false) = true
+        AND ${activeAppointmentPredicate}
         AND ${scopedAppointmentPredicate}
         AND ($6::int IS NULL OR p.guardian_id = $6)
         AND (
           $4::text[] IS NULL
-          OR LOWER(a.status::text) = ANY($4::text[])
+          OR ${normalizedStatusExpr} = ANY($4::text[])
         )
         AND (
           $5::boolean = false
           OR (
-            a.scheduled_date::date < CURRENT_DATE
-            AND a.status IN ('scheduled', 'confirmed', 'rescheduled', 'no-show')
+            ${appointmentLocalDateExpr} < ${CLINIC_TODAY_SQL}
+            AND ${normalizedStatusExpr} IN ('scheduled', 'confirmed', 'rescheduled', 'no_show')
           )
         )
     `,
-    [facilityId, startDate, endDate, toNullableArray(statuses), Boolean(overdueOnly), guardianId],
+    [toNullableArray(scopeIds), startDate, endDate, toNullableArray(statuses), Boolean(overdueOnly), guardianId],
   );
 
   return rows[0] || {
@@ -865,7 +1019,7 @@ const getAppointmentSnapshot = async ({
 };
 
 const getAppointmentStatusBreakdown = async ({
-  facilityId,
+  scopeIds,
   startDate,
   endDate,
   statuses,
@@ -876,8 +1030,6 @@ const getAppointmentStatusBreakdown = async ({
     appointmentsScopeFallback,
     appointmentsPatient,
     appointmentsPatientFallback,
-    guardiansScope,
-    guardiansScopeFallback,
     patientsScope,
     patientsScopeFallback,
   } = await getSchemaColumnMappings();
@@ -887,38 +1039,44 @@ const getAppointmentStatusBreakdown = async ({
     appointmentsPatientFallback,
   );
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
-  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const appointmentScopeExpr = buildScopedColumnExpression(
     'a',
     appointmentsScope,
     appointmentsScopeFallback,
   );
-  const scopedAppointmentPredicate = buildScopeMatchPredicate('$1', [
+  const normalizedStatusExpr = buildNormalizedAppointmentStatusExpression('a');
+  const appointmentLocalDateExpr = buildAppointmentLocalDateExpression('a');
+  const activeAppointmentPredicate = excludeWeekendVaccinationAppointmentsSql(
+    'a',
+    appointmentLocalDateExpr,
+  );
+  const scopedAppointmentPredicate = buildScopeArrayMatchPredicate('$1', [
     appointmentScopeExpr,
     patientScopeExpr,
-    guardianScopeExpr,
   ]);
 
   const rows = await mapRows(
     `
       SELECT
-        LOWER(a.status::text) AS status,
+        ${normalizedStatusExpr} AS status,
         COUNT(*)::int AS count
       FROM appointments a
       LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(a.is_active, true) = true
+        AND COALESCE(p.is_active, false) = true
+        AND ${activeAppointmentPredicate}
         AND ${scopedAppointmentPredicate}
         AND ($5::int IS NULL OR p.guardian_id = $5)
-        AND a.scheduled_date::date BETWEEN $2::date AND $3::date
+        AND ${appointmentLocalDateExpr} BETWEEN $2::date AND $3::date
         AND (
           $4::text[] IS NULL
-          OR LOWER(a.status::text) = ANY($4::text[])
+          OR ${normalizedStatusExpr} = ANY($4::text[])
         )
-      GROUP BY LOWER(a.status::text)
+      GROUP BY ${normalizedStatusExpr}
       ORDER BY count DESC
     `,
-    [facilityId, startDate, endDate, toNullableArray(statuses), guardianId],
+    [toNullableArray(scopeIds), startDate, endDate, toNullableArray(statuses), guardianId],
   );
 
   return rows;
@@ -926,44 +1084,46 @@ const getAppointmentStatusBreakdown = async ({
 
 const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
   const mappings = await getSchemaColumnMappings();
-  const {
-    inventoryLowStockThreshold,
-    inventoryCriticalStockThreshold,
-  } = mappings;
-  // NOTE: inventory table has no facility scoping, so we ignore inventoryScope
-  const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
-  const lowThresholdExpr = inventoryLowStockThreshold
-    ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
-    : '10';
-  const criticalThresholdExpr = inventoryCriticalStockThreshold
-    ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
-    : '5';
-
-  // Build WHERE clause - no facility filtering for inventory table
-  const whereConditions = ['COALESCE(vi.is_active, true) = true'];
   const params = [];
   let paramIndex = 1;
-  
-  // Inventory table is global, no facility filtering
-  
-  whereConditions.push(`($${paramIndex}::int[] IS NULL OR vi.vaccine_id = ANY($${paramIndex}::int[]))`);
+
+  const inventoryScopeExpr = buildScopedColumnExpression(
+    'vi',
+    mappings.inventoryScope,
+    mappings.inventoryScopeFallback,
+  );
+  const facilityPlaceholder = inventoryScopeExpr !== 'NULL' ? `$${paramIndex}` : null;
+  if (facilityPlaceholder) {
+    params.push(facilityId);
+    paramIndex += 1;
+  }
+
+  const vaccineIdsPlaceholder = `$${paramIndex}`;
   params.push(toNullableArray(vaccineIds));
+  const inventoryRollupCte = buildInventoryRollupCte({
+    mappings,
+    facilityPlaceholder,
+    vaccineIdsPlaceholder,
+  });
 
   const rows = await mapRows(
     `
+      WITH ${inventoryRollupCte}
       SELECT
         COUNT(*)::int AS total_items,
-        COALESCE(SUM(${stockExpr}), 0)::int AS total_available_doses,
+        COALESCE(SUM(available_doses), 0)::int AS total_available_doses,
         COUNT(*) FILTER (
-          WHERE ${stockExpr} <= ${lowThresholdExpr}
+          WHERE available_doses <= low_threshold
+            AND available_doses > critical_threshold
+            AND available_doses > 0
         )::int AS low_stock_count,
         COUNT(*) FILTER (
-          WHERE ${stockExpr} <= ${criticalThresholdExpr}
+          WHERE available_doses <= critical_threshold
+            AND available_doses > 0
         )::int AS critical_stock_count,
-        COUNT(*) FILTER (WHERE ${stockExpr} <= 0)::int AS out_of_stock_count,
-        COALESCE(SUM(vi.expired_wasted), 0)::int AS wasted
-      FROM vaccine_inventory vi
-      WHERE ${whereConditions.join(' AND ')}
+        COUNT(*) FILTER (WHERE available_doses <= 0)::int AS out_of_stock_count,
+        0::int AS wasted
+      FROM inventory_rollup
     `,
     params,
   );
@@ -980,64 +1140,47 @@ const getInventorySnapshot = async ({ facilityId, vaccineIds }) => {
 
 const getInventoryByVaccine = async ({ facilityId, vaccineIds, vaccineKeys }) => {
   const mappings = await getSchemaColumnMappings();
-  const {
-    inventoryLowStockThreshold,
-    inventoryCriticalStockThreshold,
-  } = mappings;
-  // NOTE: inventory table has no facility scoping, so we ignore inventoryScope
-  const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
-  const lowThresholdExpr = inventoryLowStockThreshold
-    ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
-    : '10';
-  const criticalThresholdExpr = inventoryCriticalStockThreshold
-    ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
-    : '5';
-
-  // Build JOIN conditions - no facility filtering for inventory table
-  const joinConditions = [
-    'vi.vaccine_id = vd.vaccine_id',
-    'COALESCE(vi.is_active, true) = true',
-  ];
   const params = [];
   let paramIndex = 1;
-  
-  // Inventory table is global, no facility filtering
-  
-  joinConditions.push(`($${paramIndex}::int[] IS NULL OR vi.vaccine_id = ANY($${paramIndex}::int[]))`);
+
+  const inventoryScopeExpr = buildScopedColumnExpression(
+    'vi',
+    mappings.inventoryScope,
+    mappings.inventoryScopeFallback,
+  );
+  const facilityPlaceholder = inventoryScopeExpr !== 'NULL' ? `$${paramIndex}` : null;
+  if (facilityPlaceholder) {
+    params.push(facilityId);
+    paramIndex += 1;
+  }
+
+  const vaccineIdsPlaceholder = `$${paramIndex}`;
   params.push(toNullableArray(vaccineIds));
   paramIndex++;
-  
+
+  const vaccineKeysPlaceholder = `$${paramIndex}`;
   params.push(vaccineKeys);
+  const inventoryRollupCte = buildInventoryRollupCte({
+    mappings,
+    facilityPlaceholder,
+    vaccineIdsPlaceholder,
+  });
 
   const rows = await mapRows(
     `
-      WITH vaccine_dim AS (
-        SELECT
-          v.id AS vaccine_id,
-          ${VACCINE_KEY_CASE_SQL} AS vaccine_key
-        FROM vaccines v
-        WHERE COALESCE(v.is_active, true) = true
-      ),
-      inventory_rollup AS (
-        SELECT
-          vd.vaccine_key,
-          COALESCE(SUM(${stockExpr}), 0)::int AS available_doses,
-          BOOL_OR(${stockExpr} <= ${lowThresholdExpr}) AS low_stock,
-          BOOL_OR(${stockExpr} <= ${criticalThresholdExpr}) AS critical_stock
-        FROM vaccine_dim vd
-        LEFT JOIN vaccine_inventory vi
-          ON ${joinConditions.join(' AND ')}
-        WHERE vd.vaccine_key = ANY($${paramIndex}::text[])
-        GROUP BY vd.vaccine_key
+      WITH requested_keys AS (
+        SELECT UNNEST(${vaccineKeysPlaceholder}::text[]) AS vaccine_key
       )
+      , ${inventoryRollupCte}
       SELECT
-        ir.vaccine_key,
-        ${vaccineNameCaseFromKeyExpression('ir.vaccine_key')} AS vaccine_name,
-        ir.available_doses,
-        COALESCE(ir.low_stock, false) AS low_stock,
-        COALESCE(ir.critical_stock, false) AS critical_stock
-      FROM inventory_rollup ir
-      ORDER BY ir.vaccine_key
+        rk.vaccine_key,
+        ${vaccineNameCaseFromKeyExpression('rk.vaccine_key')} AS vaccine_name,
+        COALESCE(ir.available_doses, 0)::int AS available_doses,
+        (COALESCE(ir.available_doses, 0) <= COALESCE(ir.low_threshold, 10)) AS low_stock,
+        (COALESCE(ir.available_doses, 0) <= COALESCE(ir.critical_threshold, 5)) AS critical_stock
+      FROM requested_keys rk
+      LEFT JOIN inventory_rollup ir ON ir.vaccine_key = rk.vaccine_key
+      ORDER BY array_position(${vaccineKeysPlaceholder}::text[], rk.vaccine_key)
     `,
     params,
   );
@@ -1066,6 +1209,8 @@ const getVaccineProgress = async ({
     alias: 'ir',
     statusColumn: immunizationStatus,
   });
+  const completionDateExpr = buildVaccinationCompletionDateExpression('ir');
+  const adjustedDueDateExpr = buildVaccinationAdjustedDueDateExpression('ir');
   const scopedVaccinationPredicate = buildScopeMatchPredicate('$1', [
     patientScopeExpr,
     guardianScopeExpr,
@@ -1085,8 +1230,8 @@ const getVaccineProgress = async ({
           ir.patient_id,
           ir.vaccine_id,
           ${immunizationStatusExpr} AS status,
-          ir.admin_date::date AS admin_date,
-          ir.next_due_date::date AS next_due_date
+          ${completionDateExpr} AS admin_date,
+          ${adjustedDueDateExpr} AS next_due_date
         FROM immunization_records ir
         JOIN patients p ON p.id = ir.patient_id
         LEFT JOIN guardians g ON g.id = p.guardian_id
@@ -1100,10 +1245,12 @@ const getVaccineProgress = async ({
         ${vaccineNameCaseFromKeyExpression('vd.vaccine_key')} AS vaccine_name,
         COUNT(fr.*) FILTER (
           WHERE fr.admin_date BETWEEN $2::date AND $3::date
+            AND ${weekdayPredicateSql('fr.admin_date')}
             AND fr.status IN ('completed', 'attended')
         )::int AS doses_administered,
         COUNT(DISTINCT fr.patient_id) FILTER (
           WHERE fr.admin_date BETWEEN $2::date AND $3::date
+            AND ${weekdayPredicateSql('fr.admin_date')}
             AND fr.status IN ('completed', 'attended')
         )::int AS infants_covered,
         COUNT(fr.*) FILTER (
@@ -1111,7 +1258,7 @@ const getVaccineProgress = async ({
             AND fr.status IN ('scheduled', 'pending')
         )::int AS due_count,
         COUNT(fr.*) FILTER (
-          WHERE fr.next_due_date < CURRENT_DATE
+          WHERE fr.next_due_date < ${CLINIC_TODAY_SQL}
             AND fr.status IN ('scheduled', 'pending')
         )::int AS overdue_count
       FROM vaccine_dim vd
@@ -1158,6 +1305,7 @@ const getDailyVaccinationTrend = async ({
     alias: 'ir',
     statusColumn: immunizationStatus,
   });
+  const completionDateExpr = buildVaccinationCompletionDateExpression('ir');
   const scopedVaccinationPredicate = buildScopeMatchPredicate('$1', [
     patientScopeExpr,
     guardianScopeExpr,
@@ -1166,14 +1314,15 @@ const getDailyVaccinationTrend = async ({
   const rows = await mapRows(
     `
       SELECT
-        ir.admin_date::date AS day,
+        ${completionDateExpr} AS day,
         COUNT(*)::int AS count
       FROM immunization_records ir
       JOIN patients p ON p.id = ir.patient_id
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(ir.is_active, true) = true
         AND COALESCE(p.is_active, true) = true
-        AND ir.admin_date BETWEEN $2::date AND $3::date
+        AND ${completionDateExpr} BETWEEN $2::date AND $3::date
+        AND ${weekdayPredicateSql(completionDateExpr)}
         AND ${scopedVaccinationPredicate}
         AND ($6::int IS NULL OR p.guardian_id = $6)
         AND ($4::int[] IS NULL OR ir.vaccine_id = ANY($4::int[]))
@@ -1181,8 +1330,8 @@ const getDailyVaccinationTrend = async ({
           $5::text[] IS NULL
           OR ${immunizationStatusExpr} = ANY($5::text[])
         )
-      GROUP BY ir.admin_date::date
-      ORDER BY ir.admin_date::date ASC
+      GROUP BY ${completionDateExpr}
+      ORDER BY ${completionDateExpr} ASC
     `,
     [facilityId, startDate, endDate, toNullableArray(vaccineIds), toNullableArray(statuses), guardianId],
   );
@@ -1190,14 +1339,12 @@ const getDailyVaccinationTrend = async ({
   return rows;
 };
 
-const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, statuses, guardianId }) => {
+const getDailyAppointmentTrend = async ({ scopeIds, startDate, endDate, statuses, guardianId }) => {
   const {
     appointmentsScope,
     appointmentsScopeFallback,
     appointmentsPatient,
     appointmentsPatientFallback,
-    guardiansScope,
-    guardiansScopeFallback,
     patientsScope,
     patientsScopeFallback,
   } = await getSchemaColumnMappings();
@@ -1207,38 +1354,44 @@ const getDailyAppointmentTrend = async ({ facilityId, startDate, endDate, status
     appointmentsPatientFallback,
   );
   const patientScopeExpr = buildScopedColumnExpression('p', patientsScope, patientsScopeFallback);
-  const guardianScopeExpr = buildScopedColumnExpression('g', guardiansScope, guardiansScopeFallback);
   const appointmentScopeExpr = buildScopedColumnExpression(
     'a',
     appointmentsScope,
     appointmentsScopeFallback,
   );
-  const scopedAppointmentPredicate = buildScopeMatchPredicate('$1', [
+  const normalizedStatusExpr = buildNormalizedAppointmentStatusExpression('a');
+  const appointmentLocalDateExpr = buildAppointmentLocalDateExpression('a');
+  const activeAppointmentPredicate = excludeWeekendVaccinationAppointmentsSql(
+    'a',
+    appointmentLocalDateExpr,
+  );
+  const scopedAppointmentPredicate = buildScopeArrayMatchPredicate('$1', [
     appointmentScopeExpr,
     patientScopeExpr,
-    guardianScopeExpr,
   ]);
 
   const rows = await mapRows(
     `
       SELECT
-        a.scheduled_date::date AS day,
+        ${appointmentLocalDateExpr} AS day,
         COUNT(*)::int AS count
       FROM appointments a
       LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE COALESCE(a.is_active, true) = true
-        AND a.scheduled_date::date BETWEEN $2::date AND $3::date
+        AND COALESCE(p.is_active, false) = true
+        AND ${activeAppointmentPredicate}
+        AND ${appointmentLocalDateExpr} BETWEEN $2::date AND $3::date
         AND ${scopedAppointmentPredicate}
         AND ($5::int IS NULL OR p.guardian_id = $5)
         AND (
           $4::text[] IS NULL
-          OR LOWER(a.status::text) = ANY($4::text[])
+          OR ${normalizedStatusExpr} = ANY($4::text[])
         )
-      GROUP BY a.scheduled_date::date
-      ORDER BY a.scheduled_date::date ASC
+      GROUP BY ${appointmentLocalDateExpr}
+      ORDER BY ${appointmentLocalDateExpr} ASC
     `,
-    [facilityId, startDate, endDate, toNullableArray(statuses), guardianId],
+    [toNullableArray(scopeIds), startDate, endDate, toNullableArray(statuses), guardianId],
   );
 
   return rows;
@@ -1278,18 +1431,18 @@ const getDemographics = async ({ facilityId, guardianId }) => {
           COUNT(sp.id) FILTER (
             WHERE sp.dob IS NOT NULL
               AND (
-                (buckets.sort_order = 1 AND AGE(CURRENT_DATE, sp.dob) < INTERVAL '6 months')
+                (buckets.sort_order = 1 AND AGE(${CLINIC_TODAY_SQL}, sp.dob) < INTERVAL '6 months')
                 OR (
                   buckets.sort_order = 2
-                  AND AGE(CURRENT_DATE, sp.dob) >= INTERVAL '6 months'
-                  AND AGE(CURRENT_DATE, sp.dob) < INTERVAL '12 months'
+                  AND AGE(${CLINIC_TODAY_SQL}, sp.dob) >= INTERVAL '6 months'
+                  AND AGE(${CLINIC_TODAY_SQL}, sp.dob) < INTERVAL '12 months'
                 )
                 OR (
                   buckets.sort_order = 3
-                  AND AGE(CURRENT_DATE, sp.dob) >= INTERVAL '12 months'
-                  AND AGE(CURRENT_DATE, sp.dob) < INTERVAL '24 months'
+                  AND AGE(${CLINIC_TODAY_SQL}, sp.dob) >= INTERVAL '12 months'
+                  AND AGE(${CLINIC_TODAY_SQL}, sp.dob) < INTERVAL '24 months'
                 )
-                OR (buckets.sort_order = 4 AND AGE(CURRENT_DATE, sp.dob) >= INTERVAL '24 months')
+                OR (buckets.sort_order = 4 AND AGE(${CLINIC_TODAY_SQL}, sp.dob) >= INTERVAL '24 months')
               )
           ),
           0
@@ -1415,7 +1568,7 @@ const getReminderStats = async ({ startDate, endDate, facilityId = null }) => {
         )::int AS sms_failed,
         COUNT(*) FILTER (WHERE ${unreadExpr} = false)::int AS unread_notifications
       FROM notifications n
-      WHERE n.created_at::date BETWEEN $1::date AND $2::date
+      WHERE ${toClinicDateSql('n.created_at')} BETWEEN $1::date AND $2::date
       ${notificationsScopeClause}
     `,
     notificationParams,
@@ -1427,7 +1580,7 @@ const getReminderStats = async ({ startDate, endDate, facilityId = null }) => {
         COUNT(*) FILTER (WHERE LOWER(COALESCE(s.status, '')) = 'failed')::int AS sms_log_failed,
         COUNT(*)::int AS sms_log_total
       FROM sms_logs s
-      WHERE s.created_at::date BETWEEN $1::date AND $2::date
+      WHERE ${toClinicDateSql('s.created_at')} BETWEEN $1::date AND $2::date
     `,
     [startDate, endDate],
   );
@@ -1562,7 +1715,7 @@ const getRecentActivity = async ({
           AND COALESCE(p.is_active, true) = true
           AND ($1::int IS NULL OR ${patientScopeExpr} = $1)
           AND ($5::int IS NULL OR p.guardian_id = $5)
-          AND ir.created_at::date BETWEEN $2::date AND $3::date
+          AND ${toClinicDateSql('ir.created_at')} BETWEEN $2::date AND $3::date
 
         UNION ALL
 
@@ -1586,9 +1739,10 @@ const getRecentActivity = async ({
         FROM appointments a
         LEFT JOIN patients p ON p.id = ${appointmentPatientExpr}
         WHERE COALESCE(a.is_active, true) = true
+          AND COALESCE(p.is_active, false) = true
           AND ($1::int IS NULL OR COALESCE(${patientScopeExpr}, ${appointmentScopeExpr}) = $1)
           AND ($5::int IS NULL OR p.guardian_id = $5)
-          AND a.updated_at::date BETWEEN $2::date AND $3::date
+          AND ${toClinicDateSql('a.updated_at')} BETWEEN $2::date AND $3::date
 
         UNION ALL
 
@@ -1609,7 +1763,7 @@ const getRecentActivity = async ({
         FROM vaccine_inventory_transactions vit
         LEFT JOIN vaccines v ON v.id = vit.vaccine_id
         WHERE ($1::int IS NULL OR ${inventoryTxnScopeExpr} = $1)
-          AND vit.created_at::date BETWEEN $2::date AND $3::date
+          AND ${toClinicDateSql('vit.created_at')} BETWEEN $2::date AND $3::date
 
         UNION ALL
 
@@ -1625,7 +1779,7 @@ const getRecentActivity = async ({
             ELSE 'info'
           END::text AS severity
         FROM notifications n
-        WHERE n.created_at::date BETWEEN $2::date AND $3::date
+        WHERE ${toClinicDateSql('n.created_at')} BETWEEN $2::date AND $3::date
           ${notificationScopeClause}
       ) activity
       ORDER BY activity.activity_at DESC
@@ -1643,121 +1797,66 @@ const resetSchemaColumnMappingCache = () => {
 
 const getLowStockAlerts = async ({ facilityId, vaccineIds, limit }) => {
   const mappings = await getSchemaColumnMappings();
-  const {
-    inventoryAlertsScope,
-    inventoryAlertsScopeFallback,
-    inventoryLowStockThreshold,
-    inventoryCriticalStockThreshold,
-  } = mappings;
-  const inventoryAlertScopeExpr = buildScopedColumnExpression(
-    'vsa',
-    inventoryAlertsScope,
-    inventoryAlertsScopeFallback,
+  const inventoryScopeExpr = buildScopedColumnExpression(
+    'vi',
+    mappings.inventoryScope,
+    mappings.inventoryScopeFallback,
   );
-  const stockExpr = buildInventoryStockExpression({ alias: 'vi', mappings });
-  const lowThresholdExpr = inventoryLowStockThreshold
-    ? `COALESCE(vi.${inventoryLowStockThreshold}, 0)`
-    : '10';
-  const criticalThresholdExpr = inventoryCriticalStockThreshold
-    ? `COALESCE(vi.${inventoryCriticalStockThreshold}, 0)`
-    : '5';
-  const activeStockAlertPredicate = buildActiveStockAlertPredicate({
-    alias: 'vsa',
-    mappings,
-  });
-  const stockAlertTimestampExpr = buildStockAlertTimestampExpression({
-    alias: 'vsa',
-    mappings,
-  });
-  const stockAlertScopePredicate = buildScopeMatchPredicate('$1', [inventoryAlertScopeExpr]);
-  const stockAlertSeverityExpr = buildStockAlertSeverityExpression({
-    alias: 'vsa',
-    mappings,
-    stockExpr: mappings.stockAlertsCurrentStock
-      ? `COALESCE(vsa.${mappings.stockAlertsCurrentStock}, 0)`
-      : '0',
-    lowThresholdExpr: mappings.stockAlertsThresholdValue
-      ? `COALESCE(vsa.${mappings.stockAlertsThresholdValue}, 0)`
-      : '0',
-    criticalThresholdExpr: mappings.stockAlertsThresholdValue
-      ? `COALESCE(vsa.${mappings.stockAlertsThresholdValue}, 0)`
-      : '0',
-  });
-  const stockAlertMessageExpr = mappings.stockAlertsMessage
-    ? `COALESCE(NULLIF(vsa.${mappings.stockAlertsMessage}, ''), CONCAT(COALESCE(v.name, 'Vaccine'), ' stock alert'))`
-    : `CONCAT(COALESCE(v.name, 'Vaccine'), ' stock alert')`;
-  const stockAlertCurrentStockExpr = mappings.stockAlertsCurrentStock
-    ? `COALESCE(vsa.${mappings.stockAlertsCurrentStock}, 0)`
-    : '0';
-  const stockAlertThresholdExpr = mappings.stockAlertsThresholdValue
-    ? `COALESCE(vsa.${mappings.stockAlertsThresholdValue}, 0)`
-    : '0';
-
-  const activeAlertRows = await mapRows(
-    `
-      SELECT
-        vsa.id::text AS id,
-        'inventory'::text AS type,
-        ${stockAlertSeverityExpr} AS severity,
-        ${stockAlertMessageExpr} AS message,
-        ${stockAlertTimestampExpr} AS alert_at,
-        v.id AS vaccine_id,
-        COALESCE(v.name, 'Vaccine') AS vaccine_name,
-        ${stockAlertCurrentStockExpr}::int AS current_stock,
-        ${stockAlertThresholdExpr}::int AS threshold_value
-      FROM vaccine_stock_alerts vsa
-      LEFT JOIN vaccines v ON v.id = vsa.vaccine_id
-      WHERE ${activeStockAlertPredicate}
-        AND ${stockAlertScopePredicate}
-        AND ($2::int[] IS NULL OR vsa.vaccine_id = ANY($2::int[]))
-      ORDER BY
-        CASE
-          WHEN ${stockAlertSeverityExpr} = 'critical' THEN 0
-          ELSE 1
-        END ASC,
-        ${stockAlertTimestampExpr} DESC
-      LIMIT $3
-    `,
-    [facilityId, toNullableArray(vaccineIds), limit || 50],
-  );
-
-  if (activeAlertRows.length > 0) {
-    return activeAlertRows;
+  const params = [];
+  let paramIndex = 1;
+  const facilityPlaceholder = inventoryScopeExpr !== 'NULL' ? `$${paramIndex}` : null;
+  if (facilityPlaceholder) {
+    params.push(facilityId);
+    paramIndex += 1;
   }
 
-  const derivedRows = await mapRows(
+  const vaccineIdsPlaceholder = `$${paramIndex}`;
+  params.push(toNullableArray(vaccineIds));
+  paramIndex += 1;
+
+  const limitPlaceholder = `$${paramIndex}`;
+  params.push(limit || 50);
+
+  const inventoryRollupCte = buildInventoryRollupCte({
+    mappings,
+    facilityPlaceholder,
+    vaccineIdsPlaceholder,
+  });
+
+  return mapRows(
     `
+      WITH ${inventoryRollupCte}
       SELECT
-        vi.id::text AS id,
+        CONCAT('inventory-', ir.vaccine_key)::text AS id,
         'inventory'::text AS type,
-        CASE 
-          WHEN ${stockExpr} <= ${criticalThresholdExpr} THEN 'critical'
-          WHEN ${stockExpr} <= ${lowThresholdExpr} THEN 'warning'
-          ELSE 'info'
+        CASE
+          WHEN ir.available_doses <= ir.critical_threshold THEN 'critical'
+          ELSE 'warning'
         END AS severity,
-        CONCAT(v.name, ' is low on stock (', ${stockExpr}, ' doses remaining)') AS message,
+        CONCAT(
+          ${vaccineNameCaseFromKeyExpression('ir.vaccine_key')},
+          ' is low on stock (',
+          ir.available_doses,
+          ' doses remaining)'
+        ) AS message,
         CURRENT_TIMESTAMP AS alert_at,
-        v.id AS vaccine_id,
-        v.name AS vaccine_name,
-        ${stockExpr}::int AS current_stock,
-        ${lowThresholdExpr}::int AS threshold_value
-      FROM vaccine_inventory vi
-      LEFT JOIN vaccines v ON v.id = vi.vaccine_id
-      WHERE COALESCE(vi.is_active, true) = true
-        AND ($1::int[] IS NULL OR vi.vaccine_id = ANY($1::int[]))
-        AND ${stockExpr} <= ${lowThresholdExpr}
-      ORDER BY 
-        CASE 
-          WHEN ${stockExpr} <= ${criticalThresholdExpr} THEN 0
+        NULL::int AS vaccine_id,
+        ${vaccineNameCaseFromKeyExpression('ir.vaccine_key')} AS vaccine_name,
+        ir.available_doses::int AS current_stock,
+        ir.low_threshold::int AS threshold_value
+      FROM inventory_rollup ir
+      WHERE ir.available_doses <= ir.low_threshold
+      ORDER BY
+        CASE
+          WHEN ir.available_doses <= ir.critical_threshold THEN 0
           ELSE 1
         END ASC,
-        ${stockExpr} ASC
-      LIMIT $2
+        ir.available_doses ASC,
+        ir.vaccine_key ASC
+      LIMIT ${limitPlaceholder}::int
     `,
-    [toNullableArray(vaccineIds), limit || 50],
+    params,
   );
-
-  return derivedRows;
 };
 
 const getFailedSmsCount = async ({ startDate, endDate }) => {
@@ -1765,7 +1864,7 @@ const getFailedSmsCount = async ({ startDate, endDate }) => {
     `
       SELECT COUNT(*)::int AS failed_count
       FROM sms_logs s
-      WHERE s.created_at::date BETWEEN $1::date AND $2::date
+      WHERE ${toClinicDateSql('s.created_at')} BETWEEN $1::date AND $2::date
         AND LOWER(COALESCE(s.status, '')) = 'failed'
     `,
     [startDate, endDate],

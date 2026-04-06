@@ -3,21 +3,118 @@
 const pool = require('../db');
 const logger = require('../config/logger');
 
+const GUARDIAN_NOTIFICATION_TYPE_GROUPS = Object.freeze({
+  appointment: Object.freeze([
+    'appointment_confirmation',
+    'appointment_confirmed',
+    'appointment_status',
+    'appointment_status_changed',
+    'appointment_update',
+    'appointment_updated',
+    'appointment_rescheduled',
+    'appointment_cancelled',
+    'appointment_suggested',
+    'sms_confirmation_sent',
+  ]),
+  vaccination_update: Object.freeze([
+    'vaccine_administered',
+    'infant_registration',
+    'child_registration_success',
+    'child_registered',
+    'infant_created',
+    'transfer_in',
+    'transfer_in_submitted',
+  ]),
+  reminder: Object.freeze([
+    'appointment_reminder',
+    'vaccination_reminder',
+    'vaccination_schedule',
+    'vaccination_due',
+    'immunization_schedule',
+    'schedule_due',
+    'vaccine_due',
+    'upcoming_vaccine',
+    'next_vaccine_computed',
+    'missed_schedule',
+    'missed_appointment',
+    'missed_vaccine',
+    'overdue_vaccination',
+    'vaccine_overdue',
+  ]),
+  health_alert: Object.freeze(['health_alert']),
+  general: Object.freeze([
+    'system_announcement',
+    'announcement',
+    'new_message',
+    'profile_update',
+    'general',
+    'notification',
+    'auth',
+    'security',
+  ]),
+});
+
+const GUARDIAN_ALLOWED_NOTIFICATION_TYPES = Object.freeze(
+  Array.from(new Set(Object.values(GUARDIAN_NOTIFICATION_TYPE_GROUPS).flat())),
+);
+
+const GUARDIAN_LEGACY_TYPE_FILTER_MAP = Object.freeze({
+  vaccination_schedule: GUARDIAN_NOTIFICATION_TYPE_GROUPS.reminder,
+  missed_schedule: GUARDIAN_NOTIFICATION_TYPE_GROUPS.reminder,
+  infant_registration: GUARDIAN_NOTIFICATION_TYPE_GROUPS.vaccination_update,
+  system_announcement: GUARDIAN_NOTIFICATION_TYPE_GROUPS.general,
+});
+
+const normalizeFilterValue = (value) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+const resolveGuardianTypeFilterValues = (rawType) => {
+  const normalizedType = normalizeFilterValue(rawType);
+
+  if (!normalizedType || normalizedType === 'all') {
+    return [...GUARDIAN_ALLOWED_NOTIFICATION_TYPES];
+  }
+
+  if (GUARDIAN_NOTIFICATION_TYPE_GROUPS[normalizedType]) {
+    return [...GUARDIAN_NOTIFICATION_TYPE_GROUPS[normalizedType]];
+  }
+
+  if (GUARDIAN_LEGACY_TYPE_FILTER_MAP[normalizedType]) {
+    return [...GUARDIAN_LEGACY_TYPE_FILTER_MAP[normalizedType]];
+  }
+
+  if (GUARDIAN_ALLOWED_NOTIFICATION_TYPES.includes(normalizedType)) {
+    return [normalizedType];
+  }
+
+  return [];
+};
+
+const buildGuardianVisibilityClause = (guardianIdPlaceholder, typesPlaceholder) => `
+  guardian_id = ${guardianIdPlaceholder}
+  AND target_role IS DISTINCT FROM 'admin'
+  AND notification_type = ANY(${typesPlaceholder}::text[])
+`;
+
 class GuardianNotificationService {
   /**
    * Get notifications for a specific guardian
    */
   async getGuardianNotifications(guardianId, options = {}) {
     const { limit = 50, offset = 0, unreadOnly = false, type, search } = options;
+    const typeFilterValues = resolveGuardianTypeFilterValues(type);
+
+    if (type && type !== 'all' && typeFilterValues.length === 0) {
+      return [];
+    }
 
     try {
       let query = `
         SELECT * FROM notifications
-        WHERE guardian_id = $1
-        AND target_role != 'admin'
+        WHERE ${buildGuardianVisibilityClause('$1', '$2')}
       `;
-      const params = [guardianId];
-      let paramIndex = 2;
+      const params = [guardianId, typeFilterValues];
+      let paramIndex = 3;
 
       // Filter unread only
       if (unreadOnly) {
@@ -25,12 +122,6 @@ class GuardianNotificationService {
       }
 
       // Filter by notification type
-      if (type && type !== 'all') {
-        query += ` AND notification_type = $${paramIndex++}`;
-        params.push(type);
-      }
-
-      // Search filter
       if (search) {
         query += ` AND (title ILIKE $${paramIndex} OR message ILIKE $${paramIndex})`;
         params.push(`%${search}%`);
@@ -56,10 +147,9 @@ class GuardianNotificationService {
     try {
       const result = await pool.query(
         `SELECT COUNT(*) as count FROM notifications
-         WHERE guardian_id = $1
-         AND target_role != 'admin'
+         WHERE ${buildGuardianVisibilityClause('$1', '$2')}
          AND (is_read = FALSE OR is_read IS NULL)`,
-        [guardianId],
+        [guardianId, GUARDIAN_ALLOWED_NOTIFICATION_TYPES],
       );
       return parseInt(result.rows[0].count, 10);
     } catch (error) {
@@ -78,9 +168,10 @@ class GuardianNotificationService {
          FROM notifications
          WHERE id = $1
            AND guardian_id = $2
-           AND target_role != 'admin'
+           AND notification_type = ANY($3::text[])
+           AND target_role IS DISTINCT FROM 'admin'
          LIMIT 1`,
-        [notificationId, guardianId],
+        [notificationId, guardianId, GUARDIAN_ALLOWED_NOTIFICATION_TYPES],
       );
 
       return result.rows[0] || null;
@@ -98,9 +189,12 @@ class GuardianNotificationService {
       const result = await pool.query(
         `UPDATE notifications
          SET is_read = TRUE, read_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND guardian_id = $2 AND target_role != 'admin'
+         WHERE id = $1
+           AND guardian_id = $2
+           AND notification_type = ANY($3::text[])
+           AND target_role IS DISTINCT FROM 'admin'
          RETURNING *`,
-        [notificationId, guardianId],
+        [notificationId, guardianId, GUARDIAN_ALLOWED_NOTIFICATION_TYPES],
       );
       return result.rows[0];
     } catch (error) {
@@ -117,9 +211,12 @@ class GuardianNotificationService {
       const result = await pool.query(
         `UPDATE notifications
          SET is_read = FALSE, read_at = NULL, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND guardian_id = $2 AND target_role != 'admin'
+         WHERE id = $1
+           AND guardian_id = $2
+           AND notification_type = ANY($3::text[])
+           AND target_role IS DISTINCT FROM 'admin'
          RETURNING *`,
-        [notificationId, guardianId],
+        [notificationId, guardianId, GUARDIAN_ALLOWED_NOTIFICATION_TYPES],
       );
       return result.rows[0];
     } catch (error) {
@@ -136,11 +233,10 @@ class GuardianNotificationService {
       const result = await pool.query(
         `UPDATE notifications
          SET is_read = TRUE, read_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE guardian_id = $1
-           AND target_role != 'admin'
+         WHERE ${buildGuardianVisibilityClause('$1', '$2')}
            AND (is_read = FALSE OR is_read IS NULL)
          RETURNING id`,
-        [guardianId],
+        [guardianId, GUARDIAN_ALLOWED_NOTIFICATION_TYPES],
       );
       return result.rows.length;
     } catch (error) {
@@ -156,9 +252,12 @@ class GuardianNotificationService {
     try {
       const result = await pool.query(
         `DELETE FROM notifications
-         WHERE id = $1 AND guardian_id = $2 AND target_role != 'admin'
+         WHERE id = $1
+           AND guardian_id = $2
+           AND notification_type = ANY($3::text[])
+           AND target_role IS DISTINCT FROM 'admin'
          RETURNING id`,
-        [notificationId, guardianId],
+        [notificationId, guardianId, GUARDIAN_ALLOWED_NOTIFICATION_TYPES],
       );
       return result.rows.length > 0;
     } catch (error) {
@@ -227,6 +326,63 @@ class GuardianNotificationService {
       throw error;
     }
   }
+
+  /**
+   * Get guardian-safe notification summary stats
+   */
+  async getNotificationStats(guardianId) {
+    try {
+      const result = await pool.query(
+        `SELECT
+           COUNT(*)::int as total,
+           COUNT(*) FILTER (WHERE is_read = FALSE OR is_read IS NULL)::int as unread,
+           COUNT(*) FILTER (WHERE priority = 'urgent' AND (is_read = FALSE OR is_read IS NULL))::int as urgent_unread,
+           COUNT(*) FILTER (WHERE priority = 'high' AND (is_read = FALSE OR is_read IS NULL))::int as high_unread,
+           COUNT(*) FILTER (
+             WHERE notification_type = ANY($2::text[])
+               AND (is_read = FALSE OR is_read IS NULL)
+           )::int as appointment_reminders,
+           COUNT(*) FILTER (
+             WHERE notification_type = ANY($3::text[])
+               AND (is_read = FALSE OR is_read IS NULL)
+           )::int as vaccination_reminders,
+           COUNT(*) FILTER (
+             WHERE notification_type = ANY($4::text[])
+               AND (is_read = FALSE OR is_read IS NULL)
+           )::int as health_alerts
+         FROM notifications
+         WHERE ${buildGuardianVisibilityClause('$1', '$5')}`,
+        [
+          guardianId,
+          GUARDIAN_NOTIFICATION_TYPE_GROUPS.appointment
+            .concat(['appointment_reminder', 'missed_schedule', 'missed_appointment']),
+          GUARDIAN_NOTIFICATION_TYPE_GROUPS.reminder.filter(
+            (type) => !['appointment_reminder', 'missed_schedule', 'missed_appointment'].includes(type),
+          ),
+          GUARDIAN_NOTIFICATION_TYPE_GROUPS.health_alert,
+          GUARDIAN_ALLOWED_NOTIFICATION_TYPES,
+        ],
+      );
+
+      return result.rows[0] || {
+        total: 0,
+        unread: 0,
+        urgent_unread: 0,
+        high_unread: 0,
+        appointment_reminders: 0,
+        vaccination_reminders: 0,
+        health_alerts: 0,
+      };
+    } catch (error) {
+      logger.error('Error fetching guardian notification stats:', error);
+      throw error;
+    }
+  }
 }
 
-module.exports = new GuardianNotificationService();
+const guardianNotificationService = new GuardianNotificationService();
+
+guardianNotificationService.resolveTypeFilterValues = resolveGuardianTypeFilterValues;
+guardianNotificationService.allowedNotificationTypes = [...GUARDIAN_ALLOWED_NOTIFICATION_TYPES];
+
+module.exports = guardianNotificationService;

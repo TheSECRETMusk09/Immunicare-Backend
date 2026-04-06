@@ -18,12 +18,26 @@ jest.mock('../repositories/analyticsRepository', () => ({
   getFailedSmsCount: jest.fn(),
 }));
 
+jest.mock('../services/adminMetricsService', () => ({
+  getAdminMetricsSummary: jest.fn(),
+}));
+
 const analyticsService = require('../services/analyticsService');
 const analyticsRepository = require('../repositories/analyticsRepository');
+const { getAdminMetricsSummary } = require('../services/adminMetricsService');
 
 describe('analytics service dashboard contract', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    getAdminMetricsSummary.mockResolvedValue({
+      vaccination: { total: 0, completed: 0, pending: 0, cancelled: 0 },
+      inventory: { total_items: 0, low_stock_items: 0, expired_items: 0, total_value: 0 },
+      appointments: { total: 0, scheduled: 0, completed: 0, cancelled: 0, no_show: 0 },
+      guardians: { total: 0, active: 0, new_last_30_days: 0 },
+      infants: { total: 0, active: 0, up_to_date: 0, partially_vaccinated: 0, not_vaccinated: 0 },
+      users: { total: 0, staff: 0 },
+      scope: { facilityId: 1, type: 'clinic' },
+    });
 
     analyticsRepository.getVaccineDimension.mockResolvedValue([
       { vaccine_id: 1, vaccine_key: 'BCG', vaccine_name: 'BCG' },
@@ -77,7 +91,35 @@ describe('analytics service dashboard contract', () => {
       {
         vaccine_key: 'BCG',
         vaccine_name: 'BCG',
-        available_doses: 45,
+        available_doses: 300,
+        low_stock: false,
+        critical_stock: false,
+      },
+      {
+        vaccine_key: 'HEPB',
+        vaccine_name: 'Hepatitis B',
+        available_doses: 220,
+        low_stock: false,
+        critical_stock: false,
+      },
+      {
+        vaccine_key: 'PENTA',
+        vaccine_name: 'Pentavalent',
+        available_doses: 150,
+        low_stock: true,
+        critical_stock: false,
+      },
+      {
+        vaccine_key: 'MMR',
+        vaccine_name: 'MMR',
+        available_doses: 0,
+        low_stock: true,
+        critical_stock: true,
+      },
+      {
+        vaccine_key: 'IPV',
+        vaccine_name: 'IPV',
+        available_doses: 250,
         low_stock: false,
         critical_stock: false,
       },
@@ -167,7 +209,8 @@ describe('analytics service dashboard contract', () => {
     expect(payload.summary.vaccinationsCompletedToday).toBe(27);
     expect(payload.summary.infantsDueForVaccination).toBe(39);
     expect(payload.summary.overdueVaccinations).toBe(12);
-    expect(payload.summary.lowStockVaccines).toBe(4);
+    expect(payload.summary.pendingAppointments).toBe(15);
+    expect(payload.summary.lowStockVaccines).toBe(2);
     expect(payload.summary.totalAvailableVaccineDoses).toBe(920);
 
     expect(Array.isArray(payload.alerts)).toBe(true);
@@ -185,6 +228,42 @@ describe('analytics service dashboard contract', () => {
     payload.criticalAlerts.forEach((alert) => {
       expect(alert.severity).toBe('critical');
     });
+  });
+
+  test('passes merged clinic and facility scope ids into appointment analytics queries', async () => {
+    await analyticsService.getDashboardAnalytics({
+      query: {
+        period: 'month',
+        vaccineType: 'ALL',
+        vaccinationStatus: 'all',
+      },
+      user: {
+        role: 'ADMIN',
+        clinic_id: 1,
+        facility_id: 203,
+      },
+    });
+
+    expect(analyticsRepository.getAppointmentSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopeIds: [1, 203],
+      }),
+    );
+    expect(analyticsRepository.getAppointmentStatusBreakdown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopeIds: [1, 203],
+      }),
+    );
+    expect(analyticsRepository.getDailyAppointmentTrend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopeIds: [1, 203],
+      }),
+    );
+    expect(getAdminMetricsSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopeIds: [1, 203],
+      }),
+    );
   });
 
   test('supports stock alerts with missing id and timestamp using safe fallback values', async () => {

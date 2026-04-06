@@ -44,7 +44,11 @@ const getBearerTokenFromHeader = (authorizationHeader) => {
 };
 
 const getAccessTokenFromRequest = (req) => {
-  return req.cookies?.token || getBearerTokenFromHeader(req.headers?.authorization) || null;
+  return (
+    getBearerTokenFromHeader(req.headers?.authorization) ||
+    req.cookies?.token ||
+    null
+  );
 };
 
 const getRefreshTokenFromRequest = (req) => {
@@ -172,7 +176,7 @@ const optionalAuth = (req, res, next) => {
       }
       next();
     });
-  } catch (error) {
+  } catch (_error) {
     // Error occurred, continue without user
     next();
   }

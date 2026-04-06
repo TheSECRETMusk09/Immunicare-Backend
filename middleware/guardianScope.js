@@ -24,7 +24,9 @@ const CANONICAL_ROLES = {
  * @returns {number|null} - Guardian ID or null
  */
 const resolveGuardianId = (user) => {
-  if (!user) return null;
+  if (!user) {
+    return null;
+  }
   
   // Check if user is a guardian
   const isGuardian = 
@@ -35,7 +37,9 @@ const resolveGuardianId = (user) => {
     user.runtime_role === 'GUARDIAN' ||
     user.runtime_role === CANONICAL_ROLES.GUARDIAN;
   
-  if (!isGuardian) return null;
+  if (!isGuardian) {
+    return null;
+  }
   
   // Try guardian_id first (new tokens)
   if (user.guardian_id !== undefined && user.guardian_id !== null) {

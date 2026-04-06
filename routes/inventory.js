@@ -495,6 +495,13 @@ const getInventoryTransactionsFacilityColumn = () =>
     'clinic_id',
   );
 
+const getInventoryTransactionDateColumn = () =>
+  resolveFirstExistingColumn(
+    'vaccine_inventory_transactions',
+    ['transaction_date'],
+    null,
+  );
+
 const getVaccineBatchFacilityColumn = () =>
   resolveFirstExistingColumn('vaccine_batches', ['clinic_id', 'facility_id'], 'clinic_id');
 
@@ -1456,7 +1463,21 @@ router.put('/vaccine-inventory/:id', async (req, res) => {
 // Get vaccine inventory transactions
 router.get('/vaccine-inventory-transactions', async (req, res) => {
   try {
-    const { vaccine_id, clinic_id, transaction_type, limit = 100 } = req.query;
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    const {
+      vaccine_id,
+      clinic_id,
+      transaction_type,
+      type,
+      start_date,
+      startDate,
+      end_date,
+      endDate,
+      limit = 100000,
+    } = req.query;
 
     const vaccineIdCheck = validateNumberRange(vaccine_id, {
       label: 'vaccine_id',
@@ -1474,11 +1495,15 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
       label: 'limit',
       required: false,
       min: 1,
-      max: 500,
+      max: 100000,
       integer: true,
     });
 
-    const normalizedTransactionTypeInput = sanitizeText(transaction_type).toUpperCase();
+    const normalizedStartDate = sanitizeText(start_date ?? startDate);
+    const normalizedEndDate = sanitizeText(end_date ?? endDate);
+    const normalizedTransactionTypeInput = sanitizeText(
+      transaction_type ?? type,
+    ).toUpperCase();
     const normalizedTransactionType = normalizedTransactionTypeInput
       ? normalizeEnumValue(
         normalizedTransactionTypeInput,
@@ -1497,7 +1522,18 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
     if (limitCheck.error) {
       errors.limit = limitCheck.error;
     }
-    if (transaction_type && !normalizedTransactionType) {
+    Object.assign(
+      errors,
+      validateDateRange({
+        startDate: normalizedStartDate,
+        endDate: normalizedEndDate,
+        startKey: 'start_date',
+        endKey: 'end_date',
+        startLabel: 'Start date',
+        endLabel: 'End date',
+      }),
+    );
+    if ((transaction_type || type) && !normalizedTransactionType) {
       errors.transaction_type =
         `transaction_type must be one of ${VACCINE_INVENTORY_TRANSACTION_TYPES.join(', ')}`;
     }
@@ -1506,14 +1542,29 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
       return respondValidationError(res, errors);
     }
 
-    const safeLimit = limitCheck.value || 100;
+    const safeLimit = limitCheck.value || 100000;
     const scopeIds = resolveInventoryScopeIds(req, clinicIdCheck.value);
-    const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
-    const performerJoinSpec = await getInventoryActorJoinSpec('vit.performed_by', 'performer');
-    const approverJoinSpec = await getUserDisplayJoinSpec('vit.approved_by', 'approver');
+    const [
+      transactionFacilityColumn,
+      transactionDateColumn,
+      performerJoinSpec,
+      approverJoinSpec,
+    ] = await Promise.all([
+      getInventoryTransactionsFacilityColumn(),
+      getInventoryTransactionDateColumn(),
+      getInventoryActorJoinSpec('vit.performed_by', 'performer'),
+      getUserDisplayJoinSpec('vit.approved_by', 'approver'),
+    ]);
+    const movementDateSql = transactionDateColumn
+      ? `COALESCE(vit.${transactionDateColumn}::date, vit.created_at::date)`
+      : 'vit.created_at::date';
+    const movementTimestampSql = transactionDateColumn
+      ? `COALESCE(vit.${transactionDateColumn}::timestamp, vit.created_at)`
+      : 'vit.created_at';
 
     let query = `
       SELECT vit.*, v.name as vaccine_name, v.code as vaccine_code,
+             ${transactionDateColumn ? `vit.${transactionDateColumn}` : 'NULL::date'} as transaction_date,
              ${performerJoinSpec.displayNameSql} as performed_by_name,
              ${performerJoinSpec.usernameSql} as performed_by_username,
              ${performerJoinSpec.roleSql} as performed_by_role,
@@ -1550,7 +1601,19 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
       paramCount++;
     }
 
-    query += ` ORDER BY vit.created_at DESC LIMIT $${paramCount}`;
+    if (normalizedStartDate) {
+      query += ` AND ${movementDateSql} >= $${paramCount}`;
+      params.push(normalizedStartDate);
+      paramCount++;
+    }
+
+    if (normalizedEndDate) {
+      query += ` AND ${movementDateSql} <= $${paramCount}`;
+      params.push(normalizedEndDate);
+      paramCount++;
+    }
+
+    query += ` ORDER BY ${movementTimestampSql} DESC, vit.id DESC LIMIT $${paramCount}`;
     params.push(safeLimit);
 
     const result = await pool.query(query, params);
@@ -1607,12 +1670,14 @@ ${JSON.stringify(errors, null, 2)}
 
     const [
       transactionFacilityColumn,
+      transactionDateColumn,
       inventoryFacilityColumn,
       batchFacilityColumn,
       batchLotColumn,
       batchStorageColumn,
     ] = await Promise.all([
       getInventoryTransactionsFacilityColumn(),
+      getInventoryTransactionDateColumn(),
       getInventoryFacilityColumn(),
       getVaccineBatchFacilityColumn(),
       getVaccineBatchLotColumn(),
@@ -1850,28 +1915,52 @@ ${JSON.stringify(errors, null, 2)}
       });
     }
 
+    const transactionColumns = [
+      'vaccine_inventory_id',
+      'vaccine_id',
+      transactionFacilityColumn,
+      'transaction_type',
+      'quantity',
+      'previous_balance',
+      'new_balance',
+      'lot_number',
+      'batch_number',
+      'expiry_date',
+      'supplier_name',
+      'reference_number',
+      'performed_by',
+      'notes',
+    ];
+    const transactionValues = [
+      normalized.vaccine_inventory_id,
+      resolvedVaccineId,
+      facilityId,
+      normalized.transaction_type,
+      normalized.quantity,
+      previousBalance,
+      newBalance,
+      effectiveLotNumber,
+      effectiveLotNumber,
+      effectiveExpiryDate,
+      normalized.supplier_name,
+      normalized.reference_number,
+      userId,
+      normalized.notes,
+    ];
+
+    if (transactionDateColumn) {
+      transactionColumns.splice(10, 0, transactionDateColumn);
+      transactionValues.splice(10, 0, normalized.transaction_date || null);
+    }
+
+    const transactionPlaceholders = transactionValues.map(
+      (_value, index) => `$${index + 1}`,
+    );
     const transactionResult = await client.query(
       `INSERT INTO vaccine_inventory_transactions (
-        vaccine_inventory_id, vaccine_id, ${transactionFacilityColumn}, transaction_type, quantity,
-        previous_balance, new_balance, lot_number, batch_number, expiry_date,
-        supplier_name, reference_number, performed_by, notes
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
-      [
-        normalized.vaccine_inventory_id,
-        resolvedVaccineId,
-        facilityId,
-        normalized.transaction_type,
-        normalized.quantity,
-        previousBalance,
-        newBalance,
-        effectiveLotNumber,
-        effectiveLotNumber,
-        effectiveExpiryDate,
-        normalized.supplier_name,
-        normalized.reference_number,
-        userId,
-        normalized.notes,
-      ],
+        ${transactionColumns.join(', ')}
+      ) VALUES (${transactionPlaceholders.join(', ')}) RETURNING *`,
+      transactionValues,
     );
 
     const adjustmentDelta =
@@ -1983,6 +2072,12 @@ router.get('/vaccine-stock-alerts', canViewVaccineInventory, async (req, res) =>
       return respondValidationError(res, {
         clinic_id: clinicIdCheck.error,
       });
+    }
+
+    const syncClinicId =
+      clinicIdCheck.value || req.user?.clinic_id || req.user?.facility_id || null;
+    if (syncClinicId) {
+      await inventoryCalculationService.syncStockAlerts(syncClinicId);
     }
 
     let query = `
@@ -2270,6 +2365,12 @@ router.get('/vaccine-inventory/stats', async (req, res) => {
       });
     }
 
+    const syncClinicId =
+      clinicIdCheck.value || req.user?.clinic_id || req.user?.facility_id || null;
+    if (syncClinicId) {
+      await inventoryCalculationService.syncStockAlerts(syncClinicId);
+    }
+
     const inventoryFacilityColumn = await getInventoryFacilityColumn();
     const stockAlertsFacilityColumn = await getStockAlertsFacilityColumn();
     const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
@@ -2339,6 +2440,7 @@ router.get('/summary', async (req, res) => {
       return res.status(400).json({ error: 'Clinic ID required' });
     }
 
+    await inventoryCalculationService.syncStockAlerts(clinicId);
     const summary = await inventoryCalculationService.getUnifiedSummary(clinicId);
     const alerts = await inventoryCalculationService.getStockAlerts(clinicId);
 
@@ -2391,15 +2493,98 @@ router.get('/available-lots', async (req, res) => {
 // ============================================================================
 router.get('/stock-movements', async (req, res) => {
   try {
-    const { vaccine_id, limit = 250 } = req.query;
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    const {
+      vaccine_id,
+      vaccine_name,
+      transaction_type,
+      type,
+      start_date,
+      startDate,
+      end_date,
+      endDate,
+      limit = 100000,
+    } = req.query;
     const scopeIds = resolveInventoryScopeIds(req);
 
     if (scopeIds.length === 0) {
       return res.status(400).json({ error: 'Clinic ID required' });
     }
 
-    const safeLimit = Math.min(parseInt(limit) || 250, 1000);
-    const transactionFacilityColumn = await getInventoryTransactionsFacilityColumn();
+    const vaccineIdCheck = validateNumberRange(vaccine_id, {
+      label: 'vaccine_id',
+      required: false,
+      min: 1,
+      integer: true,
+    });
+    const limitCheck = validateNumberRange(limit, {
+      label: 'limit',
+      required: false,
+      min: 1,
+      max: 100000,
+      integer: true,
+    });
+    const normalizedVaccineName = sanitizeText(vaccine_name, {
+      maxLength: 100,
+    });
+    const normalizedStartDate = sanitizeText(start_date ?? startDate);
+    const normalizedEndDate = sanitizeText(end_date ?? endDate);
+    const normalizedTransactionTypeInput = sanitizeText(
+      transaction_type ?? type,
+    ).toUpperCase();
+    const normalizedTransactionType = normalizedTransactionTypeInput
+      ? normalizeEnumValue(
+        normalizedTransactionTypeInput,
+        VACCINE_INVENTORY_TRANSACTION_TYPES,
+        '',
+      )
+      : '';
+
+    const errors = {
+      ...validateDateRange({
+        startDate: normalizedStartDate,
+        endDate: normalizedEndDate,
+        startKey: 'start_date',
+        endKey: 'end_date',
+        startLabel: 'Start date',
+        endLabel: 'End date',
+      }),
+    };
+
+    if (vaccine_id && vaccineIdCheck.error) {
+      errors.vaccine_id = vaccineIdCheck.error;
+    }
+    if (limitCheck.error) {
+      errors.limit = limitCheck.error;
+    }
+    if ((transaction_type || type) && !normalizedTransactionType) {
+      errors.transaction_type =
+        `transaction_type must be one of ${VACCINE_INVENTORY_TRANSACTION_TYPES.join(', ')}`;
+    }
+
+    if (hasFieldErrors(errors)) {
+      return respondValidationError(res, errors);
+    }
+
+    const safeLimit = limitCheck.value || 100000;
+    const [
+      transactionFacilityColumn,
+      transactionDateColumn,
+      performerJoinSpec,
+    ] = await Promise.all([
+      getInventoryTransactionsFacilityColumn(),
+      getInventoryTransactionDateColumn(),
+      getInventoryActorJoinSpec('vit.performed_by', 'performer'),
+    ]);
+    const movementDateSql = transactionDateColumn
+      ? `COALESCE(vit.${transactionDateColumn}::date, vit.created_at::date)`
+      : 'vit.created_at::date';
+    const movementTimestampSql = transactionDateColumn
+      ? `COALESCE(vit.${transactionDateColumn}::timestamp, vit.created_at)`
+      : 'vit.created_at';
 
     let query = `
       SELECT 
@@ -2413,17 +2598,15 @@ router.get('/stock-movements', async (req, res) => {
         vit.reference_number,
         vit.notes,
         vit.created_at,
+        ${transactionDateColumn ? `vit.${transactionDateColumn}` : 'NULL::date'} as transaction_date,
         v.name as vaccine_name,
         v.code as vaccine_code,
-        COALESCE(
-          NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''),
-          u.username,
-          'System'
-        ) as performed_by_name,
-        u.role as performed_by_role
+        ${performerJoinSpec.displayNameSql} as performed_by_name,
+        ${performerJoinSpec.usernameSql} as performed_by_username,
+        ${performerJoinSpec.roleSql} as performed_by_role
       FROM vaccine_inventory_transactions vit
       JOIN vaccines v ON vit.vaccine_id = v.id
-      LEFT JOIN users u ON vit.performed_by = u.id
+      ${performerJoinSpec.joins.join('\n      ')}
       WHERE 1=1
     `;
 
@@ -2440,23 +2623,55 @@ router.get('/stock-movements', async (req, res) => {
       paramCount++;
     }
 
-    if (vaccine_id) {
+    if (vaccineIdCheck.value) {
       query += ` AND vit.vaccine_id = $${paramCount}`;
-      params.push(parseInt(vaccine_id));
+      params.push(vaccineIdCheck.value);
       paramCount++;
     }
 
-    query += ` ORDER BY vit.created_at DESC LIMIT $${paramCount}`;
+    if (normalizedVaccineName) {
+      query += ` AND LOWER(TRIM(COALESCE(v.name, ''))) = $${paramCount}`;
+      params.push(normalizedVaccineName.toLowerCase());
+      paramCount++;
+    }
+
+    if (normalizedTransactionType) {
+      query += ` AND vit.transaction_type = $${paramCount}`;
+      params.push(normalizedTransactionType);
+      paramCount++;
+    }
+
+    if (normalizedStartDate) {
+      query += ` AND ${movementDateSql} >= $${paramCount}`;
+      params.push(normalizedStartDate);
+      paramCount++;
+    }
+
+    if (normalizedEndDate) {
+      query += ` AND ${movementDateSql} <= $${paramCount}`;
+      params.push(normalizedEndDate);
+      paramCount++;
+    }
+
+    query += ` ORDER BY ${movementTimestampSql} DESC, vit.id DESC LIMIT $${paramCount}`;
     params.push(safeLimit);
 
     const result = await pool.query(query, params);
-    const movements = await inventoryCalculationService.calculateStockMovements(scopeIds[0]);
+    const movements = await inventoryCalculationService.calculateStockMovements({
+      clinicScope: scopeIds,
+      vaccineId: vaccineIdCheck.value || null,
+      vaccineName: normalizedVaccineName,
+      transactionType: normalizedTransactionType || null,
+      startDate: normalizedStartDate,
+      endDate: normalizedEndDate,
+    });
 
     res.json({
       success: true,
       data: {
         movements: result.rows,
         summary: movements,
+        total: result.rows.length,
       },
     });
   } catch (error) {

@@ -29,7 +29,23 @@ const authRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   // Do not count CORS preflight requests, which can inflate auth request counts in development.
-  skip: (req) => req.method === 'OPTIONS',
+  skip: (req) => {
+    if (req.method === 'OPTIONS') {
+      return true;
+    }
+
+    // Local development can trigger many background refresh calls from parallel tabs
+    // and automatic session checks. Keep login/register throttled, but do not block
+    // refresh-token exchanges for localhost workflows.
+    if (process.env.NODE_ENV !== 'production') {
+      const requestUrl = String(req.originalUrl || req.url || '');
+      if (requestUrl.includes('/api/auth/refresh')) {
+        return true;
+      }
+    }
+
+    return false;
+  },
   handler: (req, res, _next, options) => {
     res.status(429).json({
       success: false,
@@ -625,6 +641,53 @@ const BASE_PORT = parseInt(process.env.PORT, 10) || 5000;
 const MAX_PORT_ATTEMPTS = 10;
 const PORT_INCREMENT = 1;
 
+async function inspectCoreSchemaState() {
+  try {
+    const result = await pool.query(`
+      SELECT
+        current_database() AS database_name,
+        current_schema() AS schema_name,
+        (
+          SELECT COUNT(*)
+          FROM information_schema.tables
+          WHERE table_schema = current_schema()
+            AND table_type = 'BASE TABLE'
+        )::int AS table_count,
+        to_regclass('users')::text AS users_table,
+        to_regclass('roles')::text AS roles_table,
+        to_regclass('guardians')::text AS guardians_table,
+        to_regclass('patients')::text AS patients_table,
+        to_regclass('appointments')::text AS appointments_table
+    `);
+
+    const row = result.rows[0];
+    const missingCoreTables = [
+      ['users', row.users_table],
+      ['roles', row.roles_table],
+      ['guardians', row.guardians_table],
+      ['patients', row.patients_table],
+      ['appointments', row.appointments_table],
+    ]
+      .filter(([, value]) => !value)
+      .map(([tableName]) => tableName);
+
+    return {
+      databaseName: row.database_name,
+      schemaName: row.schema_name,
+      tableCount: row.table_count,
+      missingCoreTables,
+    };
+  } catch (error) {
+    return {
+      databaseName: null,
+      schemaName: null,
+      tableCount: null,
+      missingCoreTables: [],
+      inspectionError: error,
+    };
+  }
+}
+
 /**
  * Check if a port is available
  * @param {number} port - Port number to check
@@ -705,6 +768,38 @@ async function startServer() {
 
       if (health.healthy) {
         console.log(`Database connection successful (latency: ${health.latency}ms)`);
+        const schemaState = await inspectCoreSchemaState();
+
+        if (schemaState.inspectionError) {
+          console.warn(
+            `Database schema inspection failed after successful connection: ${schemaState.inspectionError.message}`,
+          );
+        } else if (schemaState.missingCoreTables.length > 0) {
+          console.error('Connected database is reachable but missing required Immunicare tables.');
+          console.error(`Database: ${schemaState.databaseName}`);
+          console.error(`Schema: ${schemaState.schemaName}`);
+          console.error(
+            `Missing core tables: ${schemaState.missingCoreTables.join(', ')}`,
+          );
+
+          if (schemaState.tableCount === 0) {
+            console.error('The active schema appears empty.');
+          }
+
+          console.error(
+            'Initialize the application schema before retrying the server:',
+          );
+          console.error(
+            `  npm run ${runtimeEnv === 'hostinger' ? 'db:init:hostinger' : isProductionLikeEnv ? 'db:init:prod' : 'db:init'}`,
+          );
+
+          if (isProductionLikeEnv) {
+            logger.error('CRITICAL: Database schema is incomplete for production. Exiting.');
+            process.exit(1);
+          } else {
+            logger.warn('Development server will continue with an incomplete database schema.');
+          }
+        }
       } else {
         console.error('Database health check failed:', health.error);
         const isAuthOrConfigDbError = ['28P01', '28000', '3D000', '3F000', '42501'].includes(

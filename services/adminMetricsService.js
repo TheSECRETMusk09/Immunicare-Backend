@@ -1,4 +1,13 @@
 const pool = require('../db');
+const inventoryCalculationService = require('./inventoryCalculationService');
+const {
+  CLINIC_TODAY_SQL,
+  excludeWeekendVaccinationAppointmentsSql,
+  rollForwardWeekendDateSql,
+  toClinicDateKey,
+  toClinicDateSql,
+  weekdayPredicateSql,
+} = require('../utils/clinicCalendar');
 
 const APPOINTMENT_PENDING_STATUSES = Object.freeze(['scheduled', 'confirmed', 'rescheduled']);
 const APPOINTMENT_NO_SHOW_STATUSES = Object.freeze(['no_show', 'no-show']);
@@ -36,15 +45,15 @@ const normalizeDateInput = (value, label = 'Date') => {
     throw error;
   }
 
-  const date = new Date(`${normalized}T00:00:00.000Z`);
-  if (Number.isNaN(date.getTime())) {
+  const clinicDateKey = toClinicDateKey(normalized);
+  if (!clinicDateKey) {
     const error = new Error(`${label} is invalid.`);
     error.statusCode = 400;
     error.code = 'INVALID_DATE';
     throw error;
   }
 
-  return normalized;
+  return clinicDateKey;
 };
 
 const buildScopedColumnExpression = (alias, primaryColumn, fallbackColumn = null) => {
@@ -87,6 +96,7 @@ const resolveSchema = async () => {
 
     const patientScopeColumn = pickColumn('patients', ['facility_id', 'clinic_id']);
     const appointmentScopeColumn = pickColumn('appointments', ['clinic_id', 'facility_id']);
+    const appointmentPatientColumn = pickColumn('appointments', ['patient_id', 'infant_id']);
     const guardianScopeColumn = pickColumn('guardians', ['clinic_id', 'facility_id']);
     const inventoryScopeColumn = pickColumn('vaccine_inventory', ['clinic_id', 'facility_id']);
     const batchScopeColumn = pickColumn('vaccine_batches', ['clinic_id', 'facility_id']);
@@ -105,6 +115,7 @@ const resolveSchema = async () => {
         appointmentScopeColumn,
         ['clinic_id', 'facility_id'],
       ),
+      appointmentPatientColumn,
       guardianScopeColumn,
       guardianScopeFallbackColumn: pickFallbackColumn(
         'guardians',
@@ -147,6 +158,7 @@ const resolveSchema = async () => {
       patientScopeFallbackColumn: 'clinic_id',
       appointmentScopeColumn: 'clinic_id',
       appointmentScopeFallbackColumn: 'facility_id',
+      appointmentPatientColumn: 'patient_id',
       guardianScopeColumn: 'clinic_id',
       guardianScopeFallbackColumn: 'facility_id',
       inventoryScopeColumn: 'clinic_id',
@@ -242,21 +254,27 @@ const buildImmunizationStatusExpression = (schema, alias = 'ir') => {
   return `LOWER(CASE WHEN ${alias}.admin_date IS NOT NULL THEN 'completed' ELSE 'scheduled' END)`;
 };
 
-const buildInventoryStockExpression = (schema, alias = 'vi') => {
-  if (schema.inventoryStockColumn) {
-    return `GREATEST(COALESCE(${alias}.${schema.inventoryStockColumn}, 0), 0)`;
-  }
+const buildVaccinationCompletionDateExpression = (alias = 'ir') => `
+  COALESCE(
+    ${toClinicDateSql(`${alias}.admin_date`)},
+    ${toClinicDateSql(`${alias}.created_at`)}
+  )
+`;
 
-  return `GREATEST(
-    COALESCE(${alias}.beginning_balance, 0)
-    + COALESCE(${alias}.received_during_period, 0)
-    + COALESCE(${alias}.transferred_in, 0)
-    - COALESCE(${alias}.transferred_out, 0)
-    - COALESCE(${alias}.expired_wasted, 0)
-    - COALESCE(${alias}.issuance, 0),
-    0
-  )`;
-};
+const buildVaccinationStatusDateExpression = (statusExpression, alias = 'ir') => `
+  CASE
+    WHEN ${statusExpression} IN ('completed', 'attended')
+      THEN ${buildVaccinationCompletionDateExpression(alias)}
+    ELSE ${rollForwardWeekendDateSql(`(${alias}.next_due_date)::date`)}
+  END
+`;
+
+const buildNormalizedAppointmentStatusExpression = (alias = 'a') => `
+  CASE
+    WHEN LOWER(REPLACE(COALESCE(${alias}.status::text, ''), '-', '_')) = 'completed' THEN 'attended'
+    ELSE LOWER(REPLACE(COALESCE(${alias}.status::text, ''), '-', '_'))
+  END
+`;
 
 const executeMetricsQueries = async ({
   startDate = '',
@@ -270,12 +288,12 @@ const executeMetricsQueries = async ({
   );
   const immunizationStatusExpression = buildImmunizationStatusExpression(schema, 'ir');
   const childStatusExpression = buildImmunizationStatusExpression(schema, 'irx');
-  const inventoryStockExpression = buildInventoryStockExpression(schema, 'vi');
-  const inventoryLowStockThresholdExpression = schema.inventoryLowStockThresholdColumn
-    ? `COALESCE(vi.${schema.inventoryLowStockThresholdColumn}, 10)`
-    : '10';
+  const vaccinationCompletionDateExpression = buildVaccinationCompletionDateExpression('ir');
+  const vaccinationStatusDateExpression = buildVaccinationStatusDateExpression(
+    immunizationStatusExpression,
+    'ir',
+  );
   const patientActiveExpression = schema.patientHasIsActive ? 'COALESCE(p.is_active, true)' : 'true';
-  const inventoryActiveExpression = schema.inventoryHasIsActive ? 'COALESCE(vi.is_active, true)' : 'true';
   const batchActiveExpression = schema.batchHasIsActive ? 'COALESCE(vb.is_active, true)' : 'true';
   const userActiveExpression = schema.userHasIsActive ? 'COALESCE(u.is_active, true)' : 'true';
   const appointmentActiveExpression = schema.appointmentHasIsActive ? 'COALESCE(a.is_active, true)' : 'true';
@@ -285,10 +303,21 @@ const executeMetricsQueries = async ({
     schema.patientScopeColumn,
     schema.patientScopeFallbackColumn,
   );
+  const appointmentScopeExpression = buildScopedColumnExpression(
+    'a',
+    schema.appointmentScopeColumn,
+    schema.appointmentScopeFallbackColumn,
+  );
   const guardianScopeExpression = buildScopedColumnExpression(
     'g',
     schema.guardianScopeColumn,
     schema.guardianScopeFallbackColumn,
+  );
+  const appointmentStatusExpression = buildNormalizedAppointmentStatusExpression('a');
+  const appointmentDateExpression = toClinicDateSql('a.scheduled_date');
+  const appointmentWeekendPredicate = excludeWeekendVaccinationAppointmentsSql(
+    'a',
+    appointmentDateExpression,
   );
 
   const vaccinationParams = [];
@@ -297,7 +326,12 @@ const executeMetricsQueries = async ({
     scopeIds: resolvedScopeIds,
     params: vaccinationParams,
   });
-  const vaccinationDateClause = buildDateClause('ir.admin_date::date', startDate, endDate, vaccinationParams);
+  const vaccinationDateClause = buildDateClause(
+    vaccinationStatusDateExpression,
+    startDate,
+    endDate,
+    vaccinationParams,
+  );
   const vaccinationQuery = `
     SELECT
       COUNT(*)::int AS total,
@@ -309,28 +343,12 @@ const executeMetricsQueries = async ({
     LEFT JOIN guardians g ON g.id = p.guardian_id
     WHERE COALESCE(ir.is_active, true) = true
       AND ${patientActiveExpression}
+      AND (
+        ${immunizationStatusExpression} NOT IN ('completed', 'attended')
+        OR ${weekdayPredicateSql(vaccinationCompletionDateExpression)}
+      )
       ${vaccinationScopeClause}
       ${vaccinationDateClause}
-  `;
-
-  const inventoryParams = [];
-  const inventoryScopeClause = buildScopeClause({
-    alias: 'vi',
-    primaryColumn: schema.inventoryScopeColumn,
-    fallbackColumn: schema.inventoryScopeFallbackColumn,
-    scopeIds: resolvedScopeIds,
-    params: inventoryParams,
-  });
-  const inventoryQuery = `
-    SELECT
-      COUNT(*)::int AS total_items,
-      COUNT(*) FILTER (
-        WHERE ${inventoryStockExpression} <= ${inventoryLowStockThresholdExpression}
-      )::int AS low_stock_items,
-      0::numeric AS total_value
-    FROM vaccine_inventory vi
-    WHERE ${inventoryActiveExpression}
-      ${inventoryScopeClause}
   `;
 
   const expiredParams = [];
@@ -345,34 +363,65 @@ const executeMetricsQueries = async ({
     SELECT COUNT(*)::int AS expired_items
     FROM vaccine_batches vb
     WHERE ${batchActiveExpression}
-      AND vb.expiry_date < CURRENT_DATE
+      AND vb.expiry_date < ${CLINIC_TODAY_SQL}
       ${batchScopeClause}
   `;
 
   const appointmentParams = [];
-  const appointmentScopeClause = buildScopeClause({
-    alias: 'a',
-    primaryColumn: schema.appointmentScopeColumn,
-    fallbackColumn: schema.appointmentScopeFallbackColumn,
-    scopeIds: resolvedScopeIds,
-    params: appointmentParams,
-  });
-  const appointmentDateClause = buildDateClause('a.scheduled_date::date', startDate, endDate, appointmentParams);
+  const appointmentJoins = schema.appointmentPatientColumn
+    ? `
+      LEFT JOIN patients p ON p.id = a.${schema.appointmentPatientColumn}
+      LEFT JOIN guardians g ON g.id = p.guardian_id
+    `
+    : '';
+  const appointmentScopeClause = schema.appointmentPatientColumn
+    ? buildScopeMatchClause({
+      expressions: [appointmentScopeExpression, patientScopeExpression, guardianScopeExpression],
+      scopeIds: resolvedScopeIds,
+      params: appointmentParams,
+    })
+    : buildScopeClause({
+      alias: 'a',
+      primaryColumn: schema.appointmentScopeColumn,
+      fallbackColumn: schema.appointmentScopeFallbackColumn,
+      scopeIds: resolvedScopeIds,
+      params: appointmentParams,
+    });
+  const appointmentDateClause = buildDateClause(
+    appointmentDateExpression,
+    startDate,
+    endDate,
+    appointmentParams,
+  );
+  const appointmentPatientEligibilityClause = schema.appointmentPatientColumn
+    ? schema.patientHasIsActive
+      ? 'AND p.id IS NOT NULL AND COALESCE(p.is_active, false) = true'
+      : 'AND p.id IS NOT NULL'
+    : '';
   const appointmentQuery = `
     SELECT
       COUNT(*)::int AS total,
-      COUNT(*) FILTER (WHERE LOWER(COALESCE(a.status::text, '')) = 'scheduled')::int AS scheduled,
-      COUNT(*) FILTER (WHERE LOWER(COALESCE(a.status::text, '')) = 'attended')::int AS completed,
-      COUNT(*) FILTER (WHERE LOWER(COALESCE(a.status::text, '')) = 'cancelled')::int AS cancelled,
       COUNT(*) FILTER (
-        WHERE LOWER(COALESCE(a.status::text, '')) = ANY($${appointmentParams.length + 1}::text[])
+        WHERE ${appointmentStatusExpression} IN ('scheduled', 'confirmed', 'rescheduled')
+      )::int AS scheduled,
+      COUNT(*) FILTER (
+        WHERE ${appointmentStatusExpression} = 'attended'
+      )::int AS completed,
+      COUNT(*) FILTER (
+        WHERE ${appointmentStatusExpression} = 'cancelled'
+      )::int AS cancelled,
+      COUNT(*) FILTER (
+        WHERE ${appointmentStatusExpression} = ANY($${appointmentParams.length + 1}::text[])
       )::int AS no_show,
       COUNT(*) FILTER (
-        WHERE a.scheduled_date::date < CURRENT_DATE
-          AND LOWER(COALESCE(a.status::text, '')) = ANY($${appointmentParams.length + 2}::text[])
+        WHERE ${appointmentDateExpression} < ${CLINIC_TODAY_SQL}
+          AND ${appointmentStatusExpression} = ANY($${appointmentParams.length + 2}::text[])
       )::int AS missed_follow_up_load
     FROM appointments a
+    ${appointmentJoins}
     WHERE ${appointmentActiveExpression}
+      ${appointmentPatientEligibilityClause}
+      AND ${appointmentWeekendPredicate}
       ${appointmentScopeClause}
       ${appointmentDateClause}
   `;
@@ -386,7 +435,12 @@ const executeMetricsQueries = async ({
     scopeIds: resolvedScopeIds,
     params: guardianParams,
   });
-  const guardianDateClause = buildDateClause('g.created_at::date', startDate, endDate, guardianParams);
+  const guardianDateClause = buildDateClause(
+    toClinicDateSql('g.created_at'),
+    startDate,
+    endDate,
+    guardianParams,
+  );
   const guardianQuery = `
     SELECT
       COUNT(*)::int AS total,
@@ -404,12 +458,33 @@ const executeMetricsQueries = async ({
     scopeIds: resolvedScopeIds,
     params: infantParams,
   });
-  const infantDateClause = buildDateClause('p.created_at::date', startDate, endDate, infantParams);
+  const infantDateClause = buildDateClause(
+    toClinicDateSql('p.created_at'),
+    startDate,
+    endDate,
+    infantParams,
+  );
   const infantQuery = `
     SELECT
       COUNT(*)::int AS total,
-      COUNT(*) FILTER (WHERE ${patientActiveExpression})::int AS active,
-      COUNT(*)::int AS up_to_date,
+      COUNT(*)::int AS active,
+      COUNT(*) FILTER (
+        WHERE EXISTS (
+          SELECT 1
+          FROM immunization_records irx
+          WHERE irx.patient_id = p.id
+            AND COALESCE(irx.is_active, true) = true
+            AND ${childStatusExpression} IN ('completed', 'attended')
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM immunization_records irx
+          WHERE irx.patient_id = p.id
+            AND COALESCE(irx.is_active, true) = true
+            AND ${childStatusExpression} IN ('pending', 'scheduled')
+            AND irx.admin_date IS NULL
+        )
+      )::int AS up_to_date,
       COUNT(*) FILTER (
         WHERE EXISTS (
           SELECT 1
@@ -417,12 +492,13 @@ const executeMetricsQueries = async ({
           WHERE irx.patient_id = p.id
             AND COALESCE(irx.is_active, true) = true
         )
-        AND NOT EXISTS (
+        AND EXISTS (
           SELECT 1
           FROM immunization_records irx
           WHERE irx.patient_id = p.id
             AND COALESCE(irx.is_active, true) = true
-            AND ${childStatusExpression} IN ('completed', 'attended')
+            AND ${childStatusExpression} IN ('pending', 'scheduled')
+            AND irx.admin_date IS NULL
         )
       )::int AS partially_vaccinated,
       COUNT(*) FILTER (
@@ -435,7 +511,7 @@ const executeMetricsQueries = async ({
       )::int AS not_vaccinated
     FROM patients p
     LEFT JOIN guardians g ON g.id = p.guardian_id
-    WHERE 1 = 1
+    WHERE ${patientActiveExpression}
       ${infantScopeClause}
       ${infantDateClause}
   `;
@@ -462,19 +538,28 @@ const executeMetricsQueries = async ({
       ${usersScopeClause}
   `;
 
-  const [vaccinationResult, inventoryResult, expiredResult, appointmentResult, guardianResult, infantResult, usersResult] =
+  const [vaccinationResult, expiredResult, appointmentResult, guardianResult, infantResult, usersResult, inventorySummary] =
     await Promise.all([
       pool.query(vaccinationQuery, vaccinationParams),
-      pool.query(inventoryQuery, inventoryParams),
       pool.query(expiredQuery, expiredParams),
       pool.query(appointmentQuery, appointmentParams),
       pool.query(guardianQuery, guardianParams),
       pool.query(infantQuery, infantParams),
       pool.query(usersQuery, usersParams),
+      resolvedScopeIds.length > 0
+        ? inventoryCalculationService.getUnifiedSummary(
+          resolvedScopeIds.length === 1 ? resolvedScopeIds[0] : resolvedScopeIds,
+        )
+        : Promise.resolve({
+          total_vaccines: 0,
+          low_stock_count: 0,
+          critical_count: 0,
+          out_of_stock_count: 0,
+          total_value: 0,
+        }),
     ]);
 
   const vaccination = vaccinationResult.rows[0] || {};
-  const inventory = inventoryResult.rows[0] || {};
   const expired = expiredResult.rows[0] || {};
   const appointments = appointmentResult.rows[0] || {};
   const guardians = guardianResult.rows[0] || {};
@@ -489,10 +574,13 @@ const executeMetricsQueries = async ({
       cancelled: parseMetricInt(vaccination.cancelled),
     },
     inventory: {
-      total_items: parseMetricInt(inventory.total_items),
-      low_stock_items: parseMetricInt(inventory.low_stock_items),
+      total_items: parseMetricInt(inventorySummary.total_vaccines),
+      low_stock_items:
+        parseMetricInt(inventorySummary.low_stock_count)
+        + parseMetricInt(inventorySummary.critical_count)
+        + parseMetricInt(inventorySummary.out_of_stock_count),
       expired_items: parseMetricInt(expired.expired_items),
-      total_value: parseMetricFloat(inventory.total_value),
+      total_value: parseMetricFloat(inventorySummary.total_value),
     },
     appointments: {
       total: parseMetricInt(appointments.total),

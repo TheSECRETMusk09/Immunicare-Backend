@@ -1,6 +1,13 @@
 const pool = require('../db');
 const { calculateVaccineReadiness } = require('./vaccineRulesEngine');
 const NotificationService = require('./notificationService');
+const {
+  CLINIC_TODAY_SQL,
+  getClinicTodayDateKey,
+  isWeekendDateKey,
+  shiftClinicDateKey,
+  toClinicDateKey,
+} = require('../utils/clinicCalendar');
 
 const notificationService = new NotificationService();
 
@@ -65,7 +72,8 @@ const calculateAgeInMonths = (dobString) => {
     return 0;
   }
   const birthDate = new Date(dobString);
-  const today = new Date();
+  const todayKey = getClinicTodayDateKey();
+  const today = todayKey ? new Date(`${todayKey}T12:00:00`) : new Date();
   return (today - birthDate) / (1000 * 60 * 60 * 24 * 30.44); // Approximate months
 };
 
@@ -179,10 +187,7 @@ const calculateNextValidDose = (dobString, vaccinationHistory = [], schedule = V
   return nextDoseInfo;
 };
 
-const isWeekend = (date) => {
-  const day = date.getDay();
-  return day === 0 || day === 6;
-};
+const isWeekend = (date) => isWeekendDateKey(date);
 
 const getHolidayInfo = (date) => {
   const month = date.getMonth() + 1;
@@ -207,15 +212,22 @@ const getHolidayInfo = (date) => {
 };
 
 const findEarliestValidDate = (startDateStr, _clinicId = null) => {
-  const startDate = new Date(startDateStr);
+  const startDateKey = toClinicDateKey(startDateStr);
   const maxDaysToCheck = 90; // Look ahead 3 months
 
+  if (!startDateKey) {
+    return null;
+  }
+
   for (let i = 0; i < maxDaysToCheck; i++) {
-    const checkDate = new Date(startDate);
-    checkDate.setDate(checkDate.getDate() + i);
+    const candidateDateKey = shiftClinicDateKey(startDateKey, i);
+    const checkDate = candidateDateKey ? new Date(`${candidateDateKey}T12:00:00`) : null;
+    if (!candidateDateKey || !checkDate) {
+      continue;
+    }
 
     // Skip weekends
-    if (isWeekend(checkDate)) {
+    if (isWeekend(candidateDateKey)) {
       continue;
     }
 
@@ -226,7 +238,7 @@ const findEarliestValidDate = (startDateStr, _clinicId = null) => {
     }
 
     // Return the first valid date found
-    return checkDate.toISOString().split('T')[0];
+    return candidateDateKey;
   }
 
   // If no valid date found in the period, return null
@@ -234,12 +246,7 @@ const findEarliestValidDate = (startDateStr, _clinicId = null) => {
 };
 
 const toDateKey = (value) => {
-  const parsedDate = new Date(value);
-  if (Number.isNaN(parsedDate.getTime())) {
-    return null;
-  }
-
-  return parsedDate.toISOString().split('T')[0];
+  return toClinicDateKey(value);
 };
 
 const resolveNextVaccineFromReadiness = (readiness = {}) => {
@@ -287,24 +294,21 @@ const findFirstSchedulableSlotWindow = async ({
   maxDaysToCheck = 90,
 }) => {
   const appointmentSchedulingService = require('./appointmentSchedulingService');
-  const normalizedStartDate = toDateKey(startDate) || toDateKey(new Date());
+  const normalizedStartDate = toDateKey(startDate) || getClinicTodayDateKey();
 
   if (!normalizedStartDate) {
     return null;
   }
 
-  const baseDate = new Date(`${normalizedStartDate}T00:00:00`);
-
   for (let dayOffset = 0; dayOffset < maxDaysToCheck; dayOffset += 1) {
-    const candidateDate = new Date(baseDate);
-    candidateDate.setDate(baseDate.getDate() + dayOffset);
+    const candidateDateKey = shiftClinicDateKey(normalizedStartDate, dayOffset);
+    const candidateDate = candidateDateKey ? new Date(`${candidateDateKey}T12:00:00`) : null;
 
-    if (isWeekend(candidateDate) || getHolidayInfo(candidateDate)) {
+    if (!candidateDateKey || !candidateDate) {
       continue;
     }
 
-    const candidateDateKey = toDateKey(candidateDate);
-    if (!candidateDateKey) {
+    if (isWeekend(candidateDateKey) || getHolidayInfo(candidateDate)) {
       continue;
     }
 
@@ -512,7 +516,10 @@ const getSuggestedAppointments = async ({ childId, facilityId = 'san_nicolas' })
     }
 
     // Step 5: Find available slots
-    const earliestValidDate = findEarliestValidDate(nextVaccine.date || new Date().toISOString().split('T')[0], facilityId);
+    const earliestValidDate = findEarliestValidDate(
+      nextVaccine.date || getClinicTodayDateKey(),
+      facilityId,
+    );
 
     if (!earliestValidDate) {
       return {
@@ -576,7 +583,7 @@ const checkVaccineStock = async (vaccineId, facilityId) => {
        WHERE vaccine_id = $1
          AND facility_id = $2
          AND quantity > 0
-         AND expiry_date > CURRENT_DATE
+         AND expiry_date > ${CLINIC_TODAY_SQL}
        GROUP BY vaccine_id`,
       [vaccineId, facilityId],
     );

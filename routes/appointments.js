@@ -39,6 +39,13 @@ const {
 } = require('../services/infantControlNumberService');
 const { writeAuditLog } = require('../services/auditLogService');
 const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
+const {
+  CLINIC_TODAY_SQL,
+  excludeWeekendVaccinationAppointmentsSql,
+  getClinicTodayDateKey,
+  toClinicDateKey,
+  toClinicDateSql,
+} = require('../utils/clinicCalendar');
 
 const router = express.Router();
 
@@ -92,6 +99,47 @@ const getAppointmentFacilityColumn = () =>
 const getAppointmentPatientColumn = () =>
   resolveFirstExistingColumn('appointments', ['patient_id', 'infant_id'], 'patient_id');
 
+const resolveFallbackColumn = async (tableName, primaryColumn, candidateColumns = []) => {
+  const fallbackCandidates = candidateColumns.filter(
+    (columnName) => columnName && columnName !== primaryColumn,
+  );
+
+  if (fallbackCandidates.length === 0) {
+    return null;
+  }
+
+  return resolveFirstExistingColumn(tableName, fallbackCandidates, null);
+};
+
+const buildScopedColumnExpression = (alias, primaryColumn, fallbackColumn = null) => {
+  const primary = primaryColumn ? `${alias}.${primaryColumn}` : null;
+  const fallback = fallbackColumn ? `${alias}.${fallbackColumn}` : null;
+
+  if (primary && fallback && primary !== fallback) {
+    return `COALESCE(${primary}, ${fallback})`;
+  }
+
+  return primary || fallback || 'NULL';
+};
+
+const getPatientFacilityColumns = async () => {
+  const primary = await getPatientFacilityColumn();
+  const fallback = await resolveFallbackColumn('patients', primary, ['facility_id', 'clinic_id']);
+
+  return { primary, fallback };
+};
+
+const getAppointmentFacilityColumns = async () => {
+  const primary = await getAppointmentFacilityColumn();
+  const fallback = await resolveFallbackColumn(
+    'appointments',
+    primary,
+    ['facility_id', 'clinic_id'],
+  );
+
+  return { primary, fallback };
+};
+
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 const requireAppointmentReadAccess = (req, res, next) => {
   if (isGuardian(req)) {
@@ -111,6 +159,8 @@ const requireAppointmentCreateAccess = (req, res, next) => {
 const APPOINTMENT_STATUS_VALUES = [
   'pending',
   'scheduled',
+  'confirmed',
+  'rescheduled',
   'attended',
   'cancelled',
   'no_show',
@@ -143,13 +193,18 @@ const normalizeAppointmentStatus = (value) => {
 const APPOINTMENT_STATUS_FILTER_VALUES = Object.freeze({
   pending: ['pending'],
   scheduled: ['scheduled', 'confirmed', 'rescheduled'],
+  confirmed: ['confirmed'],
+  rescheduled: ['rescheduled'],
   attended: ['attended', 'completed'],
   cancelled: ['cancelled'],
   no_show: ['no_show', 'no-show'],
 });
 
+const normalizeAppointmentStatusFilterKey = (value) =>
+  String(value || '').trim().toLowerCase().replace(/-/g, '_');
+
 const getAppointmentStatusFilterValues = (status) => {
-  const normalizedStatus = normalizeAppointmentStatus(status);
+  const normalizedStatus = normalizeAppointmentStatusFilterKey(status);
   return APPOINTMENT_STATUS_FILTER_VALUES[normalizedStatus] || [];
 };
 
@@ -190,6 +245,7 @@ const enforceGuardianVaccinationEligibility = async ({
   infantId,
   vaccineId,
   appointmentType,
+  scheduledDate = null,
 }) => {
   const vaccinationFlow = isVaccinationAppointmentType(appointmentType) || Number.isInteger(vaccineId);
   if (!vaccinationFlow) {
@@ -199,7 +255,9 @@ const enforceGuardianVaccinationEligibility = async ({
     };
   }
 
-  const readinessResult = await calculateVaccineReadiness(infantId);
+  const readinessResult = await calculateVaccineReadiness(infantId, {
+    scheduledDate,
+  });
   if (!readinessResult?.success || !readinessResult?.data) {
     const error = new Error('Failed to resolve vaccination readiness for this child');
     error.statusCode = 500;
@@ -263,8 +321,8 @@ const sanitizeAppointmentMutablePayload = (payload = {}, { allowStatus = true } 
       if (Number.isNaN(parsedDate.getTime())) {
         errors.scheduled_date = 'scheduled_date must be a valid date';
       } else {
-        const todayManila = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(new Date());
-        const parsedManila = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(parsedDate);
+        const todayManila = getClinicTodayDateKey();
+        const parsedManila = toClinicDateKey(parsedDate);
 
         if (parsedManila < todayManila) {
           errors.scheduled_date =
@@ -434,6 +492,8 @@ const APPOINTMENT_LIST_SORT_COLUMNS = Object.freeze({
   type: 'COALESCE(a.type::text, \'\')',
 });
 
+const APPOINTMENT_LOCAL_DATE_EXPRESSION = toClinicDateSql('a.scheduled_date');
+
 const sanitizeSortDirection = (value, fallback = 'desc') =>
   String(value || fallback).trim().toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
@@ -486,9 +546,26 @@ const fetchInfantOwnership = async (infantId) => {
 };
 
 const fetchAppointmentById = async (id) => {
-  const patientFacilityColumn = await getPatientFacilityColumn();
-  const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+  const {
+    primary: patientFacilityColumn,
+    fallback: patientFacilityFallbackColumn,
+  } = await getPatientFacilityColumns();
+  const {
+    primary: appointmentFacilityColumn,
+    fallback: appointmentFacilityFallbackColumn,
+  } = await getAppointmentFacilityColumns();
   const appointmentPatientColumn = await getAppointmentPatientColumn();
+  const patientFacilityExpression = buildScopedColumnExpression(
+    'p',
+    patientFacilityColumn,
+    patientFacilityFallbackColumn,
+  );
+  const appointmentFacilityExpression = buildScopedColumnExpression(
+    'a',
+    appointmentFacilityColumn,
+    appointmentFacilityFallbackColumn,
+  );
+  const resolvedClinicExpression = `COALESCE(${patientFacilityExpression}, ${appointmentFacilityExpression})`;
 
   const result = await pool.query(
     `
@@ -499,7 +576,7 @@ const fetchAppointmentById = async (id) => {
         p.last_name AS last_name,
         p.control_number AS control_number,
         p.guardian_id AS owner_guardian_id,
-        COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) AS resolved_clinic_id,
+        ${resolvedClinicExpression} AS resolved_clinic_id,
         g.name AS guardian_name,
         g.phone AS guardian_phone,
         g.email AS guardian_email
@@ -539,9 +616,26 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       sortDirection,
     } = req.query;
     const canonicalRole = getCanonicalRole(req);
-    const patientFacilityColumn = await getPatientFacilityColumn();
-    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+    const {
+      primary: patientFacilityColumn,
+      fallback: patientFacilityFallbackColumn,
+    } = await getPatientFacilityColumns();
+    const {
+      primary: appointmentFacilityColumn,
+      fallback: appointmentFacilityFallbackColumn,
+    } = await getAppointmentFacilityColumns();
     const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const patientFacilityExpression = buildScopedColumnExpression(
+      'p',
+      patientFacilityColumn,
+      patientFacilityFallbackColumn,
+    );
+    const appointmentFacilityExpression = buildScopedColumnExpression(
+      'a',
+      appointmentFacilityColumn,
+      appointmentFacilityFallbackColumn,
+    );
+    const resolvedClinicExpression = `COALESCE(${patientFacilityExpression}, ${appointmentFacilityExpression})`;
     const requestedScopeIds = mergeScopeIds(clinic_id, facility_id);
     const scopeContext = resolveAppointmentScopeContext(req, requestedScopeIds);
     if (scopeContext.error) {
@@ -577,7 +671,7 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
         p.last_name AS last_name,
         p.control_number AS control_number,
         p.guardian_id AS owner_guardian_id,
-        COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) AS resolved_clinic_id,
+        ${resolvedClinicExpression} AS resolved_clinic_id,
         g.name AS guardian_name,
         g.phone AS guardian_phone
       FROM appointments a
@@ -585,6 +679,7 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE a.is_active = true
         AND p.is_active = true
+        AND ${excludeWeekendVaccinationAppointmentsSql('a', APPOINTMENT_LOCAL_DATE_EXPRESSION)}
     `;
 
     if (canonicalRole === CANONICAL_ROLES.GUARDIAN) {
@@ -600,8 +695,8 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       canonicalRole !== CANONICAL_ROLES.GUARDIAN &&
       scopeContext.useScope
     ) {
-        query += ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
-        params.push(scopeContext.scopeIds);
+      query += ` AND ${resolvedClinicExpression} = ANY($${params.length + 1}::int[])`;
+      params.push(scopeContext.scopeIds);
     }
 
     if (status) {
@@ -618,17 +713,17 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
     }
 
     if (date) {
-      query += ` AND DATE(a.scheduled_date) = $${params.length + 1}`;
+      query += ` AND ${APPOINTMENT_LOCAL_DATE_EXPRESSION} = $${params.length + 1}::date`;
       params.push(date);
     }
 
     if (normalizedStartDate) {
-      query += ` AND DATE(a.scheduled_date) >= $${params.length + 1}`;
+      query += ` AND ${APPOINTMENT_LOCAL_DATE_EXPRESSION} >= $${params.length + 1}::date`;
       params.push(normalizedStartDate);
     }
 
     if (normalizedEndDate) {
-      query += ` AND DATE(a.scheduled_date) <= $${params.length + 1}`;
+      query += ` AND ${APPOINTMENT_LOCAL_DATE_EXPRESSION} <= $${params.length + 1}::date`;
       params.push(normalizedEndDate);
     }
 
@@ -820,6 +915,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
           infantId,
           vaccineId: finalVaccineId,
           appointmentType: normalizedType,
+          scheduledDate: normalizedScheduledDate,
         });
         finalVaccineId = guardianEligibility.vaccineId;
       } catch (eligibilityError) {
@@ -839,6 +935,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       scheduledDate: normalizedScheduledDate,
       vaccineId: finalVaccineId,
       clinicId: sanitizeNullableInt(finalClinicId),
+      appointmentType: normalizedType,
     });
 
     if (!availability.available) {
@@ -925,6 +1022,22 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
     const appointment = result.rows[0];
     const fullAppointment = (await fetchAppointmentById(appointment.id)) || appointment;
 
+    if (fullAppointment?.owner_guardian_id) {
+      try {
+        await appointmentConfirmationService.notifyGuardianAppointmentBooked({
+          guardianId: fullAppointment.owner_guardian_id,
+          guardianName: fullAppointment.guardian_name || 'Guardian',
+          infantName: `${fullAppointment.first_name || ''} ${fullAppointment.last_name || ''}`.trim() || 'Your child',
+          appointmentId: appointment.id,
+          scheduledDate: fullAppointment.scheduled_date,
+          clinicName: fullAppointment.location || fullAppointment.clinic_name || 'Main Health Center',
+          appointmentType: fullAppointment.type || 'Vaccination',
+        });
+      } catch (notificationError) {
+        console.error('Failed to create in-app appointment notification:', notificationError.message);
+      }
+    }
+
     if (guardianFlow) {
       await notifyAdminsOfGuardianAppointmentEvent({
         event: 'created',
@@ -970,7 +1083,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
 // Check booking availability (GUARDIAN and SYSTEM_ADMIN)
 router.get('/availability/check', requireAppointmentReadAccess, async (req, res) => {
   try {
-    const { scheduled_date, vaccine_id, clinic_id } = req.query;
+    const { scheduled_date, vaccine_id, clinic_id, type } = req.query;
 
     if (!scheduled_date) {
       return res.status(400).json({
@@ -982,6 +1095,7 @@ router.get('/availability/check', requireAppointmentReadAccess, async (req, res)
       scheduledDate: scheduled_date,
       vaccineId: sanitizeNullableInt(vaccine_id),
       clinicId: sanitizeNullableInt(clinic_id || req.user.clinic_id),
+      appointmentType: type || null,
     });
 
     res.json(availability);
@@ -1097,6 +1211,8 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       scheduledDate: scheduled_date,
       vaccineId: finalVaccineId,
       clinicId: finalClinicId,
+      appointmentType: appointment.type,
+      excludeAppointmentId: appointmentId,
     });
 
     if (!availability.available) {
@@ -1181,6 +1297,26 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       } catch (notificationError) {
         console.error('Failed to send rescheduling notification:', notificationError.message);
         // Don't fail the rescheduling if notification fails
+      }
+    }
+
+    if (updatedAppointment.owner_guardian_id) {
+      try {
+        await appointmentConfirmationService.createGuardianNotification({
+          guardianId: updatedAppointment.owner_guardian_id,
+          guardianName: updatedAppointment.guardian_name || 'Guardian',
+          infantName: `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your child',
+          appointmentId,
+          scheduledDate: updatedAppointment.scheduled_date,
+          clinicName: updatedAppointment.location || updatedAppointment.clinic_name || 'Main Health Center',
+          appointmentType: updatedAppointment.type || 'Vaccination',
+          notificationType: 'appointment_rescheduled',
+          category: 'appointment',
+          title: 'Appointment Rescheduled',
+          message: `${`${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment was rescheduled from ${new Date(appointment.scheduled_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })} to ${new Date(updatedAppointment.scheduled_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}.`,
+        });
+      } catch (notificationError) {
+        console.error('Failed to create reschedule in-app notification:', notificationError.message);
       }
     }
 
@@ -1326,9 +1462,26 @@ router.get('/availability/date/:date', requireAppointmentReadAccess, async (req,
 router.get('/date/:date', requirePermission('appointment:view'), async (req, res) => {
   try {
     const { date } = req.params;
-    const patientFacilityColumn = await getPatientFacilityColumn();
-    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+    const {
+      primary: patientFacilityColumn,
+      fallback: patientFacilityFallbackColumn,
+    } = await getPatientFacilityColumns();
+    const {
+      primary: appointmentFacilityColumn,
+      fallback: appointmentFacilityFallbackColumn,
+    } = await getAppointmentFacilityColumns();
     const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const patientFacilityExpression = buildScopedColumnExpression(
+      'p',
+      patientFacilityColumn,
+      patientFacilityFallbackColumn,
+    );
+    const appointmentFacilityExpression = buildScopedColumnExpression(
+      'a',
+      appointmentFacilityColumn,
+      appointmentFacilityFallbackColumn,
+    );
+    const resolvedClinicExpression = `COALESCE(${patientFacilityExpression}, ${appointmentFacilityExpression})`;
     const scopeContext = resolveAppointmentScopeContext(req);
     if (scopeContext.error) {
       return res.status(scopeContext.status).json({ error: scopeContext.error });
@@ -1337,7 +1490,7 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
     const params = [date];
     let scopeClause = '';
     if (scopeContext.useScope) {
-      scopeClause = ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
+      scopeClause = ` AND ${resolvedClinicExpression} = ANY($${params.length + 1}::int[])`;
       params.push(scopeContext.scopeIds);
     }
 
@@ -1348,14 +1501,15 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
           p.first_name AS first_name,
           p.last_name AS last_name,
           p.control_number AS control_number,
-          COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) AS resolved_clinic_id,
+          ${resolvedClinicExpression} AS resolved_clinic_id,
           g.name AS guardian_name,
           g.phone AS guardian_phone
         FROM appointments a
         LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
         LEFT JOIN guardians g ON g.id = p.guardian_id
-        WHERE DATE(a.scheduled_date) = $1
+        WHERE ${APPOINTMENT_LOCAL_DATE_EXPRESSION} = $1::date
           AND a.is_active = true AND p.is_active = true
+          AND ${excludeWeekendVaccinationAppointmentsSql('a', APPOINTMENT_LOCAL_DATE_EXPRESSION)}
           ${scopeClause}
         ORDER BY a.scheduled_date ASC
       `,
@@ -1373,9 +1527,26 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
 router.get('/upcoming', requirePermission('appointment:view'), async (req, res) => {
   try {
     const limit = sanitizeLimit(req.query.limit, 10, 100);
-    const patientFacilityColumn = await getPatientFacilityColumn();
-    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+    const {
+      primary: patientFacilityColumn,
+      fallback: patientFacilityFallbackColumn,
+    } = await getPatientFacilityColumns();
+    const {
+      primary: appointmentFacilityColumn,
+      fallback: appointmentFacilityFallbackColumn,
+    } = await getAppointmentFacilityColumns();
     const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const patientFacilityExpression = buildScopedColumnExpression(
+      'p',
+      patientFacilityColumn,
+      patientFacilityFallbackColumn,
+    );
+    const appointmentFacilityExpression = buildScopedColumnExpression(
+      'a',
+      appointmentFacilityColumn,
+      appointmentFacilityFallbackColumn,
+    );
+    const resolvedClinicExpression = `COALESCE(${patientFacilityExpression}, ${appointmentFacilityExpression})`;
     const scopeContext = resolveAppointmentScopeContext(req);
     if (scopeContext.error) {
       return res.status(scopeContext.status).json({ error: scopeContext.error });
@@ -1384,7 +1555,7 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
     const params = [];
     let scopeClause = '';
     if (scopeContext.useScope) {
-      scopeClause = ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
+      scopeClause = ` AND ${resolvedClinicExpression} = ANY($${params.length + 1}::int[])`;
       params.push(scopeContext.scopeIds);
     }
 
@@ -1395,15 +1566,16 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
           p.first_name AS first_name,
           p.last_name AS last_name,
           p.control_number AS control_number,
-          COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) AS resolved_clinic_id,
+          ${resolvedClinicExpression} AS resolved_clinic_id,
           g.name AS guardian_name,
           g.phone AS guardian_phone
         FROM appointments a
         LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
         LEFT JOIN guardians g ON g.id = p.guardian_id
-        WHERE a.scheduled_date >= CURRENT_DATE
+        WHERE ${APPOINTMENT_LOCAL_DATE_EXPRESSION} >= ${CLINIC_TODAY_SQL}
           AND a.status = 'scheduled'
           AND a.is_active = true AND p.is_active = true
+          AND ${excludeWeekendVaccinationAppointmentsSql('a', APPOINTMENT_LOCAL_DATE_EXPRESSION)}
           ${scopeClause}
         ORDER BY a.scheduled_date ASC
         LIMIT $${params.length + 1}
@@ -1456,21 +1628,41 @@ router.get('/suggestions/:infantId', requireAppointmentReadAccess, async (req, r
 // Get appointment statistics
 router.get('/stats/overview', requirePermission('appointment:view'), async (req, res) => {
   try {
-    const patientFacilityColumn = await getPatientFacilityColumn();
-    const appointmentFacilityColumn = await getAppointmentFacilityColumn();
+    const {
+      primary: patientFacilityColumn,
+      fallback: patientFacilityFallbackColumn,
+    } = await getPatientFacilityColumns();
+    const {
+      primary: appointmentFacilityColumn,
+      fallback: appointmentFacilityFallbackColumn,
+    } = await getAppointmentFacilityColumns();
     const appointmentPatientColumn = await getAppointmentPatientColumn();
+    const patientFacilityExpression = buildScopedColumnExpression(
+      'p',
+      patientFacilityColumn,
+      patientFacilityFallbackColumn,
+    );
+    const appointmentFacilityExpression = buildScopedColumnExpression(
+      'a',
+      appointmentFacilityColumn,
+      appointmentFacilityFallbackColumn,
+    );
+    const resolvedClinicExpression = `COALESCE(${patientFacilityExpression}, ${appointmentFacilityExpression})`;
     const scopeContext = resolveAppointmentScopeContext(req);
     if (scopeContext.error) {
       return res.status(scopeContext.status).json({ error: scopeContext.error });
     }
 
     const params = [];
+    const todayKey = getClinicTodayDateKey();
+    const monthStartKey = todayKey ? `${todayKey.slice(0, 7)}-01` : null;
     let baseWhere = `
       WHERE a.is_active = true
         AND p.is_active = true
+        AND ${excludeWeekendVaccinationAppointmentsSql('a', APPOINTMENT_LOCAL_DATE_EXPRESSION)}
     `;
     if (scopeContext.useScope) {
-      baseWhere += ` AND COALESCE(p.${patientFacilityColumn}, a.${appointmentFacilityColumn}) = ANY($${params.length + 1}::int[])`;
+      baseWhere += ` AND ${resolvedClinicExpression} = ANY($${params.length + 1}::int[])`;
       params.push(scopeContext.scopeIds);
     }
 
@@ -1481,9 +1673,9 @@ router.get('/stats/overview', requirePermission('appointment:view'), async (req,
           FROM appointments a
           LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
           ${baseWhere}
-            AND DATE(a.scheduled_date) = CURRENT_DATE
+            AND ${APPOINTMENT_LOCAL_DATE_EXPRESSION} = $${params.length + 1}::date
         `,
-        params,
+        [...params, todayKey],
       ),
       pool.query(
         `
@@ -1521,9 +1713,9 @@ router.get('/stats/overview', requirePermission('appointment:view'), async (req,
           FROM appointments a
           LEFT JOIN patients p ON p.id = a.${appointmentPatientColumn}
           ${baseWhere}
-            AND DATE_TRUNC('month', a.scheduled_date) = DATE_TRUNC('month', CURRENT_DATE)
+            AND ${APPOINTMENT_LOCAL_DATE_EXPRESSION} BETWEEN $${params.length + 1}::date AND $${params.length + 2}::date
         `,
-        params,
+        [...params, monthStartKey, todayKey],
       ),
     ]);
 
@@ -1676,6 +1868,8 @@ router.put('/:id(\\d+)', async (req, res) => {
       const availability = await appointmentSchedulingService.checkBookingAvailability({
         scheduledDate: normalizedUpdates.scheduled_date,
         clinicId: sanitizeNullableInt(appointment.resolved_clinic_id || req.user.clinic_id),
+        appointmentType: appointment.type,
+        excludeAppointmentId: appointment.id,
       });
 
       if (!availability.available) {
@@ -1808,6 +2002,26 @@ router.put('/:id(\\d+)', async (req, res) => {
       });
     }
 
+    if (updatedAppointment.owner_guardian_id) {
+      try {
+        await appointmentConfirmationService.createGuardianNotification({
+          guardianId: updatedAppointment.owner_guardian_id,
+          guardianName: updatedAppointment.guardian_name || 'Guardian',
+          infantName: `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your child',
+          appointmentId,
+          scheduledDate: updatedAppointment.scheduled_date,
+          clinicName: updatedAppointment.location || updatedAppointment.clinic_name || 'Main Health Center',
+          appointmentType: updatedAppointment.type || 'Vaccination',
+          notificationType: 'appointment_updated',
+          category: 'appointment',
+          title: 'Appointment Updated',
+          message: `${`${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment details were updated. Current schedule: ${new Date(updatedAppointment.scheduled_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}.`,
+        });
+      } catch (notificationError) {
+        console.error('Failed to create appointment update notification:', notificationError.message);
+      }
+    }
+
     const normalizedAppointment = normalizeAppointmentRecord(updatedAppointment);
 
     await recordAppointmentAuditEvent({
@@ -1901,6 +2115,26 @@ router.put('/:id(\\d+)/cancel', async (req, res) => {
         guardianName: cancelledAppointment.guardian_name || null,
         infantName: `${cancelledAppointment.first_name || ''} ${cancelledAppointment.last_name || ''}`.trim(),
       });
+    }
+
+    if (cancelledAppointment.owner_guardian_id) {
+      try {
+        await appointmentConfirmationService.createGuardianNotification({
+          guardianId: cancelledAppointment.owner_guardian_id,
+          guardianName: cancelledAppointment.guardian_name || 'Guardian',
+          infantName: `${cancelledAppointment.first_name || ''} ${cancelledAppointment.last_name || ''}`.trim() || 'Your child',
+          appointmentId,
+          scheduledDate: cancelledAppointment.scheduled_date,
+          clinicName: cancelledAppointment.location || cancelledAppointment.clinic_name || 'Main Health Center',
+          appointmentType: cancelledAppointment.type || 'Vaccination',
+          notificationType: 'appointment_cancelled',
+          category: 'appointment',
+          title: 'Appointment Cancelled',
+          message: `${`${cancelledAppointment.first_name || ''} ${cancelledAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment on ${new Date(cancelledAppointment.scheduled_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })} was cancelled.`,
+        });
+      } catch (notificationError) {
+        console.error('Failed to create appointment cancellation notification:', notificationError.message);
+      }
     }
 
     const normalizedAppointment = normalizeAppointmentRecord(cancelledAppointment);

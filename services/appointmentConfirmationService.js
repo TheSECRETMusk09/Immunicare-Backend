@@ -9,6 +9,33 @@ const logger = require('../config/logger');
 const socketService = require('./socketService');
 
 class AppointmentConfirmationService {
+  formatScheduledDateParts(scheduledDate) {
+    const scheduledDateObj = new Date(scheduledDate);
+
+    return {
+      scheduledDateObj,
+      dateStr: scheduledDateObj.toLocaleDateString('en-PH', {
+        timeZone: 'Asia/Manila',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }),
+      shortDateStr: scheduledDateObj.toLocaleDateString('en-PH', {
+        timeZone: 'Asia/Manila',
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      }),
+      timeStr: scheduledDateObj.toLocaleTimeString('en-PH', {
+        timeZone: 'Asia/Manila',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+  }
+
   /**
    * Send appointment confirmation SMS when appointment is created
    */
@@ -49,17 +76,9 @@ class AppointmentConfirmationService {
       const appointment = result.rows[0];
 
       // Format the date and time
-      const scheduledDate = new Date(appointment.scheduled_date);
-      const dateStr = scheduledDate.toLocaleDateString('en-PH', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      });
-      const timeStr = scheduledDate.toLocaleTimeString('en-PH', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
+      const { dateStr, timeStr, shortDateStr } = this.formatScheduledDateParts(
+        appointment.scheduled_date,
+      );
 
       // Format phone number
       const formattedPhone = smsService.formatPhoneNumber(appointment.guardian_phone);
@@ -128,6 +147,10 @@ class AppointmentConfirmationService {
         scheduledDate: appointment.scheduled_date,
         clinicName: appointment.clinic_name,
         appointmentType: appointmentTypeDisplay,
+        notificationType: 'sms_confirmation_sent',
+        category: 'confirmation',
+        title: 'Appointment Confirmation SMS Sent',
+        message: `Confirmation SMS has been sent to ${appointment.guardian_name} for ${appointment.infant_first_name} ${appointment.infant_last_name}'s ${appointmentTypeDisplay} appointment on ${shortDateStr} at ${timeStr} at ${appointment.clinic_name}.`,
       });
 
       return { success: true, message: 'Confirmation SMS sent', data: smsResult };
@@ -151,6 +174,7 @@ class AppointmentConfirmationService {
                     a.type,
                     p.first_name as infant_first_name,
                     p.last_name as infant_last_name,
+                    g.id as guardian_id,
                     g.name as guardian_name,
                     g.phone as guardian_phone,
                     c.name as clinic_name
@@ -197,6 +221,21 @@ class AppointmentConfirmationService {
       const smsResult = await smsService.sendSMS(formattedPhone, message, 'appointment_reminder', {
         appointmentId: appointmentId,
         reminderType: reminderType,
+      });
+
+      await this.createGuardianNotification({
+        guardianId: appointment.guardian_id,
+        guardianName: appointment.guardian_name,
+        infantName: `${appointment.infant_first_name} ${appointment.infant_last_name}`,
+        appointmentId,
+        scheduledDate: appointment.scheduled_date,
+        clinicName: appointment.clinic_name,
+        appointmentType: appointment.type || 'Vaccination',
+        notificationType: 'appointment_reminder',
+        category: 'reminder',
+        title: reminderType === '24h' ? 'Appointment Reminder: Tomorrow' : 'Appointment Reminder',
+        message,
+        priority: 'high',
       });
 
       return { success: true, message: 'Reminder SMS sent', data: smsResult };
@@ -419,22 +458,27 @@ class AppointmentConfirmationService {
   /**
    * Create in-app notification for guardian after successful SMS delivery
    */
-  async createGuardianNotification({ guardianId, guardianName, infantName, appointmentId, scheduledDate, clinicName, appointmentType }) {
+  async createGuardianNotification({
+    guardianId,
+    guardianName,
+    infantName,
+    appointmentId,
+    scheduledDate,
+    clinicName,
+    appointmentType,
+    notificationType = 'appointment_confirmation',
+    category = 'appointment',
+    title = 'Upcoming Appointment Booked',
+    message = null,
+    priority = 'medium',
+    channel = 'in_app',
+    sound = false,
+  }) {
     try {
-      const scheduledDateObj = new Date(scheduledDate);
-      const dateStr = scheduledDateObj.toLocaleDateString('en-PH', {
-        weekday: 'long',
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
-      const timeStr = scheduledDateObj.toLocaleTimeString('en-PH', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-
-      const title = 'Appointment Confirmation SMS Sent';
-      const message = `Confirmation SMS has been sent to ${guardianName} for ${infantName}'s ${appointmentType} appointment on ${dateStr} at ${timeStr} at ${clinicName}.`;
+      const { shortDateStr, timeStr } = this.formatScheduledDateParts(scheduledDate);
+      const resolvedMessage =
+        message ||
+        `Upcoming appointment booked for ${infantName}: ${appointmentType} on ${shortDateStr} at ${timeStr} at ${clinicName}.`;
 
       // Insert notification into database
       const notificationResult = await pool.query(
@@ -445,15 +489,15 @@ class AppointmentConfirmationService {
         [
           guardianId,
           title,
-          message,
+          resolvedMessage,
           'appointment',
-          'confirmation',
+          category,
           false,
-          'sms_confirmation_sent',
+          notificationType,
           'guardian',
           guardianId,
-          'in_app',
-          'medium',
+          channel,
+          priority,
           'delivered',
           'appointment',
           appointmentId,
@@ -466,9 +510,9 @@ class AppointmentConfirmationService {
       const notification = {
         id: notificationResult.rows[0]?.id || `notif-${Date.now()}`,
         title,
-        message,
+        message: resolvedMessage,
         type: 'appointment',
-        category: 'confirmation',
+        category,
         isRead: false,
         relatedEntityType: 'appointment',
         relatedEntityId: appointmentId,
@@ -477,7 +521,7 @@ class AppointmentConfirmationService {
 
       socketService.sendToUser(guardianId, 'notification', {
         notification,
-        sound: false,
+        sound,
       });
 
       logger.info(`In-app notification created for guardian ${guardianId} for appointment ${appointmentId}`);
@@ -486,6 +530,29 @@ class AppointmentConfirmationService {
       logger.error('Error creating guardian notification:', error);
       return { success: false, error: error.message };
     }
+  }
+
+  async notifyGuardianAppointmentBooked({
+    guardianId,
+    guardianName,
+    infantName,
+    appointmentId,
+    scheduledDate,
+    clinicName,
+    appointmentType,
+  }) {
+    return this.createGuardianNotification({
+      guardianId,
+      guardianName,
+      infantName,
+      appointmentId,
+      scheduledDate,
+      clinicName,
+      appointmentType,
+      notificationType: 'appointment_confirmation',
+      category: 'appointment',
+      title: 'Upcoming Appointment Booked',
+    });
   }
 
   /**

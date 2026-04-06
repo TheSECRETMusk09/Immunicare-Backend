@@ -711,6 +711,68 @@ router.get('/records/infant/:infantId', async (req, res) => {
 });
 
 // Get all vaccination records (SYSTEM_ADMIN)
+router.get('/records/reconciliation', requirePermission('vaccination:view'), async (req, res) => {
+  try {
+    await ensureVaccinationTrackingColumns();
+    const scopeContext = resolveVaccinationScopeContext(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({ error: scopeContext.error });
+    }
+
+    const params = [];
+    let whereClause = `
+      WHERE ir.is_active = true
+        AND p.is_active = true
+    `;
+
+    if (scopeContext.useScope) {
+      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
+      params.push(scopeContext.scopeIds);
+    }
+
+    const result = await pool.query(
+      `
+        SELECT DISTINCT ON (ir.patient_id, ir.vaccine_id, COALESCE(ir.dose_no, 1))
+          ir.id,
+          ir.patient_id,
+          ir.vaccine_id,
+          COALESCE(ir.dose_no, 1) AS dose_no,
+          ir.admin_date,
+          ir.status,
+          ir.notes,
+          ir.batch_number,
+          ir.lot_number
+        FROM immunization_records ir
+        JOIN patients p ON p.id = ir.patient_id
+        ${whereClause}
+        ORDER BY
+          ir.patient_id ASC,
+          ir.vaccine_id ASC,
+          COALESCE(ir.dose_no, 1) ASC,
+          CASE
+            WHEN ir.admin_date IS NOT NULL THEN 0
+            WHEN LOWER(COALESCE(TRIM(ir.status::text), '')) = 'completed' THEN 1
+            ELSE 2
+          END ASC,
+          ir.admin_date DESC NULLS LAST,
+          ir.created_at DESC NULLS LAST,
+          ir.id DESC
+      `,
+      params,
+    );
+
+    res.json({
+      records: result.rows,
+      metadata: {
+        total: result.rows.length,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching vaccination reconciliation records:', error);
+    res.status(500).json({ error: 'Failed to fetch vaccination reconciliation records' });
+  }
+});
+
 router.get('/records', requirePermission('vaccination:view'), async (req, res) => {
   try {
     await ensureVaccinationTrackingColumns();

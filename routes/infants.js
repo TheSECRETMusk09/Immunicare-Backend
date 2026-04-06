@@ -14,6 +14,7 @@ const { ensureAtBirthVaccinationRecords } = require('../services/atBirthVaccinat
 const {
   createGuardianChildRecord,
 } = require('../services/guardianChildRegistrationService');
+const immunizationScheduleService = require('../services/immunizationScheduleService');
 const {
   isScopeRequestAllowed,
   parsePositiveInt,
@@ -81,6 +82,24 @@ const toNullableString = (value) => {
 };
 
 let importedVaccinationPredicatePromise = null;
+
+const mergePendingDoseCounts = (rows = [], scheduleSummaryMap = new Map()) =>
+  rows.map((row) => {
+    const scheduleSummary = scheduleSummaryMap.get(Number.parseInt(row?.id, 10));
+
+    return {
+      ...row,
+      pending_vaccinations: scheduleSummary?.pendingCount || 0,
+      overdue_vaccinations: scheduleSummary?.overdueCount || 0,
+      upcoming_vaccinations: scheduleSummary?.upcomingCount || 0,
+    };
+  });
+
+const sumPendingDoseCounts = (scheduleSummaryMap = new Map()) =>
+  Array.from(scheduleSummaryMap.values()).reduce(
+    (total, summary) => total + Number(summary?.pendingCount || 0),
+    0,
+  );
 
 const requirePatientReadAccess = (req, res, next) => {
   const canonicalRole = getCanonicalRole(req);
@@ -415,14 +434,6 @@ router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) =
             SELECT COUNT(*)
             FROM immunization_records ir
             WHERE ir.patient_id = p.id
-              AND ir.is_active = true
-              AND COALESCE(ir.status, 'pending') IN ('scheduled', 'pending')
-              AND ir.admin_date IS NULL
-          ) AS pending_vaccinations,
-          (
-            SELECT COUNT(*)
-            FROM immunization_records ir
-            WHERE ir.patient_id = p.id
               AND COALESCE(ir.is_active, true) = true
               AND ${importedVaccinationPredicate}
               AND (
@@ -481,7 +492,14 @@ router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) =
       params,
     );
 
-    res.json({ success: true, data: result.rows || [] });
+    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
+      result.rows || [],
+    );
+
+    res.json({
+      success: true,
+      data: mergePendingDoseCounts(result.rows || [], scheduleSummaryMap),
+    });
   } catch (error) {
     console.error('Error fetching infants by guardian:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch infants' });
@@ -567,14 +585,6 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
             FROM immunization_records ir
             WHERE ir.patient_id = p.id
               AND COALESCE(ir.is_active, true) = true
-              AND COALESCE(LOWER(ir.status), 'pending') IN ('scheduled', 'pending')
-              AND ir.admin_date IS NULL
-          ) AS pending_vaccinations,
-          (
-           SELECT COUNT(*)
-            FROM immunization_records ir
-            WHERE ir.patient_id = p.id
-              AND COALESCE(ir.is_active, true) = true
               AND ${importedVaccinationPredicate}
               AND (
                 LOWER(COALESCE(ir.status, '')) = 'completed'
@@ -631,65 +641,63 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
       [...params, limit, offset],
     );
 
-    const countResult = await pool.query(
-      `
-        SELECT COUNT(*)::INT AS total
-        FROM patients p
-        LEFT JOIN guardians g ON g.id = p.guardian_id
-        ${whereClause}
-      `,
-      params,
-    );
-    const total = parseInt(countResult.rows[0]?.total, 10) || 0;
-
-    const summaryResult = await pool.query(
-      `
-        SELECT
-          COUNT(*)::INT AS total,
-          COUNT(*) FILTER (
-            WHERE latest_transfer_case_status IN ('for_validation', 'needs_clarification', 'pending_validation')
-          )::INT AS needs_review,
-          COUNT(*) FILTER (
-            WHERE latest_transfer_case_id IS NOT NULL
-          )::INT AS with_imported_history,
-          COALESCE(SUM(COALESCE(pending_vaccinations, 0)), 0)::INT AS pending_vaccinations
-        FROM (
+    const [summaryResult, filteredPatientsResult] = await Promise.all([
+      pool.query(
+        `
+          SELECT
+            COUNT(*)::INT AS total,
+            COUNT(*) FILTER (
+              WHERE latest_transfer_case_status IN ('for_validation', 'needs_clarification', 'pending_validation')
+            )::INT AS needs_review,
+            COALESCE(SUM(COALESCE(transfer_case_count, 0)), 0)::INT AS with_imported_history
+          FROM (
+            SELECT
+              p.id,
+              (
+                SELECT tic.validation_status
+                FROM transfer_in_cases tic
+                WHERE tic.infant_id = p.id
+                ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+                LIMIT 1
+              ) AS latest_transfer_case_status,
+              (
+                SELECT COUNT(*)
+                FROM transfer_in_cases tic
+                WHERE tic.infant_id = p.id
+              ) AS transfer_case_count
+            FROM patients p
+            LEFT JOIN guardians g ON g.id = p.guardian_id
+            ${whereClause}
+          ) filtered_patients
+        `,
+        params,
+      ),
+      pool.query(
+        `
           SELECT
             p.id,
-            (
-              SELECT COUNT(*)
-              FROM immunization_records ir
-              WHERE ir.patient_id = p.id
-                AND COALESCE(ir.is_active, true) = true
-                AND COALESCE(LOWER(TRIM(ir.status)), 'pending') IN ('scheduled', 'pending')
-                AND ir.admin_date IS NULL
-            ) AS pending_vaccinations,
-            (
-              SELECT tic.id
-              FROM transfer_in_cases tic
-              WHERE tic.infant_id = p.id
-              ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-              LIMIT 1
-            ) AS latest_transfer_case_id,
-            (
-              SELECT tic.validation_status
-              FROM transfer_in_cases tic
-              WHERE tic.infant_id = p.id
-              ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-              LIMIT 1
-            ) AS latest_transfer_case_status
+            p.dob,
+            p.facility_id,
+            p.health_center
           FROM patients p
           LEFT JOIN guardians g ON g.id = p.guardian_id
           ${whereClause}
-        ) filtered_patients
-      `,
-      params,
-    );
+        `,
+        params,
+      ),
+    ]);
     const summary = summaryResult.rows[0] || {};
+    const filteredPatients = filteredPatientsResult.rows || [];
+    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
+      filteredPatients,
+    );
+    const total = filteredPatients.length;
+    const pendingVaccinations = sumPendingDoseCounts(scheduleSummaryMap);
+    const data = mergePendingDoseCounts(result.rows || [], scheduleSummaryMap);
 
     res.json({
       success: true,
-      data: result.rows || [],
+      data,
       pagination: {
         total,
         limit,
@@ -703,7 +711,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
         total: parseInt(summary.total, 10) || total,
         needsReview: parseInt(summary.needs_review, 10) || 0,
         withImportedHistory: parseInt(summary.with_imported_history, 10) || 0,
-        pendingVaccinations: parseInt(summary.pending_vaccinations, 10) || 0,
+        pendingVaccinations,
       },
     });
   } catch (error) {
@@ -969,14 +977,6 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
               )
           ) AS completed_vaccinations,
           (
-            SELECT COUNT(*)
-            FROM immunization_records ir
-            WHERE ir.patient_id = p.id
-              AND COALESCE(ir.is_active, true) = true
-              AND COALESCE(LOWER(ir.status), 'pending') IN ('scheduled', 'pending')
-              AND ir.admin_date IS NULL
-          ) AS pending_vaccinations,
-          (
            SELECT COUNT(*)
             FROM immunization_records ir
             WHERE ir.patient_id = p.id
@@ -1042,7 +1042,14 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Infant not found' });
     }
 
-    res.json({ success: true, data: result.rows[0] });
+    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
+      result.rows,
+    );
+
+    res.json({
+      success: true,
+      data: mergePendingDoseCounts(result.rows, scheduleSummaryMap)[0],
+    });
   } catch (error) {
     console.error('Error fetching infant:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch infant' });
