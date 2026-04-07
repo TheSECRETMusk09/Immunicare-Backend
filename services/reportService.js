@@ -801,6 +801,70 @@ class ReportService {
     );
   }
 
+  async getInventoryIssuedColumn() {
+    return this.resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['issuance', 'doses_administered', 'issued'],
+      null,
+    );
+  }
+
+  async getInventoryWastedColumn() {
+    return this.resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['expired_wasted', 'doses_wasted', 'wasted_expired'],
+      null,
+    );
+  }
+
+  async getInventoryStockColumn() {
+    return this.resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['stock_on_hand', 'ending_balance'],
+      null,
+    );
+  }
+
+  async getInventoryLotBatchColumn() {
+    return this.resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['lot_batch_number', 'lot_number'],
+      null,
+    );
+  }
+
+  async getInventoryLowStockThresholdColumn() {
+    return this.resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['low_stock_threshold'],
+      null,
+    );
+  }
+
+  async getInventoryCriticalStockThresholdColumn() {
+    return this.resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['critical_stock_threshold'],
+      null,
+    );
+  }
+
+  async getInventoryPeriodStartColumn() {
+    return this.resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['period_start', 'created_at'],
+      'created_at',
+    );
+  }
+
+  async getInventoryPeriodEndColumn() {
+    return this.resolveFirstExistingColumn(
+      'vaccine_inventory',
+      ['period_end', 'updated_at', 'created_at'],
+      'created_at',
+    );
+  }
+
   ensureResolvedSchemaValue(value, message) {
     if (!value) {
       throw this.createHttpError(
@@ -2491,30 +2555,56 @@ class ReportService {
       scopeIds,
     });
 
-    const reportActivityQuery = `
-        SELECT
-          COUNT(*)::int AS total_reports,
-          COALESCE(SUM(download_count), 0)::int AS total_downloads,
-          COUNT(CASE WHEN date_generated >= NOW() - INTERVAL '7 days' THEN 1 END)::int AS reports_last_7_days,
-          COUNT(CASE WHEN date_generated >= NOW() - INTERVAL '30 days' THEN 1 END)::int AS reports_last_30_days
-        FROM reports
-      `;
-
+    const reportsTable = await this.resolveFirstExistingTable(['reports'], null);
+    const reportActivityQuery = reportsTable
+      ? `
+          SELECT
+            COUNT(*)::int AS total_reports,
+            COALESCE(SUM(download_count), 0)::int AS total_downloads,
+            COUNT(CASE WHEN date_generated >= NOW() - INTERVAL '7 days' THEN 1 END)::int AS reports_last_7_days,
+            COUNT(CASE WHEN date_generated >= NOW() - INTERVAL '30 days' THEN 1 END)::int AS reports_last_30_days
+          FROM ${reportsTable}
+        `
+      : null;
     const transferCasesTable = await this.resolveFirstExistingTable(['transfer_in_cases'], null);
+    const [
+      transferHasValidationStatus,
+      transferHasValidatedAt,
+      transferHasUpdatedAt,
+      transferHasCreatedAt,
+    ] = transferCasesTable
+      ? await Promise.all([
+        this.hasColumn(transferCasesTable, 'validation_status'),
+        this.hasColumn(transferCasesTable, 'validated_at'),
+        this.hasColumn(transferCasesTable, 'updated_at'),
+        this.hasColumn(transferCasesTable, 'created_at'),
+      ])
+      : [false, false, false, false];
+    const transferStatusExpression = transferHasValidationStatus
+      ? 'validation_status'
+      : `'pending'`;
+    const transferTurnaroundExpressionCandidates = [
+      transferHasValidatedAt ? 'validated_at' : null,
+      transferHasUpdatedAt ? 'updated_at' : null,
+      transferHasCreatedAt ? 'created_at' : null,
+    ].filter(Boolean);
+    const transferTurnaroundExpression = transferTurnaroundExpressionCandidates.length > 0
+      ? `COALESCE(${transferTurnaroundExpressionCandidates.join(', ')})`
+      : 'NULL';
     const transferSummaryQuery = transferCasesTable
       ? `
           SELECT
             COUNT(*)::int AS total,
             COUNT(
               CASE
-                WHEN validation_status IN ('pending', 'for_validation', 'needs_clarification')
+                WHEN ${transferStatusExpression} IN ('pending', 'for_validation', 'needs_clarification')
                 THEN 1
               END
             )::int AS open_cases,
             ROUND(
               AVG(
-                EXTRACT(EPOCH FROM (COALESCE(validated_at, updated_at, created_at) - created_at)) / 86400.0
-              ) FILTER (WHERE validation_status IN ('approved', 'rejected')),
+                EXTRACT(EPOCH FROM (${transferTurnaroundExpression} - created_at)) / 86400.0
+              ) FILTER (WHERE ${transferStatusExpression} IN ('approved', 'rejected')),
               2
             ) AS avg_turnaround_days
           FROM ${transferCasesTable}
@@ -2522,7 +2612,18 @@ class ReportService {
       : null;
 
     const [reports, transfers] = await Promise.all([
-      this.pool.query(reportActivityQuery),
+      reportActivityQuery
+        ? this.pool.query(reportActivityQuery)
+        : Promise.resolve({
+          rows: [
+            {
+              total_reports: 0,
+              total_downloads: 0,
+              reports_last_7_days: 0,
+              reports_last_30_days: 0,
+            },
+          ],
+        }),
       transferSummaryQuery
         ? this.pool.query(transferSummaryQuery)
         : Promise.resolve({
@@ -2792,54 +2893,100 @@ class ReportService {
   }
 
   async queryInventoryRows(filters) {
-    const clinicsTable = await this.getClinicsTableName();
-    const facilityColumn = await this.getInventoryFacilityColumn();
+    const [
+      clinicsTable,
+      facilityColumn,
+      issuedColumn,
+      wastedColumn,
+      stockColumn,
+      lotBatchColumn,
+      lowStockThresholdColumn,
+      criticalStockThresholdColumn,
+      periodStartColumn,
+      periodEndColumn,
+      batchesTable,
+    ] = await Promise.all([
+      this.getClinicsTableName(),
+      this.getInventoryFacilityColumn(),
+      this.getInventoryIssuedColumn(),
+      this.getInventoryWastedColumn(),
+      this.getInventoryStockColumn(),
+      this.getInventoryLotBatchColumn(),
+      this.getInventoryLowStockThresholdColumn(),
+      this.getInventoryCriticalStockThresholdColumn(),
+      this.getInventoryPeriodStartColumn(),
+      this.getInventoryPeriodEndColumn(),
+      this.resolveFirstExistingTable(['vaccine_batches'], null),
+    ]);
 
-    const stockOnHandExpression = `(
+    const issuedExpression = issuedColumn ? `COALESCE(vi.${issuedColumn}, 0)` : '0';
+    const wastedExpression = wastedColumn ? `COALESCE(vi.${wastedColumn}, 0)` : '0';
+    const lowStockThresholdExpression = lowStockThresholdColumn
+      ? `COALESCE(vi.${lowStockThresholdColumn}, 10)`
+      : '10';
+    const criticalStockThresholdExpression = criticalStockThresholdColumn
+      ? `COALESCE(vi.${criticalStockThresholdColumn}, 5)`
+      : '5';
+    const stockOnHandExpression = stockColumn
+      ? `COALESCE(vi.${stockColumn}, 0)`
+      : `(
         COALESCE(vi.beginning_balance, 0)
         + COALESCE(vi.received_during_period, 0)
         + COALESCE(vi.transferred_in, 0)
         - COALESCE(vi.transferred_out, 0)
-        - COALESCE(vi.expired_wasted, 0)
-        - COALESCE(vi.issuance, 0)
+        - ${wastedExpression}
+        - ${issuedExpression}
       )`;
+    const lotBatchExpression = lotBatchColumn ? `vi.${lotBatchColumn}` : 'NULL::text';
+
+    let expiryRiskExpression = 'false';
+    if (batchesTable) {
+      const [batchExpiryColumn, batchIsActiveColumn] = await Promise.all([
+        this.resolveFirstExistingColumn(batchesTable, ['expiry_date'], null),
+        this.resolveFirstExistingColumn(batchesTable, ['is_active'], null),
+      ]);
+
+      if (batchExpiryColumn) {
+        expiryRiskExpression = `
+          EXISTS (
+            SELECT 1
+            FROM ${batchesTable} vb
+            WHERE vb.vaccine_id = vi.vaccine_id
+              AND vb.${batchExpiryColumn} <= CURRENT_DATE + INTERVAL '30 days'
+              ${batchIsActiveColumn ? `AND COALESCE(vb.${batchIsActiveColumn}, true) = true` : ''}
+          )
+        `;
+      }
+    }
 
     let query = `
         SELECT
-          ROW_NUMBER() OVER (ORDER BY v.name, vi.period_start DESC) AS a,
+          ROW_NUMBER() OVER (ORDER BY v.name, vi.${periodStartColumn} DESC) AS a,
           v.name AS items,
           COALESCE(vi.beginning_balance, 0) AS beginning_balance,
           COALESCE(vi.received_during_period, 0) AS received,
-          vi.lot_batch_number,
+          ${lotBatchExpression} AS lot_batch_number,
           COALESCE(vi.transferred_in, 0) AS transferred_in,
           COALESCE(vi.transferred_out, 0) AS transferred_out,
-          COALESCE(vi.expired_wasted, 0) AS expired_wasted,
-          COALESCE(vi.issuance, 0) AS issued,
+          ${wastedExpression} AS expired_wasted,
+          ${issuedExpression} AS issued,
           (
             COALESCE(vi.beginning_balance, 0)
             + COALESCE(vi.received_during_period, 0)
           ) AS total_available,
           ${stockOnHandExpression} AS stock_on_hand,
-          COALESCE(vi.low_stock_threshold, 10) AS low_stock_threshold,
-          COALESCE(vi.critical_stock_threshold, 5) AS critical_stock_threshold,
+          ${lowStockThresholdExpression} AS low_stock_threshold,
+          ${criticalStockThresholdExpression} AS critical_stock_threshold,
           (
-            ${stockOnHandExpression} <= COALESCE(vi.low_stock_threshold, 10)
+            ${stockOnHandExpression} <= ${lowStockThresholdExpression}
           ) AS low_stock_breach,
           (
-            ${stockOnHandExpression} <= COALESCE(vi.critical_stock_threshold, 5)
+            ${stockOnHandExpression} <= ${criticalStockThresholdExpression}
           ) AS critical_stock_breach,
-          (
-            EXISTS (
-              SELECT 1
-              FROM vaccine_batches vb
-              WHERE vb.vaccine_id = vi.vaccine_id
-                AND vb.expiry_date <= CURRENT_DATE + INTERVAL '30 days'
-                AND COALESCE(vb.is_active, true) = true
-            )
-          ) AS expiry_risk,
+          (${expiryRiskExpression}) AS expiry_risk,
           ${facilityColumn && clinicsTable ? 'hf.name' : '\'N/A\''} AS health_center,
-          vi.period_start,
-          vi.period_end
+          vi.${periodStartColumn} AS period_start,
+          vi.${periodEndColumn} AS period_end
         FROM vaccine_inventory vi
         JOIN vaccines v ON v.id = vi.vaccine_id
         ${
@@ -2854,13 +3001,13 @@ class ReportService {
     let paramIndex = 1;
 
     if (filters.startDate) {
-      query += ` AND vi.period_start::date >= $${paramIndex}`;
+      query += ` AND vi.${periodStartColumn}::date >= $${paramIndex}`;
       params.push(filters.startDate);
       paramIndex += 1;
     }
 
     if (filters.endDate) {
-      query += ` AND vi.period_end::date <= $${paramIndex}`;
+      query += ` AND vi.${periodEndColumn}::date <= $${paramIndex}`;
       params.push(filters.endDate);
       paramIndex += 1;
     }
@@ -2879,10 +3026,10 @@ class ReportService {
     }
 
     if (filters.lowStockOnly) {
-      query += ` AND ${stockOnHandExpression} <= COALESCE(vi.low_stock_threshold, 10)`;
+      query += ` AND ${stockOnHandExpression} <= ${lowStockThresholdExpression}`;
     }
 
-    query += ' ORDER BY v.name ASC, vi.period_start DESC';
+    query += ` ORDER BY v.name ASC, vi.${periodStartColumn} DESC`;
 
     const result = await this.pool.query(query, params);
     return result.rows;

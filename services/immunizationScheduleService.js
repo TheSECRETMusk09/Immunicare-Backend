@@ -11,6 +11,69 @@ const {
   toClinicDateKey,
 } = require('../utils/clinicCalendar');
 
+const SCHEDULE_SCHEMA_COLUMNS = [
+  'is_active',
+  'age_in_months',
+  'age_months',
+  'age_description',
+  'minimum_age_days',
+  'grace_period_days',
+];
+
+let scheduleSchemaPromise = null;
+
+const resolveScheduleSchema = async () => {
+  if (!scheduleSchemaPromise) {
+    scheduleSchemaPromise = pool
+      .query(
+        `
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'vaccination_schedules'
+            AND column_name = ANY($1::text[])
+        `,
+        [SCHEDULE_SCHEMA_COLUMNS],
+      )
+      .then((result) => {
+        const columns = new Set((result.rows || []).map((row) => row.column_name));
+        const ageColumn = columns.has('age_in_months')
+          ? 'age_in_months'
+          : columns.has('age_months')
+            ? 'age_months'
+            : null;
+
+        if (!ageColumn) {
+          throw new Error('Vaccination schedules age column is not configured');
+        }
+
+        return {
+          columns,
+          ageColumn,
+        };
+      })
+      .catch((error) => {
+        scheduleSchemaPromise = null;
+        throw error;
+      });
+  }
+
+  return scheduleSchemaPromise;
+};
+
+const buildOptionalScheduleColumn = (
+  availableColumns,
+  columnName,
+  fallbackSql,
+  alias = columnName,
+) => {
+  if (availableColumns.has(columnName)) {
+    return `vs.${columnName} AS ${alias}`;
+  }
+
+  return `${fallbackSql} AS ${alias}`;
+};
+
 class ImmunizationScheduleService {
   getClinicTodayDateKey() {
     return getClinicTodayDateKey();
@@ -134,43 +197,39 @@ class ImmunizationScheduleService {
    */
   async getAllSchedules() {
     try {
+      const { columns, ageColumn } = await resolveScheduleSchema();
+      const activeFilter = columns.has('is_active')
+        ? 'WHERE COALESCE(vs.is_active, true) = true'
+        : '';
       const result = await pool.query(
         `
           SELECT
-            vs.id, vs.vaccine_id, vs.vaccine_name, vs.dose_number,
+            vs.id,
+            vs.vaccine_id,
+            COALESCE(NULLIF(TRIM(vs.vaccine_name), ''), v.name) AS vaccine_name,
+            vs.dose_number,
             CONCAT('Dose ', COALESCE(vs.dose_number, 1)) AS dose_name,
-            vs.total_doses, vs.age_months, vs.age_description, vs.description,
-            vs.minimum_age_days, vs.grace_period_days,
-            v.code as vaccine_code, v.name as vaccine_full_name
+            vs.total_doses,
+            vs.${ageColumn} AS age_months,
+            ${buildOptionalScheduleColumn(columns, 'age_description', 'NULL::text')},
+            vs.description,
+            ${buildOptionalScheduleColumn(columns, 'minimum_age_days', 'NULL::integer')},
+            ${buildOptionalScheduleColumn(columns, 'grace_period_days', 'NULL::integer')},
+            v.code AS vaccine_code,
+            v.name AS vaccine_full_name
           FROM vaccination_schedules vs
           LEFT JOIN vaccines v ON v.id = vs.vaccine_id
-          WHERE COALESCE(vs.is_active, true) = true
-          ORDER BY vs.age_months ASC, vs.vaccine_name ASC, vs.dose_number ASC
+          ${activeFilter}
+          ORDER BY
+            vs.${ageColumn} ASC,
+            COALESCE(NULLIF(TRIM(vs.vaccine_name), ''), v.name) ASC,
+            vs.dose_number ASC
         `,
       );
       return result.rows;
     } catch (error) {
       console.error('Error in getAllSchedules:', error);
-      // Fallback if is_active column doesn't exist
-      try {
-        const result = await pool.query(
-          `
-            SELECT
-              vs.id, vs.vaccine_id, vs.vaccine_name, vs.dose_number,
-              CONCAT('Dose ', COALESCE(vs.dose_number, 1)) AS dose_name,
-              vs.total_doses, vs.age_months, vs.age_description, vs.description,
-              vs.minimum_age_days, vs.grace_period_days,
-              v.code as vaccine_code, v.name as vaccine_full_name
-            FROM vaccination_schedules vs
-            LEFT JOIN vaccines v ON v.id = vs.vaccine_id
-            ORDER BY vs.age_months ASC, vs.vaccine_name ASC, vs.dose_number ASC
-          `,
-        );
-        return result.rows;
-      } catch (innerError) {
-        console.error('Fatal error in getAllSchedules:', innerError);
-        return [];
-      }
+      return [];
     }
   }
 
@@ -992,24 +1051,24 @@ class ImmunizationScheduleService {
         return { error: 'Infant not found or invalid DOB' };
       }
 
-      let result;
-      try {
-        result = await pool.query(
-          `SELECT age_months, minimum_age_days, age_description
-           FROM vaccination_schedules
-           WHERE vaccine_id = $1 AND dose_number = $2 AND COALESCE(is_active, true) = true
-           LIMIT 1`,
-          [vaccineId, doseNumber],
-        );
-      } catch (err) {
-        result = await pool.query(
-          `SELECT age_months, minimum_age_days, age_description
-           FROM vaccination_schedules
-           WHERE vaccine_id = $1 AND dose_number = $2
-           LIMIT 1`,
-          [vaccineId, doseNumber],
-        );
-      }
+      const { columns, ageColumn } = await resolveScheduleSchema();
+      const activeFilter = columns.has('is_active')
+        ? 'AND COALESCE(vs.is_active, true) = true'
+        : '';
+      const result = await pool.query(
+        `
+          SELECT
+            vs.${ageColumn} AS age_months,
+            ${buildOptionalScheduleColumn(columns, 'minimum_age_days', 'NULL::integer')},
+            ${buildOptionalScheduleColumn(columns, 'age_description', 'NULL::text')}
+          FROM vaccination_schedules vs
+          WHERE vs.vaccine_id = $1
+            AND vs.dose_number = $2
+            ${activeFilter}
+          LIMIT 1
+        `,
+        [vaccineId, doseNumber],
+      );
 
       if (result.rows.length === 0) {
         return { error: 'Schedule not found for this vaccine and dose' };

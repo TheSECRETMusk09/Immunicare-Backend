@@ -29,6 +29,9 @@ const {
   getRefreshTokenCookieOptions,
 } = require('../utils/authCookies');
 const { resolveAuthSchemaCompatibility } = require('../utils/schemaHelpers');
+const {
+  resolveUniqueGuardianUsername,
+} = require('../utils/guardianAccountNaming');
 
 const router = express.Router();
 
@@ -51,82 +54,7 @@ const resolveCanonicalRole = (roleName) => {
   return null;
 };
 
-const MAX_GUARDIAN_USERNAME_SUFFIX = 10000;
-const GUARDIAN_USERNAME_FORMAT_REGEX = /^[a-z0-9]+(?:\.[a-z0-9]+)+$/;
 const GUARDIAN_CONTROL_NUMBER_REGEX = /^GD-(\d{4,})$/i;
-
-const normalizeGuardianUsernamePart = (value) => {
-  if (value === undefined || value === null) {
-    return '';
-  }
-
-  return String(value)
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '.')
-    .replace(/\.{2,}/g, '.')
-    .replace(/^\.+|\.+$/g, '');
-};
-
-const buildGuardianUsernameBase = ({ firstName, lastName }) => {
-  const normalizedFirst = normalizeGuardianUsernamePart(firstName);
-  const normalizedLast = normalizeGuardianUsernamePart(lastName);
-
-  const safeFirst = normalizedFirst || 'guardian';
-  const safeLast = normalizedLast || safeFirst || 'user';
-
-  const baseUsername = `${safeFirst}.${safeLast}`
-    .replace(/\.{2,}/g, '.')
-    .replace(/^\.+|\.+$/g, '');
-
-  return baseUsername || 'guardian.user';
-};
-
-const resolveUniqueGuardianUsername = async (
-  client,
-  { firstName, lastName, excludeUserId = null } = {},
-) => {
-  const baseUsername = buildGuardianUsernameBase({ firstName, lastName });
-
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [baseUsername]);
-
-  let query = `
-    SELECT username
-    FROM users
-    WHERE (lower(username) = lower($1) OR lower(username) LIKE lower($2))
-  `;
-  const params = [baseUsername, `${baseUsername}%`];
-
-  if (excludeUserId) {
-    query += ' AND id <> $3';
-    params.push(excludeUserId);
-  }
-
-  const existingUsernamesResult = await client.query(query, params);
-  const takenUsernames = new Set(
-    existingUsernamesResult.rows
-      .map((row) => String(row.username || '').trim().toLowerCase())
-      .filter(Boolean),
-  );
-
-  if (!takenUsernames.has(baseUsername.toLowerCase())) {
-    return baseUsername;
-  }
-
-  for (let suffix = 2; suffix <= MAX_GUARDIAN_USERNAME_SUFFIX; suffix += 1) {
-    const candidate = `${baseUsername}${suffix}`;
-    if (!GUARDIAN_USERNAME_FORMAT_REGEX.test(candidate)) {
-      continue;
-    }
-
-    if (!takenUsernames.has(candidate.toLowerCase())) {
-      return candidate;
-    }
-  }
-
-  throw new Error('Unable to allocate unique guardian username');
-};
 
 const normalizeLoginIdentifier = (rawIdentifier = '') => String(rawIdentifier || '').trim();
 
@@ -2206,7 +2134,7 @@ router.get('/verify', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT u.id, u.username, u.role_id, u.clinic_id, u.facility_id, u.guardian_id, u.last_login, u.email,
+      `SELECT u.id, u.username, u.role_id, u.clinic_id, u.guardian_id, u.last_login, u.email,
               u.force_password_change, r.name as role_name, r.display_name, c.name as clinic_name
        FROM users u
        JOIN roles r ON u.role_id = r.id

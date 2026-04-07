@@ -13,6 +13,53 @@ const TEXTBEE_BASE_URL = 'https://api.textbee.dev/api/v1/gateway/devices';
 
 let smsLogSchemaCache = null;
 let smsLogSchemaPromise = null;
+let smsVerificationSchemaPromise = null;
+
+async function ensureSmsVerificationSchema() {
+  if (smsVerificationSchemaPromise) {
+    return smsVerificationSchemaPromise;
+  }
+
+  smsVerificationSchemaPromise = (async () => {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_verification_codes (
+        id SERIAL PRIMARY KEY,
+        phone_number VARCHAR(32) NOT NULL,
+        code VARCHAR(32) NOT NULL,
+        purpose VARCHAR(64) NOT NULL DEFAULT 'verification',
+        user_id INTEGER NULL,
+        guardian_id INTEGER NULL,
+        expires_at TIMESTAMP NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        ip_address TEXT NULL,
+        user_agent TEXT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        verified_at TIMESTAMP NULL,
+        UNIQUE (phone_number, purpose)
+      )
+    `);
+
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS purpose VARCHAR(64) NOT NULL DEFAULT 'verification'`);
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS user_id INTEGER NULL`);
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS guardian_id INTEGER NULL`);
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL`);
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 3`);
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS ip_address TEXT NULL`);
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS user_agent TEXT NULL`);
+    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP NULL`);
+
+    // Helpful indexes (idempotent)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sms_verification_codes_phone ON sms_verification_codes (phone_number)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sms_verification_codes_expires ON sms_verification_codes (expires_at)`);
+  })().catch((error) => {
+    smsVerificationSchemaPromise = null;
+    throw error;
+  });
+
+  return smsVerificationSchemaPromise;
+}
 
 const SMS_CONFIG = {
   provider: SMS_PROVIDER,
@@ -264,6 +311,7 @@ async function logSms({
 
 async function checkOtpCooldown(phoneNumber, purpose) {
   try {
+    await ensureSmsVerificationSchema();
     const result = await pool.query(
       `SELECT created_at
        FROM sms_verification_codes
@@ -331,6 +379,7 @@ async function upsertOtpCode({
 }) {
   const expiresAt = new Date(Date.now() + SMS_CONFIG.otp.expiryMinutes * 60 * 1000);
 
+  await ensureSmsVerificationSchema();
   await pool.query(
     `INSERT INTO sms_verification_codes
       (phone_number, code, purpose, user_id, guardian_id, expires_at, attempts, max_attempts, ip_address, user_agent)
@@ -543,6 +592,7 @@ async function verifyOTP(phoneNumber, code, purpose = 'verification') {
 
   const formattedPhone = validation.formattedNumber;
 
+  await ensureSmsVerificationSchema();
   const result = await pool.query(
     `SELECT id, code, attempts, max_attempts, user_id, guardian_id, expires_at
      FROM sms_verification_codes

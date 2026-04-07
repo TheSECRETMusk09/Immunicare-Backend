@@ -51,6 +51,25 @@ const initializeAppointmentRuntimeSchema = async () => {
     return true;
   }
 
+  // Ensure reminder/SMS tracking columns exist (used by reminder scheduler + tests)
+  const smsTrackingColumns = await queryExistingColumns('appointments', [
+    'reminder_sent_24h',
+    'reminder_sent_48h',
+    'sms_missed_notification_sent',
+  ]);
+  if (
+    !smsTrackingColumns.has('reminder_sent_24h') ||
+    !smsTrackingColumns.has('reminder_sent_48h') ||
+    !smsTrackingColumns.has('sms_missed_notification_sent')
+  ) {
+    await pool.query(`
+      ALTER TABLE appointments
+        ADD COLUMN IF NOT EXISTS reminder_sent_24h BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS reminder_sent_48h BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS sms_missed_notification_sent BOOLEAN DEFAULT FALSE
+    `);
+  }
+
   const foreignKeys = await queryAppointmentsInfantForeignKeys();
   const hasPatientsForeignKey = foreignKeys.some((row) => row.target_table === 'patients');
   if (hasPatientsForeignKey) {

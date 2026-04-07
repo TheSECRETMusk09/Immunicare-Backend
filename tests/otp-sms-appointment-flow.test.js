@@ -2,13 +2,18 @@
  * Targeted Tests for OTP SMS and Appointment Flow
  * Tests the complete flow from guardian registration to appointment booking with SMS notifications
  *
- * Run with: node backend/tests/otp-sms-appointment-flow.test.js
+ * Run with:
+ * - Jest: `npm test`
+ * - CLI: `node backend/tests/otp-sms-appointment-flow.test.js`
  */
 
 const pool = require('../db');
 const smsService = require('../services/smsService');
 const appointmentConfirmationService = require('../services/appointmentConfirmationService');
 const { processAppointmentReminders } = require('../services/smsReminderScheduler');
+const {
+  ensureAppointmentRuntimeSchemaInitialized,
+} = require('../services/appointmentRuntimeSchemaService');
 
 // Test configuration
 const TEST_CONFIG = {
@@ -111,16 +116,21 @@ async function testOtpSendAndVerify() {
     const testOtp = '123456';
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
+    // smsService normalizes "verification" to "phone_verification"
     await pool.query(
       `INSERT INTO sms_verification_codes (phone_number, code, purpose, expires_at, attempts, max_attempts)
        VALUES ($1, $2, $3, $4, 0, 3)
        ON CONFLICT (phone_number, purpose) DO UPDATE SET code = EXCLUDED.code`,
-      [TEST_CONFIG.testPhone, testOtp, 'verification', expiresAt],
+      [TEST_CONFIG.testPhone, testOtp, 'phone_verification', expiresAt],
     );
     console.log(`  ✓ Test OTP inserted: ${testOtp}`);
 
     // Verify correct OTP
-    const verifyResult = await smsService.verifyOTP(TEST_CONFIG.testPhone, testOtp, 'verification');
+    const verifyResult = await smsService.verifyOTP(
+      TEST_CONFIG.testPhone,
+      testOtp,
+      'phone_verification',
+    );
     console.log('  Verify result:', JSON.stringify(verifyResult, null, 2));
 
     if (!verifyResult.success) {
@@ -130,7 +140,11 @@ async function testOtpSendAndVerify() {
 
     // Test 1.5: Verify incorrect OTP fails
     console.log('\nTest 1.5: Verify Incorrect OTP Fails');
-    const wrongVerifyResult = await smsService.verifyOTP(TEST_CONFIG.testPhone, '000000', 'verification');
+    const wrongVerifyResult = await smsService.verifyOTP(
+      TEST_CONFIG.testPhone,
+      '000000',
+      'phone_verification',
+    );
     if (wrongVerifyResult.success) {
       throw new Error('Wrong OTP should not verify');
     }
@@ -145,10 +159,14 @@ async function testOtpSendAndVerify() {
       `INSERT INTO sms_verification_codes (phone_number, code, purpose, expires_at, attempts, max_attempts)
        VALUES ($1, $2, $3, $4, 0, 3)
        ON CONFLICT (phone_number, purpose) DO UPDATE SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at`,
-      [TEST_CONFIG.testPhone, expiredOtp, 'verification', pastExpiry],
+      [TEST_CONFIG.testPhone, expiredOtp, 'phone_verification', pastExpiry],
     );
 
-    const expiredVerifyResult = await smsService.verifyOTP(TEST_CONFIG.testPhone, expiredOtp, 'verification');
+    const expiredVerifyResult = await smsService.verifyOTP(
+      TEST_CONFIG.testPhone,
+      expiredOtp,
+      'phone_verification',
+    );
     if (expiredVerifyResult.success) {
       throw new Error('Expired OTP should not verify');
     }
@@ -170,6 +188,8 @@ async function testAppointmentBooking() {
   console.log('\n=== TEST SUITE 2: Appointment Booking ===\n');
 
   try {
+    await ensureAppointmentRuntimeSchemaInitialized();
+
     // First, create test guardian and infant
     console.log('Setting up test data...');
 
@@ -208,7 +228,7 @@ async function testAppointmentBooking() {
 
     // Create infant/patient
     const infantResult = await pool.query(
-      `INSERT INTO patients (first_name, last_name, guardian_id, clinic_id, is_active, date_of_birth)
+      `INSERT INTO patients (first_name, last_name, guardian_id, clinic_id, is_active, dob)
        VALUES ($1, $2, $3, $4, true, NOW() - INTERVAL '6 months')
        RETURNING id`,
       ['Test', 'Baby', TEST_CONFIG.testGuardianId, TEST_CONFIG.testClinicId],
@@ -499,9 +519,25 @@ async function runAllTests() {
     }
     console.log('╚════════════════════════════════════════════════════════════╝');
 
-    process.exit(allPassed ? 0 : 1);
   }
+
+  return allPassed;
 }
 
-// Run tests
-runAllTests();
+describe('OTP SMS & appointment flow (integration)', () => {
+  test(
+    'completes end-to-end flow',
+    async () => {
+      const passed = await runAllTests();
+      expect(passed).toBe(true);
+    },
+    5 * 60 * 1000,
+  );
+});
+
+// CLI runner (kept for manual debugging)
+if (require.main === module) {
+  runAllTests()
+    .then((passed) => process.exit(passed ? 0 : 1))
+    .catch(() => process.exit(1));
+}

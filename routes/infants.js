@@ -641,8 +641,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
       [...params, limit, offset],
     );
 
-    const [summaryResult, filteredPatientsResult] = await Promise.all([
-      pool.query(
+    const summaryResult = await pool.query(
         `
           SELECT
             COUNT(*)::INT AS total,
@@ -671,27 +670,12 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
           ) filtered_patients
         `,
         params,
-      ),
-      pool.query(
-        `
-          SELECT
-            p.id,
-            p.dob,
-            p.facility_id,
-            p.health_center
-          FROM patients p
-          LEFT JOIN guardians g ON g.id = p.guardian_id
-          ${whereClause}
-        `,
-        params,
-      ),
-    ]);
+      );
     const summary = summaryResult.rows[0] || {};
-    const filteredPatients = filteredPatientsResult.rows || [];
+    const total = parseInt(summary.total, 10) || 0;
     const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
-      filteredPatients,
+      result.rows || [],
     );
-    const total = filteredPatients.length;
     const pendingVaccinations = sumPendingDoseCounts(scheduleSummaryMap);
     const data = mergePendingDoseCounts(result.rows || [], scheduleSummaryMap);
 
@@ -716,7 +700,9 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
     });
   } catch (error) {
     console.error('[Infants API] Error fetching infants:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch infants' });
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: 'Failed to fetch infants' });
+    }
   }
 });
 

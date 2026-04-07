@@ -17,6 +17,13 @@ const {
   decryptPasswordVisibilityPayload,
 } = require('../utils/passwordVisibilityCrypto');
 const { resolvePrimaryUserScopeId } = require('../services/entityScopeService');
+const {
+  buildGuardianEmail,
+  isSeedStyleGuardianEmail,
+  isSeedStyleGuardianUsername,
+  normalizeGuardianEmail,
+  resolveUniqueGuardianAccountIdentity,
+} = require('../utils/guardianAccountNaming');
 
 const router = express.Router();
 
@@ -61,8 +68,6 @@ const canAccessUserScope = (req, userId) => {
 };
 
 const GUARDIAN_PHONE_REGEX = /^(\+63|0)\d{10}$/;
-const MAX_GUARDIAN_USERNAME_SUFFIX = 10000;
-const GUARDIAN_USERNAME_FORMAT_REGEX = /^[a-z0-9]+(?:\.[a-z0-9]+)+$/;
 const GUARDIAN_PORTAL_CLINIC_NAME = 'Guardian Portal';
 let ensureGuardianProfileColumnsPromise = null;
 
@@ -78,111 +83,6 @@ const ensureGuardianProfileColumnsExist = async () => {
   }
 
   return ensureGuardianProfileColumnsPromise;
-};
-
-const normalizeGuardianEmail = (value) => {
-  const normalized = String(value || '')
-    .trim()
-    .toLowerCase();
-
-  return normalized || null;
-};
-
-const normalizeGuardianUsernamePart = (value) => {
-  if (value === undefined || value === null) {
-    return '';
-  }
-
-  return String(value)
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '.')
-    .replace(/\.{2,}/g, '.')
-    .replace(/^\.+|\.+$/g, '');
-};
-
-const splitGuardianFullName = (fullName) => {
-  const normalizedName = String(fullName || '')
-    .trim()
-    .replace(/\s+/g, ' ');
-
-  if (!normalizedName) {
-    return {
-      firstName: 'guardian',
-      lastName: 'user',
-    };
-  }
-
-  const parts = normalizedName.split(' ').filter(Boolean);
-  const firstName = parts[0] || 'guardian';
-  const lastName = parts.slice(1).join(' ') || firstName;
-
-  return {
-    firstName,
-    lastName,
-  };
-};
-
-const buildGuardianUsernameBase = (fullName) => {
-  const { firstName, lastName } = splitGuardianFullName(fullName);
-
-  const normalizedFirst = normalizeGuardianUsernamePart(firstName);
-  const normalizedLast = normalizeGuardianUsernamePart(lastName);
-
-  const safeFirst = normalizedFirst || 'guardian';
-  const safeLast = normalizedLast || safeFirst || 'user';
-
-  const baseUsername = `${safeFirst}.${safeLast}`
-    .replace(/\.{2,}/g, '.')
-    .replace(/^\.+|\.+$/g, '');
-
-  return baseUsername || 'guardian.user';
-};
-
-const resolveUniqueGuardianUsername = async (
-  client,
-  { fullName, excludeUserId = null } = {},
-) => {
-  const baseUsername = buildGuardianUsernameBase(fullName);
-
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [baseUsername]);
-
-  let query = `
-    SELECT username
-    FROM users
-    WHERE (lower(username) = lower($1) OR lower(username) LIKE lower($2))
-  `;
-  const params = [baseUsername, `${baseUsername}%`];
-
-  if (excludeUserId) {
-    query += ' AND id <> $3';
-    params.push(excludeUserId);
-  }
-
-  const existingUsernamesResult = await client.query(query, params);
-  const takenUsernames = new Set(
-    existingUsernamesResult.rows
-      .map((row) => String(row.username || '').trim().toLowerCase())
-      .filter(Boolean),
-  );
-
-  if (!takenUsernames.has(baseUsername.toLowerCase())) {
-    return baseUsername;
-  }
-
-  for (let suffix = 2; suffix <= MAX_GUARDIAN_USERNAME_SUFFIX; suffix += 1) {
-    const candidate = `${baseUsername}${suffix}`;
-    if (!GUARDIAN_USERNAME_FORMAT_REGEX.test(candidate)) {
-      continue;
-    }
-
-    if (!takenUsernames.has(candidate.toLowerCase())) {
-      return candidate;
-    }
-  }
-
-  throw new Error('Unable to allocate unique guardian username');
 };
 
 const ensureGuardianRoleId = async (client) => {
@@ -249,7 +149,14 @@ const buildProvisionedGuardianPassword = () => {
   return `Guardian-${crypto.randomBytes(8).toString('hex')}`;
 };
 
-const ensureGuardianUserAccount = async (client, guardianRecord = {}) => {
+const ensureGuardianUserAccount = async (
+  client,
+  guardianRecord = {},
+  {
+    syncExplicitGuardianEmail = false,
+    throwOnEmailConflict = false,
+  } = {},
+) => {
   const guardianId = parseInt(guardianRecord.id, 10);
   if (!guardianId || guardianId <= 0) {
     throw new Error('Guardian id is required to ensure linked user account');
@@ -270,39 +177,133 @@ const ensureGuardianUserAccount = async (client, guardianRecord = {}) => {
   );
 
   const existingUser = linkedUserResult.rows[0] || null;
+  const generatedIdentity = await resolveUniqueGuardianAccountIdentity(client, {
+    fullName: guardianName,
+    excludeUserId: existingUser?.id || null,
+  });
+  const normalizedGuardianEmail = normalizeGuardianEmail(guardianRecord.email);
+  const guardianEmailIsCustom =
+    Boolean(normalizedGuardianEmail) && !isSeedStyleGuardianEmail(normalizedGuardianEmail);
+
+  let targetUsername = generatedIdentity.username;
+  let targetEmail = guardianEmailIsCustom ? normalizedGuardianEmail : generatedIdentity.email;
+  let shouldBackfillGuardianEmail =
+    Boolean(targetEmail) &&
+    (!normalizedGuardianEmail || isSeedStyleGuardianEmail(normalizedGuardianEmail));
 
   if (existingUser) {
-    const generatedUsername = await resolveUniqueGuardianUsername(client, {
-      fullName: guardianName,
-      excludeUserId: existingUser.id,
-    });
+    const existingUsername = String(existingUser.username || '').trim();
+    const existingUserEmail = normalizeGuardianEmail(existingUser.email);
+    const userEmailIsCustom =
+      Boolean(existingUserEmail) && !isSeedStyleGuardianEmail(existingUserEmail);
 
-    if (String(existingUser.username || '').trim().toLowerCase() !== generatedUsername.toLowerCase()) {
-      const updatedUserResult = await client.query(
-        `UPDATE users
-         SET username = $1,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2
-         RETURNING id, username`,
-        [generatedUsername, existingUser.id],
-      );
-
-      return updatedUserResult.rows[0] || { id: existingUser.id, username: generatedUsername };
+    if (existingUsername && !isSeedStyleGuardianUsername(existingUsername)) {
+      targetUsername = existingUsername;
     }
 
-    return {
+    const generatedFallbackEmail =
+      buildGuardianEmail(targetUsername, generatedIdentity.emailDomain) || generatedIdentity.email;
+
+    if (syncExplicitGuardianEmail && guardianEmailIsCustom) {
+      targetEmail = normalizedGuardianEmail;
+      shouldBackfillGuardianEmail = false;
+    } else if (userEmailIsCustom) {
+      targetEmail = existingUserEmail;
+      shouldBackfillGuardianEmail =
+        Boolean(targetEmail) &&
+        (!normalizedGuardianEmail || isSeedStyleGuardianEmail(normalizedGuardianEmail));
+    } else {
+      targetEmail = generatedFallbackEmail;
+    }
+
+    if (targetEmail && targetEmail !== existingUserEmail) {
+      const availableEmail = await resolveGuardianUserEmail(client, targetEmail, {
+        excludeUserId: existingUser.id,
+      });
+
+      if (!availableEmail) {
+        if (throwOnEmailConflict) {
+          const error = new Error('Guardian email is already linked to another user account');
+          error.code = 'GUARDIAN_EMAIL_CONFLICT';
+          throw error;
+        }
+
+        targetEmail = userEmailIsCustom ? existingUserEmail : generatedIdentity.email;
+        shouldBackfillGuardianEmail =
+          Boolean(targetEmail) &&
+          (!normalizedGuardianEmail || isSeedStyleGuardianEmail(normalizedGuardianEmail));
+      }
+    }
+
+    const updateClauses = [];
+    const updateParams = [];
+
+    if (existingUsername.toLowerCase() !== targetUsername.toLowerCase()) {
+      updateClauses.push(`username = $${updateParams.length + 1}`);
+      updateParams.push(targetUsername);
+    }
+
+    if ((existingUserEmail || null) !== (targetEmail || null)) {
+      updateClauses.push(`email = $${updateParams.length + 1}`);
+      updateParams.push(targetEmail);
+    }
+
+    let userRecord = {
       id: existingUser.id,
-      username: generatedUsername,
+      username: targetUsername,
+      email: targetEmail,
     };
+
+    if (updateClauses.length > 0) {
+      updateParams.push(existingUser.id);
+      const updatedUserResult = await client.query(
+        `UPDATE users
+         SET ${updateClauses.join(', ')},
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $${updateParams.length}
+         RETURNING id, username, email`,
+        updateParams,
+      );
+
+      userRecord = updatedUserResult.rows[0] || userRecord;
+    }
+
+    if (
+      shouldBackfillGuardianEmail &&
+      targetEmail &&
+      normalizedGuardianEmail !== targetEmail
+    ) {
+      await client.query(
+        `UPDATE guardians
+         SET email = $1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [targetEmail, guardianId],
+      );
+    }
+
+    return userRecord;
   }
 
   const guardianRoleId = await ensureGuardianRoleId(client);
   const guardianPortalClinicId = await ensureGuardianPortalClinicId(client);
-  const generatedUsername = await resolveUniqueGuardianUsername(client, {
-    fullName: guardianName,
-  });
   const generatedPasswordHash = await bcrypt.hash(buildProvisionedGuardianPassword(), 10);
-  const availableEmail = await resolveGuardianUserEmail(client, guardianRecord.email);
+
+  if (targetEmail) {
+    const availableEmail = await resolveGuardianUserEmail(client, targetEmail);
+    if (!availableEmail) {
+      if (throwOnEmailConflict && guardianEmailIsCustom) {
+        const error = new Error('Guardian email is already linked to another user account');
+        error.code = 'GUARDIAN_EMAIL_CONFLICT';
+        throw error;
+      }
+
+      targetEmail = generatedIdentity.email;
+      shouldBackfillGuardianEmail =
+        Boolean(targetEmail) &&
+        (!normalizedGuardianEmail || isSeedStyleGuardianEmail(normalizedGuardianEmail));
+    }
+  }
 
   const createdUserResult = await client.query(
     `INSERT INTO users (
@@ -316,16 +317,30 @@ const ensureGuardianUserAccount = async (client, guardianRecord = {}) => {
        force_password_change
      )
      VALUES ($1, $2, $3, $4, $5, $6, true, true)
-     RETURNING id, username`,
+     RETURNING id, username, email`,
     [
-      generatedUsername,
-      availableEmail,
+      targetUsername,
+      targetEmail,
       generatedPasswordHash,
       guardianRoleId,
       guardianId,
       guardianPortalClinicId,
     ],
   );
+
+  if (
+    shouldBackfillGuardianEmail &&
+    targetEmail &&
+    normalizedGuardianEmail !== targetEmail
+  ) {
+    await client.query(
+      `UPDATE guardians
+       SET email = $1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [targetEmail, guardianId],
+    );
+  }
 
   await client.query(
     `UPDATE guardians
@@ -1022,7 +1037,8 @@ router.get('/guardians', requirePermission('user:view'), async (req, res) => {
         WITH latest_linked_users AS (
           SELECT DISTINCT ON (u.guardian_id)
             u.guardian_id,
-            u.username
+            u.username,
+            u.email
           FROM users u
           WHERE u.guardian_id IS NOT NULL
           ORDER BY u.guardian_id, u.id DESC
@@ -1031,9 +1047,9 @@ router.get('/guardians', requirePermission('user:view'), async (req, res) => {
           SELECT
             g.id,
             COALESCE(llu.username, '') AS username,
+            COALESCE(llu.email, g.email) AS email,
             g.name,
             g.phone,
-            g.email,
             g.address,
             g.relationship,
             g.is_password_set,
@@ -1123,12 +1139,16 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
     );
 
     const guardian = result.rows[0];
-    const guardianUser = await ensureGuardianUserAccount(client, guardian);
+    const guardianUser = await ensureGuardianUserAccount(client, guardian, {
+      syncExplicitGuardianEmail: true,
+      throwOnEmailConflict: true,
+    });
 
     await client.query('COMMIT');
 
     const responsePayload = {
       ...guardian,
+      email: guardianUser?.email || guardian.email || null,
       username: guardianUser?.username || null,
     };
 
@@ -1139,6 +1159,9 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
       await client.query('ROLLBACK');
     } catch (rollbackError) {
       console.error('Rollback error while creating guardian:', rollbackError);
+    }
+    if (error.code === 'GUARDIAN_EMAIL_CONFLICT') {
+      return res.status(409).json({ success: false, error: error.message, code: error.code });
     }
     console.error('Error creating guardian:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -1212,12 +1235,16 @@ router.put('/guardians/:id', requirePermission('user:update'), async (req, res) 
       return res.status(404).json({ success: false, error: 'Guardian not found' });
     }
 
-    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0]);
+    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0], {
+      syncExplicitGuardianEmail: true,
+      throwOnEmailConflict: true,
+    });
 
     await client.query('COMMIT');
 
     const responsePayload = {
       ...result.rows[0],
+      email: ensuredGuardianUser?.email || result.rows[0].email || null,
       username: ensuredGuardianUser?.username || null,
     };
 
@@ -1228,6 +1255,9 @@ router.put('/guardians/:id', requirePermission('user:update'), async (req, res) 
       await client.query('ROLLBACK');
     } catch (rollbackError) {
       console.error('Rollback error while updating guardian:', rollbackError);
+    }
+    if (error.code === 'GUARDIAN_EMAIL_CONFLICT') {
+      return res.status(409).json({ success: false, error: error.message, code: error.code });
     }
     console.error('Error updating guardian:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -2378,12 +2408,16 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
-    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0]);
+    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0], {
+      syncExplicitGuardianEmail: true,
+      throwOnEmailConflict: true,
+    });
 
     await client.query('COMMIT');
 
     const responsePayload = {
       ...result.rows[0],
+      email: ensuredGuardianUser?.email || result.rows[0].email || null,
       username: ensuredGuardianUser?.username || null,
     };
 
@@ -2394,6 +2428,12 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
       await client.query('ROLLBACK');
     } catch (rollbackError) {
       console.error('Rollback error while updating guardian profile:', rollbackError);
+    }
+    if (error.code === 'GUARDIAN_EMAIL_CONFLICT') {
+      return res.status(409).json({
+        error: error.message,
+        code: error.code,
+      });
     }
     console.error('Error updating guardian profile:', error);
     res.status(500).json({
@@ -2503,12 +2543,16 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
       });
     }
 
-    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0]);
+    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0], {
+      syncExplicitGuardianEmail: true,
+      throwOnEmailConflict: true,
+    });
 
     await client.query('COMMIT');
 
     const responsePayload = {
       ...result.rows[0],
+      email: ensuredGuardianUser?.email || result.rows[0].email || null,
       username: ensuredGuardianUser?.username || null,
     };
 
@@ -2523,6 +2567,13 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
       await client.query('ROLLBACK');
     } catch (rollbackError) {
       console.error('Rollback error while updating guardian self profile:', rollbackError);
+    }
+    if (error.code === 'GUARDIAN_EMAIL_CONFLICT') {
+      return res.status(409).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+      });
     }
     console.error('Error updating guardian self profile:', error);
     return res.status(500).json({

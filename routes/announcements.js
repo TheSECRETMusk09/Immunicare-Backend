@@ -20,6 +20,7 @@ const DELIVERY_STATUS_VALUES = ['pending', 'queued', 'sent', 'delivered', 'read'
 
 const TABLE_COLUMN_CACHE_TTL_MS = 5 * 60 * 1000;
 const tableColumnCache = new Map();
+let announcementsSchemaPromise = null;
 
 const sanitizeAnnouncementPayload = (payload = {}) => {
   const errors = {};
@@ -210,6 +211,220 @@ const getTableColumns = async (client, tableName) => {
 const isTableAvailable = async (client, tableName) => {
   const columns = await getTableColumns(client, tableName);
   return columns.size > 0;
+};
+
+const clearTableColumnCache = (...tableNames) => {
+  tableNames
+    .filter(Boolean)
+    .forEach((tableName) => tableColumnCache.delete(String(tableName)));
+};
+
+const escapeSqlLiteral = (value) => `'${String(value).replace(/'/g, "''")}'`;
+
+const ensureConstraint = async (client, tableName, constraintName, definitionSql) => {
+  await client.query(
+    `
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = ${escapeSqlLiteral(constraintName)}
+            AND conrelid = to_regclass(${escapeSqlLiteral(`public.${tableName}`)})
+        ) THEN
+          ALTER TABLE ${tableName}
+            ADD CONSTRAINT ${constraintName}
+            ${definitionSql};
+        END IF;
+      END $$;
+    `,
+  );
+};
+
+const ensureAnnouncementsSchema = async (client = pool) => {
+  if (!announcementsSchemaPromise) {
+    announcementsSchemaPromise = (async () => {
+      const [usersAvailable, adminAvailable] = await Promise.all([
+        isTableAvailable(client, 'users'),
+        isTableAvailable(client, 'admin'),
+      ]);
+      const createdByTable = usersAvailable ? 'users' : (adminAvailable ? 'admin' : null);
+
+      if (!createdByTable) {
+        throw new Error('Unable to initialize announcements schema because users/admin tables are unavailable.');
+      }
+
+      await client.query(
+        `
+          CREATE TABLE IF NOT EXISTS announcements (
+            id SERIAL PRIMARY KEY,
+            title VARCHAR(255) NOT NULL,
+            content TEXT NOT NULL,
+            priority VARCHAR(20) NOT NULL DEFAULT 'medium',
+            status VARCHAR(20) NOT NULL DEFAULT 'draft',
+            target_audience VARCHAR(20) NOT NULL DEFAULT 'all',
+            start_date DATE,
+            end_date DATE,
+            published_at TIMESTAMP WITHOUT TIME ZONE,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            expires_at TIMESTAMP WITHOUT TIME ZONE,
+            created_by INTEGER NOT NULL REFERENCES ${createdByTable}(id),
+            created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            deleted_at TIMESTAMP WITHOUT TIME ZONE
+          )
+        `,
+      );
+
+      await client.query('CREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_announcements_priority ON announcements(priority)');
+      await client.query(
+        'CREATE INDEX IF NOT EXISTS idx_announcements_target_audience ON announcements(target_audience)',
+      );
+      await client.query('CREATE INDEX IF NOT EXISTS idx_announcements_created_by ON announcements(created_by)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_announcements_created_at ON announcements(created_at)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_announcements_is_active ON announcements(is_active)');
+
+      await ensureConstraint(
+        client,
+        'announcements',
+        'chk_announcements_priority',
+        `CHECK (priority IN ('low', 'medium', 'high', 'urgent'))`,
+      );
+      await ensureConstraint(
+        client,
+        'announcements',
+        'chk_announcements_status',
+        `CHECK (status IN ('draft', 'published', 'archived'))`,
+      );
+      await ensureConstraint(
+        client,
+        'announcements',
+        'chk_announcements_target_audience',
+        `CHECK (target_audience IN ('all', 'patients', 'staff'))`,
+      );
+
+      await client.query(
+        `
+          CREATE TABLE IF NOT EXISTS announcement_recipient_deliveries (
+            id SERIAL PRIMARY KEY,
+            announcement_id INTEGER NOT NULL,
+            recipient_user_id INTEGER,
+            recipient_guardian_id INTEGER,
+            notification_id INTEGER,
+            resolved_target_audience VARCHAR(50) NOT NULL DEFAULT 'all',
+            delivery_channel VARCHAR(30) NOT NULL DEFAULT 'in_app',
+            delivery_status VARCHAR(30) NOT NULL DEFAULT 'pending',
+            delivery_attempts INTEGER NOT NULL DEFAULT 0,
+            queued_at TIMESTAMP WITHOUT TIME ZONE,
+            sent_at TIMESTAMP WITHOUT TIME ZONE,
+            delivered_at TIMESTAMP WITHOUT TIME ZONE,
+            read_at TIMESTAMP WITHOUT TIME ZONE,
+            failed_at TIMESTAMP WITHOUT TIME ZONE,
+            failure_reason TEXT,
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+          )
+        `,
+      );
+
+      await ensureConstraint(
+        client,
+        'announcement_recipient_deliveries',
+        'chk_ard_recipient_present',
+        'CHECK (recipient_user_id IS NOT NULL OR recipient_guardian_id IS NOT NULL)',
+      );
+      await ensureConstraint(
+        client,
+        'announcement_recipient_deliveries',
+        'chk_ard_delivery_status',
+        `CHECK (delivery_status IN ('pending', 'queued', 'sent', 'delivered', 'read', 'failed', 'cancelled'))`,
+      );
+      await ensureConstraint(
+        client,
+        'announcement_recipient_deliveries',
+        'chk_ard_delivery_attempts_non_negative',
+        'CHECK (delivery_attempts >= 0)',
+      );
+      await ensureConstraint(
+        client,
+        'announcement_recipient_deliveries',
+        'fk_ard_announcement_id',
+        'FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON UPDATE CASCADE ON DELETE CASCADE',
+      );
+
+      if (usersAvailable) {
+        await ensureConstraint(
+          client,
+          'announcement_recipient_deliveries',
+          'fk_ard_recipient_user_id',
+          'FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL',
+        );
+      }
+
+      if (await isTableAvailable(client, 'guardians')) {
+        await ensureConstraint(
+          client,
+          'announcement_recipient_deliveries',
+          'fk_ard_recipient_guardian_id',
+          'FOREIGN KEY (recipient_guardian_id) REFERENCES guardians(id) ON UPDATE CASCADE ON DELETE SET NULL',
+        );
+      }
+
+      if (await isTableAvailable(client, 'notifications')) {
+        await ensureConstraint(
+          client,
+          'announcement_recipient_deliveries',
+          'fk_ard_notification_id',
+          'FOREIGN KEY (notification_id) REFERENCES notifications(id) ON UPDATE CASCADE ON DELETE SET NULL',
+        );
+      }
+
+      await client.query(
+        'CREATE INDEX IF NOT EXISTS idx_ard_announcement_id ON announcement_recipient_deliveries(announcement_id)',
+      );
+      await client.query(
+        'CREATE INDEX IF NOT EXISTS idx_ard_recipient_user_id ON announcement_recipient_deliveries(recipient_user_id)',
+      );
+      await client.query(
+        'CREATE INDEX IF NOT EXISTS idx_ard_recipient_guardian_id ON announcement_recipient_deliveries(recipient_guardian_id)',
+      );
+      await client.query(
+        'CREATE INDEX IF NOT EXISTS idx_ard_notification_id ON announcement_recipient_deliveries(notification_id)',
+      );
+      await client.query(
+        'CREATE INDEX IF NOT EXISTS idx_ard_delivery_status ON announcement_recipient_deliveries(delivery_status)',
+      );
+      await client.query(
+        'CREATE INDEX IF NOT EXISTS idx_ard_created_at_desc ON announcement_recipient_deliveries(created_at DESC)',
+      );
+      await client.query(
+        'CREATE INDEX IF NOT EXISTS idx_ard_announcement_status ON announcement_recipient_deliveries(announcement_id, delivery_status)',
+      );
+      await client.query(
+        `
+          CREATE UNIQUE INDEX IF NOT EXISTS uq_ard_announcement_user
+            ON announcement_recipient_deliveries(announcement_id, recipient_user_id)
+            WHERE recipient_user_id IS NOT NULL
+        `,
+      );
+      await client.query(
+        `
+          CREATE UNIQUE INDEX IF NOT EXISTS uq_ard_announcement_guardian
+            ON announcement_recipient_deliveries(announcement_id, recipient_guardian_id)
+            WHERE recipient_user_id IS NULL AND recipient_guardian_id IS NOT NULL
+        `,
+      );
+
+      clearTableColumnCache('announcements', 'announcement_recipient_deliveries');
+    })().catch((error) => {
+      announcementsSchemaPromise = null;
+      throw error;
+    });
+  }
+
+  return announcementsSchemaPromise;
 };
 
 const resolveAnnouncementRecipients = async (client, targetAudienceValue) => {
@@ -513,6 +728,17 @@ const emitAnnouncementDeliverySummary = (announcementId, summary) => {
 
 // Middleware to authenticate all announcement routes
 router.use(authenticateToken);
+router.use((req, res, next) => {
+  ensureAnnouncementsSchema(pool)
+    .then(() => next())
+    .catch((error) => {
+      if (!res.headersSent) {
+        res.status(500).json({ error: error.message });
+        return;
+      }
+      next(error);
+    });
+});
 
 // Role-based access control for announcement management
 const requireManagementRole = requireRole(['admin', 'super_admin', 'doctor', 'nurse', 'staff']);

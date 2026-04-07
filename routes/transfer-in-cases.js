@@ -1258,7 +1258,7 @@ router.get('/', requirePermission('transfer:view'), async (req, res) => {
 });
 
 // Admin: Update transfer-in case validation
-router.put('/:id/validate', requirePermission('transfer:validate'), async (req, res) => {
+const handleValidateTransferCase = async (req, res) => {
   try {
     const caseId = parseInt(req.params.id, 10);
     if (Number.isNaN(caseId)) {
@@ -1529,7 +1529,12 @@ router.put('/:id/validate', requirePermission('transfer:validate'), async (req, 
       error: 'Failed to update transfer-in case.',
     });
   }
-});
+};
+
+router.put('/:id/validate', requirePermission('transfer:validate'), handleValidateTransferCase);
+
+// Backward-compatible alias: older clients used PUT /transfer-in-cases/:id
+router.put('/:id', requirePermission('transfer:validate'), handleValidateTransferCase);
 
 // Admin: Approve vaccines for bulk import
 router.put('/:id/approve-vaccines', requirePermission('transfer:approve'), async (req, res) => {

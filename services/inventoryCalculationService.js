@@ -10,6 +10,23 @@ const schemaCache = {
   columns: new Map(),
   tables: new Map(),
 };
+const INVENTORY_SCHEMA_DEFAULTS = Object.freeze({
+  facilityColumn: 'clinic_id',
+  issuedColumn: 'issuance',
+  wastedColumn: 'expired_wasted',
+  stockOnHandColumn: 'stock_on_hand',
+  lowStockThresholdColumn: 'low_stock_threshold',
+  criticalStockThresholdColumn: 'critical_stock_threshold',
+  lotBatchNumberColumn: 'lot_batch_number',
+  expiryDateColumn: 'expiry_date',
+  periodStartColumn: 'period_start',
+  periodEndColumn: 'period_end',
+  updatedAtColumn: 'updated_at',
+  createdAtColumn: 'created_at',
+  isActiveColumn: 'is_active',
+});
+
+let inventorySchemaPromise = null;
 
 const normalizeScopeIds = (value) => {
   const rawValues = Array.isArray(value) ? value : [value];
@@ -157,6 +174,176 @@ const resolveFirstExistingTable = async (
   }
 };
 
+const pickInventoryColumn = (availableColumns, candidates = [], fallback = null) =>
+  candidates.find((columnName) => availableColumns.has(columnName)) || fallback;
+
+const resolveInventorySchema = async () => {
+  try {
+    const result = await pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'vaccine_inventory'
+      `,
+    );
+
+    const availableColumns = new Set((result.rows || []).map((row) => row.column_name));
+
+    return {
+      facilityColumn: pickInventoryColumn(
+        availableColumns,
+        ['clinic_id', 'facility_id'],
+        INVENTORY_SCHEMA_DEFAULTS.facilityColumn,
+      ),
+      issuedColumn: pickInventoryColumn(
+        availableColumns,
+        ['issuance', 'doses_administered', 'issued'],
+        null,
+      ),
+      wastedColumn: pickInventoryColumn(
+        availableColumns,
+        ['expired_wasted', 'doses_wasted', 'wasted_expired'],
+        null,
+      ),
+      stockOnHandColumn: pickInventoryColumn(
+        availableColumns,
+        ['stock_on_hand', 'ending_balance'],
+        null,
+      ),
+      lowStockThresholdColumn: pickInventoryColumn(
+        availableColumns,
+        ['low_stock_threshold'],
+        null,
+      ),
+      criticalStockThresholdColumn: pickInventoryColumn(
+        availableColumns,
+        ['critical_stock_threshold'],
+        null,
+      ),
+      lotBatchNumberColumn: pickInventoryColumn(
+        availableColumns,
+        ['lot_batch_number', 'lot_number'],
+        null,
+      ),
+      expiryDateColumn: pickInventoryColumn(
+        availableColumns,
+        ['expiry_date'],
+        null,
+      ),
+      periodStartColumn: pickInventoryColumn(
+        availableColumns,
+        ['period_start'],
+        null,
+      ),
+      periodEndColumn: pickInventoryColumn(
+        availableColumns,
+        ['period_end'],
+        null,
+      ),
+      updatedAtColumn: pickInventoryColumn(
+        availableColumns,
+        ['updated_at'],
+        null,
+      ),
+      createdAtColumn: pickInventoryColumn(
+        availableColumns,
+        ['created_at'],
+        null,
+      ),
+      isActiveColumn: pickInventoryColumn(
+        availableColumns,
+        ['is_active'],
+        null,
+      ),
+    };
+  } catch (_error) {
+    return { ...INVENTORY_SCHEMA_DEFAULTS };
+  }
+};
+
+const getInventorySchema = async () => {
+  if (!inventorySchemaPromise) {
+    inventorySchemaPromise = resolveInventorySchema();
+  }
+
+  return inventorySchemaPromise;
+};
+
+const buildInventoryColumnSql = (alias, columnName, fallbackSql = 'NULL') =>
+  columnName ? `${alias}.${columnName}` : fallbackSql;
+
+const buildInventoryCoalescedSql = (alias, columnName, fallbackSql = '0') =>
+  columnName ? `COALESCE(${alias}.${columnName}, 0)` : fallbackSql;
+
+const buildInventorySqlContext = (alias, inventorySchema = {}) => {
+  const beginningBalanceExpression = `COALESCE(${alias}.beginning_balance, 0)`;
+  const receivedExpression = `COALESCE(${alias}.received_during_period, 0)`;
+  const transferredInExpression = `COALESCE(${alias}.transferred_in, 0)`;
+  const transferredOutExpression = `COALESCE(${alias}.transferred_out, 0)`;
+  const issuedExpression = buildInventoryCoalescedSql(alias, inventorySchema.issuedColumn, '0');
+  const wastedExpression = buildInventoryCoalescedSql(alias, inventorySchema.wastedColumn, '0');
+  const calculatedStockExpression = `(
+    ${beginningBalanceExpression}
+    + ${receivedExpression}
+    + ${transferredInExpression}
+    - ${transferredOutExpression}
+    - ${wastedExpression}
+    - ${issuedExpression}
+  )`;
+  const stockOnHandExpression = inventorySchema.stockOnHandColumn
+    ? buildInventoryCoalescedSql(alias, inventorySchema.stockOnHandColumn, calculatedStockExpression)
+    : calculatedStockExpression;
+  const lowStockThresholdExpression = inventorySchema.lowStockThresholdColumn
+    ? `COALESCE(${alias}.${inventorySchema.lowStockThresholdColumn}, 10)`
+    : '10';
+  const criticalStockThresholdExpression = inventorySchema.criticalStockThresholdColumn
+    ? `COALESCE(${alias}.${inventorySchema.criticalStockThresholdColumn}, 5)`
+    : '5';
+  const lotBatchNumberExpression = buildInventoryColumnSql(
+    alias,
+    inventorySchema.lotBatchNumberColumn,
+    'NULL::text',
+  );
+  const expiryDateExpression = buildInventoryColumnSql(
+    alias,
+    inventorySchema.expiryDateColumn,
+    'NULL::date',
+  );
+  const isActiveExpression = inventorySchema.isActiveColumn
+    ? `COALESCE(${alias}.${inventorySchema.isActiveColumn}, true)`
+    : 'true';
+  const sortDateCandidates = [
+    inventorySchema.periodEndColumn ? `${alias}.${inventorySchema.periodEndColumn}` : null,
+    inventorySchema.updatedAtColumn ? `${alias}.${inventorySchema.updatedAtColumn}::date` : null,
+    inventorySchema.createdAtColumn ? `${alias}.${inventorySchema.createdAtColumn}::date` : null,
+  ].filter(Boolean);
+  const sortDateExpression = sortDateCandidates.length > 0
+    ? `COALESCE(${sortDateCandidates.join(', ')})`
+    : 'CURRENT_DATE';
+  const updatedAtOrderExpression = inventorySchema.updatedAtColumn
+    ? `${alias}.${inventorySchema.updatedAtColumn}`
+    : `${sortDateExpression}::timestamp`;
+
+  return {
+    beginningBalanceExpression,
+    receivedExpression,
+    transferredInExpression,
+    transferredOutExpression,
+    issuedExpression,
+    wastedExpression,
+    calculatedStockExpression,
+    stockOnHandExpression,
+    lowStockThresholdExpression,
+    criticalStockThresholdExpression,
+    lotBatchNumberExpression,
+    expiryDateExpression,
+    isActiveExpression,
+    sortDateExpression,
+    updatedAtOrderExpression,
+  };
+};
+
 class InventoryCalculationService {
   async getInventoryAggregateRows(clinicScope) {
     const scopeIds = normalizeScopeIds(clinicScope);
@@ -164,11 +351,13 @@ class InventoryCalculationService {
       return [];
     }
 
-    const inventoryFacilityColumn = await resolveFirstExistingColumn(
+    const inventorySchema = await getInventorySchema();
+    const inventoryFacilityColumn = inventorySchema.facilityColumn || await resolveFirstExistingColumn(
       'vaccine_inventory',
       ['clinic_id', 'facility_id'],
       'clinic_id',
     );
+    const inventorySql = buildInventorySqlContext('vi', inventorySchema);
     const scopeParam = scopeIds.length === 1 ? scopeIds[0] : scopeIds;
     const scopeClause = scopeIds.length === 1
       ? `vi.${inventoryFacilityColumn} = $1`
@@ -182,28 +371,28 @@ class InventoryCalculationService {
             vi.vaccine_id,
             ${CORE_VACCINE_KEY_CASE_SQL} AS vaccine_key,
             ${CORE_VACCINE_NAME_SQL} AS vaccine_name,
-            COALESCE(vi.beginning_balance, 0)::int AS beginning_balance,
-            COALESCE(vi.received_during_period, 0)::int AS received,
-            COALESCE(vi.transferred_in, 0)::int AS transferred_in,
-            COALESCE(vi.transferred_out, 0)::int AS transferred_out,
-            COALESCE(vi.issuance, 0)::int AS issued,
-            COALESCE(vi.expired_wasted, 0)::int AS wasted_expired,
-            COALESCE(vi.stock_on_hand, 0)::int AS stock_on_hand,
-            COALESCE(vi.low_stock_threshold, 10)::int AS low_stock_threshold,
-            COALESCE(vi.critical_stock_threshold, 5)::int AS critical_stock_threshold,
-            vi.lot_batch_number,
-            vi.expiry_date,
+            ${inventorySql.beginningBalanceExpression}::int AS beginning_balance,
+            ${inventorySql.receivedExpression}::int AS received,
+            ${inventorySql.transferredInExpression}::int AS transferred_in,
+            ${inventorySql.transferredOutExpression}::int AS transferred_out,
+            ${inventorySql.issuedExpression}::int AS issued,
+            ${inventorySql.wastedExpression}::int AS wasted_expired,
+            ${inventorySql.stockOnHandExpression}::int AS stock_on_hand,
+            ${inventorySql.lowStockThresholdExpression}::int AS low_stock_threshold,
+            ${inventorySql.criticalStockThresholdExpression}::int AS critical_stock_threshold,
+            ${inventorySql.lotBatchNumberExpression} AS lot_batch_number,
+            ${inventorySql.expiryDateExpression} AS expiry_date,
             ROW_NUMBER() OVER (
               PARTITION BY ${CORE_VACCINE_KEY_CASE_SQL}
               ORDER BY
-                COALESCE(vi.period_end, vi.updated_at::date, vi.created_at::date) DESC,
-                vi.updated_at DESC,
+                ${inventorySql.sortDateExpression} DESC,
+                ${inventorySql.updatedAtOrderExpression} DESC,
                 vi.id DESC
             ) AS row_rank
           FROM vaccine_inventory vi
           JOIN vaccines v ON v.id = vi.vaccine_id
           WHERE ${scopeClause}
-            AND COALESCE(vi.is_active, true) = true
+            AND ${inventorySql.isActiveExpression} = true
         )
         SELECT
           MAX(vaccine_id)::int AS vaccine_id,
@@ -715,24 +904,28 @@ class InventoryCalculationService {
         }));
       }
 
+      const inventorySchema = await getInventorySchema();
+      const inventorySql = buildInventorySqlContext('vi', inventorySchema);
+      const inventoryFacilityColumn = inventorySchema.facilityColumn || 'clinic_id';
+
       const result = await pool.query(
         `
         SELECT 
           vi.id as inventory_id,
-          vi.lot_batch_number,
-          vi.stock_on_hand,
-          vi.expiry_date,
-          vi.low_stock_threshold,
-          vi.critical_stock_threshold,
+          ${inventorySql.lotBatchNumberExpression} AS lot_batch_number,
+          ${inventorySql.stockOnHandExpression}::int AS stock_on_hand,
+          ${inventorySql.expiryDateExpression} AS expiry_date,
+          ${inventorySql.lowStockThresholdExpression}::int AS low_stock_threshold,
+          ${inventorySql.criticalStockThresholdExpression}::int AS critical_stock_threshold,
           v.name as vaccine_name,
           v.code as vaccine_code
         FROM vaccine_inventory vi
         JOIN vaccines v ON v.id = vi.vaccine_id
         WHERE vi.vaccine_id = $1
-          AND vi.clinic_id = $2
-          AND vi.stock_on_hand > 0
-          AND COALESCE(vi.is_active, true) = true
-        ORDER BY vi.expiry_date ASC NULLS LAST, vi.stock_on_hand DESC
+          AND vi.${inventoryFacilityColumn} = $2
+          AND ${inventorySql.stockOnHandExpression}::int > 0
+          AND ${inventorySql.isActiveExpression} = true
+        ORDER BY ${inventorySql.expiryDateExpression} ASC NULLS LAST, ${inventorySql.stockOnHandExpression}::int DESC
         `,
         [vaccineId, clinicId]
       );

@@ -39,6 +39,7 @@ const {
 } = require('../services/infantControlNumberService');
 const { writeAuditLog } = require('../services/auditLogService');
 const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
+const logger = require('../config/logger');
 const {
   CLINIC_TODAY_SQL,
   excludeWeekendVaccinationAppointmentsSql,
@@ -241,6 +242,70 @@ const getEligibleGuardianVaccines = (readinessData = {}) => {
     .filter((value) => Number.isInteger(value) && value > 0);
 };
 
+const READINESS_TIMING_WARN_THRESHOLD_MS = Math.max(
+  1,
+  Number.parseInt(process.env.APPOINTMENT_READINESS_WARN_MS || '1500', 10) || 1500,
+);
+
+const resolveGuardianBookingReadiness = async ({
+  infantId,
+  vaccineId,
+  appointmentType,
+  scheduledDate = null,
+}) => {
+  const startedAt = Date.now();
+
+  try {
+    const readinessResult = await calculateVaccineReadiness(infantId, {
+      scheduledDate,
+    });
+    const durationMs = Date.now() - startedAt;
+    const readinessStatus = readinessResult?.data?.readinessStatus || null;
+    const blockedVaccineCount = Array.isArray(readinessResult?.data?.blockedVaccines)
+      ? readinessResult.data.blockedVaccines.length
+      : 0;
+
+    logger.logPerformance('guardian_appointment_booking_readiness', durationMs, {
+      infantId,
+      vaccineId: vaccineId || null,
+      appointmentType: appointmentType || null,
+      scheduledDate: scheduledDate || null,
+      readinessStatus,
+      blockedVaccineCount,
+      success: Boolean(readinessResult?.success),
+    });
+
+    if (durationMs >= READINESS_TIMING_WARN_THRESHOLD_MS) {
+      logger.warn('Guardian appointment readiness check exceeded expected duration', {
+        infantId,
+        vaccineId: vaccineId || null,
+        appointmentType: appointmentType || null,
+        scheduledDate: scheduledDate || null,
+        readinessStatus,
+        durationMs,
+        thresholdMs: READINESS_TIMING_WARN_THRESHOLD_MS,
+      });
+    }
+
+    return readinessResult;
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+
+    logger.warn('Guardian appointment readiness check failed', {
+      infantId,
+      vaccineId: vaccineId || null,
+      appointmentType: appointmentType || null,
+      scheduledDate: scheduledDate || null,
+      durationMs,
+      thresholdMs: READINESS_TIMING_WARN_THRESHOLD_MS,
+      errorMessage: error?.message || 'Unknown readiness error',
+      errorCode: error?.code || error?.statusCode || null,
+    });
+
+    throw error;
+  }
+};
+
 const enforceGuardianVaccinationEligibility = async ({
   infantId,
   vaccineId,
@@ -255,7 +320,10 @@ const enforceGuardianVaccinationEligibility = async ({
     };
   }
 
-  const readinessResult = await calculateVaccineReadiness(infantId, {
+  const readinessResult = await resolveGuardianBookingReadiness({
+    infantId,
+    vaccineId,
+    appointmentType,
     scheduledDate,
   });
   if (!readinessResult?.success || !readinessResult?.data) {
@@ -2500,3 +2568,9 @@ router.get('/blocked-dates/check', requireAppointmentReadAccess, async (req, res
 });
 
 module.exports = router;
+module.exports.__testables = {
+  enforceGuardianVaccinationEligibility,
+  getEligibleGuardianVaccines,
+  isVaccinationAppointmentType,
+  resolveGuardianBookingReadiness,
+};

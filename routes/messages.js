@@ -8,6 +8,21 @@ const router = express.Router();
 // Middleware to authenticate all message routes
 router.use(authenticateToken);
 
+const isMissingMessagesSchemaError = (error) => {
+  const code = error?.code;
+  const message = String(error?.message || '').toLowerCase();
+  // 42P01 = undefined_table, 42703 = undefined_column
+  return code === '42P01' || code === '42703' || message.includes('does not exist');
+};
+
+const respondSchemaFallback = (res, payload) => {
+  res.json({
+    success: true,
+    ...payload,
+    _warning: 'messages_schema_unavailable',
+  });
+};
+
 // Root messages endpoint - returns API info
 router.get('/', async (req, res) => {
   res.json({
@@ -98,6 +113,9 @@ router.get('/conversations', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching conversations:', error);
+    if (isMissingMessagesSchemaError(error)) {
+      return respondSchemaFallback(res, { data: [] });
+    }
     res.status(500).json({
       success: false,
       error: 'Failed to fetch conversations',
@@ -145,6 +163,9 @@ router.get('/conversation/:conversationId', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching messages:', error);
+    if (isMissingMessagesSchemaError(error)) {
+      return respondSchemaFallback(res, { data: [] });
+    }
     res.status(500).json({
       success: false,
       error: 'Failed to fetch messages',
@@ -190,6 +211,9 @@ router.put('/conversation/:conversationId/read', async (req, res) => {
     });
   } catch (error) {
     console.error('Error marking messages as read:', error);
+    if (isMissingMessagesSchemaError(error)) {
+      return respondSchemaFallback(res, { message: 'Messages marked as read' });
+    }
     res.status(500).json({
       success: false,
       error: 'Failed to mark messages as read',
@@ -273,6 +297,13 @@ router.post('/', async (req, res) => {
     });
   } catch (error) {
     console.error('Error sending message:', error);
+    if (isMissingMessagesSchemaError(error)) {
+      return res.status(503).json({
+        success: false,
+        error: 'Messaging is currently unavailable',
+        code: 'MESSAGING_SCHEMA_UNAVAILABLE',
+      });
+    }
     res.status(500).json({
       success: false,
       error: 'Failed to send message',
@@ -316,6 +347,9 @@ router.get('/user/:userId', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching user messages:', error);
+    if (isMissingMessagesSchemaError(error)) {
+      return respondSchemaFallback(res, { data: [] });
+    }
     res.status(500).json({
       success: false,
       error: 'Failed to fetch messages',
@@ -353,6 +387,9 @@ router.put('/:messageId/read', async (req, res) => {
     });
   } catch (error) {
     console.error('Error marking message as read:', error);
+    if (isMissingMessagesSchemaError(error)) {
+      return respondSchemaFallback(res, { message: 'Message marked as read' });
+    }
     res.status(500).json({
       success: false,
       error: 'Failed to mark message as read',
@@ -383,6 +420,9 @@ router.get('/unread-count', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching unread count:', error);
+    if (isMissingMessagesSchemaError(error)) {
+      return respondSchemaFallback(res, { data: { unreadCount: 0 } });
+    }
     res.status(500).json({
       success: false,
       error: 'Failed to fetch unread count',

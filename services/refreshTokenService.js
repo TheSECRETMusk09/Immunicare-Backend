@@ -398,7 +398,7 @@ const refreshAccessToken = async (refreshToken, userAgent, ipAddress) => {
 
       // Verify user still exists and is active
       const userQuery = `
-        SELECT u.id, u.email, u.username, r.name as role, u.clinic_id, u.facility_id, u.guardian_id, u.is_active
+        SELECT u.id, u.email, u.username, r.name as role, u.clinic_id, u.guardian_id, u.is_active
         FROM users u
         LEFT JOIN roles r ON u.role_id = r.id
         WHERE u.id = $1 AND u.is_active = true
@@ -442,7 +442,7 @@ const refreshAccessToken = async (refreshToken, userAgent, ipAddress) => {
 
   // Verify user still exists and is active
   const userQuery = `
-    SELECT u.id, u.email, u.username, r.name as role, u.clinic_id, u.facility_id, u.guardian_id, u.is_active
+    SELECT u.id, u.email, u.username, r.name as role, u.clinic_id, u.guardian_id, u.is_active
     FROM users u
     LEFT JOIN roles r ON u.role_id = r.id
     WHERE u.id = $1 AND u.is_active = true
