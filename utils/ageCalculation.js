@@ -85,14 +85,14 @@ async function updateAllInfantAges() {
   try {
     // First, ensure the age_months column exists
     await client.query(`
-      ALTER TABLE patients
+      ALTER TABLE public.patients
       ADD COLUMN IF NOT EXISTS age_months INTEGER
     `);
 
     // Get all active patients with valid dob
     const patientsResult = await client.query(`
       SELECT id, dob
-      FROM patients
+      FROM public.patients
       WHERE is_active = true
         AND dob IS NOT NULL
     `);
@@ -106,7 +106,7 @@ async function updateAllInfantAges() {
         const ageMonths = calculateAgeInMonths(patient.dob);
 
         await client.query(`
-          UPDATE patients
+          UPDATE public.patients
           SET age_months = $1, updated_at = CURRENT_TIMESTAMP
           WHERE id = $2
         `, [ageMonths, patient.id]);
@@ -143,7 +143,7 @@ async function updateAllInfantAges() {
 async function updatePatientAge(patientId) {
   try {
     const result = await pool.query(`
-      SELECT dob FROM patients WHERE id = $1 AND is_active = true
+      SELECT dob FROM public.patients WHERE id = $1 AND is_active = true
     `, [patientId]);
 
     if (result.rows.length === 0) {
@@ -155,11 +155,11 @@ async function updatePatientAge(patientId) {
 
     // Ensure column exists
     await pool.query(`
-      ALTER TABLE patients ADD COLUMN IF NOT EXISTS age_months INTEGER
+      ALTER TABLE public.patients ADD COLUMN IF NOT EXISTS age_months INTEGER
     `);
 
     await pool.query(`
-      UPDATE patients SET age_months = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2
+      UPDATE public.patients SET age_months = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2
     `, [ageMonths, patientId]);
 
     return { success: true, ageMonths };
@@ -180,7 +180,7 @@ async function getInfantAgeInfo(patientId) {
       SELECT
         id, first_name, last_name, dob,
         age_months, created_at, updated_at
-      FROM patients
+      FROM public.patients
       WHERE id = $1 AND is_active = true
     `, [patientId]);
 
@@ -216,7 +216,7 @@ async function getAllInfantsWithAges(limit = 100, offset = 0) {
   try {
     // First ensure column exists
     await pool.query(`
-      ALTER TABLE patients ADD COLUMN IF NOT EXISTS age_months INTEGER
+      ALTER TABLE public.patients ADD COLUMN IF NOT EXISTS age_months INTEGER
     `);
 
     const result = await pool.query(`
@@ -224,10 +224,10 @@ async function getAllInfantsWithAges(limit = 100, offset = 0) {
         id, first_name, last_name, dob,
         age_months, sex, guardian_id,
         created_at, updated_at
-      FROM patients
+      FROM public.patients
       WHERE is_active = true
       ORDER BY created_at DESC
-      LIMIT $1 OFFSET $2
+      LIMIT $1::bigint OFFSET $2::bigint
     `, [limit, offset]);
 
     return result.rows.map(patient => {
@@ -263,7 +263,7 @@ async function getAgeStatistics() {
         COUNT(CASE WHEN age_months < 12 THEN 1 END) as under_1_year,
         COUNT(CASE WHEN age_months >= 12 AND age_months < 24 THEN 1 END) as age_1_to_2,
         COUNT(CASE WHEN age_months >= 24 THEN 1 END) as age_2_plus
-      FROM patients
+      FROM public.patients
       WHERE is_active = true
     `);
 

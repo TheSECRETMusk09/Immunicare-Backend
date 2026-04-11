@@ -42,11 +42,11 @@ const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
 const logger = require('../config/logger');
 const {
   CLINIC_TODAY_SQL,
-  excludeWeekendVaccinationAppointmentsSql,
   getClinicTodayDateKey,
   toClinicDateKey,
   toClinicDateSql,
 } = require('../utils/clinicCalendar');
+const { mergeScopeIds } = require('../services/entityScopeService');
 
 const router = express.Router();
 
@@ -506,16 +506,6 @@ const sanitizeNullableInt = (value) => {
   return parsed;
 };
 
-const mergeScopeIds = (...values) =>
-  Array.from(
-    new Set(
-      values
-        .flat()
-        .map((value) => sanitizeNullableInt(value))
-        .filter((value) => Number.isInteger(value) && value > 0),
-    ),
-  );
-
 const resolveAppointmentScopeContext = (req, explicitScopeIds = []) => {
   const canonicalRole = getCanonicalRole(req);
   const userScopeIds = mergeScopeIds(req.user?.clinic_id, req.user?.facility_id);
@@ -598,19 +588,19 @@ const recordAppointmentAuditEvent = async ({
   });
 };
 
-const fetchInfantOwnership = async (infantId) => {
-  const result = await pool.query(
-    `
-      SELECT p.id, p.guardian_id, g.clinic_id
-      FROM patients p
-      LEFT JOIN guardians g ON g.id = p.guardian_id
-      WHERE p.id = $1 AND p.is_active = true
-      LIMIT 1
-    `,
-    [infantId],
-  );
+const patientService = require('../services/patientService');
 
-  return result.rows[0] || null;
+const fetchInfantOwnership = async (infantId) => {
+  const patient = await patientService.getPatientById(infantId);
+  if (!patient) {
+    return null;
+  }
+
+  return {
+    id: patient.id,
+    guardian_id: patient.guardianId,
+    clinic_id: patient.clinicId || null
+  };
 };
 
 const fetchAppointmentById = async (id) => {
@@ -747,7 +737,6 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       LEFT JOIN guardians g ON g.id = p.guardian_id
       WHERE a.is_active = true
         AND p.is_active = true
-        AND ${excludeWeekendVaccinationAppointmentsSql('a', APPOINTMENT_LOCAL_DATE_EXPRESSION)}
     `;
 
     if (canonicalRole === CANONICAL_ROLES.GUARDIAN) {
@@ -820,8 +809,14 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
     const countResult = await pool.query(countQuery, params);
     const total = parseInt(countResult.rows[0].count);
 
-    // Add pagination
-    query += ` ORDER BY ${APPOINTMENT_LIST_SORT_COLUMNS[normalizedSortField]} ${normalizedSortDirection} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    // Add a stable secondary sort to prevent duplicate rows across pages when
+    // many appointments share the same primary sort value.
+    const primarySortColumn = APPOINTMENT_LIST_SORT_COLUMNS[normalizedSortField];
+    const secondarySortClause = primarySortColumn === 'a.id'
+      ? ''
+      : `, a.id ${normalizedSortDirection}`;
+
+    query += ` ORDER BY ${primarySortColumn} ${normalizedSortDirection}${secondarySortClause} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limitNum, offset);
 
     const result = await pool.query(query, params);
@@ -861,6 +856,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
     // If no ID but details provided (auto-create flow)
     if (!infantId && payload.infant_details && isGuardian(req)) {
       try {
+        // Use canonical patient service to create/validate infant
         const infantRecord = await appointmentSchedulingService.ensureInfantRecord(
           payload.infant_details,
           req.user.guardian_id,
@@ -1212,13 +1208,9 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
-    // Use infantId for validation: verify infant still exists and is active
-    const infantId = appointment.infant_id;
-    const infantValidation = await pool.query(
-      'SELECT id, is_active FROM patients WHERE id = $1',
-      [infantId],
-    );
-    if (infantValidation.rowCount === 0 || !infantValidation.rows[0].is_active) {
+    // Use infantId for validation: verify infant still exists and is active using canonical service
+    const infant = await patientService.getPatientById(appointment.infant_id);
+    if (!infant || !infant.isActive) {
       return res.status(400).json({ error: 'Invalid infant record for this appointment' });
     }
 
@@ -1577,7 +1569,6 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
         LEFT JOIN guardians g ON g.id = p.guardian_id
         WHERE ${APPOINTMENT_LOCAL_DATE_EXPRESSION} = $1::date
           AND a.is_active = true AND p.is_active = true
-          AND ${excludeWeekendVaccinationAppointmentsSql('a', APPOINTMENT_LOCAL_DATE_EXPRESSION)}
           ${scopeClause}
         ORDER BY a.scheduled_date ASC
       `,
@@ -1643,7 +1634,6 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
         WHERE ${APPOINTMENT_LOCAL_DATE_EXPRESSION} >= ${CLINIC_TODAY_SQL}
           AND a.status = 'scheduled'
           AND a.is_active = true AND p.is_active = true
-          AND ${excludeWeekendVaccinationAppointmentsSql('a', APPOINTMENT_LOCAL_DATE_EXPRESSION)}
           ${scopeClause}
         ORDER BY a.scheduled_date ASC
         LIMIT $${params.length + 1}
@@ -1727,7 +1717,6 @@ router.get('/stats/overview', requirePermission('appointment:view'), async (req,
     let baseWhere = `
       WHERE a.is_active = true
         AND p.is_active = true
-        AND ${excludeWeekendVaccinationAppointmentsSql('a', APPOINTMENT_LOCAL_DATE_EXPRESSION)}
     `;
     if (scopeContext.useScope) {
       baseWhere += ` AND ${resolvedClinicExpression} = ANY($${params.length + 1}::int[])`;
@@ -1932,11 +1921,12 @@ router.put('/:id(\\d+)', async (req, res) => {
       return respondValidationError(res, errors);
     }
 
-    if (hasOwn(normalizedUpdates, 'scheduled_date') && guardianFlow) {
+    if (hasOwn(normalizedUpdates, 'scheduled_date')) {
       const availability = await appointmentSchedulingService.checkBookingAvailability({
         scheduledDate: normalizedUpdates.scheduled_date,
+        vaccineId: appointment.vaccine_id,
         clinicId: sanitizeNullableInt(appointment.resolved_clinic_id || req.user.clinic_id),
-        appointmentType: appointment.type,
+        appointmentType: normalizedUpdates.type || appointment.type,
         excludeAppointmentId: appointment.id,
       });
 
@@ -2114,9 +2104,9 @@ router.put('/:id(\\d+)', async (req, res) => {
       detail: error.detail,
       appointmentId,
     });
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to update appointment',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 });
@@ -2325,6 +2315,40 @@ router.put('/bulk-update', requirePermission('appointment:update'), async (req, 
     const updateEntries = Object.entries(normalizedUpdates).filter(([key]) => allowedFields.has(key));
     if (updateEntries.length === 0) {
       return res.status(400).json({ error: 'No valid update fields provided' });
+    }
+
+    if (hasOwn(normalizedUpdates, 'scheduled_date')) {
+      const existingAppointmentsResult = await pool.query(
+        `
+          SELECT id, infant_id, type, vaccine_id, clinic_id, facility_id, resolved_clinic_id
+          FROM appointments
+          WHERE id = ANY($1)
+        `,
+        [sanitizedIds],
+      );
+
+      for (const appointment of existingAppointmentsResult.rows || []) {
+        const resolvedClinicId = sanitizeNullableInt(
+          appointment.resolved_clinic_id || appointment.clinic_id || appointment.facility_id || req.user.clinic_id,
+        );
+
+        const availability = await appointmentSchedulingService.checkBookingAvailability({
+          scheduledDate: normalizedUpdates.scheduled_date,
+          vaccineId: appointment.vaccine_id,
+          clinicId: resolvedClinicId,
+          appointmentType: normalizedUpdates.type || appointment.type,
+          excludeAppointmentId: appointment.id,
+        });
+
+        if (!availability.available) {
+          return res.status(400).json({
+            error: availability.message,
+            code: availability.code,
+            availability,
+            appointmentId: appointment.id,
+          });
+        }
+      }
     }
 
     const setClause = updateEntries

@@ -1326,7 +1326,67 @@ deficit AS (
   FROM target t
   CROSS JOIN current_count c
 ),
-seed AS (
+holiday_years AS (
+  SELECT gs::int AS year
+  FROM generate_series(EXTRACT(YEAR FROM CURRENT_DATE)::int - 2, EXTRACT(YEAR FROM CURRENT_DATE)::int) gs
+),
+easter_holidays AS (
+  SELECT
+    year,
+    make_date(
+      year,
+      ((h + l - 7 * m + 114) / 31)::int,
+      (((h + l - 7 * m + 114) % 31) + 1)::int
+    ) AS easter_sunday
+  FROM (
+    SELECT
+      year,
+      a,
+      h,
+      e,
+      i,
+      k,
+      ((32 + 2 * e + 2 * i - h - k) % 7) AS l,
+      ((a + 11 * h + 22 * ((32 + 2 * e + 2 * i - h - k) % 7)) / 451) AS m
+    FROM (
+      SELECT
+        year,
+        (year % 19) AS a,
+        ((19 * (year % 19) + (year / 100) - ((year / 100) / 4) - (((year / 100) - ((year / 100 + 8) / 25) + 1) / 3) + 15) % 30) AS h,
+        ((year / 100) % 4) AS e,
+        ((year % 100) / 4) AS i,
+        ((year % 100) % 4) AS k
+      FROM holiday_years
+    ) base
+  ) calc
+),
+holiday_dates AS (
+  SELECT holiday_date::date AS holiday_date
+  FROM (
+    SELECT make_date(year, 1, 1) AS holiday_date FROM holiday_years
+    UNION ALL SELECT make_date(year, 2, 25) FROM holiday_years
+    UNION ALL SELECT make_date(year, 4, 9) FROM holiday_years
+    UNION ALL SELECT make_date(year, 5, 1) FROM holiday_years
+    UNION ALL SELECT make_date(year, 6, 12) FROM holiday_years
+    UNION ALL SELECT make_date(year, 8, 21) FROM holiday_years
+    UNION ALL
+      SELECT
+        (make_date(year, 8, 31) - (((EXTRACT(DOW FROM make_date(year, 8, 31))::int + 6) % 7) * INTERVAL '1 day'))::date
+      FROM holiday_years
+    UNION ALL SELECT make_date(year, 11, 1) FROM holiday_years
+    UNION ALL SELECT make_date(year, 11, 2) FROM holiday_years
+    UNION ALL SELECT make_date(year, 11, 30) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 8) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 24) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 25) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 30) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 31) FROM holiday_years
+    UNION ALL SELECT (easter_sunday - INTERVAL '3 days')::date FROM easter_holidays
+    UNION ALL SELECT (easter_sunday - INTERVAL '2 days')::date FROM easter_holidays
+    UNION ALL SELECT (easter_sunday + INTERVAL '1 day')::date FROM easter_holidays
+  ) holidays
+),
+candidate AS (
   SELECT
     gs AS n,
     mp.patient_id,
@@ -1349,6 +1409,16 @@ seed AS (
   JOIN generate_series(1, d.to_add) gs ON d.to_add > 0
   JOIN marker_subjects mp ON mp.rn = ((gs - 1) % 100000) + 1
   JOIN creator_users cu ON cu.rn = ((gs - 1) % GREATEST((SELECT COUNT(*) FROM creator_users), 1)) + 1
+),
+seed AS (
+  SELECT c.*
+  FROM candidate c
+  WHERE EXTRACT(DOW FROM (c.scheduled_date AT TIME ZONE 'Asia/Manila')) NOT IN (0, 6)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM holiday_dates hd
+      WHERE hd.holiday_date = (c.scheduled_date AT TIME ZONE 'Asia/Manila')::date
+    )
 )
 INSERT INTO appointments (
   infant_id,
@@ -2032,15 +2102,102 @@ SET sent_at = COALESCE(n.sent_at, CASE WHEN n.status IN ('sent','delivered','rea
     updated_at = CURRENT_TIMESTAMP
 WHERE COALESCE(n.message, '') LIKE 'SYNPH26-TXN-NF-%';
 
+WITH RECURSIVE
+holiday_years AS (
+  SELECT gs::int AS year
+  FROM generate_series(EXTRACT(YEAR FROM CURRENT_DATE)::int - 2, EXTRACT(YEAR FROM CURRENT_DATE)::int) gs
+),
+easter_holidays AS (
+  SELECT
+    year,
+    make_date(
+      year,
+      ((h + l - 7 * m + 114) / 31)::int,
+      (((h + l - 7 * m + 114) % 31) + 1)::int
+    ) AS easter_sunday
+  FROM (
+    SELECT
+      year,
+      a,
+      h,
+      e,
+      i,
+      k,
+      ((32 + 2 * e + 2 * i - h - k) % 7) AS l,
+      ((a + 11 * h + 22 * ((32 + 2 * e + 2 * i - h - k) % 7)) / 451) AS m
+    FROM (
+      SELECT
+        year,
+        (year % 19) AS a,
+        ((19 * (year % 19) + (year / 100) - ((year / 100) / 4) - (((year / 100) - ((year / 100 + 8) / 25) + 1) / 3) + 15) % 30) AS h,
+        ((year / 100) % 4) AS e,
+        ((year % 100) / 4) AS i,
+        ((year % 100) % 4) AS k
+      FROM holiday_years
+    ) base
+  ) calc
+),
+holiday_dates AS (
+  SELECT holiday_date::date AS holiday_date
+  FROM (
+    SELECT make_date(year, 1, 1) AS holiday_date FROM holiday_years
+    UNION ALL SELECT make_date(year, 2, 25) FROM holiday_years
+    UNION ALL SELECT make_date(year, 4, 9) FROM holiday_years
+    UNION ALL SELECT make_date(year, 5, 1) FROM holiday_years
+    UNION ALL SELECT make_date(year, 6, 12) FROM holiday_years
+    UNION ALL SELECT make_date(year, 8, 21) FROM holiday_years
+    UNION ALL
+      SELECT
+        (make_date(year, 8, 31) - (((EXTRACT(DOW FROM make_date(year, 8, 31))::int + 6) % 7) * INTERVAL '1 day'))::date
+      FROM holiday_years
+    UNION ALL SELECT make_date(year, 11, 1) FROM holiday_years
+    UNION ALL SELECT make_date(year, 11, 2) FROM holiday_years
+    UNION ALL SELECT make_date(year, 11, 30) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 8) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 24) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 25) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 30) FROM holiday_years
+    UNION ALL SELECT make_date(year, 12, 31) FROM holiday_years
+    UNION ALL SELECT (easter_sunday - INTERVAL '3 days')::date FROM easter_holidays
+    UNION ALL SELECT (easter_sunday - INTERVAL '2 days')::date FROM easter_holidays
+    UNION ALL SELECT (easter_sunday + INTERVAL '1 day')::date FROM easter_holidays
+  ) holidays
+),
+base_dates AS (
+  SELECT
+    a.id,
+    GREATEST(a.scheduled_date, (p.dob + INTERVAL '7 days')::timestamptz) AS candidate_date
+  FROM appointments a
+  JOIN infants i
+    ON a.infant_id = i.id
+  JOIN patients p
+    ON p.control_number = i.patient_control_number
+  WHERE p.control_number LIKE 'SYNPH26-INF-%'
+    AND a.scheduled_date::date < p.dob
+),
+adjusted_dates AS (
+  SELECT id, candidate_date
+  FROM base_dates
+  UNION ALL
+  SELECT ad.id, ad.candidate_date + INTERVAL '1 day'
+  FROM adjusted_dates ad
+  WHERE EXTRACT(DOW FROM (ad.candidate_date AT TIME ZONE 'Asia/Manila')) IN (0, 6)
+    OR EXISTS (
+      SELECT 1
+      FROM holiday_dates hd
+      WHERE hd.holiday_date = (ad.candidate_date AT TIME ZONE 'Asia/Manila')::date
+    )
+),
+final_dates AS (
+  SELECT DISTINCT ON (id) id, candidate_date
+  FROM adjusted_dates
+  ORDER BY id, candidate_date DESC
+)
 UPDATE appointments a
-SET scheduled_date = GREATEST(a.scheduled_date, (p.dob + INTERVAL '7 days')::timestamptz),
+SET scheduled_date = final_dates.candidate_date,
     updated_at = CURRENT_TIMESTAMP
-FROM infants i
-JOIN patients p
-  ON p.control_number = i.patient_control_number
-WHERE a.infant_id = i.id
-  AND p.control_number LIKE 'SYNPH26-INF-%'
-  AND a.scheduled_date::date < p.dob;
+FROM final_dates
+WHERE a.id = final_dates.id;
 
 UPDATE immunization_records ir
 SET admin_date = CASE

@@ -10,7 +10,7 @@ const {
   resolveOrCreateInfantPatient,
   INFANT_CONTROL_NUMBER_PATTERN,
 } = require('../services/infantControlNumberService');
-const { ensureAtBirthVaccinationRecords } = require('../services/atBirthVaccinationService');
+const patientService = require('../services/patientService');
 const {
   createGuardianChildRecord,
 } = require('../services/guardianChildRegistrationService');
@@ -37,17 +37,8 @@ router.use(authenticateToken);
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 const guardianOwnsInfant = async (guardianId, infantId) => {
-  const result = await pool.query(
-    `
-      SELECT id
-      FROM patients
-      WHERE id = $1 AND guardian_id = $2 AND is_active = true
-      LIMIT 1
-    `,
-    [infantId, guardianId],
-  );
-
-  return result.rows.length > 0;
+  const patient = await patientService.getPatientById(infantId);
+  return patient && patient.guardianId === guardianId;
 };
 
 const normalizeInfantValidationErrors = (errors = {}) => {
@@ -126,6 +117,11 @@ const sanitizeOffset = (value, fallback = 0) => {
   }
 
   return parsed;
+};
+
+const sanitizePage = (value, fallback = 1) => {
+  const parsed = parsePositiveInt(value);
+  return parsed || fallback;
 };
 
 const resolveScopedFacilityContext = (req) => {
@@ -506,7 +502,7 @@ router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) =
   }
 });
 
-// Get all infants
+// Get all infants (redirected to canonical patient service)
 router.get('/', requirePermission('patient:view'), async (req, res) => {
   try {
     const scopedFacilityContext = resolveScopedFacilityContext(req);
@@ -514,199 +510,61 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
       return res.status(scopedFacilityContext.status).json({ success: false, error: scopedFacilityContext.error });
     }
 
-    const limit = sanitizeLimit(req.query.limit, 10000, 10000);
-    const page = sanitizeLimit(req.query.page, 1, 100000);
-    const offset = req.query.page !== undefined
-      ? (page - 1) * limit
-      : sanitizeOffset(req.query.offset, 0);
-    const searchTerm = toNullableString(req.query.search || req.query.query);
-    const dobFilter = toNullableString(req.query.dob || req.query.date || req.query.date_of_birth);
-    if (dobFilter && Number.isNaN(Date.parse(dobFilter))) {
-      return res.status(400).json({ success: false, error: 'Invalid date filter format. Expected YYYY-MM-DD.' });
+    // Performance: Cap limits to prevent large queries
+    const limit = sanitizeLimit(req.query.limit, 25, 1000);
+    const page = sanitizePage(req.query.page, 1);
+    const offset = sanitizeOffset(req.query.offset, (page - 1) * limit);
+    
+    // Build filters for canonical patient service
+    const filters = {
+      search: req.query.search || req.query.query,
+      facilityId: scopedFacilityContext.useScope && scopedFacilityContext.scopeIds.length > 0 ? scopedFacilityContext.scopeIds[0] : undefined,
+      dateFrom: req.query.start_date || req.query.dob_start || req.query.date_of_birth_start,
+      dateTo: req.query.end_date || req.query.dob_end || req.query.date_of_birth_end,
+      excludeFutureDob:
+        ['true', '1', 'yes'].includes(
+          String(req.query.exclude_future_dob || req.query.excludeFutureDob || '')
+            .trim()
+            .toLowerCase(),
+        ),
+      isActive: true,
+      page,
+      limit,
+      offset,
+      orderBy: 'created_at',
+      orderDirection: 'DESC'
+    };
+
+    // Guardian can only see their own patients
+    if (isGuardian(req)) {
+      filters.guardianId = req.user.id;
     }
 
-    const importedVaccinationPredicate = await getImportedVaccinationPredicate();
-    const params = [];
-    let whereClause = 'WHERE p.is_active = true';
-
-    if (scopedFacilityContext.useScope) {
-      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
-      params.push(scopedFacilityContext.scopeIds);
-    }
-
-    if (searchTerm) {
-      whereClause += `
-        AND (
-          p.first_name ILIKE $${params.length + 1}
-          OR p.last_name ILIKE $${params.length + 1}
-          OR COALESCE(g.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(p.mother_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(p.father_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
-          OR COALESCE(p.cellphone_number, '') ILIKE $${params.length + 1}
-          OR COALESCE(g.phone, '') ILIKE $${params.length + 1}
-        )
-      `;
-      params.push(`%${searchTerm}%`);
-    }
-
-    if (dobFilter) {
-      whereClause += ` AND DATE(p.dob) = $${params.length + 1}`;
-      params.push(dobFilter);
-    }
-
-    const result = await pool.query(
-      `
-        SELECT
-          p.*,
-          p.age_months,
-          g.name as guardian_name,
-          g.phone as guardian_phone,
-          g.email as guardian_email,
-          p.mother_name,
-          p.father_name,
-          p.cellphone_number,
-          p.control_number,
-          COALESCE(p.mother_name, p.father_name, g.name) as primary_parent_name,
-          COALESCE(p.cellphone_number, g.phone) as primary_contact,
-          EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.dob)) * 12 + EXTRACT(MONTH FROM AGE(CURRENT_DATE, p.dob)) as calculated_age_months,
-          (
-            SELECT COUNT(*)
-            FROM immunization_records ir
-            WHERE ir.patient_id = p.id
-              AND COALESCE(ir.is_active, true) = true
-              AND (
-                LOWER(COALESCE(ir.status, '')) = 'completed'
-                OR ir.admin_date IS NOT NULL
-              )
-          ) AS completed_vaccinations,
-          (
-            SELECT COUNT(*)
-            FROM immunization_records ir
-            WHERE ir.patient_id = p.id
-              AND COALESCE(ir.is_active, true) = true
-              AND ${importedVaccinationPredicate}
-              AND (
-                LOWER(COALESCE(ir.status, '')) = 'completed'
-                OR ir.admin_date IS NOT NULL
-              )
-          ) AS imported_vaccinations,
-          (
-            SELECT tic.id
-            FROM transfer_in_cases tic
-            WHERE tic.infant_id = p.id
-            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-            LIMIT 1
-          ) AS latest_transfer_case_id,
-          (
-            SELECT tic.validation_status
-            FROM transfer_in_cases tic
-            WHERE tic.infant_id = p.id
-            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-            LIMIT 1
-          ) AS latest_transfer_case_status,
-          (
-            SELECT tic.source_facility
-            FROM transfer_in_cases tic
-            WHERE tic.infant_id = p.id
-            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-            LIMIT 1
-          ) AS latest_transfer_source_facility,
-          (
-            SELECT tic.updated_at
-            FROM transfer_in_cases tic
-            WHERE tic.infant_id = p.id
-            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-            LIMIT 1
-          ) AS latest_transfer_case_updated_at,
-          (
-            SELECT json_agg(
-              json_build_object(
-                'id', ia.id,
-                'allergy_type', ia.allergy_type,
-                'allergen', ia.allergen,
-                'severity', ia.severity,
-                'reaction_description', ia.reaction_description
-              )
-            )
-            FROM infant_allergies ia
-            WHERE ia.infant_id = p.id AND ia.is_active = true
-          ) as allergies
-        FROM patients p
-        LEFT JOIN guardians g ON g.id = p.guardian_id
-        ${whereClause}
-        ORDER BY p.created_at DESC
-        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-      `,
-      [...params, limit, offset],
-    );
-
-    const summaryResult = await pool.query(
-        `
-          SELECT
-            COUNT(*)::INT AS total,
-            COUNT(*) FILTER (
-              WHERE latest_transfer_case_status IN ('for_validation', 'needs_clarification', 'pending_validation')
-            )::INT AS needs_review,
-            COALESCE(SUM(COALESCE(transfer_case_count, 0)), 0)::INT AS with_imported_history
-          FROM (
-            SELECT
-              p.id,
-              (
-                SELECT tic.validation_status
-                FROM transfer_in_cases tic
-                WHERE tic.infant_id = p.id
-                ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-                LIMIT 1
-              ) AS latest_transfer_case_status,
-              (
-                SELECT COUNT(*)
-                FROM transfer_in_cases tic
-                WHERE tic.infant_id = p.id
-              ) AS transfer_case_count
-            FROM patients p
-            LEFT JOIN guardians g ON g.id = p.guardian_id
-            ${whereClause}
-          ) filtered_patients
-        `,
-        params,
-      );
-    const summary = summaryResult.rows[0] || {};
-    const total = parseInt(summary.total, 10) || 0;
-    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
-      result.rows || [],
-    );
-    const pendingVaccinations = sumPendingDoseCounts(scheduleSummaryMap);
-    const data = mergePendingDoseCounts(result.rows || [], scheduleSummaryMap);
+    const result = await patientService.getPatients(filters);
 
     res.json({
       success: true,
-      data,
-      pagination: {
-        total,
+      data: result.patients,
+      pagination: result.pagination || {
+        page,
         limit,
         offset,
-        page: limit > 0 ? Math.floor(offset / limit) + 1 : 1,
-        totalPages: limit > 0 ? Math.ceil(total / limit) : 0,
-        hasNext: limit > 0 ? offset + limit < total : false,
-        hasPrev: offset > 0,
+        total: result.total,
       },
-      summary: {
-        total: parseInt(summary.total, 10) || total,
-        needsReview: parseInt(summary.needs_review, 10) || 0,
-        withImportedHistory: parseInt(summary.with_imported_history, 10) || 0,
-        pendingVaccinations,
-      },
+      summary: result.summary || null,
     });
+
   } catch (error) {
-    console.error('[Infants API] Error fetching infants:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, error: 'Failed to fetch infants' });
-    }
+    console.error('Error fetching infants:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch infants',
+      message: error.message
+    });
   }
 });
 
-// Get infant statistics
+// Get infant statistics (redirected to canonical patient service)
 router.get('/stats/overview', requirePermission('patient:view'), async (req, res) => {
   try {
     const scopedFacilityContext = resolveScopedFacilityContext(req);
@@ -717,47 +575,24 @@ router.get('/stats/overview', requirePermission('patient:view'), async (req, res
       });
     }
 
-    const params = [];
-    let whereClause = 'WHERE p.is_active = true';
-    if (scopedFacilityContext.useScope) {
-      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
-      params.push(scopedFacilityContext.scopeIds);
+    // Build filters for canonical patient service
+    const filters = {
+      facilityId: scopedFacilityContext.useScope && scopedFacilityContext.scopeIds.length > 0 ? scopedFacilityContext.scopeIds[0] : undefined,
+      isActive: true,
+      // No pagination needed for stats
+    };
+
+    // Guardian can only see their own patients
+    if (isGuardian(req)) {
+      filters.guardianId = req.user.id;
     }
 
-    const [totalInfants, thisMonth, bySex] = await Promise.all([
-      pool.query(`SELECT COUNT(*) as count FROM patients p ${whereClause}`, params),
-      pool.query(
-        `
-          SELECT COUNT(*) as count
-          FROM patients p
-          ${whereClause}
-            AND DATE_TRUNC('month', p.created_at) = DATE_TRUNC('month', CURRENT_DATE)
-        `,
-        params,
-      ),
-      pool.query(
-        `
-          SELECT sex, COUNT(*) as count
-          FROM patients p
-          ${whereClause}
-          GROUP BY sex
-        `,
-        params,
-      ),
-    ]);
-
-    const sexStats = {};
-    bySex.rows.forEach((row) => {
-      sexStats[row.sex] = parseInt(row.count, 10);
-    });
+    // Use canonical patient service for statistics
+    const stats = await patientService.getPatientStatistics(filters);
 
     res.json({
       success: true,
-      data: {
-        totalInfants: parseInt(totalInfants.rows[0].count, 10),
-        thisMonth: parseInt(thisMonth.rows[0].count, 10),
-        bySex: sexStats,
-      },
+      data: stats,
     });
   } catch (error) {
     console.error('Error fetching infant stats:', error);
@@ -765,7 +600,7 @@ router.get('/stats/overview', requirePermission('patient:view'), async (req, res
   }
 });
 
-// Get infants with upcoming vaccinations
+// Get infants with upcoming vaccinations (redirected to canonical patient service)
 router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (req, res) => {
   try {
     const limit = sanitizeLimit(req.query.limit, 50, 200);
@@ -778,38 +613,31 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (r
       });
     }
 
-    const params = [];
-    let whereClause = `
-      WHERE p.is_active = true
-        AND vr.next_due_date IS NOT NULL
-        AND vr.next_due_date <= CURRENT_DATE + INTERVAL '30 days'
-        AND vr.is_active = true
-    `;
+    // Build filters for canonical patient service
+    const filters = {
+      facilityId: scopedFacilityContext.useScope ? scopedFacilityContext.scopeIds[0] : undefined,
+      isActive: true,
+      limit,
+      offset,
+      orderBy: 'next_due_date',
+      orderDirection: 'ASC',
+      // Custom filter for upcoming vaccinations
+      customWhere: [
+        'vr.next_due_date IS NOT NULL',
+        'vr.next_due_date <= CURRENT_DATE + INTERVAL \'30 days\'',
+        'vr.is_active = true'
+      ]
+    };
 
-    if (scopedFacilityContext.useScope) {
-      whereClause += ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
-      params.push(scopedFacilityContext.scopeIds);
+    // Guardian can only see their own patients
+    if (isGuardian(req)) {
+      filters.guardianId = req.user.id;
     }
 
-    const result = await pool.query(
-      `
-        SELECT DISTINCT
-          p.*,
-          p.control_number,
-          g.name as guardian_name,
-          g.phone as guardian_phone,
-          vr.next_due_date as upcoming_vaccination_date
-        FROM patients p
-        LEFT JOIN guardians g ON g.id = p.guardian_id
-        LEFT JOIN immunization_records vr ON vr.patient_id = p.id
-        ${whereClause}
-        ORDER BY vr.next_due_date ASC
-        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-      `,
-      [...params, limit, offset],
-    );
+    // Use canonical patient service with custom vaccination filter
+    const result = await patientService.getPatientsWithVaccinationFilters(filters);
 
-    res.json({ success: true, data: result.rows || [] });
+    res.json({ success: true, data: result.patients || [] });
   } catch (error) {
     console.error('Error fetching upcoming vaccinations:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch upcoming vaccinations' });
@@ -909,7 +737,7 @@ router.get('/control-number/:controlNumber', requirePatientReadAccess, async (re
   }
 });
 
-// Get infant by ID
+// Get infant by ID (redirected to canonical patient service)
 router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
   try {
     const infantId = parseInt(req.params.id, 10);
@@ -917,13 +745,13 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
     }
 
-    const importedVaccinationPredicate = await getImportedVaccinationPredicate();
     const canonicalRole = getCanonicalRole(req);
     const scopedFacilityContext = resolveScopedFacilityContext(req);
     if (scopedFacilityContext.error) {
       return res.status(scopedFacilityContext.status).json({ success: false, error: scopedFacilityContext.error });
     }
 
+    // Check ownership for guardians
     if (isGuardian(req)) {
       const isOwner = await guardianOwnsInfant(parseInt(req.user.guardian_id, 10), infantId);
       if (!isOwner) {
@@ -936,105 +764,31 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
-    const params = [infantId];
-    let facilityFilterClause = '';
-    if (!isGuardian(req) && scopedFacilityContext.useScope) {
-      facilityFilterClause = ` AND p.facility_id = ANY($${params.length + 1}::int[])`;
-      params.push(scopedFacilityContext.scopeIds);
-    }
-
-    const result = await pool.query(
-      `
-        SELECT
-          p.*,
-          p.age_months,
-          g.name as guardian_name,
-          g.phone as guardian_phone,
-          g.email as guardian_email,
-          EXTRACT(YEAR FROM AGE(CURRENT_DATE, p.dob)) * 12 + EXTRACT(MONTH FROM AGE(CURRENT_DATE, p.dob)) as calculated_age_months,
-          (
-            SELECT COUNT(*)
-            FROM immunization_records ir
-            WHERE ir.patient_id = p.id
-              AND COALESCE(ir.is_active, true) = true
-              AND (
-                LOWER(COALESCE(ir.status, '')) = 'completed'
-                OR ir.admin_date IS NOT NULL
-              )
-          ) AS completed_vaccinations,
-          (
-           SELECT COUNT(*)
-            FROM immunization_records ir
-            WHERE ir.patient_id = p.id
-              AND COALESCE(ir.is_active, true) = true
-              AND ${importedVaccinationPredicate}
-              AND (
-                LOWER(COALESCE(ir.status, '')) = 'completed'
-                OR ir.admin_date IS NOT NULL
-              )
-          ) AS imported_vaccinations,
-          (
-            SELECT tic.id
-            FROM transfer_in_cases tic
-            WHERE tic.infant_id = p.id
-            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-            LIMIT 1
-          ) AS latest_transfer_case_id,
-          (
-            SELECT tic.validation_status
-            FROM transfer_in_cases tic
-            WHERE tic.infant_id = p.id
-            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-            LIMIT 1
-          ) AS latest_transfer_case_status,
-          (
-            SELECT tic.source_facility
-            FROM transfer_in_cases tic
-            WHERE tic.infant_id = p.id
-            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-            LIMIT 1
-          ) AS latest_transfer_source_facility,
-          (
-            SELECT tic.updated_at
-            FROM transfer_in_cases tic
-            WHERE tic.infant_id = p.id
-            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-            LIMIT 1
-          ) AS latest_transfer_case_updated_at,
-          (
-            SELECT json_agg(
-              json_build_object(
-                'id', ia.id,
-                'allergy_type', ia.allergy_type,
-                'allergen', ia.allergen,
-                'severity', ia.severity,
-                'reaction_description', ia.reaction_description,
-                'onset_date', ia.onset_date
-              )
-            )
-            FROM infant_allergies ia
-            WHERE ia.infant_id = p.id AND ia.is_active = true
-          ) as allergies
-        FROM patients p
-        LEFT JOIN guardians g ON g.id = p.guardian_id
-        WHERE p.id = $1
-          AND p.is_active = true
-          ${facilityFilterClause}
-      `,
-      params,
-    );
-
-    if (result.rows.length === 0) {
+    // Use canonical patient service
+    const patient = await patientService.getPatientById(infantId);
+    if (!patient) {
       return res.status(404).json({ success: false, error: 'Infant not found' });
     }
 
-    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
-      result.rows,
-    );
+    // Apply facility scope filtering for non-guardians
+    if (!isGuardian(req) && scopedFacilityContext.useScope) {
+      const patientFacilityId = Number.parseInt(patient.facilityId, 10);
+      if (
+        Number.isFinite(patientFacilityId) &&
+        patientFacilityId > 0 &&
+        !scopedFacilityContext.scopeIds.includes(patientFacilityId)
+      ) {
+        return res.status(403).json({ success: false, error: 'Access denied - facility scope mismatch' });
+      }
+    }
+
+    // Get vaccination schedule summary for the patient
+    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients([patient]);
+    const patientWithSchedule = mergePendingDoseCounts([patient], scheduleSummaryMap)[0];
 
     res.json({
       success: true,
-      data: mergePendingDoseCounts(result.rows, scheduleSummaryMap)[0],
+      data: patientWithSchedule,
     });
   } catch (error) {
     console.error('Error fetching infant:', error);
@@ -1042,7 +796,7 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
   }
 });
 
-// Create infant (SYSTEM_ADMIN)
+// Create infant (SYSTEM_ADMIN) - redirected to canonical patient service
 router.post('/', requirePermission('patient:create'), async (req, res) => {
   try {
     const {
@@ -1075,202 +829,29 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
       street_color,
     } = req.body;
 
-    if (!first_name || !last_name || !dob || !sex) {
-      const missingFields = [];
-      if (!first_name) {
-        missingFields.push('first_name');
-      }
-      if (!last_name) {
-        missingFields.push('last_name');
-      }
-      if (!dob) {
-        missingFields.push('dob');
-      }
-      if (!sex) {
-        missingFields.push('sex');
-      }
-
-      const fieldErrors = {};
-      if (!first_name) {
-        fieldErrors.first_name = 'First name is required';
-      }
-      if (!last_name) {
-        fieldErrors.last_name = 'Last name is required';
-      }
-      if (!dob) {
-        fieldErrors.dob = 'Date of birth is required';
-      }
-      if (!sex) {
-        fieldErrors.sex = 'Sex is required';
-      }
-
-      return res.status(400).json({
-        success: false,
-        error: `Missing required fields: ${missingFields.join(', ')} are required`,
-        fields: fieldErrors,
-      });
+    // Validate required fields
+    const validationResult = validateInfantPayload(req.body);
+    if (!validationResult.isValid) {
+      return respondInfantValidationError(res, validationResult.errors);
     }
 
-    const dobDate = new Date(dob);
-    if (Number.isNaN(dobDate.getTime()) || dobDate > new Date()) {
-      return res.status(400).json({ success: false, error: 'Invalid date of birth' });
-    }
-
-    // Calculate age in months for the new infant
-    const ageMonths = calculateAgeInMonths(dob);
-
-    const maxDob = new Date();
-    maxDob.setFullYear(maxDob.getFullYear() - 20);
-    if (dobDate < maxDob) {
-      return res.status(400).json({ success: false, error: 'Date of birth seems invalid' });
-    }
-
-    let normalizedSex = sex;
-    if (sex === 'M') {
-      normalizedSex = 'male';
-    }
-    if (sex === 'F') {
-      normalizedSex = 'female';
-    }
-
-    if (!['male', 'female', 'other'].includes(normalizedSex)) {
-      return res.status(400).json({ success: false, error: 'Invalid sex value' });
-    }
-
-    const normalizedPurok = toNullableString(purok);
-    const normalizedStreetColor = toNullableString(street_color);
-    const purokErrors = {};
-    validatePurokSelection(
-      {
-        purok: normalizedPurok,
-        street_color: normalizedStreetColor,
-      },
-      purokErrors,
-    );
-
-    if (Object.keys(purokErrors).length > 0) {
-      return respondInfantValidationError(res, purokErrors);
-    }
-
-    const resolvedFacilityId = await resolvePatientFacilityId({
-      guardianId: guardian_id,
-      requestedFacilityId: facility_id,
-      user: req.user,
-      client: pool,
-    });
-
-    const optionalFields = {
-      middle_name: middle_name || null,
-      national_id: national_id || null,
-      address: address || null,
-      contact: contact || null,
-      photo_url: photo_url || null,
-      mother_name: mother_name || null,
-      father_name: father_name || null,
-      birth_weight: birth_weight || null,
-      birth_height: birth_height || null,
-      place_of_birth: place_of_birth || null,
-      barangay: barangay || null,
-      health_center: health_center || null,
-      purok: normalizedPurok,
-      street_color: normalizedStreetColor,
-      family_no: family_no || null,
-      time_of_delivery: time_of_delivery || null,
-      type_of_delivery: type_of_delivery || null,
-      doctor_midwife_nurse: doctor_midwife_nurse || null,
-      nbs_done: nbs_done === undefined ? null : Boolean(nbs_done),
-      nbs_date: nbs_date || null,
-      cellphone_number: cellphone_number || null,
-      facility_id: resolvedFacilityId,
-      age_months: ageMonths, // Auto-calculated age in months
+    const patientData = {
+      ...validationResult.data,
+      guardian_id:
+        guardian_id !== undefined && guardian_id !== null && guardian_id !== ''
+          ? parseInt(guardian_id, 10)
+          : validationResult.data.guardian_id,
     };
+    
+    // Use canonical patient service to create patient
+    const newPatient = await patientService.createPatient(patientData, req.user.id);
 
-    let resolved;
-
-    try {
-      resolved = await resolveOrCreateInfantPatient(
-        {
-          guardianId: guardian_id || null,
-          firstName: first_name,
-          lastName: last_name,
-          dob,
-          sex: normalizedSex,
-          initialValues: optionalFields,
-        },
-        pool,
-      );
-    } catch (resolveError) {
-      if (resolveError.code === 'AMBIGUOUS_INFANT_MATCH') {
-        return res.status(409).json({
-          success: false,
-          error:
-            'Multiple infant records already match this guardian, name, and date of birth. Resolve duplicates before creating a new profile.',
-          matches: resolveError.matches || [],
-        });
-      }
-
-      throw resolveError;
-    }
-
-    let result;
-
-    if (resolved.existed) {
-      const {
-        updates: backfillUpdates,
-        values: backfillValues,
-        nextParamIndex: backfillParamIndex,
-      } = buildBackfillAssignments(optionalFields);
-
-      if (backfillUpdates.length > 0) {
-        result = await pool.query(
-          `
-            UPDATE patients
-            SET ${backfillUpdates.join(', ')},
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $${backfillParamIndex}
-            RETURNING *
-          `,
-          [...backfillValues, resolved.id],
-        );
-      } else {
-        result = await pool.query(
-          `
-            SELECT *
-            FROM patients
-            WHERE id = $1
-            LIMIT 1
-          `,
-          [resolved.id],
-        );
-      }
-    } else {
-      result = await pool.query(
-        `
-          SELECT *
-          FROM patients
-          WHERE id = $1
-          LIMIT 1
-        `,
-        [resolved.id],
-      );
-    }
-
-    if (result.rows.length === 0) {
-      return res.status(500).json({ success: false, error: 'Failed to resolve infant record' });
-    }
-
-    await ensureAtBirthVaccinationRecords(resolved.id, {
-      patientDob: result.rows[0].dob,
-    });
-
-    socketService.broadcast('infant_created', result.rows[0]);
-    res.status(resolved.existed ? 200 : 201).json({
+    socketService.broadcast('infant_created', newPatient);
+    res.status(201).json({
       success: true,
-      data: result.rows[0],
-      control_number: resolved.control_number,
-      message: resolved.existed
-        ? 'Existing infant record reused successfully'
-        : 'Infant registered successfully',
+      data: newPatient,
+      control_number: newPatient.control_number,
+      message: 'Infant registered successfully',
     });
   } catch (error) {
     console.error('Error creating infant:', error);
@@ -1278,7 +859,7 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
   }
 });
 
-// Create infant (GUARDIAN own)
+// Create infant (GUARDIAN own) - redirected to canonical patient service
 router.post('/guardian', requirePermission('patient:create:own'), async (req, res) => {
   try {
     if (!isGuardian(req)) {
@@ -1311,21 +892,28 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
       });
     }
 
-    const { patient, controlNumber, existed } = await createGuardianChildRecord({
-      guardianId,
-      payload,
-      client: pool,
-    });
+    // Validate required fields
+    const validationResult = validateInfantPayload(payload);
+    if (!validationResult.isValid) {
+      return respondInfantValidationError(res, validationResult.errors);
+    }
 
-    socketService.broadcast('infant_created', patient);
+    // Ensure guardian_id is set to current guardian
+    const patientData = {
+      ...validationResult.data,
+      guardian_id: guardianId,
+    };
 
-    return res.status(existed ? 200 : 201).json({
+    // Use canonical patient service to create patient
+    const newPatient = await patientService.createPatient(patientData, req.user.id);
+
+    socketService.broadcast('infant_created', newPatient);
+
+    return res.status(201).json({
       success: true,
-      data: patient,
-      control_number: controlNumber,
-      message: existed
-        ? 'An existing child record under your account was reused.'
-        : 'Child registered successfully.',
+      data: newPatient,
+      control_number: newPatient.control_number,
+      message: 'Child registered successfully.',
     });
   } catch (error) {
     if (error.code === 'VALIDATION_ERROR') {
@@ -1939,7 +1527,7 @@ router.get('/search/:query', requirePermission('patient:view'), async (req, res)
         LEFT JOIN guardians g ON g.id = p.guardian_id
         ${whereClause}
         ORDER BY p.created_at DESC
-        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+        LIMIT $${params.length + 1}::bigint OFFSET $${params.length + 2}::bigint
       `,
       [...params, limit, offset],
     );

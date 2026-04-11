@@ -26,6 +26,34 @@ const APPROVED_VACCINE_NAMES = Object.freeze([
 
 const APPROVED_VACCINE_NAME_SET = new Set(APPROVED_VACCINE_NAMES);
 
+const OPERATIONAL_VACCINE_GROUPS = Object.freeze({
+  BCG: Object.freeze(['BCG']),
+  'Hepa B': Object.freeze(['Hepa B']),
+  'IPV multi dose': Object.freeze(['IPV multi dose']),
+  MMR: Object.freeze(['MMR']),
+  'OPV 20-doses': Object.freeze(['OPV 20-doses']),
+  'Penta Valent': Object.freeze(['Penta Valent']),
+  'PCV 13/PCV 10': Object.freeze(['PCV 13', 'PCV 10', 'PCV 13/PCV 10']),
+});
+
+const OPERATIONAL_VACCINE_NAMES = Object.freeze(Object.keys(OPERATIONAL_VACCINE_GROUPS));
+
+const normalizeOperationalAliasKey = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toUpperCase();
+
+const OPERATIONAL_VACCINE_ALIAS_LOOKUP = Object.freeze(
+  Object.entries(OPERATIONAL_VACCINE_GROUPS).reduce((accumulator, [canonicalName, aliases]) => {
+    aliases.forEach((alias) => {
+      accumulator[normalizeOperationalAliasKey(alias)] = canonicalName;
+    });
+    accumulator[normalizeOperationalAliasKey(canonicalName)] = canonicalName;
+    return accumulator;
+  }, {}),
+);
+
 const APPROVED_VACCINE_BRANDS = Object.freeze(
   APPROVED_VACCINE_NAMES.reduce((accumulator, vaccineName) => {
     accumulator[vaccineName] = Object.freeze([]);
@@ -45,6 +73,30 @@ const withAllowedBrands = (row = {}) => ({
 });
 
 const getApprovedVaccineNames = () => [...APPROVED_VACCINE_NAMES];
+
+const getOperationalVaccineNames = () => [...OPERATIONAL_VACCINE_NAMES];
+
+const getOperationalVaccineSourceNames = () => {
+  const seen = new Set();
+
+  Object.values(OPERATIONAL_VACCINE_GROUPS).forEach((aliases) => {
+    aliases.forEach((alias) => {
+      if (!seen.has(alias)) {
+        seen.add(alias);
+      }
+    });
+  });
+
+  return [...seen];
+};
+
+const normalizeOperationalVaccineName = (value) =>
+  OPERATIONAL_VACCINE_ALIAS_LOOKUP[normalizeOperationalAliasKey(value)] || null;
+
+const resolveOperationalVaccineAliases = (value) => {
+  const canonicalName = normalizeOperationalVaccineName(value);
+  return canonicalName ? [...(OPERATIONAL_VACCINE_GROUPS[canonicalName] || [])] : [];
+};
 
 const getApprovedBrandsForVaccine = (vaccineName) =>
   Object.prototype.hasOwnProperty.call(APPROVED_VACCINE_BRANDS, vaccineName)
@@ -345,11 +397,16 @@ const unapproveVaccine = async (vaccineId) => {
 module.exports = {
   APPROVED_VACCINE_NAMES,
   APPROVED_VACCINE_NAME_SET,
+  OPERATIONAL_VACCINE_NAMES,
   APPROVED_VACCINE_BRANDS,
   APPROVED_VACCINE_LIST_TEXT,
   normalizeVaccineName,
+  normalizeOperationalVaccineName,
   isApprovedVaccineName,
   getApprovedVaccineNames,
+  getOperationalVaccineNames,
+  getOperationalVaccineSourceNames,
+  resolveOperationalVaccineAliases,
   getApprovedBrandsForVaccine,
   validateApprovedVaccineName,
   validateApprovedVaccineBrand,

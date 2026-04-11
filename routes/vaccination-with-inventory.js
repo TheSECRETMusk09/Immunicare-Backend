@@ -134,7 +134,7 @@ const validateAdministrationDateForPatient = async (patientId, adminDate) => {
   if (normalizedDob && normalizedAdminDate < normalizedDob) {
     return {
       valid: false,
-      error: "Administration date cannot be earlier than the infant's date of birth",
+      error: 'Administration date cannot be earlier than the infant\'s date of birth',
     };
   }
 
@@ -655,7 +655,7 @@ router.get('/inventory-status/:vaccineId', async (req, res) => {
          AND vb.clinic_id = $2
          AND vb.is_active = true
          AND vb.qty_current > 0
-         AND vb.expiry_date > CURRENT_DATE
+         AND vb.expiry_date >= CURRENT_DATE
        ORDER BY vb.expiry_date ASC`,
       [vaccineId, clinicId],
     );

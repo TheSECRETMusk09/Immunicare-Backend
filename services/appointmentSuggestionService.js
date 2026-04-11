@@ -1,10 +1,10 @@
 const pool = require('../db');
 const { calculateVaccineReadiness } = require('./vaccineRulesEngine');
 const NotificationService = require('./notificationService');
+const appointmentSchedulingService = require('./appointmentSchedulingService');
 const {
   CLINIC_TODAY_SQL,
   getClinicTodayDateKey,
-  isWeekendDateKey,
   shiftClinicDateKey,
   toClinicDateKey,
 } = require('../utils/clinicCalendar');
@@ -187,31 +187,7 @@ const calculateNextValidDose = (dobString, vaccinationHistory = [], schedule = V
   return nextDoseInfo;
 };
 
-const isWeekend = (date) => isWeekendDateKey(date);
-
-const getHolidayInfo = (date) => {
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  const holidays = [
-    { month: 1, day: 1, name: 'New Year\'s Day' },
-    { month: 4, day: 9, name: 'Araw ng Kagitingan' },
-    { month: 5, day: 1, name: 'Labor Day' },
-    { month: 6, day: 12, name: 'Independence Day' },
-    { month: 8, day: 21, name: 'Ninoy Aquino Day' },
-    { month: 8, day: 31, name: 'National Heroes Day' },
-    { month: 11, day: 1, name: 'All Saints Day' },
-    { month: 11, day: 30, name: 'Bonifacio Day' },
-    { month: 12, day: 8, name: 'Feast of the Immaculate Conception' },
-    { month: 12, day: 24, name: 'Christmas Eve' },
-    { month: 12, day: 25, name: 'Christmas Day' },
-    { month: 12, day: 30, name: 'Rizal Day' },
-    { month: 12, day: 31, name: 'New Year\'s Eve' },
-  ];
-
-  return holidays.find(h => h.month === month && h.day === day) || null;
-};
-
-const findEarliestValidDate = (startDateStr, _clinicId = null) => {
+const findEarliestValidDate = async (startDateStr, clinicId = null) => {
   const startDateKey = toClinicDateKey(startDateStr);
   const maxDaysToCheck = 90; // Look ahead 3 months
 
@@ -221,24 +197,18 @@ const findEarliestValidDate = (startDateStr, _clinicId = null) => {
 
   for (let i = 0; i < maxDaysToCheck; i++) {
     const candidateDateKey = shiftClinicDateKey(startDateKey, i);
-    const checkDate = candidateDateKey ? new Date(`${candidateDateKey}T12:00:00`) : null;
-    if (!candidateDateKey || !checkDate) {
+    if (!candidateDateKey) {
       continue;
     }
 
-    // Skip weekends
-    if (isWeekend(candidateDateKey)) {
-      continue;
-    }
+    const appointmentAvailability = await appointmentSchedulingService.checkBookingAvailability({
+      scheduledDate: candidateDateKey,
+      clinicId,
+    });
 
-    // Skip holidays
-    const holiday = getHolidayInfo(checkDate);
-    if (holiday) {
-      continue;
+    if (appointmentAvailability.available) {
+      return candidateDateKey;
     }
-
-    // Return the first valid date found
-    return candidateDateKey;
   }
 
   // If no valid date found in the period, return null
@@ -302,13 +272,7 @@ const findFirstSchedulableSlotWindow = async ({
 
   for (let dayOffset = 0; dayOffset < maxDaysToCheck; dayOffset += 1) {
     const candidateDateKey = shiftClinicDateKey(normalizedStartDate, dayOffset);
-    const candidateDate = candidateDateKey ? new Date(`${candidateDateKey}T12:00:00`) : null;
-
-    if (!candidateDateKey || !candidateDate) {
-      continue;
-    }
-
-    if (isWeekend(candidateDateKey) || getHolidayInfo(candidateDate)) {
+    if (!candidateDateKey) {
       continue;
     }
 
@@ -516,7 +480,7 @@ const getSuggestedAppointments = async ({ childId, facilityId = 'san_nicolas' })
     }
 
     // Step 5: Find available slots
-    const earliestValidDate = findEarliestValidDate(
+    const earliestValidDate = await findEarliestValidDate(
       nextVaccine.date || getClinicTodayDateKey(),
       facilityId,
     );

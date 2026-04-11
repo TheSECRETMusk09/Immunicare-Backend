@@ -10,8 +10,9 @@ const {
 const VaccinationReminderService = require('../services/vaccinationReminderService');
 const socketService = require('../services/socketService');
 const {
-  APPROVED_VACCINE_NAMES,
+  getOperationalVaccineSourceNames,
   getApprovedVaccines,
+  resolveOperationalVaccineAliases,
   validateApprovedVaccine,
   validateApprovedVaccineBrand,
 } = require('../utils/approvedVaccines');
@@ -52,27 +53,57 @@ const PROVIDER_NAME_COLUMNS = ['full_name', 'name', 'username', 'email'];
 let providerSchemaPromise = null;
 let vaccinationTrackingColumnsPromise = null;
 let batchFacilityColumnPromise = null;
+const routeResponseCache = new Map();
 
-const DEFAULT_VACCINATION_SCHEDULE_SEEDS = Object.freeze([
-  ['BCG', 1, 1, 0, 0, 'At birth', 'BCG at birth'],
-  ['Hepa B', 1, 1, 0, 0, 'At birth', 'Hepa B at birth'],
-  ['Penta Valent', 1, 3, 2, 60, '2 months', 'Penta dose 1'],
-  ['Penta Valent', 2, 3, 3, 90, '3 months', 'Penta dose 2'],
-  ['Penta Valent', 3, 3, 4, 120, '4 months', 'Penta dose 3'],
-  ['OPV 20-doses', 1, 3, 2, 60, '2 months', 'OPV dose 1'],
-  ['OPV 20-doses', 2, 3, 3, 90, '3 months', 'OPV dose 2'],
-  ['OPV 20-doses', 3, 3, 4, 120, '4 months', 'OPV dose 3'],
-  ['PCV 13', 1, 3, 2, 60, '2 months', 'PCV 13 dose 1'],
-  ['PCV 13', 2, 3, 3, 90, '3 months', 'PCV 13 dose 2'],
-  ['PCV 13', 3, 3, 4, 120, '4 months', 'PCV 13 dose 3'],
-  ['PCV 10', 1, 3, 2, 60, '2 months', 'PCV 10 dose 1'],
-  ['PCV 10', 2, 3, 3, 90, '3 months', 'PCV 10 dose 2'],
-  ['PCV 10', 3, 3, 4, 120, '4 months', 'PCV 10 dose 3'],
-  ['IPV multi dose', 1, 2, 3, 90, '3 months', 'IPV dose 1'],
-  ['IPV multi dose', 2, 2, 9, 270, '9 months', 'IPV dose 2'],
-  ['Measles & Rubella (MR)', 1, 1, 9, 270, '9 months', 'Measles and Rubella dose'],
-  ['MMR', 1, 1, 12, 365, '12 months', 'MMR dose'],
-]);
+const RECONCILIATION_CACHE_TTL_MS = 60 * 1000;
+const SCHEDULES_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const buildScopeCacheKey = (scopeContext = {}) => {
+  if (!scopeContext?.useScope) {
+    return 'system';
+  }
+
+  const scopeIds = Array.isArray(scopeContext.scopeIds)
+    ? [...scopeContext.scopeIds].map((value) => Number.parseInt(value, 10))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .sort((left, right) => left - right)
+    : [];
+
+  return scopeIds.length > 0 ? scopeIds.join(',') : 'scoped';
+};
+
+const getRouteCacheEntry = (key) => {
+  const cachedEntry = routeResponseCache.get(key);
+  if (!cachedEntry) {
+    return null;
+  }
+
+  if (cachedEntry.expiresAt <= Date.now()) {
+    routeResponseCache.delete(key);
+    return null;
+  }
+
+  return cachedEntry.payload;
+};
+
+const setRouteCacheEntry = (key, payload, ttlMs) => {
+  routeResponseCache.set(key, {
+    payload,
+    expiresAt: Date.now() + ttlMs,
+  });
+};
+
+const invalidateRouteCache = (prefix = '') => {
+  Array.from(routeResponseCache.keys()).forEach((key) => {
+    if (!prefix || key.startsWith(prefix)) {
+      routeResponseCache.delete(key);
+    }
+  });
+};
+
+const invalidateVaccinationDashboardCaches = () => {
+  invalidateRouteCache('reconciliation:');
+};
 
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
 
@@ -83,6 +114,43 @@ const sanitizeOptionalText = (value) => {
 
   const normalized = String(value).trim();
   return normalized.length > 0 ? normalized : null;
+};
+
+const OPERATIONAL_YEAR_START = '2026-01-01';
+const OPERATIONAL_YEAR_END = '2026-12-31';
+
+const normalizeOptionalDateFilter = (value, fieldName) => {
+  const normalizedValue = sanitizeOptionalText(value);
+  if (!normalizedValue) {
+    return { value: null };
+  }
+
+  const normalizedDate = normalizeDateOnly(normalizedValue);
+  if (!normalizedDate) {
+    return {
+      error: `${fieldName} must be a valid date`,
+    };
+  }
+
+  return { value: normalizedDate };
+};
+
+const appendDateRangeFilter = ({
+  whereParts,
+  params,
+  expression,
+  startDate,
+  endDate,
+}) => {
+  if (startDate) {
+    whereParts.push(`${expression} >= $${params.length + 1}::date`);
+    params.push(startDate);
+  }
+
+  if (endDate) {
+    whereParts.push(`${expression} <= $${params.length + 1}::date`);
+    params.push(endDate);
+  }
 };
 
 const resolveLotBatchValue = (...values) => {
@@ -365,18 +433,11 @@ const resolveVaccinationScopeContext = (req) => {
 
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
-const guardianOwnsInfant = async (guardianId, infantId) => {
-  const result = await pool.query(
-    `
-      SELECT id
-      FROM patients
-      WHERE id = $1 AND guardian_id = $2 AND is_active = true
-      LIMIT 1
-    `,
-    [infantId, guardianId],
-  );
+const patientService = require('../services/patientService');
 
-  return result.rows.length > 0;
+const guardianOwnsInfant = async (guardianId, infantId) => {
+  const patient = await patientService.getPatientById(infantId);
+  return patient && patient.guardianId === guardianId;
 };
 
 const getVaccinationRecord = async (id) => {
@@ -680,6 +741,12 @@ router.get('/records/infant/:infantId', async (req, res) => {
     const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
     const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
 
+    // Validate patient exists using canonical service
+    const patient = await patientService.getPatientById(infantId);
+    if (!patient) {
+      return res.status(404).json({ error: 'Infant not found' });
+    }
+
     const result = await pool.query(
       `
         SELECT
@@ -719,6 +786,13 @@ router.get('/records/reconciliation', requirePermission('vaccination:view'), asy
       return res.status(scopeContext.status).json({ error: scopeContext.error });
     }
 
+    const cacheKey = `reconciliation:${buildScopeCacheKey(scopeContext)}`;
+    const cachedPayload = getRouteCacheEntry(cacheKey);
+    if (cachedPayload) {
+      res.setHeader('X-Immunicare-Cache', 'HIT');
+      return res.json(cachedPayload);
+    }
+
     const params = [];
     let whereClause = `
       WHERE ir.is_active = true
@@ -732,41 +806,65 @@ router.get('/records/reconciliation', requirePermission('vaccination:view'), asy
 
     const result = await pool.query(
       `
-        SELECT DISTINCT ON (ir.patient_id, ir.vaccine_id, COALESCE(ir.dose_no, 1))
-          ir.id,
-          ir.patient_id,
-          ir.vaccine_id,
-          COALESCE(ir.dose_no, 1) AS dose_no,
-          ir.admin_date,
-          ir.status,
-          ir.notes,
-          ir.batch_number,
-          ir.lot_number
-        FROM immunization_records ir
-        JOIN patients p ON p.id = ir.patient_id
-        ${whereClause}
-        ORDER BY
-          ir.patient_id ASC,
-          ir.vaccine_id ASC,
-          COALESCE(ir.dose_no, 1) ASC,
+        WITH filtered_records AS (
+          SELECT
+            ir.id,
+            ir.patient_id,
+            ir.vaccine_id,
+            COALESCE(ir.dose_no, 1) AS dose_no,
+            ir.admin_date,
+            LOWER(NULLIF(TRIM(COALESCE(ir.status::text, '')), '')) AS normalized_status
+          FROM immunization_records ir
+          JOIN patients p ON p.id = ir.patient_id
+          ${whereClause}
+        ),
+        aggregated_records AS (
+          SELECT
+            patient_id,
+            vaccine_id,
+            dose_no,
+            MAX(id) AS id,
+            MAX(admin_date) AS admin_date,
+            BOOL_OR(admin_date IS NOT NULL) AS has_admin_date,
+            BOOL_OR(normalized_status = 'completed') AS has_completed_status,
+            BOOL_OR(normalized_status = 'attended') AS has_attended_status,
+            BOOL_OR(normalized_status = 'overdue') AS has_overdue_status,
+            BOOL_OR(normalized_status = 'due') AS has_due_status,
+            BOOL_OR(normalized_status = 'upcoming') AS has_upcoming_status,
+            BOOL_OR(normalized_status = 'pending') AS has_pending_status
+          FROM filtered_records
+          GROUP BY patient_id, vaccine_id, dose_no
+        )
+        SELECT
+          id,
+          patient_id,
+          vaccine_id,
+          dose_no,
+          admin_date,
           CASE
-            WHEN ir.admin_date IS NOT NULL THEN 0
-            WHEN LOWER(COALESCE(TRIM(ir.status::text), '')) = 'completed' THEN 1
-            ELSE 2
-          END ASC,
-          ir.admin_date DESC NULLS LAST,
-          ir.created_at DESC NULLS LAST,
-          ir.id DESC
+            WHEN has_admin_date OR has_completed_status OR has_attended_status THEN 'completed'
+            WHEN has_overdue_status THEN 'overdue'
+            WHEN has_due_status THEN 'due'
+            WHEN has_upcoming_status THEN 'upcoming'
+            WHEN has_pending_status THEN 'pending'
+            ELSE 'pending'
+          END AS status
+        FROM aggregated_records
+        ORDER BY patient_id ASC, vaccine_id ASC, dose_no ASC
       `,
       params,
     );
 
-    res.json({
+    const payload = {
       records: result.rows,
       metadata: {
         total: result.rows.length,
       },
-    });
+    };
+
+    setRouteCacheEntry(cacheKey, payload, RECONCILIATION_CACHE_TTL_MS);
+    res.setHeader('X-Immunicare-Cache', 'MISS');
+    res.json(payload);
   } catch (error) {
     console.error('Error fetching vaccination reconciliation records:', error);
     res.status(500).json({ error: 'Failed to fetch vaccination reconciliation records' });
@@ -782,9 +880,54 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
       ? (page - 1) * limit
       : sanitizeOffset(req.query.offset, 0);
     const searchTerm = sanitizeOptionalText(req.query.search || req.query.query);
+    const vaccineNameFilter = sanitizeOptionalText(req.query.vaccine_name || req.query.vaccine);
+    const vaccineIdFilter = parseInt(req.query.vaccine_id, 10);
+    const statusFilter = sanitizeOptionalText(req.query.status);
+    const dateView = String(req.query.date_view || req.query.dateView || 'all')
+      .trim()
+      .toLowerCase();
+    const administeredStart = normalizeOptionalDateFilter(
+      req.query.administered_start_date || req.query.date_administered_start,
+      'administered_start_date',
+    );
+    const administeredEnd = normalizeOptionalDateFilter(
+      req.query.administered_end_date || req.query.date_administered_end,
+      'administered_end_date',
+    );
+    const nextDueStart = normalizeOptionalDateFilter(
+      req.query.next_due_start_date || req.query.nextDueStart,
+      'next_due_start_date',
+    );
+    const nextDueEnd = normalizeOptionalDateFilter(
+      req.query.next_due_end_date || req.query.nextDueEnd,
+      'next_due_end_date',
+    );
+    const dateFilterErrors = {
+      ...(administeredStart.error ? { administered_start_date: administeredStart.error } : {}),
+      ...(administeredEnd.error ? { administered_end_date: administeredEnd.error } : {}),
+      ...(nextDueStart.error ? { next_due_start_date: nextDueStart.error } : {}),
+      ...(nextDueEnd.error ? { next_due_end_date: nextDueEnd.error } : {}),
+    };
+
+    if (req.query.vaccine_id && (!Number.isInteger(vaccineIdFilter) || vaccineIdFilter <= 0)) {
+      dateFilterErrors.vaccine_id = 'vaccine_id must be a positive integer';
+    }
+
+    if (dateView && !['all', 'present', 'upcoming', 'past'].includes(dateView)) {
+      dateFilterErrors.date_view = 'date_view must be one of all, present, upcoming, or past';
+    }
+
+    if (Object.keys(dateFilterErrors).length > 0) {
+      return res.status(400).json({
+        error: 'Invalid vaccination record filters',
+        errors: dateFilterErrors,
+      });
+    }
+
     const { providerJoinsSql, providerValueExpression } = await getProviderSqlFragments();
     const resolvedBatchNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'batch_number');
     const resolvedLotNumberExpression = buildResolvedLotBatchExpression('ir', 'batch', 'lot_number');
+    const operationalDateExpression = 'COALESCE(ir.admin_date::date, ir.next_due_date::date, ir.created_at::date)';
     const scopeContext = resolveVaccinationScopeContext(req);
     if (scopeContext.error) {
       return res.status(scopeContext.status).json({ error: scopeContext.error });
@@ -814,6 +957,70 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
         )
       `;
       params.push(`%${searchTerm}%`);
+    }
+
+    if (Number.isInteger(vaccineIdFilter) && vaccineIdFilter > 0) {
+      whereClause += ` AND ir.vaccine_id = $${params.length + 1}`;
+      params.push(vaccineIdFilter);
+    }
+
+    if (vaccineNameFilter && vaccineNameFilter.toLowerCase() !== 'all') {
+      const normalizedAliases = resolveOperationalVaccineAliases(vaccineNameFilter)
+        .map((name) => String(name).trim().toLowerCase())
+        .filter(Boolean);
+
+      if (normalizedAliases.length > 0) {
+        whereClause += ` AND LOWER(TRIM(COALESCE(v.name, ''))) = ANY($${params.length + 1}::text[])`;
+        params.push(normalizedAliases);
+      } else {
+        whereClause += ` AND LOWER(TRIM(COALESCE(v.name, ''))) = $${params.length + 1}`;
+        params.push(vaccineNameFilter.toLowerCase());
+      }
+    }
+
+    if (statusFilter && statusFilter.toLowerCase() !== 'all') {
+      whereClause += ` AND LOWER(TRIM(COALESCE(ir.status::text, ''))) = $${params.length + 1}`;
+      params.push(statusFilter.toLowerCase());
+    }
+
+    appendDateRangeFilter({
+      whereParts: {
+        push: (clause) => {
+          whereClause += ` AND ${clause}`;
+        },
+      },
+      params,
+      expression: 'ir.admin_date::date',
+      startDate: administeredStart.value,
+      endDate: administeredEnd.value,
+    });
+
+    appendDateRangeFilter({
+      whereParts: {
+        push: (clause) => {
+          whereClause += ` AND ${clause}`;
+        },
+      },
+      params,
+      expression: 'ir.next_due_date::date',
+      startDate: nextDueStart.value,
+      endDate: nextDueEnd.value,
+    });
+
+    if (dateView === 'present') {
+      whereClause += `
+        AND (
+          ir.admin_date::date BETWEEN $${params.length + 1}::date AND $${params.length + 2}::date
+          OR ir.next_due_date::date BETWEEN $${params.length + 1}::date AND $${params.length + 2}::date
+        )
+      `;
+      params.push(OPERATIONAL_YEAR_START, OPERATIONAL_YEAR_END);
+    } else if (dateView === 'upcoming') {
+      whereClause += ` AND ${operationalDateExpression} > $${params.length + 1}::date`;
+      params.push(OPERATIONAL_YEAR_END);
+    } else if (dateView === 'past') {
+      whereClause += ` AND ${operationalDateExpression} < $${params.length + 1}::date`;
+      params.push(OPERATIONAL_YEAR_START);
     }
 
     const result = await pool.query(
@@ -855,7 +1062,17 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
         LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
         ${whereClause}
-        ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC
+        ORDER BY
+          CASE
+            WHEN (
+              ir.admin_date::date BETWEEN DATE '${OPERATIONAL_YEAR_START}' AND DATE '${OPERATIONAL_YEAR_END}'
+              OR ir.next_due_date::date BETWEEN DATE '${OPERATIONAL_YEAR_START}' AND DATE '${OPERATIONAL_YEAR_END}'
+            ) THEN 0
+            WHEN ${operationalDateExpression} < DATE '${OPERATIONAL_YEAR_START}' THEN 1
+            ELSE 2
+          END ASC,
+          ${operationalDateExpression} DESC,
+          ir.id DESC
         LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
       [...params, limit, offset],
@@ -913,9 +1130,34 @@ router.get('/vaccines', requirePermission('dashboard:view'), async (req, res) =>
 });
 
 // Get vaccination schedules (both roles)
-router.get('/schedules', requirePermission('dashboard:view'), async (_req, res) => {
+router.get('/schedules', requirePermission('dashboard:view'), async (req, res) => {
   try {
+    const dateView = String(req.query.date_view || req.query.dateView || 'present')
+      .trim()
+      .toLowerCase();
+
+    if (dateView && !['all', 'present', 'upcoming', 'past'].includes(dateView)) {
+      return res.status(400).json({
+        error: 'Invalid date_view parameter',
+        message: 'date_view must be one of all, present, upcoming, or past',
+      });
+    }
+
+    // Create cache key based on date view
+    const cacheKey = `schedules:approved:${dateView}`;
+    const cachedPayload = getRouteCacheEntry(cacheKey);
+    if (cachedPayload) {
+      res.setHeader('X-Immunicare-Cache', 'HIT');
+      return res.json(cachedPayload);
+    }
+
     await ensureVaccinationTrackingColumns();
+
+    const whereClause = `
+      WHERE is_active = true
+        AND vaccine_name = ANY($1::text[])
+    `;
+    const params = [getOperationalVaccineSourceNames()];
 
     const result = await pool.query(
       `
@@ -931,13 +1173,14 @@ router.get('/schedules', requirePermission('dashboard:view'), async (_req, res) 
           created_at,
           updated_at
         FROM vaccination_schedules
-        WHERE is_active = true
-          AND vaccine_name = ANY($1::text[])
+        ${whereClause}
         ORDER BY age_in_months ASC, vaccine_name ASC
       `,
-      [APPROVED_VACCINE_NAMES],
+      params,
     );
 
+    setRouteCacheEntry(cacheKey, result.rows, SCHEDULES_CACHE_TTL_MS);
+    res.setHeader('X-Immunicare-Cache', 'MISS');
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching vaccination schedules:', error);
@@ -969,13 +1212,74 @@ router.get('/batches', requirePermission('inventory:view'), async (_req, res) =>
           AND v.name = ANY($1::text[])
         ORDER BY vb.expiry_date ASC
       `,
-      [APPROVED_VACCINE_NAMES],
+      [getOperationalVaccineSourceNames()],
     );
 
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching vaccination batches:', error);
     res.json([]);
+  }
+});
+
+// Get vaccination inventory status for FEFO batch sources
+router.get('/inventory-status/:vaccineId', requirePermission('vaccination:create'), async (req, res) => {
+  try {
+    await ensureVaccinationTrackingColumns();
+
+    const vaccineId = parseInt(req.params.vaccineId, 10);
+    if (Number.isNaN(vaccineId)) {
+      return res.status(400).json({ error: 'Invalid vaccine ID' });
+    }
+
+    const scopedClinicIdRaw =
+      req.user?.clinic_id || req.user?.facility_id || req.healthCenterFilter?.clinic_id || null;
+    const scopedClinicId = scopedClinicIdRaw ? parseInt(scopedClinicIdRaw, 10) : null;
+
+    if (!scopedClinicId) {
+      return res.status(400).json({
+        error: 'clinic_id scope is required to load vaccine inventory status',
+      });
+    }
+
+    // Validate vaccine is approved
+    const vaccineValidation = await validateApprovedVaccine(vaccineId, { fieldName: 'vaccine_id' });
+    if (!vaccineValidation.valid) {
+      return res.status(400).json({ error: vaccineValidation.error });
+    }
+
+    const result = await pool.query(
+      `
+        SELECT
+          vb.id as batch_id,
+          COALESCE(NULLIF(TRIM(vb.lot_no), ''), NULLIF(TRIM(vb.lot_number), '')) AS lot_no,
+          vb.vaccine_id,
+          vb.qty_current,
+          vb.expiry_date,
+          vb.manufacture_date as received_date,
+          v.name as vaccine_name,
+          v.code as vaccine_code,
+          s.name as supplier_name,
+          c.name as clinic_name
+        FROM vaccine_batches vb
+        JOIN vaccines v ON v.id = vb.vaccine_id
+        LEFT JOIN suppliers s ON s.id = vb.supplier_id
+        LEFT JOIN clinics c ON c.id = vb.clinic_id
+        WHERE vb.is_active = true
+          AND vb.status = 'active'
+          AND vb.qty_current > 0
+          AND vb.expiry_date > CURRENT_DATE
+          AND vb.clinic_id = $1
+          AND vb.vaccine_id = $2
+        ORDER BY vb.expiry_date ASC
+      `,
+      [scopedClinicId, vaccineId],
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching vaccination inventory status:', error);
+    res.status(500).json({ error: 'Failed to fetch vaccination inventory status' });
   }
 });
 
@@ -1031,7 +1335,7 @@ router.get('/inventory/valid', requirePermission('vaccination:create'), async (r
         AND v.name = ANY($2::text[])
     `;
 
-    const params = [effectiveClinicId, APPROVED_VACCINE_NAMES];
+    const params = [effectiveClinicId, getOperationalVaccineSourceNames()];
     let paramCount = 3;
 
     // Filter by specific vaccine if provided
@@ -1080,21 +1384,13 @@ router.get('/schedules/infant/:infantId', async (req, res) => {
       }
     }
 
-    const infantResult = await pool.query(
-      `
-        SELECT dob
-        FROM patients
-        WHERE id = $1 AND is_active = true
-        LIMIT 1
-      `,
-      [infantId],
-    );
-
-    if (infantResult.rows.length === 0) {
+    // Validate patient exists using canonical service
+    const patient = await patientService.getPatientById(infantId);
+    if (!patient) {
       return res.status(404).json({ error: 'Infant not found' });
     }
 
-    const dob = new Date(infantResult.rows[0].dob);
+    const dob = new Date(patient.dob);
 
     const recordsResult = await pool.query(
       `
@@ -1129,7 +1425,7 @@ router.get('/schedules/infant/:infantId', async (req, res) => {
        WHERE is_active = true
          AND vaccine_name = ANY($1::text[])
        ORDER BY age_in_months ASC`,
-      [APPROVED_VACCINE_NAMES],
+      [getOperationalVaccineSourceNames()],
     );
 
     const schedules = scheduleResult.rows.map((schedule) => {
@@ -1323,6 +1619,7 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
           await client.query('COMMIT');
 
           const updatedRecord = await getVaccinationRecord(existingRecord.id);
+          invalidateVaccinationDashboardCaches();
 
           queueFirstVaccineNotification(patient_id, vaccine_id, normalizedAdminDate);
 
@@ -1391,6 +1688,7 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       await client.query('COMMIT');
 
       const createdRecord = await getVaccinationRecord(insertResult.rows[0].id);
+      invalidateVaccinationDashboardCaches();
 
       queueFirstVaccineNotification(patient_id, vaccine_id, normalizedAdminDate);
 
@@ -1563,6 +1861,7 @@ router.post('/records/guardian-complete', async (req, res) => {
     }
 
     const updatedRecord = await getVaccinationRecord(persistedRecord.id);
+    invalidateVaccinationDashboardCaches();
     socketService.broadcast('vaccination_updated', updatedRecord || persistedRecord);
 
     return res.status(existingResult.rows.length > 0 ? 200 : 201).json(updatedRecord || persistedRecord);
@@ -1647,6 +1946,7 @@ router.put('/records/:id/guardian-date', async (req, res) => {
     }
 
     const updatedRecord = await getVaccinationRecord(id);
+    invalidateVaccinationDashboardCaches();
     socketService.broadcast('vaccination_updated', updatedRecord || result.rows[0]);
     return res.json(updatedRecord || result.rows[0]);
   } catch (error) {
@@ -1776,6 +2076,7 @@ router.put('/records/:id', requirePermission('vaccination:update'), async (req, 
     }
 
     const updatedRecord = await getVaccinationRecord(id);
+    invalidateVaccinationDashboardCaches();
     socketService.broadcast('vaccination_updated', updatedRecord || result.rows[0]);
     res.json(updatedRecord || result.rows[0]);
   } catch (error) {
@@ -1897,6 +2198,7 @@ router.delete('/:id(\\d+)', requirePermission('vaccination:delete'), async (req,
       return res.status(404).json({ error: 'Vaccination record not found' });
     }
 
+    invalidateVaccinationDashboardCaches();
     socketService.broadcast('vaccination_deleted', { id });
     res.json({ message: 'Vaccination record deleted successfully' });
   } catch (error) {
@@ -2060,7 +2362,7 @@ router.get('/patient/:patientId/schedule', async (req, res) => {
           AND vaccine_name = ANY($1::text[])
         ORDER BY age_in_months ASC
       `,
-      [APPROVED_VACCINE_NAMES],
+      [getOperationalVaccineSourceNames()],
     );
 
     const vaccinationStatus = schedule.rows.map((scheduleItem) => {
@@ -2223,6 +2525,12 @@ router.get('/contraindications/:infantId/:vaccineId', requirePermission('dashboa
 
     if (Number.isNaN(vaccineId)) {
       return res.status(400).json({ error: 'Invalid vaccine ID' });
+    }
+
+    // Validate patient exists using canonical service
+    const patient = await patientService.getPatientById(infantId);
+    if (!patient) {
+      return res.status(404).json({ error: 'Infant not found' });
     }
 
     const result = await vaccineEligibilityService.checkContraindications(infantId, vaccineId);

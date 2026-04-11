@@ -47,6 +47,19 @@ const getDocumentDownloadsChildColumn = () =>
 const isSchemaCompatibilityError = (error) =>
   ['42P01', '42703', '42883'].includes(error?.code);
 
+const normalizeDateFilter = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString().split('T')[0];
+};
+
 const getLegacyInfantsJoinConfig = async (alias = 'i', foreignKeyExpression) => {
   if (!(await tableExists('infants'))) {
     return {
@@ -77,7 +90,7 @@ router.get('/monitoring', auth, requireMonitoringAccess, async (req, res) => {
     const completionOverview = await getCompletionOverview();
 
     // Get recent downloads
-    const recentDownloads = await getRecentDownloads();
+    const recentDownloads = await getRecentDownloads(start_date, end_date);
 
     // Get alerts for incomplete documents
     const alerts = await getIncompleteDocumentAlerts();
@@ -404,12 +417,22 @@ router.get('/template-performance', auth, requireMonitoringAccess, async (req, r
 async function getGenerationStats(startDate, endDate) {
   try {
     await ensureDigitalPapersCompatibility();
-    const whereClause =
-      startDate || endDate
-        ? `WHERE 1=1 ${startDate ? `AND download_date >= '${startDate}'` : ''} ${
-          endDate ? `AND download_date <= '${endDate}'` : ''
-        }`
-        : '';
+    const params = [];
+    const clauses = [];
+    const normalizedStartDate = normalizeDateFilter(startDate);
+    const normalizedEndDate = normalizeDateFilter(endDate);
+
+    if (normalizedStartDate) {
+      clauses.push(`download_date::date >= $${params.length + 1}::date`);
+      params.push(normalizedStartDate);
+    }
+
+    if (normalizedEndDate) {
+      clauses.push(`download_date::date <= $${params.length + 1}::date`);
+      params.push(normalizedEndDate);
+    }
+
+    const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
 
     const result = await db.query(`
       SELECT
@@ -422,7 +445,7 @@ async function getGenerationStats(startDate, endDate) {
         AVG(EXTRACT(EPOCH FROM (download_date - download_date))) as avg_generation_time
       FROM document_downloads
       ${whereClause}
-    `);
+    `, params);
 
     return result.rows[0];
   } catch (error) {
@@ -459,7 +482,7 @@ async function getCompletionOverview() {
   }
 }
 
-async function getRecentDownloads() {
+async function getRecentDownloads(startDate, endDate) {
   try {
     await ensureDigitalPapersCompatibility();
     const childColumn = await getDocumentDownloadsChildColumn();
@@ -467,6 +490,22 @@ async function getRecentDownloads() {
       fallbackFirstName: 'System User',
     });
     const legacyInfantsJoin = await getLegacyInfantsJoinConfig('i', `dd.${childColumn}`);
+    const params = [];
+    const clauses = [];
+    const normalizedStartDate = normalizeDateFilter(startDate);
+    const normalizedEndDate = normalizeDateFilter(endDate);
+
+    if (normalizedStartDate) {
+      clauses.push(`dd.download_date::date >= $${params.length + 1}::date`);
+      params.push(normalizedStartDate);
+    }
+
+    if (normalizedEndDate) {
+      clauses.push(`dd.download_date::date <= $${params.length + 1}::date`);
+      params.push(normalizedEndDate);
+    }
+
+    const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     const result = await db.query(`
       SELECT
         dd.*,
@@ -481,9 +520,10 @@ async function getRecentDownloads() {
       LEFT JOIN patients p ON dd.${childColumn} = p.id
       ${legacyInfantsJoin.joinClause}
       LEFT JOIN users u ON dd.user_id = u.id
+      ${whereClause}
       ORDER BY dd.download_date DESC
       LIMIT 10
-    `);
+    `, params);
 
     return result.rows;
   } catch (error) {

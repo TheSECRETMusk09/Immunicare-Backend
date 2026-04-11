@@ -101,6 +101,17 @@ class ImmunizationScheduleService {
     return new Date(`${dateKey}T00:00:00.000Z`);
   }
 
+  isFutureClinicDate(value, referenceDate = null) {
+    const dateKey = this.getClinicDateKey(value);
+    const referenceKey = this.resolveProjectionReferenceDateKey(referenceDate);
+
+    if (!dateKey || !referenceKey) {
+      return false;
+    }
+
+    return dateKey > referenceKey;
+  }
+
   resolveProjectionReferenceDateKey(referenceDate = null) {
     return this.getClinicDateKey(referenceDate) || this.getClinicTodayDateKey();
   }
@@ -577,6 +588,10 @@ class ImmunizationScheduleService {
       return [];
     }
 
+    if (this.isFutureClinicDate(dob)) {
+      return [];
+    }
+
     const scheduleItems = schedules.map((schedule) => {
       const completedDoseCount = administered[schedule.vaccine_id] || 0;
       const dueDate = schedule.minimum_age_days
@@ -965,6 +980,37 @@ class ImmunizationScheduleService {
       }
 
       const infantInfo = await this.getInfantInfo(infantId);
+      const isFutureSeed = this.isFutureClinicDate(dob);
+      if (isFutureSeed) {
+        return {
+          infantId,
+          infantInfo: {
+            id: infantInfo?.id,
+            controlNumber: infantInfo?.control_number,
+            firstName: infantInfo?.first_name,
+            lastName: infantInfo?.last_name,
+            dateOfBirth: dob,
+            guardianName: infantInfo?.guardian_name,
+            guardianPhone: infantInfo?.guardian_phone,
+            guardianEmail: infantInfo?.guardian_email,
+          },
+          currentAge: {
+            months: 0,
+            days: 0,
+          },
+          summary: {
+            totalScheduled: 0,
+            completedCount: 0,
+            overdueCount: 0,
+            upcomingCount: 0,
+            futureCount: 0,
+            overallStatus: 'on_track',
+          },
+          schedules: [],
+          isFutureSeed: true,
+        };
+      }
+
       const schedules = await this.getAllSchedules();
       const { administered, recordsByVaccine } = await this.getAdministeredVaccines(infantId);
 
@@ -1006,6 +1052,7 @@ class ImmunizationScheduleService {
           overallStatus: summary.overallStatus,
         },
         schedules: scheduleItems,
+        isFutureSeed: false,
       };
     } catch (error) {
       console.error('Error getting infant schedule:', error);
@@ -1034,6 +1081,7 @@ class ImmunizationScheduleService {
       schedules: guardianProjection.schedules,
       summary: guardianProjection.summary,
       readiness: guardianProjection.readiness,
+      isFutureSeed: Boolean(schedule.isFutureSeed),
     };
   }
 

@@ -7,6 +7,7 @@
 const pool = require('../db');
 const smsService = require('./smsService');
 const socketService = require('./socketService');
+const inventoryCalculationService = require('./inventoryCalculationService');
 
 const FATAL_DB_CONFIG_ERROR_CODES = new Set([
   '28P01',
@@ -112,154 +113,44 @@ class CriticalStockMonitor {
   }
 
   async synchronizeStockFlagsAndAlerts() {
-    await pool.query('BEGIN');
-
     try {
-      const inventoryRows = await pool.query(
-        `
-          SELECT
-            vi.id,
-            vi.vaccine_id,
-            vi.clinic_id,
-            vi.beginning_balance,
-            vi.received_during_period,
-            vi.transferred_in,
-            vi.transferred_out,
-            vi.expired_wasted,
-            vi.issuance,
-            vi.low_stock_threshold,
-            vi.critical_stock_threshold,
-            vi.is_low_stock,
-            vi.is_critical_stock,
-            v.name AS vaccine_name,
-            hf.name AS facility_name
-          FROM vaccine_inventory vi
-          JOIN vaccines v ON v.id = vi.vaccine_id
-          JOIN clinics hf ON hf.id = vi.clinic_id
-        `,
+      const facilityResult = await pool.query(
+        `SELECT id FROM clinics WHERE COALESCE(is_active, true) = true ORDER BY id ASC`,
       );
+      const facilityIds = facilityResult.rows
+        .map((row) => Number.parseInt(row.id, 10))
+        .filter((value) => Number.isInteger(value));
 
-      const stockAlertsFacilityColumn = await this.getStockAlertsFacilityColumn();
       const criticalItems = [];
       const lowItems = [];
 
-      for (const row of inventoryRows.rows) {
-        const stockOnHand =
-          Number(row.beginning_balance || 0) +
-          Number(row.received_during_period || 0) +
-          Number(row.transferred_in || 0) -
-          Number(row.transferred_out || 0) -
-          Number(row.expired_wasted || 0) -
-          Number(row.issuance || 0);
+      for (const clinicId of facilityIds) {
+        const aggregateRows = await inventoryCalculationService.syncStockAlerts(clinicId);
+        for (const row of aggregateRows) {
+          const currentStock = Number.parseInt(row.stock_on_hand, 10) || 0;
+          const lowThreshold = Number.parseInt(row.low_stock_threshold, 10) || 10;
+          const criticalThreshold = Number.parseInt(row.critical_stock_threshold, 10) || 5;
 
-        const lowThreshold = Number(row.low_stock_threshold || 10);
-        const criticalThreshold = Number(row.critical_stock_threshold || 5);
-        const isCritical = stockOnHand <= criticalThreshold;
-        const isLow = stockOnHand <= lowThreshold;
-
-        if (Boolean(row.is_low_stock) !== isLow || Boolean(row.is_critical_stock) !== isCritical) {
-          await pool.query(
-            `
-              UPDATE vaccine_inventory
-              SET is_low_stock = $1,
-                  is_critical_stock = $2,
-                  updated_at = CURRENT_TIMESTAMP
-              WHERE id = $3
-            `,
-            [isLow, isCritical, row.id],
-          );
-        }
-
-        const alertType = isCritical ? 'CRITICAL_STOCK' : isLow ? 'LOW_STOCK' : null;
-
-        if (alertType) {
-          const thresholdValue = isCritical ? criticalThreshold : lowThreshold;
-          const priority = isCritical ? 'URGENT' : 'HIGH';
-
-          const existing = await pool.query(
-            `
-              SELECT id
-              FROM vaccine_stock_alerts
-              WHERE vaccine_inventory_id = $1
-                AND status = 'ACTIVE'
-                AND alert_type = $2
-              LIMIT 1
-            `,
-            [row.id, alertType],
-          );
-
-          if (existing.rows.length === 0) {
-            await pool.query(
-              `
-                INSERT INTO vaccine_stock_alerts (
-                  vaccine_inventory_id,
-                  vaccine_id,
-                  ${stockAlertsFacilityColumn},
-                  alert_type,
-                  current_stock,
-                  threshold_value,
-                  status,
-                  message,
-                  priority
-                ) VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', $7, $8)
-              `,
-              [
-                row.id,
-                row.vaccine_id,
-                row.clinic_id,
-                alertType,
-                stockOnHand,
-                thresholdValue,
-                `${row.vaccine_name} at ${row.facility_name} is ${alertType === 'CRITICAL_STOCK' ? 'critical' : 'low'}: ${stockOnHand} remaining.`,
-                priority,
-              ],
-            );
-          } else {
-            await pool.query(
-              `
-                UPDATE vaccine_stock_alerts
-                SET current_stock = $1,
-                    threshold_value = $2,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = $3
-              `,
-              [stockOnHand, thresholdValue, existing.rows[0].id],
-            );
-          }
-
-          if (isCritical) {
+          if (currentStock > 0 && currentStock <= criticalThreshold) {
             criticalItems.push({
               ...row,
-              stock_on_hand: stockOnHand,
+              clinic_id: clinicId,
+              stock_on_hand: currentStock,
               critical_stock_threshold: criticalThreshold,
             });
-          } else {
+          } else if (currentStock > criticalThreshold && currentStock <= lowThreshold) {
             lowItems.push({
               ...row,
-              stock_on_hand: stockOnHand,
+              clinic_id: clinicId,
+              stock_on_hand: currentStock,
               low_stock_threshold: lowThreshold,
             });
           }
-        } else {
-          await pool.query(
-            `
-              UPDATE vaccine_stock_alerts
-              SET status = 'RESOLVED',
-                  resolved_at = CURRENT_TIMESTAMP,
-                  updated_at = CURRENT_TIMESTAMP,
-                  resolution_notes = COALESCE(resolution_notes, 'Auto-resolved by stock monitor')
-              WHERE vaccine_inventory_id = $1
-                AND status = 'ACTIVE'
-            `,
-            [row.id],
-          );
         }
       }
 
-      await pool.query('COMMIT');
       return { criticalItems, lowItems };
     } catch (error) {
-      await pool.query('ROLLBACK');
       throw error;
     }
   }

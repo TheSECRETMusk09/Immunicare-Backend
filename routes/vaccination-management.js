@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { authenticateToken: auth } = require('../middleware/auth');
+const appointmentSchedulingService = require('../services/appointmentSchedulingService');
 const smsService = require('../services/smsService');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 
@@ -554,6 +555,26 @@ router.post('/appointments', auth, async (req, res) => {
       });
     }
 
+    if (appointmentDate) {
+      const scheduledDateForValidation = appointmentTime
+        ? `${appointmentDate}T${appointmentTime}:00`
+        : appointmentDate;
+      const availability = await appointmentSchedulingService.checkBookingAvailability({
+        scheduledDate: scheduledDateForValidation,
+        clinicId,
+        appointmentType: 'Vaccination',
+      });
+
+      if (!availability.available) {
+        return res.status(400).json({
+          error: availability.message,
+          code: availability.code,
+          availability,
+          success: false,
+        });
+      }
+    }
+
     const query = `
       INSERT INTO appointments (
         patient_id, vaccine, appointment_date, appointment_time,
@@ -596,6 +617,27 @@ router.put('/appointments/:id', auth, async (req, res) => {
   try {
     const appointmentId = req.params.id;
     const updates = req.body;
+
+    const scheduledDateInput = updates.scheduled_date || updates.appointmentDate || updates.date;
+    if (scheduledDateInput) {
+      const scheduledDateForValidation = updates.appointmentTime
+        ? `${scheduledDateInput}T${updates.appointmentTime}:00`
+        : scheduledDateInput;
+      const availability = await appointmentSchedulingService.checkBookingAvailability({
+        scheduledDate: scheduledDateForValidation,
+        clinicId: req.user.clinic_id,
+        appointmentType: 'Vaccination',
+      });
+
+      if (!availability.available) {
+        return res.status(400).json({
+          error: availability.message,
+          code: availability.code,
+          availability,
+          success: false,
+        });
+      }
+    }
 
     const setClause = Object.keys(updates)
       .map((key, index) => `${key} = $${index + 2}`)

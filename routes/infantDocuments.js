@@ -93,27 +93,13 @@ const ADMIN_DOCUMENT_ROLES = new Set([
 ]);
 
 const fetchInfantOwner = async (infantId) => {
-  const patientResult = await pool.query(
-    'SELECT id, guardian_id FROM patients WHERE id = $1 AND is_active = true',
-    [infantId],
-  );
-
-  if (patientResult.rows.length > 0) {
+  // Use canonical patient service for patient lookup
+  const patient = await patientService.getPatientById(infantId);
+  if (patient) {
     return {
       source: 'patients',
-      ...patientResult.rows[0],
-    };
-  }
-
-  const infantResult = await pool.query(
-    'SELECT id, guardian_id FROM infants WHERE id = $1',
-    [infantId],
-  );
-
-  if (infantResult.rows.length > 0) {
-    return {
-      source: 'infants',
-      ...infantResult.rows[0],
+      id: patient.id,
+      guardian_id: patient.guardianId,
     };
   }
 

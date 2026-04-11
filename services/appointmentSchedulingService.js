@@ -6,7 +6,10 @@ const {
   generateControlNumber: generateInfantControlNumber,
   resolveOrCreateInfantPatient,
 } = require('./infantControlNumberService');
-const { getHolidayInfo: getHolidayInfoFromConfig } = require('../config/holidays');
+const {
+  getHolidayInfo: getHolidayInfoFromConfig,
+  isDateAvailableForBooking,
+} = require('../config/holidays');
 const {
   CLINIC_TODAY_SQL,
   CLINIC_TIMEZONE,
@@ -491,21 +494,16 @@ const checkBookingAvailability = async ({
       };
     }
 
-    if (isWeekend(dateOnly)) {
+    const dateAvailability = isDateAvailableForBooking(dateOnly, {
+      allowPast: true,
+    });
+    if (!dateAvailability.isAvailable) {
       return {
         available: false,
-        code: 'WEEKEND_RESTRICTED',
-        message: 'Saturdays and Sundays are not available for booking',
-      };
-    }
-
-    const holiday = getHolidayInfo(dateOnly);
-    if (holiday) {
-      return {
-        available: false,
-        code: 'HOLIDAY_RESTRICTED',
-        message: `${holiday.name} is not available for booking`,
-        holiday,
+        code: dateAvailability.code,
+        message: dateAvailability.reason,
+        holiday: dateAvailability.holiday || null,
+        blockedDate: dateAvailability.blockedDate || null,
       };
     }
 
@@ -517,12 +515,15 @@ const checkBookingAvailability = async ({
       });
 
       if (blockedDate) {
+        const blockedAvailability = isDateAvailableForBooking(dateOnly, {
+          allowPast: true,
+          blockedDate,
+        });
         return {
           available: false,
-          code: 'ADMIN_BLOCKED',
-          message: blockedDate.reason
-            ? `This date is not available for booking: ${blockedDate.reason}`
-            : 'This date has been blocked by the administrator',
+          code: blockedAvailability.code,
+          message: blockedAvailability.reason,
+          holiday: blockedAvailability.holiday || null,
           blockedDate,
         };
       }

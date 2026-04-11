@@ -356,7 +356,7 @@ router.get('/stats', authenticateToken, requirePermission('dashboard:analytics')
     const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
 
     const stats = await getDashboardMetrics({
-      facilityId: useClinicScope ? scopeIds[0] : null,
+      facilityId: useClinicScope && scopeIds.length > 0 ? scopeIds[0] : null,
       scopeIds: useClinicScope ? scopeIds : [],
     });
 
@@ -995,25 +995,95 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
     const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
     const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
-    
-    const limit = sanitizeLimit(req.query.limit, 100, 1000);
+
+    const requestedFields = String(req.query.fields || req.query.view || req.query.mode || '')
+      .trim()
+      .toLowerCase();
+    const liteMode = requestedFields === 'lite' || requestedFields === 'minimal';
+    const limit = sanitizeLimit(req.query.limit, liteMode ? 1000 : 100, liteMode ? 10000 : 1000);
     const page = sanitizeLimit(req.query.page, 1, 100000);
     const offset = (page - 1) * limit;
+    const searchTerm = String(req.query.search || req.query.query || "")
+      .trim()
+      .replace(/\s+/g, " ");
+    const includeGuardianJoin =
+      !liteMode ||
+      searchTerm.length > 0 ||
+      String(req.query.include_guardian_name || '')
+        .trim()
+        .toLowerCase() === 'true';
     const patientTable = await resolvePatientTable();
     const patientScopeExpression = await resolvePatientScopeExpression('i');
     let whereClause = 'WHERE i.is_active = true';
     const params = [];
+    const joinClause = includeGuardianJoin ? 'LEFT JOIN guardians g ON i.guardian_id = g.id' : '';
+    const guardianNameSelect = includeGuardianJoin
+      ? `COALESCE(NULLIF(TRIM(g.name), ''), 'Guardian unavailable') as guardian_name`
+      : 'NULL::text as guardian_name';
     
     if (useClinicScope && patientScopeExpression) {
       whereClause += ` AND ${patientScopeExpression} = ANY($1::int[])`;
       params.push(scopeIds);
     }
-    
+
+    if (searchTerm) {
+      params.push(`%${searchTerm}%`);
+      whereClause += `
+        AND (
+          COALESCE(i.first_name, '') ILIKE $${params.length}
+          OR COALESCE(i.last_name, '') ILIKE $${params.length}
+          OR CONCAT_WS(
+            ' ',
+            NULLIF(BTRIM(i.first_name), ''),
+            NULLIF(BTRIM(i.middle_name), ''),
+            NULLIF(BTRIM(i.last_name), '')
+          ) ILIKE $${params.length}
+          OR CONCAT_WS(
+            ' ',
+            NULLIF(BTRIM(i.first_name), ''),
+            NULLIF(BTRIM(i.last_name), '')
+          ) ILIKE $${params.length}
+          OR CONCAT_WS(
+            ' ',
+            NULLIF(BTRIM(i.last_name), ''),
+            NULLIF(BTRIM(i.first_name), '')
+          ) ILIKE $${params.length}
+          OR COALESCE(i.control_number, '') ILIKE $${params.length}
+          ${includeGuardianJoin ? `OR COALESCE(g.name, '') ILIKE $${params.length}` : ''}
+          OR CAST(i.dob AS TEXT) ILIKE $${params.length}
+        )
+      `;
+    }
+
+    const selectColumns = liteMode
+      ? `
+          i.id,
+          i.first_name,
+          i.middle_name,
+          i.last_name,
+          CONCAT_WS(
+            ' ',
+            NULLIF(BTRIM(i.first_name), ''),
+            NULLIF(BTRIM(i.middle_name), ''),
+            NULLIF(BTRIM(i.last_name), '')
+          ) AS full_name,
+          i.dob,
+          i.control_number,
+          i.guardian_id,
+          i.facility_id,
+          i.sex,
+          i.is_active,
+          i.created_at,
+          i.updated_at,
+          ${guardianNameSelect}
+        `
+      : `i.*, ${guardianNameSelect}`;
+
     const result = await db.query(
       `
-        SELECT i.*, g.name as guardian_name
+        SELECT ${selectColumns}
         FROM ${patientTable} i
-        LEFT JOIN guardians g ON i.guardian_id = g.id
+        ${joinClause}
         ${whereClause}
         ORDER BY i.created_at DESC
         LIMIT $${params.length + 1}
@@ -1025,7 +1095,7 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
       `
         SELECT COUNT(*)::INT AS total
         FROM ${patientTable} i
-        LEFT JOIN guardians g ON i.guardian_id = g.id
+        ${joinClause}
         ${whereClause}
       `,
       params,

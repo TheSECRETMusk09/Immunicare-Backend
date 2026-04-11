@@ -61,6 +61,24 @@ const createHttpError = (statusCode, message) => {
   return error;
 };
 
+const normalizeDateOnlyFilter = (value, fieldName) => {
+  const normalized = typeof value === 'string' ? value.trim() : value ? String(value).trim() : '';
+  if (!normalized) {
+    return { value: null };
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return { error: `${fieldName} must use YYYY-MM-DD format.` };
+  }
+
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    return { error: `${fieldName} must be a valid date.` };
+  }
+
+  return { value: normalized };
+};
+
 const normalizeSubmittedVaccinesInput = (submittedVaccines = []) =>
   (submittedVaccines || []).map((vaccine) => {
     if (typeof vaccine === 'string') {
@@ -1177,9 +1195,32 @@ router.get('/', requirePermission('transfer:view'), async (req, res) => {
       status,
       priority,
       triage_category,
+      start_date,
+      end_date,
       limit = 1000,
       offset = 0,
     } = req.query;
+
+    const startDateFilter = normalizeDateOnlyFilter(start_date, 'start_date');
+    const endDateFilter = normalizeDateOnlyFilter(end_date, 'end_date');
+
+    if (startDateFilter.error || endDateFilter.error) {
+      return res.status(400).json({
+        success: false,
+        error: startDateFilter.error || endDateFilter.error || 'Invalid date filter.',
+      });
+    }
+
+    if (
+      startDateFilter.value &&
+      endDateFilter.value &&
+      startDateFilter.value > endDateFilter.value
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'start_date must be less than or equal to end_date.',
+      });
+    }
 
     let whereClause = 'WHERE 1=1';
     const params = [];
@@ -1200,6 +1241,18 @@ router.get('/', requirePermission('transfer:view'), async (req, res) => {
     if (triage_category) {
       whereClause += ` AND tic.triage_category = $${paramIndex}`;
       params.push(triage_category);
+      paramIndex++;
+    }
+
+    if (startDateFilter.value) {
+      whereClause += ` AND DATE(tic.created_at) >= $${paramIndex}::date`;
+      params.push(startDateFilter.value);
+      paramIndex++;
+    }
+
+    if (endDateFilter.value) {
+      whereClause += ` AND DATE(tic.created_at) <= $${paramIndex}::date`;
+      params.push(endDateFilter.value);
       paramIndex++;
     }
 

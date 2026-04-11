@@ -188,8 +188,30 @@ router.get(
           statistics: stats,
           meta: { generatedAt: new Date() },
         });
+      } else if (format === 'pdf') {
+        const doc = new PDFDocument();
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'attachment; filename="immunization-records.pdf"');
+
+        doc.pipe(res);
+        doc.fontSize(20).text('Immunization Records', 100, 100);
+        if (result.rows.length > 0) {
+          doc.fontSize(14).text(`Patient: ${result.rows[0].infant_name}`, 100, 130);
+        }
+        doc.fontSize(10).text(`Generated: ${new Date().toLocaleDateString()}`, 100, 150);
+
+        let y = 190;
+        result.rows.forEach((row) => {
+          doc.text(`${row.vaccine_name} - Dose ${row.dose_number}: ${row.compliance_status}`, 100, y);
+          if (row.administered_date) {
+            doc.text(`   Date: ${new Date(row.administered_date).toLocaleDateString()}`, 100, y + 15);
+            y += 20;
+          }
+          y += 20;
+        });
+
+        doc.end();
       } else {
-        // Handle PDF/Excel export similar to above
         res.json({ success: true, data: result.rows, statistics: stats });
       }
     } catch (error) {
@@ -281,7 +303,7 @@ router.get(
         COUNT(*) as total_appointments,
         COUNT(CASE WHEN a.status = 'attended' THEN 1 END) as completed,
         COUNT(CASE WHEN a.status = 'cancelled' THEN 1 END) as cancelled,
-        COUNT(CASE WHEN a.status = 'no_show' THEN 1 END) as no_shows,
+        COUNT(CASE WHEN a.status = 'no-show' THEN 1 END) as no_shows,
         COUNT(CASE WHEN a.status IN ('scheduled', 'no-show') THEN 1 END) as scheduled,
         a.appointment_type
       FROM appointments a

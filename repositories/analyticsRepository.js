@@ -785,11 +785,23 @@ const getVaccinationSnapshot = async ({
             AND ${weekdayPredicateSql(completionDateExpr)}
           AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS completed_today,
+        COUNT(DISTINCT ir.patient_id) FILTER (
+          WHERE ${completionDateExpr} = ${CLINIC_TODAY_SQL}
+            AND ${weekdayPredicateSql(completionDateExpr)}
+          AND ${immunizationStatusExpr} IN ('completed', 'attended')
+        )::int AS completed_children_today,
+        COUNT(*) FILTER (
+          WHERE ${immunizationStatusExpr} IN ('completed', 'attended')
+        )::int AS administered_total,
         COUNT(*) FILTER (
           WHERE ${completionDateExpr} BETWEEN $1::date AND $2::date
             AND ${weekdayPredicateSql(completionDateExpr)}
           AND ${immunizationStatusExpr} IN ('completed', 'attended')
         )::int AS administered_in_period,
+        COUNT(DISTINCT ir.patient_id) FILTER (
+          WHERE ${adjustedDueDateExpr} = ${CLINIC_TODAY_SQL}
+            AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
+        )::int AS due_today,
         COUNT(*) FILTER (
           WHERE ${adjustedDueDateExpr} BETWEEN $1::date AND $2::date
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
@@ -840,7 +852,10 @@ const getVaccinationSnapshot = async ({
 
   return rows[0] || {
     completed_today: 0,
+    completed_children_today: 0,
+    administered_total: 0,
     administered_in_period: 0,
+    due_today: 0,
     due_in_period: 0,
     due_soon_7_days: 0,
     overdue_count: 0,

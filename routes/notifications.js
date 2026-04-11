@@ -5,7 +5,9 @@ const { Notification, Alert } = require('../models/Notification');
 const User = require('../models/User');
 const { sendEmailNotification, sendSMSNotification } = require('../services/notificationService');
 const { cleanOldNotifications } = require('../services/cleanupService');
+const inventoryCalculationService = require('../services/inventoryCalculationService');
 const pool = require('../db');
+const { AsyncResultCache } = require('../utils/asyncResultCache');
 const {
   hasFieldErrors,
   normalizeBoolean,
@@ -29,6 +31,9 @@ const DEFAULT_NOTIFICATION_SETTINGS = {
   inventoryAlerts: true,
   appointmentAlerts: true,
 };
+
+const notificationRouteCache = new AsyncResultCache({ maxEntries: 100 });
+const NOTIFICATION_INVENTORY_SUMMARY_TTL_MS = 30 * 1000;
 
 const isSystemAdminRequest = (req) => getCanonicalRole(req) === CANONICAL_ROLES.SYSTEM_ADMIN;
 
@@ -84,6 +89,19 @@ router.get('/', auth, async (req, res) => {
     const userId = req.user.id;
     const { priority, category, isRead } = req.query;
     const isSystemAdmin = isSystemAdminRequest(req);
+    let runtimeUser = req.user || null;
+    let clinicId = Number.parseInt(
+      runtimeUser?.clinic_id || runtimeUser?.clinicId || runtimeUser?.health_center_id,
+      10,
+    );
+
+    if (!Number.isFinite(clinicId)) {
+      runtimeUser = (await User.findById(userId)) || runtimeUser || {};
+      clinicId = Number.parseInt(
+        runtimeUser?.clinic_id || runtimeUser?.clinicId || runtimeUser?.health_center_id,
+        10,
+      );
+    }
 
     // Build query based on user role - use single query instead of multiple
     let query = 'SELECT * FROM notifications';
@@ -94,6 +112,28 @@ router.get('/', auth, async (req, res) => {
     if (!isSystemAdmin) {
       conditions.push(`(user_id = $${params.length + 1} OR user_id IS NULL)`);
       params.push(userId);
+    }
+
+    // Hide future-scheduled notifications from the operational dashboard so the
+    // current notification feed does not surface future-seeded inventory alerts.
+    conditions.push('(scheduled_for IS NULL OR scheduled_for <= CURRENT_TIMESTAMP)');
+    conditions.push('created_at <= CURRENT_TIMESTAMP');
+
+    if (Number.isFinite(clinicId) && clinicId > 0) {
+      const inventorySummary = await notificationRouteCache.getOrLoad(
+        `notifications:inventory-summary:${clinicId}`,
+        () => inventoryCalculationService.getUnifiedSummary(clinicId),
+        NOTIFICATION_INVENTORY_SUMMARY_TTL_MS,
+      );
+      const hasActiveInventoryIssue =
+        (inventorySummary.low_stock_count || 0) > 0
+        || (inventorySummary.critical_count || 0) > 0
+        || (inventorySummary.out_of_stock_count || 0) > 0;
+
+      if (!hasActiveInventoryIssue) {
+        conditions.push(`notification_type <> $${params.length + 1}`);
+        params.push('inventory_alert');
+      }
     }
 
     // Apply filters

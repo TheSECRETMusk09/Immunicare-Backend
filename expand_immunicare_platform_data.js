@@ -11,6 +11,7 @@ process.env.DB_QUERY_TIMEOUT = process.env.DB_QUERY_TIMEOUT || '0';
 process.env.DB_STATEMENT_TIMEOUT = process.env.DB_STATEMENT_TIMEOUT || '0';
 
 const db = require('./db');
+const { isDateAvailableForBooking } = require('./config/holidays');
 const {
   FEMALE_FIRST_NAMES,
   MALE_FIRST_NAMES,
@@ -27,18 +28,19 @@ const RNG_SEED = 20260404;
 const TARGET_INFANTS = 95000;
 const WINDOW_START = new Date('2025-08-01T00:00:00.000Z');
 const WINDOW_END = new Date('2030-07-31T23:59:59.999Z');
+const OPERATIONAL_ACTIVE_DAYS_PER_YEAR = 243;
+const OPERATIONAL_WINDOW_YEARS = 5;
 const DEFAULT_GUARDIAN_PASSWORD = 'GuardianExpand2026!';
 const DEMO_CITY = 'Pasig City';
 const DEMO_REGION = 'NCR';
 const DEMO_POSTAL_CODE = '1600';
 const DEFAULT_HEALTH_CENTER = 'San Nicolas Health Center';
-const countWeekdaysInWindow = (start, end) => {
+const countOperationalDaysInWindow = (start, end) => {
   let count = 0;
   const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
 
   while (cursor <= end) {
-    const dow = cursor.getUTCDay();
-    if (dow !== 0 && dow !== 6) {
+    if (isDateAvailableForBooking(toIsoDate(cursor), { allowPast: true }).isAvailable) {
       count += 1;
     }
     cursor.setUTCDate(cursor.getUTCDate() + 1);
@@ -47,13 +49,19 @@ const countWeekdaysInWindow = (start, end) => {
   return count;
 };
 
-const WINDOW_WEEKDAY_VACCINATION_DAYS = countWeekdaysInWindow(WINDOW_START, WINDOW_END);
-const WINDOW_WEEKDAY_VACCINATION_CAPACITY =
-  WINDOW_WEEKDAY_VACCINATION_DAYS * MAX_VACCINATION_APPOINTMENTS_PER_DAY;
+const WINDOW_OPERATIONAL_VACCINATION_DAYS = countOperationalDaysInWindow(WINDOW_START, WINDOW_END);
+const WINDOW_OPERATIONAL_VACCINATION_CAPACITY =
+  WINDOW_OPERATIONAL_VACCINATION_DAYS * MAX_VACCINATION_APPOINTMENTS_PER_DAY;
+const COMPLETED_VISIT_1_TARGET = 4200;
+const COMPLETED_VISIT_2_TARGET = 1600;
+const COMPLETED_DOSE_TARGET =
+  (TARGET_INFANTS * 2)
+  + (COMPLETED_VISIT_1_TARGET * 4)
+  + (COMPLETED_VISIT_2_TARGET * 3);
 
 const TRANSACTION_TARGETS = Object.freeze({
-  immunization_records: 280000,
-  appointments: WINDOW_WEEKDAY_VACCINATION_CAPACITY,
+  immunization_records: COMPLETED_DOSE_TARGET,
+  appointments: WINDOW_OPERATIONAL_VACCINATION_CAPACITY,
   vaccine_inventory_transactions: 25000,
   notifications: 320000,
   reports: 15000,
@@ -192,13 +200,108 @@ const isWeekendDay = (value) => {
 
 const rollForwardToWeekday = (value) => {
   let cursor = cloneDate(value);
-  while (isWeekendDay(cursor)) {
+  while (!isDateAvailableForBooking(toIsoDate(cursor), { allowPast: true }).isAvailable) {
     cursor = addDays(cursor, 1);
   }
   return cursor;
 };
 
-const weekdaySeries = (start, end) => dailySeries(start, end).filter((day) => !isWeekendDay(day));
+const weekdaySeries = (start, end) =>
+  dailySeries(start, end).filter((day) =>
+    isDateAvailableForBooking(toIsoDate(day), { allowPast: true }).isAvailable,
+  );
+
+const buildOperationalServiceDays = (
+  start,
+  end,
+  { maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR } = {},
+) => {
+  const weekdays = weekdaySeries(start, end);
+  const daysByYear = new Map();
+
+  for (const day of weekdays) {
+    const year = day.getUTCFullYear();
+    if (!daysByYear.has(year)) {
+      daysByYear.set(year, []);
+    }
+    daysByYear.get(year).push(day);
+  }
+
+  const serviceDays = [];
+  for (const year of [...daysByYear.keys()].sort((left, right) => left - right)) {
+    const yearlyDays = daysByYear.get(year);
+    if (yearlyDays.length <= maxDaysPerYear) {
+      serviceDays.push(...yearlyDays);
+      continue;
+    }
+
+    const step = yearlyDays.length / maxDaysPerYear;
+    for (let index = 0; index < maxDaysPerYear; index += 1) {
+      const sourceIndex = Math.min(
+        yearlyDays.length - 1,
+        Math.floor(index * step),
+      );
+      serviceDays.push(yearlyDays[sourceIndex]);
+    }
+  }
+
+  return serviceDays;
+};
+
+const createOperationalDayAllocator = (
+  start,
+  end,
+  {
+    category = 'operational service days',
+    maxPerDay = MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+    maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR,
+  } = {},
+) => {
+  const serviceDays = buildOperationalServiceDays(start, end, { maxDaysPerYear });
+
+  if (!serviceDays.length) {
+    throw new Error(`No service days available for ${category}.`);
+  }
+
+  const keyedDays = serviceDays.map((day) => ({
+    day,
+    key: toIsoDate(day),
+    count: 0,
+  }));
+
+  const allocate = (preferredDate) => {
+    const normalizedPreferred = rollForwardToWeekday(clampDate(preferredDate, start, end));
+    const preferredKey = toIsoDate(normalizedPreferred);
+    let preferredIndex = keyedDays.findIndex((entry) => entry.key >= preferredKey);
+    if (preferredIndex < 0) {
+      preferredIndex = keyedDays.length - 1;
+    }
+
+    for (let index = preferredIndex; index < keyedDays.length; index += 1) {
+      if (keyedDays[index].count < maxPerDay) {
+        keyedDays[index].count += 1;
+        return cloneDate(keyedDays[index].day);
+      }
+    }
+
+    for (let index = preferredIndex - 1; index >= 0; index -= 1) {
+      if (keyedDays[index].count < maxPerDay) {
+        keyedDays[index].count += 1;
+        return cloneDate(keyedDays[index].day);
+      }
+    }
+
+    throw new Error(
+      `Unable to allocate ${category}; service-day capacity of ${serviceDays.length * maxPerDay} has been exhausted.`,
+    );
+  };
+
+  return {
+    serviceDays,
+    maxCapacity: serviceDays.length * maxPerDay,
+    allocate,
+  };
+};
 
 const monthSeries = (start, end) => {
   const values = [];
@@ -932,13 +1035,20 @@ const generateImmunizationData = ({
     [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
   }
 
-  const visit1Children = new Set(shuffled.slice(0, 15000).map((child) => child.controlNumber));
-  const visit2Children = new Set(shuffled.slice(0, 10000).map((child) => child.controlNumber));
+  const visit1Children = new Set(
+    shuffled.slice(0, COMPLETED_VISIT_1_TARGET).map((child) => child.controlNumber),
+  );
+  const visit2Children = new Set(
+    shuffled.slice(0, COMPLETED_VISIT_2_TARGET).map((child) => child.controlNumber),
+  );
 
   const immunizationRows = [];
   const legacyVaccinationRows = [];
   const visitAppointmentSeeds = [];
   const completionIndexByChild = new Map();
+  const completedVisitAllocator = createOperationalDayAllocator(WINDOW_START, WINDOW_END, {
+    category: 'expanded immunization visits',
+  });
 
   const scheduleIdFor = (vaccineCode, doseNumber) => {
     const vaccine = referenceData.vaccinesByCode.get(vaccineCode);
@@ -967,7 +1077,7 @@ const generateImmunizationData = ({
           ? addDays(addMonths(child.dob, 1), randomInt(-3, 8))
           : addDays(addMonths(child.dob, 2), randomInt(-3, 10));
       const boundedAdminDate = adminDate > WINDOW_END ? cloneDate(WINDOW_END) : adminDate;
-      const safeAdminDate = rollForwardToWeekday(boundedAdminDate);
+      const safeAdminDate = completedVisitAllocator.allocate(boundedAdminDate);
       const recordCreatedAt = safeAdminDate < child.createdAt ? child.createdAt : safeAdminDate;
       const nextTemplateIndex = VISIT_TEMPLATES.findIndex((entry) => entry.code === visitCode) + 1;
       const nextDueDate = nextTemplateIndex < VISIT_TEMPLATES.length
@@ -1283,7 +1393,7 @@ const createAppointments = ({
   staffUsers,
   scopeIds,
 }) => {
-  const days = weekdaySeries(WINDOW_START, WINDOW_END);
+  const days = buildOperationalServiceDays(WINDOW_START, WINDOW_END);
   const { counts } = distributeByWeekdayCapacity(TRANSACTION_TARGETS.appointments, days, {
     category: 'appointments',
   });
@@ -1373,9 +1483,9 @@ const createAppointments = ({
     }
   });
 
-  if (visitAppointmentSeeds.length > WINDOW_WEEKDAY_VACCINATION_CAPACITY) {
+  if (visitAppointmentSeeds.length > WINDOW_OPERATIONAL_VACCINATION_CAPACITY) {
     console.warn(
-      `[${MARKER}] Historical visit seeds (${visitAppointmentSeeds.length}) exceed weekday appointment capacity (${WINDOW_WEEKDAY_VACCINATION_CAPACITY}); synthetic appointment output is now generated from the weekday allocator instead of mirroring every completed visit.`,
+      `[${MARKER}] Historical visit seeds (${visitAppointmentSeeds.length}) exceed operational appointment capacity (${WINDOW_OPERATIONAL_VACCINATION_CAPACITY}); synthetic appointment output is generated from the operational-day allocator instead of mirroring every completed visit.`,
     );
   }
 

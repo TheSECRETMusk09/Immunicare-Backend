@@ -48,6 +48,36 @@ const VACCINE_INVENTORY_TRANSACTION_TYPES = [
   'ADJUST',
 ];
 
+const INVENTORY_TRANSACTION_TYPE_ALIASES = Object.freeze({
+  WASTAGE: 'WASTE',
+});
+
+const normalizeInventoryTransactionType = (value) => {
+  const rawValue = sanitizeText(value).toUpperCase();
+  if (!rawValue) {
+    return '';
+  }
+
+  const canonicalValue = INVENTORY_TRANSACTION_TYPE_ALIASES[rawValue] || rawValue;
+  return normalizeEnumValue(
+    canonicalValue,
+    VACCINE_INVENTORY_TRANSACTION_TYPES,
+    '',
+  );
+};
+
+const normalizeInventoryTransactionRow = (row = {}) => {
+  const normalizedType = normalizeInventoryTransactionType(row.transaction_type);
+  if (!normalizedType) {
+    return row;
+  }
+
+  return {
+    ...row,
+    transaction_type: normalizedType,
+  };
+};
+
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
 
 const resolveInventoryScopeIds = (req, requestedScopeId = null) => {
@@ -108,13 +138,32 @@ const safeTriggerStockNotification = async ({
   vaccineId,
   currentStock,
   lotNumber,
+  clinicId = null,
   lowStockThreshold = 10,
 }) => {
-  const normalizedStock = Number(currentStock || 0);
-  const normalizedThreshold = Number(lowStockThreshold || 10) || 10;
+  let normalizedStock = Number(currentStock || 0);
+  let normalizedThreshold = Number(lowStockThreshold || 10) || 10;
   const normalizedLotNumber = lotNumber || 'N/A';
 
   try {
+    const normalizedClinicId = Number.parseInt(clinicId, 10);
+    if (Number.isInteger(normalizedClinicId) && normalizedClinicId > 0) {
+      const inventoryCalculationService = require('../services/inventoryCalculationService');
+      const aggregateRows = await inventoryCalculationService.getInventoryAggregateRows([
+        normalizedClinicId,
+      ]);
+      const aggregateRow = aggregateRows.find(
+        (row) => Number.parseInt(row.vaccine_id, 10) === Number.parseInt(vaccineId, 10),
+      );
+
+      if (aggregateRow) {
+        normalizedStock = Number.parseInt(aggregateRow.stock_on_hand, 10) || 0;
+        normalizedThreshold =
+          Number.parseInt(aggregateRow.low_stock_threshold, 10) ||
+          normalizedThreshold;
+      }
+    }
+
     if (normalizedStock <= 0) {
       await sendOutOfStockAlert(vaccineName, vaccineId, normalizedLotNumber);
       return;
@@ -185,11 +234,8 @@ const sanitizeInventoryTransactionPayload = (payload = {}) => {
     errors.clinic_id = clinicIdCheck.error;
   }
 
-  const transactionTypeInput = String(payload.transaction_type || '').trim().toUpperCase();
-  const transactionType = normalizeEnumValue(
-    transactionTypeInput,
-    VACCINE_INVENTORY_TRANSACTION_TYPES,
-    '',
+  const transactionType = normalizeInventoryTransactionType(
+    payload.transaction_type,
   );
   if (!transactionType) {
     errors.transaction_type =
@@ -1044,6 +1090,9 @@ router.get('/transactions', async (req, res) => {
 router.post('/transactions', async (req, res) => {
   try {
     const { batch_id, txn_type, qty, notes } = req.body;
+    const normalizedTxnType =
+      normalizeInventoryTransactionType(txn_type) ||
+      String(txn_type || '').trim().toUpperCase();
 
     // Get current user ID from JWT token
     const userId = req.user.id;
@@ -1053,16 +1102,16 @@ router.post('/transactions', async (req, res) => {
       INSERT INTO inventory_transactions (batch_id, txn_type, qty, user_id, notes)
       VALUES ($1, $2, $3, $4, $5) RETURNING *
     `,
-      [batch_id, txn_type, qty, userId, notes],
+      [batch_id, normalizedTxnType, qty, userId, notes],
     );
 
     // Update batch quantity based on transaction type
     let stockChange = 0;
-    if (txn_type === 'RECEIVE') {
+    if (normalizedTxnType === 'RECEIVE') {
       stockChange = qty;
-    } else if (txn_type === 'ISSUE') {
+    } else if (normalizedTxnType === 'ISSUE') {
       stockChange = -qty;
-    } else if (txn_type === 'WASTAGE') {
+    } else if (normalizedTxnType === 'WASTE') {
       stockChange = -qty;
     }
 
@@ -1330,6 +1379,7 @@ router.post('/vaccine-inventory', async (req, res) => {
       vaccineId: vaccineValidation.vaccine.id,
       currentStock: computed.stockOnHand,
       lotNumber: normalized.lot_batch_number,
+      clinicId: normalized.clinic_id,
       lowStockThreshold: normalized.low_stock_threshold,
     });
 
@@ -1450,6 +1500,7 @@ router.put('/vaccine-inventory/:id', async (req, res) => {
       vaccineId: normalized.vaccine_id,
       currentStock: computed.stockOnHand,
       lotNumber: normalized.lot_batch_number,
+      clinicId: normalized.clinic_id,
       lowStockThreshold: normalized.low_stock_threshold,
     });
 
@@ -1501,16 +1552,9 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
 
     const normalizedStartDate = sanitizeText(start_date ?? startDate);
     const normalizedEndDate = sanitizeText(end_date ?? endDate);
-    const normalizedTransactionTypeInput = sanitizeText(
+    const normalizedTransactionType = normalizeInventoryTransactionType(
       transaction_type ?? type,
-    ).toUpperCase();
-    const normalizedTransactionType = normalizedTransactionTypeInput
-      ? normalizeEnumValue(
-        normalizedTransactionTypeInput,
-        VACCINE_INVENTORY_TRANSACTION_TYPES,
-        '',
-      )
-      : '';
+    );
 
     const errors = {};
     if (vaccine_id && vaccineIdCheck.error) {
@@ -1596,8 +1640,13 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
     }
 
     if (normalizedTransactionType) {
-      query += ` AND vit.transaction_type = $${paramCount}`;
-      params.push(normalizedTransactionType);
+      if (normalizedTransactionType === 'WASTE') {
+        query += ` AND UPPER(COALESCE(vit.transaction_type::text, '')) = ANY($${paramCount}::text[])`;
+        params.push(['WASTE', 'WASTAGE']);
+      } else {
+        query += ` AND UPPER(COALESCE(vit.transaction_type::text, '')) = $${paramCount}`;
+        params.push(normalizedTransactionType);
+      }
       paramCount++;
     }
 
@@ -1617,7 +1666,7 @@ router.get('/vaccine-inventory-transactions', async (req, res) => {
     params.push(safeLimit);
 
     const result = await pool.query(query, params);
-    res.json(result.rows);
+    res.json(result.rows.map(normalizeInventoryTransactionRow));
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -1997,6 +2046,7 @@ ${JSON.stringify(errors, null, 2)}
       vaccineId: resolvedVaccineId,
       currentStock: newBalance,
       lotNumber: effectiveLotNumber || inventory.lot_batch_number,
+      clinicId: normalized.clinic_id || inventory[transactionFacilityColumn] || inventory.clinic_id,
       lowStockThreshold:
         updatedInventoryResult.rows[0]?.low_stock_threshold || inventory.low_stock_threshold,
     });
@@ -2532,16 +2582,9 @@ router.get('/stock-movements', async (req, res) => {
     });
     const normalizedStartDate = sanitizeText(start_date ?? startDate);
     const normalizedEndDate = sanitizeText(end_date ?? endDate);
-    const normalizedTransactionTypeInput = sanitizeText(
+    const normalizedTransactionType = normalizeInventoryTransactionType(
       transaction_type ?? type,
-    ).toUpperCase();
-    const normalizedTransactionType = normalizedTransactionTypeInput
-      ? normalizeEnumValue(
-        normalizedTransactionTypeInput,
-        VACCINE_INVENTORY_TRANSACTION_TYPES,
-        '',
-      )
-      : '';
+    );
 
     const errors = {
       ...validateDateRange({
@@ -2636,8 +2679,13 @@ router.get('/stock-movements', async (req, res) => {
     }
 
     if (normalizedTransactionType) {
-      query += ` AND vit.transaction_type = $${paramCount}`;
-      params.push(normalizedTransactionType);
+      if (normalizedTransactionType === 'WASTE') {
+        query += ` AND UPPER(COALESCE(vit.transaction_type::text, '')) = ANY($${paramCount}::text[])`;
+        params.push(['WASTE', 'WASTAGE']);
+      } else {
+        query += ` AND UPPER(COALESCE(vit.transaction_type::text, '')) = $${paramCount}`;
+        params.push(normalizedTransactionType);
+      }
       paramCount++;
     }
 
@@ -2669,7 +2717,7 @@ router.get('/stock-movements', async (req, res) => {
     res.json({
       success: true,
       data: {
-        movements: result.rows,
+        movements: result.rows.map(normalizeInventoryTransactionRow),
         summary: movements,
         total: result.rows.length,
       },

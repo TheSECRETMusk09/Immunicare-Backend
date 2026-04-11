@@ -166,6 +166,19 @@ const normalizeDownloadStatus = (value) => {
   return normalized.toUpperCase();
 };
 
+const normalizeDocumentDateFilter = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString().slice(0, 10);
+};
+
 const normalizeDocumentRecord = (record) => {
   if (!record || typeof record !== 'object') {
     return record;
@@ -206,11 +219,10 @@ const buildDocumentSelectQuery = async () => {
     fallbackName: 'Guardian',
   });
   const legacyInfantSupport = await getLegacyInfantSupport();
+  const patientService = require('../services/patientService');
 
   return `
     SELECT
-      dg.*,
-      dp.title,
       dp.document_type,
       t.name AS template_name,
       t.template_type,
@@ -239,58 +251,27 @@ const buildDocumentSelectQuery = async () => {
   `;
 };
 
+const patientService = require('../services/patientService');
+
 const getPatientRecord = async (infantId) => {
   const normalizedInfantId = parsePositiveInt(infantId);
   if (!normalizedInfantId) {
     return null;
   }
 
-  const patientFacilityColumn = await getPatientFacilityColumn();
-  const patientResult = await pool.query(
-    `
-      SELECT
-        p.id,
-        p.first_name,
-        p.last_name,
-        p.guardian_id,
-        COALESCE(p.${patientFacilityColumn}, g.clinic_id) AS clinic_id
-      FROM patients p
-      LEFT JOIN guardians g ON g.id = p.guardian_id
-      WHERE p.id = $1
-        AND p.is_active = true
-      LIMIT 1
-    `,
-    [normalizedInfantId],
-  );
-
-  if (patientResult.rows[0]) {
-    return patientResult.rows[0];
-  }
-
-  if (!(await tableExists('infants'))) {
+  // Use canonical patient service for patient lookup
+  const patient = await patientService.getPatientById(normalizedInfantId);
+  if (!patient) {
     return null;
   }
 
-  const legacyInfantFacilityColumn = await getLegacyInfantFacilityColumn();
-
-  const legacyInfantResult = await pool.query(
-    `
-      SELECT
-        i.id,
-        i.first_name,
-        i.last_name,
-        i.guardian_id,
-        COALESCE(i.${legacyInfantFacilityColumn}, g.clinic_id) AS clinic_id
-      FROM infants i
-      LEFT JOIN guardians g ON g.id = i.guardian_id
-      WHERE i.id = $1
-        AND i.is_active = true
-      LIMIT 1
-    `,
-    [normalizedInfantId],
-  );
-
-  return legacyInfantResult.rows[0] || null;
+  return {
+    id: patient.id,
+    first_name: patient.firstName,
+    last_name: patient.lastName,
+    guardian_id: patient.guardianId,
+    clinic_id: patient.clinicId || patient.facilityId
+  };
 };
 
 const ensurePatientAccess = async (req, patientRecord) => {
@@ -359,7 +340,15 @@ const hasDocumentAccess = async (req, documentRecord) => {
 };
 
 const buildScopedListQuery = async (req, filters = {}) => {
-  const { infantId, templateType, status } = filters;
+  const {
+    infantId,
+    templateType,
+    status,
+    start_date: startDate,
+    startDate: camelStartDate,
+    end_date: endDate,
+    endDate: camelEndDate,
+  } = filters;
   const patientFacilityColumn = await getPatientFacilityColumn();
   const legacyInfantSupport = await getLegacyInfantSupport();
   let query = await buildDocumentSelectQuery();
@@ -393,6 +382,19 @@ const buildScopedListQuery = async (req, filters = {}) => {
   if (status) {
     query += ` AND LOWER(COALESCE(dg.status, '')) = LOWER($${params.length + 1})`;
     params.push(status);
+  }
+
+  const normalizedStartDate = normalizeDocumentDateFilter(startDate || camelStartDate);
+  const normalizedEndDate = normalizeDocumentDateFilter(endDate || camelEndDate);
+
+  if (normalizedStartDate) {
+    query += ` AND COALESCE(dg.last_downloaded, dg.created_at)::date >= $${params.length + 1}::date`;
+    params.push(normalizedStartDate);
+  }
+
+  if (normalizedEndDate) {
+    query += ` AND COALESCE(dg.last_downloaded, dg.created_at)::date <= $${params.length + 1}::date`;
+    params.push(normalizedEndDate);
   }
 
   return { query, params };
@@ -431,6 +433,9 @@ const fetchDetailedDocument = async (id) => {
     fallbackName: 'Guardian',
   });
   const legacyInfantSupport = await getLegacyInfantSupport();
+  
+  // TODO: Update this function to use canonical patient service instead of direct SQL queries
+  // The function should use patientService.getPatientById() for patient lookup
   const result = await pool.query(
     `
       SELECT

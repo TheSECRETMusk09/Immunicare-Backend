@@ -6,6 +6,7 @@ const PDFDocument = require('pdfkit');
 const pool = require('../db');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 const { getAdminMetricsSummary } = require('./adminMetricsService');
+const inventoryCalculationService = require('./inventoryCalculationService');
 const { resolveStorageRoot } = require('../utils/runtimeStorage');
 
 const REPORT_TYPES = Object.freeze([
@@ -954,6 +955,39 @@ class ReportService {
   toNumber(value, fallback = 0) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  normalizeScopeIds(scopeIds = []) {
+    const rawScopeIds = Array.isArray(scopeIds) ? scopeIds : [scopeIds];
+    return Array.from(
+      new Set(
+        rawScopeIds
+          .map((scopeId) => this.toInteger(scopeId, 0))
+          .filter((scopeId) => scopeId > 0),
+      ),
+    );
+  }
+
+  buildScopeFilter(expressions = [], scopeIds = [], params = []) {
+    const normalizedScopeIds = this.normalizeScopeIds(scopeIds);
+    const scopedExpressions = expressions.filter(Boolean);
+
+    if (normalizedScopeIds.length === 0 || scopedExpressions.length === 0) {
+      return '';
+    }
+
+    const scopeParam = normalizedScopeIds.length === 1
+      ? normalizedScopeIds[0]
+      : normalizedScopeIds;
+    params.push(scopeParam);
+
+    const placeholder = `$${params.length}`;
+    const predicate = (expression) =>
+      normalizedScopeIds.length === 1
+        ? `${expression} = ${placeholder}`
+        : `${expression} = ANY(${placeholder}::int[])`;
+
+    return ` AND (${scopedExpressions.map(predicate).join(' OR ')})`;
   }
 
   formatNullableDate(value) {
@@ -2527,6 +2561,187 @@ class ReportService {
     return this.regenerateStoredReportFile(report);
   }
 
+  async getAllTimeTruthSummary({ coreSummary = {}, facilityId = null, scopeIds = [] } = {}) {
+    const normalizedScopeIds = this.normalizeScopeIds(
+      scopeIds.length > 0 ? scopeIds : [facilityId],
+    );
+    const patientsTable = await this.getPatientsTableName();
+    const patientScopeColumn = patientsTable
+      ? await this.resolveFirstExistingColumn(patientsTable, ['facility_id', 'clinic_id'], null)
+      : null;
+    const guardianScopeColumn = await this.resolveFirstExistingColumn(
+      'guardians',
+      ['clinic_id', 'facility_id'],
+      null,
+    );
+    const appointmentPatientColumn = await this.getAppointmentsPatientColumn();
+    const appointmentScopeColumn = await this.getAppointmentsFacilityColumn();
+
+    const vaccinationParams = [];
+    const vaccinationScopeFilter = this.buildScopeFilter(
+      [
+        patientScopeColumn && patientsTable ? `p.${patientScopeColumn}` : null,
+        guardianScopeColumn ? `g.${guardianScopeColumn}` : null,
+      ],
+      normalizedScopeIds,
+      vaccinationParams,
+    );
+    const vaccinationQuery = `
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (
+            WHERE LOWER(COALESCE(ir.status::text, '')) IN ('completed', 'attended')
+              OR ir.admin_date IS NOT NULL
+          )::int AS completed
+        FROM immunization_records ir
+        ${patientsTable ? `LEFT JOIN ${patientsTable} p ON p.id = ir.patient_id` : ''}
+        LEFT JOIN guardians g ON ${patientsTable ? 'g.id = p.guardian_id' : 'false'}
+        WHERE COALESCE(ir.is_active, true) = true
+          ${vaccinationScopeFilter}
+      `;
+
+    const appointmentParams = [];
+    const appointmentScopeFilter = this.buildScopeFilter(
+      [
+        patientScopeColumn && patientsTable ? `p.${patientScopeColumn}` : null,
+        appointmentScopeColumn ? `a.${appointmentScopeColumn}` : null,
+      ],
+      normalizedScopeIds,
+      appointmentParams,
+    );
+    const appointmentQuery = `
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (
+            WHERE LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('attended', 'completed')
+          )::int AS completed,
+          COUNT(*) FILTER (
+            WHERE LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('no_show', 'no-show')
+          )::int AS no_show
+        FROM appointments a
+        ${
+  patientsTable && appointmentPatientColumn
+    ? `LEFT JOIN ${patientsTable} p ON p.id = a.${appointmentPatientColumn}`
+    : ''
+}
+        WHERE COALESCE(a.is_active, true) = true
+          ${patientsTable ? 'AND COALESCE(p.is_active, true) = true' : ''}
+          ${appointmentScopeFilter}
+      `;
+
+    const guardianParams = [];
+    const guardianScopeFilter = this.buildScopeFilter(
+      [guardianScopeColumn ? `g.${guardianScopeColumn}` : null],
+      normalizedScopeIds,
+      guardianParams,
+    );
+    const guardianQuery = `
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE COALESCE(g.is_active, true) = true)::int AS active
+        FROM guardians g
+        WHERE COALESCE(g.is_active, true) = true
+          ${guardianScopeFilter}
+      `;
+
+    const infantParams = [];
+    const infantScopeFilter = this.buildScopeFilter(
+      [
+        patientScopeColumn && patientsTable ? `p.${patientScopeColumn}` : null,
+        guardianScopeColumn ? `g.${guardianScopeColumn}` : null,
+      ],
+      normalizedScopeIds,
+      infantParams,
+    );
+    const infantQuery = `
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (
+            WHERE EXISTS (
+              SELECT 1
+              FROM immunization_records irx
+              WHERE irx.patient_id = p.id
+                AND COALESCE(irx.is_active, true) = true
+                AND (
+                  LOWER(COALESCE(irx.status::text, '')) IN ('completed', 'attended')
+                  OR irx.admin_date IS NOT NULL
+                )
+            )
+          )::int AS up_to_date
+        FROM ${patientsTable} p
+        LEFT JOIN guardians g ON g.id = p.guardian_id
+        WHERE COALESCE(p.is_active, true) = true
+          ${infantScopeFilter}
+      `;
+
+    const [vaccinationResult, appointmentResult, guardianResult, infantResult] =
+      await Promise.all([
+        this.pool.query(vaccinationQuery, vaccinationParams),
+        this.pool.query(appointmentQuery, appointmentParams),
+        this.pool.query(guardianQuery, guardianParams),
+        patientsTable
+          ? this.pool.query(infantQuery, infantParams)
+          : Promise.resolve({ rows: [{ total: 0, up_to_date: 0 }] }),
+      ]);
+
+    let inventory = coreSummary.inventory || {
+      total_items: 0,
+      low_stock_items: 0,
+      expired_items: 0,
+      total_value: 0,
+    };
+
+    if (normalizedScopeIds.length > 0) {
+      try {
+        const inventorySummary = await inventoryCalculationService.getUnifiedSummary(
+          normalizedScopeIds.length === 1 ? normalizedScopeIds[0] : normalizedScopeIds,
+        );
+        inventory = {
+          total_items: this.toInteger(inventorySummary.total_vaccines, 0),
+          low_stock_items:
+            this.toInteger(inventorySummary.low_stock_count, 0)
+            + this.toInteger(inventorySummary.critical_count, 0)
+            + this.toInteger(inventorySummary.out_of_stock_count, 0),
+          expired_items: this.toInteger(coreSummary.inventory?.expired_items, 0),
+          total_value: this.toNumber(inventorySummary.total_value, 0),
+        };
+      } catch (inventoryError) {
+        console.warn('Unable to compute reports inventory truth summary:', inventoryError.message);
+      }
+    }
+
+    return {
+      ...coreSummary,
+      vaccination: {
+        ...(coreSummary.vaccination || {}),
+        all_records: this.toInteger(vaccinationResult.rows[0]?.total, 0),
+        total: this.toInteger(vaccinationResult.rows[0]?.completed, 0),
+        completed: this.toInteger(vaccinationResult.rows[0]?.completed, 0),
+      },
+      inventory,
+      appointments: {
+        ...(coreSummary.appointments || {}),
+        total: this.toInteger(appointmentResult.rows[0]?.total, 0),
+        completed: this.toInteger(appointmentResult.rows[0]?.completed, 0),
+        no_show: this.toInteger(appointmentResult.rows[0]?.no_show, 0),
+      },
+      guardians: {
+        ...(coreSummary.guardians || {}),
+        total: this.toInteger(guardianResult.rows[0]?.total, 0),
+        active: this.toInteger(guardianResult.rows[0]?.active, 0),
+      },
+      infants: {
+        ...(coreSummary.infants || {}),
+        total: this.toInteger(infantResult.rows[0]?.total, 0),
+        up_to_date: this.toInteger(infantResult.rows[0]?.up_to_date, 0),
+      },
+      scope: {
+        facilityId: normalizedScopeIds[0] || null,
+        type: normalizedScopeIds.length > 0 ? 'clinic' : 'system',
+      },
+    };
+  }
+
   async getAdminSummary({
     startDate = '',
     endDate = '',
@@ -2554,6 +2769,14 @@ class ReportService {
       facilityId,
       scopeIds,
     });
+    const metricsSummary =
+      normalizedStartDate || normalizedEndDate
+        ? coreSummary
+        : await this.getAllTimeTruthSummary({
+          coreSummary,
+          facilityId,
+          scopeIds,
+        });
 
     const reportsTable = await this.resolveFirstExistingTable(['reports'], null);
     const reportActivityQuery = reportsTable
@@ -2638,11 +2861,11 @@ class ReportService {
     ]);
 
     return {
-      vaccination: coreSummary.vaccination,
-      inventory: coreSummary.inventory,
-      appointments: coreSummary.appointments,
-      guardians: coreSummary.guardians,
-      infants: coreSummary.infants,
+      vaccination: metricsSummary.vaccination,
+      inventory: metricsSummary.inventory,
+      appointments: metricsSummary.appointments,
+      guardians: metricsSummary.guardians,
+      infants: metricsSummary.infants,
       reports:
           reports.rows[0] || {
             total_reports: 0,
@@ -2656,6 +2879,7 @@ class ReportService {
             open_cases: 0,
             avg_turnaround_days: 0,
           },
+      scope: metricsSummary.scope,
     };
   }
 

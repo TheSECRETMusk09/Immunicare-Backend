@@ -20,6 +20,24 @@ const {
 
 router.use(authenticateToken);
 
+const sanitizeLimit = (value, fallback = 100, max = 1000) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(parsed, max);
+};
+
+const sanitizeOffset = (value, fallback = 0) => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+
+  return parsed;
+};
+
 /**
  * POST /api/infant-ages/update-all
  * Update age_months for all active infants in the database
@@ -102,8 +120,8 @@ router.get('/stats', requirePermission('patient:view'), async (req, res) => {
  */
 router.get('/', requirePermission('patient:view'), async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit, 10) || 100;
-    const offset = parseInt(req.query.offset, 10) || 0;
+    const limit = sanitizeLimit(req.query.limit, 100, 1000);
+    const offset = sanitizeOffset(req.query.offset, 0);
 
     const infants = await getAllInfantsWithAges(limit, offset);
 

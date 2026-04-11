@@ -35,6 +35,25 @@ describe('Appointments Module API Integration Tests', () => {
     return toManilaDateKey(date);
   };
 
+  const futureHolidayDate = () => {
+    const date = new Date();
+    date.setHours(12, 0, 0, 0);
+
+    for (let dayOffset = 0; dayOffset < 730; dayOffset += 1) {
+      date.setDate(date.getDate() + 1);
+      const holiday = getHolidayInfo(date);
+
+      if (holiday && date.getDay() !== 0 && date.getDay() !== 6) {
+        return {
+          dateKey: toManilaDateKey(date),
+          holiday,
+        };
+      }
+    }
+
+    throw new Error('Unable to find a future Philippine holiday for the test suite');
+  };
+
   beforeAll(async () => {
     // Get tokens first
     adminToken = await loginAdmin();
@@ -316,6 +335,25 @@ describe('Appointments Module API Integration Tests', () => {
       expect(Number.parseInt(response.body.vaccine_id, 10)).toBe(eligibleVaccineId);
     });
 
+    test('should block appointment creation on a Philippine holiday', async () => {
+      const { dateKey: holidayDate, holiday } = futureHolidayDate();
+
+      const response = await request(app)
+        .post('/api/appointments')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          infant_id: testInfantId,
+          scheduled_date: appointmentDateTime(holidayDate),
+          type: 'Vaccination',
+          location: 'Main Health Center',
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('HOLIDAY_RESTRICTED');
+      expect(response.body.availability?.code).toBe('HOLIDAY_RESTRICTED');
+      expect(String(response.body.error || '')).toContain(holiday.name);
+    });
+
     test('should return 400 for missing required fields', async () => {
       const response = await request(app)
         .post('/api/appointments')
@@ -408,6 +446,21 @@ describe('Appointments Module API Integration Tests', () => {
 
       expect(updateResponse.status).toBe(200);
       expect(updateResponse.body.notes).toEqual(updates.notes);
+    });
+
+    test('should block admin updates to Philippine holidays', async () => {
+      const { dateKey: holidayDate } = futureHolidayDate();
+
+      const response = await request(app)
+        .put(`/api/appointments/${testAppointmentId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          scheduled_date: appointmentDateTime(holidayDate),
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('HOLIDAY_RESTRICTED');
+      expect(response.body.availability?.code).toBe('HOLIDAY_RESTRICTED');
     });
 
     test('should return 403 for guardian updating other appointment', async () => {
@@ -524,6 +577,37 @@ describe('Appointments Module API Integration Tests', () => {
 
       expect(response.status).toBe(200);
       expect(Array.isArray(response.body?.slots)).toBe(true);
+    });
+
+    test('should return unavailable time slots for Philippine holidays', async () => {
+      const { dateKey: holidayDate } = futureHolidayDate();
+
+      const response = await request(app)
+        .get(`/api/appointments/availability/slots?scheduled_date=${holidayDate}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.available).toBe(false);
+      expect(response.body.code).toBe('HOLIDAY_RESTRICTED');
+      expect(Array.isArray(response.body?.slots)).toBe(true);
+      expect(response.body.slots).toHaveLength(0);
+    });
+  });
+
+  describe('PUT /api/appointments/:id/reschedule', () => {
+    test('should block rescheduling to a Philippine holiday', async () => {
+      const { dateKey: holidayDate } = futureHolidayDate();
+
+      const response = await request(app)
+        .put(`/api/appointments/${testAppointmentId}/reschedule`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          scheduled_date: appointmentDateTime(holidayDate),
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe('HOLIDAY_RESTRICTED');
+      expect(response.body.availability?.code).toBe('HOLIDAY_RESTRICTED');
     });
   });
 

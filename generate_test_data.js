@@ -16,6 +16,7 @@
 const pool = require('./db');
 const fs = require('fs');
 const path = require('path');
+const { isDateAvailableForBooking } = require('./config/holidays');
 
 // Configuration
 const CONFIG = {
@@ -43,6 +44,22 @@ const randomElement = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const randomElements = (arr, count) => {
   const shuffled = [...arr].sort(() => 0.5 - Math.random());
   return shuffled.slice(0, count);
+};
+const shiftToBookableDate = (value, direction = 1, maxSteps = 366) => {
+  const cursor = new Date(value);
+  cursor.setHours(12, 0, 0, 0);
+
+  let steps = 0;
+  while (steps < maxSteps) {
+    if (isDateAvailableForBooking(cursor, { allowPast: true }).isAvailable) {
+      return cursor;
+    }
+
+    cursor.setDate(cursor.getDate() + direction);
+    steps += 1;
+  }
+
+  return null;
 };
 
 // Philippine names
@@ -495,6 +512,10 @@ async function generateAppointments() {
       const daysOffset = randomInt(-365, 180);
       const scheduledDate = new Date();
       scheduledDate.setDate(scheduledDate.getDate() + daysOffset);
+      const bookableDate = shiftToBookableDate(scheduledDate, daysOffset < 0 ? -1 : 1);
+      if (!bookableDate) {
+        continue;
+      }
 
       const status =
         daysOffset < 0 ? randomElement(['attended', 'completed', 'no-show']) : 'scheduled';
@@ -507,7 +528,7 @@ async function generateAppointments() {
                 `,
           [
             infant.id,
-            scheduledDate,
+            bookableDate,
             randomElement(appointmentTypes),
             status,
             userId,

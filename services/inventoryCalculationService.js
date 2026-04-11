@@ -37,6 +37,15 @@ const normalizeScopeIds = (value) => {
   )];
 };
 
+const normalizeInventoryTransactionType = (value) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized === 'WASTAGE' ? 'WASTE' : normalized;
+};
+
 const CORE_VACCINE_KEY_CASE_SQL = `
   CASE
     WHEN (
@@ -714,12 +723,17 @@ class InventoryCalculationService {
         paramIndex += 1;
       }
 
-      const normalizedTransactionType = String(options.transactionType || '')
-        .trim()
-        .toUpperCase();
+      const normalizedTransactionType = normalizeInventoryTransactionType(
+        options.transactionType,
+      );
       if (normalizedTransactionType) {
-        whereClauses.push(`UPPER(COALESCE(vit.transaction_type::text, '')) = $${paramIndex}`);
-        params.push(normalizedTransactionType);
+        if (normalizedTransactionType === 'WASTE') {
+          whereClauses.push(`UPPER(COALESCE(vit.transaction_type::text, '')) = ANY($${paramIndex}::text[])`);
+          params.push(['WASTE', 'WASTAGE']);
+        } else {
+          whereClauses.push(`UPPER(COALESCE(vit.transaction_type::text, '')) = $${paramIndex}`);
+          params.push(normalizedTransactionType);
+        }
         paramIndex += 1;
       }
 
@@ -891,6 +905,8 @@ class InventoryCalculationService {
         return batchResult.rows.map((row) => ({
           batch_id: row.batch_id,
           inventory_id: row.batch_id,
+          vaccine_id: row.vaccine_id,
+          clinic_id: clinicId,
           lot_number: row.lot_number,
           batch_number: row.lot_number,
           stock: row.available_quantity,

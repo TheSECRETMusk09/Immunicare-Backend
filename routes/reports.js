@@ -1,683 +1,367 @@
 const express = require('express');
 const fs = require('fs');
-const path = require('path');
-
+const router = express.Router();
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
-const { requirePermission } = require('../middleware/rbac');
-const ReportService = require('../services/reportService');
-const { resolveUserScopeIds } = require('../services/entityScopeService');
 const {
-  hasFieldErrors,
-  isBlank,
-  normalizeBoolean,
-  normalizeEnumValue,
-  respondValidationError,
-  sanitizePayloadObject,
-  sanitizeText,
-  validateDateRange,
-} = require('../utils/adminValidation');
+  CANONICAL_ROLES,
+  getCanonicalRole,
+  requirePermission,
+} = require('../middleware/rbac');
+const ReportService = require('../services/reportService');
+const {
+  isScopeRequestAllowed,
+  resolveEffectiveScope,
+  resolveUserScopeIds,
+} = require('../services/entityScopeService');
+const { sanitizeText } = require('../utils/adminValidation');
 
-const router = express.Router();
 const reportService = new ReportService();
 
-const DOWNLOAD_STREAM_HIGH_WATER_MARK = 64 * 1024;
-const LONG_RUNNING_REPORT_TIMEOUT_MS = 5 * 60 * 1000;
+const REPORT_FORMAT_ALIASES = Object.freeze({
+  pdf: 'pdf',
+  csv: 'csv',
+  excel: 'excel',
+  xlsx: 'excel',
+});
 
-const getValidReportTypes = () => reportService.getReportTypes();
-const getValidReportFormats = () => reportService.getReportFormats();
-
-const safeInteger = (value, fallback = 0) => {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
+const normalizeReportTypeInput = (value, allowedTypes = []) => {
+  const normalized = sanitizeText(value).toLowerCase();
+  return allowedTypes.includes(normalized) ? normalized : null;
 };
 
-const errorToStatusCode = (error) => {
-  if (error && Number.isInteger(error.statusCode)) {
-    return error.statusCode;
-  }
-  if (error && Number.isInteger(error.status)) {
-    return error.status;
-  }
-  return 500;
+const normalizeReportFormatInput = (value, allowedFormats = []) => {
+  const normalized = REPORT_FORMAT_ALIASES[sanitizeText(value).toLowerCase()] || null;
+  return normalized && allowedFormats.includes(normalized) ? normalized : null;
 };
 
-const normalizeStringFilter = (value, maxLength = 120) => sanitizeText(value, { maxLength });
-
-const extendLongRunningTimeout = (req, res, timeoutMs = LONG_RUNNING_REPORT_TIMEOUT_MS) => {
-  if (req && typeof req.setTimeout === 'function') {
-    req.setTimeout(timeoutMs);
+const sendReportError = (res, error, fallbackMessage = 'Report request failed') => {
+  if (res.headersSent || res.writableEnded) {
+    return;
   }
 
-  if (res && typeof res.setTimeout === 'function') {
-    res.setTimeout(timeoutMs);
-  }
-};
-
-const hasResponseBeenCommitted = (res) => Boolean(res?.headersSent || res?.writableEnded);
-
-const normalizeReportFilters = (payload = {}) => {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return {};
-  }
-
-  const source = sanitizePayloadObject(payload);
-  return {
-    vaccineType: normalizeStringFilter(source.vaccineType, 100),
-    status: normalizeStringFilter(source.status, 40).toLowerCase(),
-    barangay: normalizeStringFilter(source.barangay, 120),
-    ageGroup: normalizeStringFilter(source.ageGroup, 50),
-    itemType: normalizeStringFilter(source.itemType, 80),
-    lowStockOnly: normalizeBoolean(source.lowStockOnly, false),
-    category: normalizeStringFilter(source.category, 100),
-    type: normalizeStringFilter(source.type, 100),
-    healthCenter: normalizeStringFilter(source.healthCenter, 120),
-    vaccinationStatus: normalizeStringFilter(source.vaccinationStatus, 40),
-    targetGroup: normalizeStringFilter(source.targetGroup, 50),
-    includeVaccination: normalizeBoolean(source.includeVaccination, true),
-    includeInventory: normalizeBoolean(source.includeInventory, true),
-    includeAppointments: normalizeBoolean(source.includeAppointments, true),
-    includeGuardians: normalizeBoolean(source.includeGuardians, true),
-    includeInfants: normalizeBoolean(source.includeInfants, true),
-  };
-};
-
-const normalizeDateFilters = ({ startDate, endDate }) => {
-  const normalizedStartDate = sanitizeText(startDate, { maxLength: 32 });
-  const normalizedEndDate = sanitizeText(endDate, { maxLength: 32 });
-
-  const dateErrors = validateDateRange({
-    startDate: normalizedStartDate,
-    endDate: normalizedEndDate,
-    startKey: 'startDate',
-    endKey: 'endDate',
-    startLabel: 'Start date',
-    endLabel: 'End date',
+  const statusCode = error?.statusCode || 500;
+  const message = error?.message || fallbackMessage;
+  res.status(statusCode).json({
+    success: false,
+    message,
+    error: error?.code || message,
+    ...(error?.fields ? { fields: error.fields } : {}),
   });
+};
+
+const resolveReportsSummaryScope = (req) => {
+  const canonicalRole =
+    typeof getCanonicalRole === 'function'
+      ? getCanonicalRole(req)
+      : req.user?.runtime_role || req.user?.role_type || req.user?.role || null;
+  const systemAdminRole = CANONICAL_ROLES?.SYSTEM_ADMIN || 'SYSTEM_ADMIN';
+  const effectiveScope =
+    typeof resolveEffectiveScope === 'function'
+      ? resolveEffectiveScope({
+        query: req.query,
+        user: req.user,
+        canonicalRole,
+      })
+      : {
+        scopeIds:
+          typeof resolveUserScopeIds === 'function'
+            ? resolveUserScopeIds(req.user)
+            : [],
+        useScope: false,
+        userScopeIds:
+          typeof resolveUserScopeIds === 'function'
+            ? resolveUserScopeIds(req.user)
+            : [],
+        requestedScopeIds: [],
+        allowSystemScope: false,
+      };
+
+  if (
+    canonicalRole !== systemAdminRole &&
+    typeof isScopeRequestAllowed === 'function' &&
+    !isScopeRequestAllowed({
+      requestedScopeIds: effectiveScope.requestedScopeIds,
+      userScopeIds: effectiveScope.userScopeIds,
+      allowSystemScope: effectiveScope.allowSystemScope,
+    })
+  ) {
+    return {
+      error: 'Cross-facility reports access is not allowed. Use your assigned facility scope.',
+      status: 403,
+    };
+  }
 
   return {
-    normalizedStartDate,
-    normalizedEndDate,
-    dateErrors,
+    canonicalRole,
+    scopeIds: effectiveScope.scopeIds,
+    useScope: effectiveScope.useScope,
+    allowSystemScope: effectiveScope.allowSystemScope,
   };
 };
 
-const mapServiceErrorMessage = (statusCode, error, fallbackMessage) => {
-  if (statusCode >= 500) {
-    return fallbackMessage;
-  }
-
-  if (error && error.message) {
-    return error.message;
-  }
-
-  return fallbackMessage;
-};
-
-// All report routes require authenticated SYSTEM_ADMIN access.
 router.use(authenticateToken);
 
-// GET /api/reports - Report history
-router.get('/', requirePermission('report:view'), async (req, res) => {
+// Root route - return API info
+router.get('/info', async (req, res) => {
+  res.json({
+    success: true,
+    message: 'Reports API',
+    endpoints: [
+      'GET /reports - Get all reports',
+      'GET /reports/admin/summary - Get admin dashboard summary',
+      'GET /reports/templates - Get available report templates',
+      'POST /reports/generate - Generate new report',
+      'GET /reports/:id/download - Download report',
+      'DELETE /reports/:id - Delete report',
+    ],
+  });
+});
+
+// Get all reports
+router.get('/', requirePermission('reports:view'), async (req, res) => {
   try {
-    const VALID_REPORT_TYPES = getValidReportTypes();
-    const { type, startDate, endDate, limit = 50, offset = 0, generatedBy } = req.query;
-
-    const normalizedType = normalizeEnumValue(type, VALID_REPORT_TYPES, '');
-    const normalizedGeneratedBy = safeInteger(generatedBy, 0);
-    const normalizedLimit = Math.min(Math.max(safeInteger(limit, 50), 1), 200);
-    const normalizedOffset = Math.max(safeInteger(offset, 0), 0);
-
-    const { normalizedStartDate, normalizedEndDate, dateErrors } = normalizeDateFilters({
-      startDate,
-      endDate,
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 50, 1), 200);
+    const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
+    const reports = await reportService.getReportHistory({
+      type: req.query.type,
+      startDate: req.query.startDate || req.query.start_date,
+      endDate: req.query.endDate || req.query.end_date,
+      generatedBy: Number.parseInt(req.query.generatedBy || req.query.generated_by, 10) || null,
+      limit,
+      offset,
     });
 
-    const validationErrors = {
-      ...dateErrors,
-    };
-
-    if (!isBlank(type) && !normalizedType) {
-      validationErrors.type = `Report type must be one of: ${VALID_REPORT_TYPES.join(', ')}`;
-    }
-
-    if (!isBlank(generatedBy) && normalizedGeneratedBy <= 0) {
-      validationErrors.generatedBy = 'Generated by must be a valid user ID.';
-    }
-
-    if (hasFieldErrors(validationErrors)) {
-      return respondValidationError(res, validationErrors);
-    }
-
-    const historyFilters = {
-      limit: normalizedLimit,
-      offset: normalizedOffset,
-    };
-
-    if (!isBlank(normalizedType)) {
-      historyFilters.type = normalizedType;
-    }
-
-    if (!isBlank(normalizedStartDate)) {
-      historyFilters.startDate = normalizedStartDate;
-    }
-
-    if (!isBlank(normalizedEndDate)) {
-      historyFilters.endDate = normalizedEndDate;
-    }
-
-    if (normalizedGeneratedBy > 0) {
-      historyFilters.generatedBy = normalizedGeneratedBy;
-    }
-
-    const reports = await reportService.getReportHistory(historyFilters);
-
-    return res.json({
+    res.json({
       success: true,
       data: reports,
       pagination: {
-        limit: normalizedLimit,
-        offset: normalizedOffset,
+        limit,
+        offset,
         total: reports.length,
+      },
+      meta: {
+        total: reports.length,
+        generatedAt: new Date(),
       },
     });
   } catch (error) {
-    console.error('Error fetching reports history:', error);
-    const statusCode = errorToStatusCode(error);
-    return res.status(statusCode).json({
-      success: false,
-      message: mapServiceErrorMessage(statusCode, error, 'Failed to fetch reports history.'),
-      error: error.code || undefined,
-    });
+    console.error('Error fetching reports:', error);
+    sendReportError(res, error, 'Failed to fetch reports');
   }
 });
 
-// GET /api/reports/templates - Available report templates
-router.get('/templates', requirePermission('report:view'), async (_req, res) => {
+// Get admin dashboard summary
+router.get('/admin/summary', requirePermission('reports:view'), async (req, res) => {
   try {
-    const templates = reportService.getReportTemplates();
-    return res.json({
-      success: true,
-      data: templates,
-    });
-  } catch (error) {
-    console.error('Error fetching report templates:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to fetch report templates.',
-    });
-  }
-});
+    const startDate = sanitizeText(req.query?.startDate ?? req.query?.start_date);
+    const endDate = sanitizeText(req.query?.endDate ?? req.query?.end_date);
+    const scopeContext = resolveReportsSummaryScope(req);
 
-// GET /api/reports/admin/summary - Admin dashboard summary for reports module
-router.get('/admin/summary', requirePermission('report:view'), async (req, res) => {
-  try {
-    const { startDate, endDate } = req.query;
-    const requestedScope = String(req.query.scope || '').trim().toLowerCase();
-    const scopeIds = resolveUserScopeIds(req.user);
-    const { normalizedStartDate, normalizedEndDate, dateErrors } = normalizeDateFilters({
-      startDate,
-      endDate,
-    });
-
-    if (hasFieldErrors(dateErrors)) {
-      return respondValidationError(res, dateErrors);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({
+        success: false,
+        error: scopeContext.error,
+      });
     }
 
     const summary = await reportService.getAdminSummary({
-      startDate: normalizedStartDate || undefined,
-      endDate: normalizedEndDate || undefined,
-      facilityId:
-        requestedScope === 'system' || scopeIds.length === 0
-          ? null
-          : scopeIds[0],
-      scopeIds: requestedScope === 'system' ? [] : scopeIds,
+      startDate,
+      endDate,
+      facilityId: scopeContext.scopeIds.length > 0 ? scopeContext.scopeIds[0] : null,
+      scopeIds: scopeContext.scopeIds,
     });
 
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    res.setHeader('Pragma', 'no-cache');
-
-    return res.json({
+    res.json({
       success: true,
       data: summary,
+      meta: {
+        generatedAt: new Date(),
+        scope: summary.scope,
+      },
     });
   } catch (error) {
-    console.error('Error fetching report admin summary:', error);
-    const statusCode = errorToStatusCode(error);
-    return res.status(statusCode).json({
-      success: false,
-      message: mapServiceErrorMessage(statusCode, error, 'Failed to fetch report summary.'),
-      error: error.code || undefined,
-    });
+    console.error('Error fetching admin summary:', error);
+    sendReportError(res, error, 'Failed to fetch admin summary');
   }
 });
 
-// GET /api/reports/stats - Report generation statistics grouped by type
-router.get('/stats', requirePermission('report:view'), async (req, res) => {
+// Get report templates
+router.get('/templates', requirePermission('reports:view'), async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
-    const { normalizedStartDate, normalizedEndDate, dateErrors } = normalizeDateFilters({
-      startDate,
-      endDate,
-    });
+    const templates = reportService.getReportTemplates();
 
-    if (hasFieldErrors(dateErrors)) {
-      return respondValidationError(res, dateErrors);
-    }
-
-    const hasFileSizeColumnResult = await pool.query(
-      `
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'reports'
-          AND column_name = 'file_size'
-        LIMIT 1
-      `,
-    );
-    const hasFileSizeColumn = hasFileSizeColumnResult.rows.length > 0;
-
-    let statsQuery = `
-      SELECT
-        type,
-        COUNT(*)::int AS count,
-        ROUND((COUNT(*) * 100.0) / NULLIF(SUM(COUNT(*)) OVER(), 0), 2) AS percentage,
-        ${hasFileSizeColumn ? 'COALESCE(SUM(file_size), 0)::bigint' : '0::bigint'} AS total_size,
-        ROUND(AVG(EXTRACT(EPOCH FROM (NOW() - date_generated)) / 86400), 2) AS avg_age_days
-      FROM reports
-      WHERE 1=1
-    `;
-
-    const statsParams = [];
-    let paramIndex = 1;
-
-    if (!isBlank(normalizedStartDate)) {
-      statsQuery += ` AND date_generated::date >= $${paramIndex}`;
-      statsParams.push(normalizedStartDate);
-      paramIndex += 1;
-    }
-
-    if (!isBlank(normalizedEndDate)) {
-      statsQuery += ` AND date_generated::date <= $${paramIndex}`;
-      statsParams.push(normalizedEndDate);
-      paramIndex += 1;
-    }
-
-    statsQuery += ' GROUP BY type ORDER BY count DESC';
-
-    const statsResult = await pool.query(statsQuery, statsParams);
-    return res.json({
+    res.json({
       success: true,
-      data: statsResult.rows,
+      data: templates,
+      meta: {
+        generatedAt: new Date(),
+      },
     });
   } catch (error) {
-    console.error('Error fetching report stats:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to fetch report stats.',
-    });
+    console.error('Error fetching report templates:', error);
+    sendReportError(res, error, 'Failed to fetch report templates');
   }
 });
 
-// POST /api/reports/generate - Generate a report file and persist metadata
-router.post('/generate', requirePermission('report:create'), async (req, res) => {
+// Generate new report
+router.post('/generate', requirePermission('reports:create'), async (req, res) => {
   try {
-    extendLongRunningTimeout(req, res);
+    req.setTimeout?.(300000);
+    res.setTimeout?.(300000);
 
-    const VALID_REPORT_TYPES = getValidReportTypes();
-    const VALID_REPORT_FORMATS = getValidReportFormats();
-    const { id: userId } = req.user;
-    const { type, format = 'pdf', startDate, endDate, filters = {} } = req.body || {};
+    const { type, format, startDate, endDate, filters } = req.body || {};
+    const allowedTypes = reportService.getReportTypes();
+    const allowedFormats = reportService.getReportFormats();
+    const normalizedType = normalizeReportTypeInput(type, allowedTypes);
+    const normalizedFormat = normalizeReportFormatInput(format, allowedFormats);
+    const fields = {};
 
-    const normalizedType = normalizeEnumValue(type, VALID_REPORT_TYPES, '');
-
-    const normalizedFormatInput = sanitizeText(format).toLowerCase();
-    const normalizedFormat = normalizedFormatInput === 'xlsx' ? 'excel' : normalizedFormatInput;
-    const normalizedSafeFormat = normalizeEnumValue(
-      normalizedFormat,
-      VALID_REPORT_FORMATS,
-      '',
-    );
-
-    const { normalizedStartDate, normalizedEndDate, dateErrors } = normalizeDateFilters({
-      startDate,
-      endDate,
-    });
-
-    const validationErrors = {
-      ...dateErrors,
-    };
-
-    if (isBlank(type)) {
-      validationErrors.type = 'Report type is required.';
+    if (!type) {
+      fields.type = 'type is required';
     } else if (!normalizedType) {
-      validationErrors.type = `Report type must be one of: ${VALID_REPORT_TYPES.join(', ')}`;
+      fields.type = `type must be one of: ${allowedTypes.join(', ')}`;
     }
 
-    if (isBlank(format)) {
-      validationErrors.format = 'Report format is required.';
-    } else if (!normalizedSafeFormat) {
-      validationErrors.format = `Report format must be one of: ${VALID_REPORT_FORMATS.join(', ')}`;
+    if (!format) {
+      fields.format = 'format is required';
+    } else if (!normalizedFormat) {
+      fields.format = `format must be one of: ${allowedFormats.join(', ')}`;
     }
 
-    if (hasFieldErrors(validationErrors)) {
-      return respondValidationError(res, validationErrors);
+    if (Object.keys(fields).length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid report request',
+        error: 'REPORT_VALIDATION_ERROR',
+        fields,
+      });
     }
-
-    const normalizedFilters = normalizeReportFilters(filters);
-    const generationFilters = {
-      ...normalizedFilters,
-      startDate: normalizedStartDate || undefined,
-      endDate: normalizedEndDate || undefined,
-    };
 
     const report = await reportService.generateReport(
       normalizedType,
-      generationFilters,
-      normalizedSafeFormat,
-      userId,
+      {
+        startDate,
+        endDate,
+        ...(filters && typeof filters === 'object' ? filters : {}),
+      },
+      normalizedFormat,
+      req.user?.id || null,
     );
 
-    if (hasResponseBeenCommitted(res)) {
-      return;
+    if (res.headersSent || res.writableEnded) {
+      return undefined;
     }
 
-    return res.status(201).json({
+    res.status(201).json({
       success: true,
       message: 'Report generated successfully.',
       data: report,
+      meta: {
+        generatedAt: new Date(),
+      },
     });
   } catch (error) {
     console.error('Error generating report:', error);
-
-    if (hasResponseBeenCommitted(res)) {
-      return;
-    }
-
-    const statusCode = errorToStatusCode(error);
-    return res.status(statusCode).json({
-      success: false,
-      message: mapServiceErrorMessage(statusCode, error, 'Failed to generate report.'),
-      error: error.code || undefined,
-    });
+    sendReportError(res, error, 'Failed to generate report');
   }
 });
 
-// POST /api/reports/batch-generate - Generate multiple reports in sequence
-router.post('/batch-generate', requirePermission('report:create'), async (req, res) => {
+// Get report status
+router.get('/:id/status', requirePermission('reports:view'), async (req, res) => {
   try {
-    extendLongRunningTimeout(req, res);
-
-    const VALID_REPORT_TYPES = getValidReportTypes();
-    const VALID_REPORT_FORMATS = getValidReportFormats();
-    const { id: userId } = req.user;
-    const { reports } = req.body || {};
-
-    if (!Array.isArray(reports) || reports.length === 0) {
+    const reportId = parseInt(req.params.id, 10);
+    if (Number.isNaN(reportId)) {
       return res.status(400).json({
         success: false,
-        message: 'Reports array is required.',
+        message: 'Invalid report ID',
+        error: 'REPORT_INVALID_ID',
       });
     }
 
-    const results = [];
-    let successCount = 0;
-    let failureCount = 0;
-
-    for (const reportConfig of reports) {
-      try {
-        const reportType = normalizeEnumValue(reportConfig?.type, VALID_REPORT_TYPES, '');
-        const rawFormat = sanitizeText(reportConfig?.format || 'pdf').toLowerCase();
-        const reportFormat = normalizeEnumValue(
-          rawFormat === 'xlsx' ? 'excel' : rawFormat,
-          VALID_REPORT_FORMATS,
-          '',
-        );
-
-        if (!reportType) {
-          throw reportService.createHttpError(
-            `Invalid report type: ${reportConfig?.type || '(empty)'}`,
-            400,
-            'REPORT_INVALID_TYPE',
-          );
-        }
-
-        if (!reportFormat) {
-          throw reportService.createHttpError(
-            `Invalid report format: ${reportConfig?.format || '(empty)'}`,
-            400,
-            'REPORT_INVALID_FORMAT',
-          );
-        }
-
-        const reportFilters = normalizeReportFilters(reportConfig?.filters || {});
-        const reportPayload = {
-          ...reportFilters,
-          startDate: sanitizeText(reportConfig?.startDate, { maxLength: 32 }) || undefined,
-          endDate: sanitizeText(reportConfig?.endDate, { maxLength: 32 }) || undefined,
-        };
-
-        const generatedReport = await reportService.generateReport(
-          reportType,
-          reportPayload,
-          reportFormat,
-          userId,
-        );
-
-        results.push({
-          config: reportConfig,
-          success: true,
-          report: generatedReport,
-        });
-        successCount += 1;
-      } catch (itemError) {
-        results.push({
-          config: reportConfig,
-          success: false,
-          error: itemError.message,
-          code: itemError.code || 'REPORT_BATCH_ITEM_FAILED',
-        });
-        failureCount += 1;
-      }
-    }
-
-    if (hasResponseBeenCommitted(res)) {
-      return;
-    }
-
-    return res.status(201).json({
+    const reportStatus = await reportService.getReportStatus(reportId);
+    res.json({
       success: true,
-      message: `Batch generation completed: ${successCount} successful, ${failureCount} failed.`,
-      results,
-    });
-  } catch (error) {
-    console.error('Error during batch report generation:', error);
-
-    if (hasResponseBeenCommitted(res)) {
-      return;
-    }
-
-    const statusCode = errorToStatusCode(error);
-    return res.status(statusCode).json({
-      success: false,
-      message: mapServiceErrorMessage(statusCode, error, 'Failed to run batch report generation.'),
-      error: error.code || undefined,
-    });
-  }
-});
-
-// GET /api/reports/:id/status - Check report status metadata
-router.get('/:id/status', requirePermission('report:view'), async (req, res) => {
-  try {
-    const reportId = safeInteger(req.params.id, 0);
-    if (reportId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid report ID.',
-      });
-    }
-
-    const statusData = await reportService.getReportStatus(reportId);
-    return res.json({
-      success: true,
-      data: statusData,
+      data: reportStatus,
     });
   } catch (error) {
     console.error('Error fetching report status:', error);
-    const statusCode = errorToStatusCode(error);
-    return res.status(statusCode).json({
-      success: false,
-      message: mapServiceErrorMessage(statusCode, error, 'Failed to fetch report status.'),
-      error: error.code || undefined,
-    });
+    sendReportError(res, error, 'Failed to fetch report status');
   }
 });
 
-// GET /api/reports/:id - Fetch report metadata row
-router.get('/:id', requirePermission('report:view'), async (req, res) => {
+// Download report
+router.get('/:id/download', requirePermission('reports:download'), async (req, res) => {
   try {
-    const reportId = safeInteger(req.params.id, 0);
-    if (reportId <= 0) {
+    const reportId = parseInt(req.params.id, 10);
+    if (Number.isNaN(reportId)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid report ID.',
+        message: 'Invalid report ID',
+        error: 'REPORT_INVALID_ID',
       });
     }
 
-    const reportResult = await pool.query('SELECT * FROM reports WHERE id = $1 LIMIT 1', [reportId]);
-    if (reportResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Report not found.',
-      });
+    const reportFile = await reportService.downloadReport(reportId);
+
+    res.setHeader('Content-Type', reportFile.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${reportFile.filename || `report-${reportId}`}"`);
+    if (reportFile.fileSize) {
+      res.setHeader('Content-Length', reportFile.fileSize);
     }
 
-    return res.json({
-      success: true,
-      data: reportResult.rows[0],
-    });
-  } catch (error) {
-    console.error('Error fetching report details:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to fetch report details.',
-    });
-  }
-});
-
-// GET /api/reports/:id/download - Download report file by metadata ID
-router.get('/:id/download', requirePermission('report:export'), async (req, res) => {
-  try {
-    extendLongRunningTimeout(req, res);
-
-    const reportId = safeInteger(req.params.id, 0);
-    if (reportId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid report ID.',
-      });
-    }
-
-    const downloadResult = await reportService.downloadReport(reportId);
-
-    if (hasResponseBeenCommitted(res)) {
-      return;
-    }
-
-    await pool.query('UPDATE reports SET download_count = download_count + 1 WHERE id = $1', [reportId]);
-
-    res.setHeader('Content-Type', downloadResult.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${downloadResult.filename}"`);
-    res.setHeader('Content-Length', String(downloadResult.fileSize));
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    res.setHeader('Pragma', 'no-cache');
-
-    const fileStream = fs.createReadStream(downloadResult.path, {
-      highWaterMark: DOWNLOAD_STREAM_HIGH_WATER_MARK,
-    });
-
-    fileStream.on('error', (streamError) => {
-      console.error('Report stream read error:', streamError);
-      if (!res.headersSent) {
-        res.status(500).json({
-          success: false,
-          message: 'Failed to stream report file.',
-        });
-      } else {
-        res.destroy(streamError);
-      }
-    });
-
-    res.on('close', () => {
-      if (!fileStream.closed) {
-        fileStream.destroy();
-      }
-    });
-
-    return fileStream.pipe(res);
-  } catch (error) {
-    console.error('Error downloading report:', error);
-
-    if (hasResponseBeenCommitted(res)) {
-      return;
-    }
-
-    const statusCode = errorToStatusCode(error);
-    return res.status(statusCode).json({
-      success: false,
-      message: mapServiceErrorMessage(statusCode, error, 'Failed to download report.'),
-      error: error.code || undefined,
-    });
-  }
-});
-
-// DELETE /api/reports/:id - Delete report metadata and stored file
-router.delete('/:id', requirePermission('report:delete'), async (req, res) => {
-  try {
-    const reportId = safeInteger(req.params.id, 0);
-    if (reportId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid report ID.',
-      });
-    }
-
-    const reportResult = await pool.query(
-      'SELECT id, file_path FROM reports WHERE id = $1 LIMIT 1',
+    await pool.query(
+      'UPDATE reports SET download_count = download_count + 1 WHERE id = $1',
       [reportId],
     );
 
-    if (reportResult.rows.length === 0) {
+    fs.createReadStream(reportFile.path)
+      .on('error', (streamError) => {
+        if (!res.headersSent) {
+          sendReportError(res, streamError, 'Failed to stream report');
+        } else {
+          res.destroy(streamError);
+        }
+      })
+      .pipe(res);
+  } catch (error) {
+    console.error('Error downloading report:', error);
+    sendReportError(res, error, 'Failed to download report');
+  }
+});
+
+// Delete report
+router.delete('/:id', requirePermission('reports:delete'), async (req, res) => {
+  try {
+    const reportId = parseInt(req.params.id, 10);
+    if (Number.isNaN(reportId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid report ID',
+      });
+    }
+
+    const result = await pool.query(
+      'UPDATE reports SET is_active = false WHERE id = $1 RETURNING id',
+      [reportId],
+    );
+
+    if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Report not found.',
+        error: 'Report not found',
       });
     }
 
-    const reportRow = reportResult.rows[0];
-    const filePath = sanitizeText(reportRow.file_path, { maxLength: 500 });
-
-    if (!isBlank(filePath)) {
-      const resolvedPath = path.isAbsolute(filePath)
-        ? filePath
-        : path.join(__dirname, '..', 'uploads', 'reports', filePath);
-
-      fs.promises.unlink(resolvedPath).catch((unlinkError) => {
-        console.warn(`Report file delete skipped for ${resolvedPath}:`, unlinkError.message);
-      });
-    }
-
-    await pool.query('DELETE FROM reports WHERE id = $1', [reportId]);
-
-    return res.json({
+    res.json({
       success: true,
-      message: 'Report deleted successfully.',
+      message: 'Report deleted successfully',
     });
   } catch (error) {
     console.error('Error deleting report:', error);
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
-      message: 'Failed to delete report.',
+      error: error.message || 'Failed to delete report',
     });
   }
 });

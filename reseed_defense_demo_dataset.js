@@ -2,11 +2,15 @@ require('dotenv').config();
 
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const {
+  MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+} = require('./utils/clinicCalendar');
 
 process.env.DB_QUERY_TIMEOUT = '0';
 process.env.DB_STATEMENT_TIMEOUT = '0';
 
 const db = require('./db');
+const { isDateAvailableForBooking } = require('./config/holidays');
 const {
   FEMALE_FIRST_NAMES,
   MALE_FIRST_NAMES,
@@ -28,6 +32,8 @@ const MIN_TOTAL_TRANSACTIONS = 100000;
 const CURRENT_DATE = new Date('2026-03-26T00:00:00.000Z');
 const WINDOW_START = new Date('2026-03-01T00:00:00.000Z');
 const WINDOW_END = new Date('2030-12-31T23:59:59.999Z');
+const OPERATIONAL_ACTIVE_DAYS_PER_YEAR = 243;
+const OPERATIONAL_HISTORY_START = new Date('2024-01-01T00:00:00.000Z');
 const DEFAULT_GUARDIAN_PASSWORD = 'GuardianDemo2026!';
 const DEFAULT_STAFF_PASSWORD = 'AdminDemo2026!';
 const DEFAULT_HEALTH_CENTER = 'SAN NICOLAS HC';
@@ -131,6 +137,126 @@ const monthSeries = (start, end) => {
     cursor = addMonths(cursor, 1);
   }
   return values;
+};
+
+const dailySeries = (start, end) => {
+  const values = [];
+  let cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+  while (cursor <= end) {
+    values.push(cloneDate(cursor));
+    cursor = addDays(cursor, 1);
+  }
+  return values;
+};
+
+const isWeekendDay = (value) => {
+  const dow = value.getUTCDay();
+  return dow === 0 || dow === 6;
+};
+
+const rollForwardToWeekday = (value) => {
+  let cursor = cloneDate(value);
+  while (!isDateAvailableForBooking(toIsoDate(cursor), { allowPast: true }).isAvailable) {
+    cursor = addDays(cursor, 1);
+  }
+  return cursor;
+};
+
+const weekdaySeries = (start, end) =>
+  dailySeries(start, end).filter((day) =>
+    isDateAvailableForBooking(toIsoDate(day), { allowPast: true }).isAvailable,
+  );
+
+const buildOperationalServiceDays = (
+  start,
+  end,
+  { maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR } = {},
+) => {
+  const weekdays = weekdaySeries(start, end);
+  const daysByYear = new Map();
+
+  for (const day of weekdays) {
+    const year = day.getUTCFullYear();
+    if (!daysByYear.has(year)) {
+      daysByYear.set(year, []);
+    }
+    daysByYear.get(year).push(day);
+  }
+
+  const serviceDays = [];
+  for (const year of [...daysByYear.keys()].sort((left, right) => left - right)) {
+    const yearlyDays = daysByYear.get(year);
+    if (yearlyDays.length <= maxDaysPerYear) {
+      serviceDays.push(...yearlyDays);
+      continue;
+    }
+
+    const step = yearlyDays.length / maxDaysPerYear;
+    for (let index = 0; index < maxDaysPerYear; index += 1) {
+      const sourceIndex = Math.min(
+        yearlyDays.length - 1,
+        Math.floor(index * step),
+      );
+      serviceDays.push(yearlyDays[sourceIndex]);
+    }
+  }
+
+  return serviceDays;
+};
+
+const createOperationalDayAllocator = (
+  start,
+  end,
+  {
+    category = 'operational schedule',
+    maxPerDay = MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+    maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR,
+  } = {},
+) => {
+  const serviceDays = buildOperationalServiceDays(start, end, { maxDaysPerYear });
+
+  if (!serviceDays.length) {
+    throw new Error(`No service days available for ${category}.`);
+  }
+
+  const keyedDays = serviceDays.map((day) => ({
+    day,
+    key: toIsoDate(day),
+    count: 0,
+  }));
+
+  const allocate = (preferredDate) => {
+    const normalizedPreferred = rollForwardToWeekday(clampDate(preferredDate, start, end));
+    const preferredKey = toIsoDate(normalizedPreferred);
+    let preferredIndex = keyedDays.findIndex((entry) => entry.key >= preferredKey);
+    if (preferredIndex < 0) {
+      preferredIndex = keyedDays.length - 1;
+    }
+
+    for (let index = preferredIndex; index < keyedDays.length; index += 1) {
+      if (keyedDays[index].count < maxPerDay) {
+        keyedDays[index].count += 1;
+        return cloneDate(keyedDays[index].day);
+      }
+    }
+
+    for (let index = preferredIndex - 1; index >= 0; index -= 1) {
+      if (keyedDays[index].count < maxPerDay) {
+        keyedDays[index].count += 1;
+        return cloneDate(keyedDays[index].day);
+      }
+    }
+
+    throw new Error(
+      `Unable to allocate ${category}; service-day capacity of ${serviceDays.length * maxPerDay} has been exhausted.`,
+    );
+  };
+
+  return {
+    serviceDays,
+    maxCapacity: serviceDays.length * maxPerDay,
+    allocate,
+  };
 };
 
 const buildAddress = (barangay) => {
@@ -1707,6 +1833,16 @@ async function reseedDefenseDemoDataset() {
     const transferCaseRows = [];
     const waitlistRows = [];
     let appointmentSequence = 1;
+    const completedVisitAllocator = createOperationalDayAllocator(
+      OPERATIONAL_HISTORY_START,
+      CURRENT_DATE,
+      { category: 'defense demo completed visits' },
+    );
+    const futureAppointmentAllocator = createOperationalDayAllocator(
+      addDays(CURRENT_DATE, 1),
+      WINDOW_END,
+      { category: 'defense demo scheduled appointments' },
+    );
 
     for (const child of children) {
       const importedHistory = [];
@@ -1730,12 +1866,13 @@ async function reseedDefenseDemoDataset() {
         const isCompleted = dueByToday && chance(completionProbability);
 
         if (isCompleted) {
-          const actualAdminDate = dueDate < WINDOW_START
+          const preferredAdminDate = dueDate < WINDOW_START
             ? dueDate
             : clampDate(jitteredAdminDate, WINDOW_START, CURRENT_DATE);
+          const actualAdminDate = completedVisitAllocator.allocate(preferredAdminDate);
           const recordCreatedAt =
             actualAdminDate < WINDOW_START
-              ? randomDateBetween(WINDOW_START, addMonths(WINDOW_START, 5))
+              ? randomDateBetween(actualAdminDate, CURRENT_DATE)
               : addDays(actualAdminDate, randomInt(0, 3));
           const administeredBy = pick(staffUsers).id;
           let nextDueDate = null;
@@ -1807,12 +1944,7 @@ async function reseedDefenseDemoDataset() {
               child.infantId,
               actualAdminDate,
               'Vaccination',
-              weightedPick([
-                { value: 'attended', weight: 78 },
-                { value: 'confirmed', weight: 12 },
-                { value: 'rescheduled', weight: 6 },
-                { value: 'scheduled', weight: 4 },
-              ]),
+              'attended',
               `${DEMO_MARKER} vaccination visit for ${template.code}`,
               null,
               'Routine immunization completed',
@@ -1872,6 +2004,8 @@ async function reseedDefenseDemoDataset() {
             continue;
           }
 
+          const scheduledAppointmentDate = futureAppointmentAllocator.allocate(appointmentDate);
+
           const appointmentStatus = dueDate <= CURRENT_DATE
             ? weightedPick([
                 { value: 'scheduled', weight: 44 },
@@ -1889,7 +2023,7 @@ async function reseedDefenseDemoDataset() {
 
           appointmentRows.push([
             child.infantId,
-            appointmentDate,
+            scheduledAppointmentDate,
             'Vaccination',
             appointmentStatus,
             `${DEMO_MARKER} follow-up vaccination schedule for ${template.code}`,
@@ -1899,18 +2033,18 @@ async function reseedDefenseDemoDataset() {
             pick(staffUsers).id,
             healthCenterClinicId,
             true,
-            addDays(appointmentDate, -randomInt(2, 15)),
-            addDays(appointmentDate, -randomInt(0, 2)),
+            addDays(scheduledAppointmentDate, -randomInt(2, 15)),
+            addDays(scheduledAppointmentDate, -randomInt(0, 2)),
             'San Nicolas Health Center Vaccination Room',
             appointmentStatus === 'confirmed' ? 'confirmed' : 'pending',
-            addDays(appointmentDate, -1),
+            addDays(scheduledAppointmentDate, -1),
             weightedPick([
               { value: 'sms', weight: 58 },
               { value: 'portal', weight: 24 },
               { value: 'sms+portal', weight: 18 },
             ]),
             chance(0.82),
-            chance(0.52) ? addDays(appointmentDate, -2) : null,
+            chance(0.52) ? addDays(scheduledAppointmentDate, -2) : null,
             child.guardianId,
             buildAppointmentControlNumber(appointmentSequence),
             chance(0.8),
@@ -1923,19 +2057,19 @@ async function reseedDefenseDemoDataset() {
             child.infantId,
             referenceData.vaccinesByCode.get(template.vaccines[0].code)?.id || null,
             toIsoDate(dueDate),
-            toIsoDate(addDays(appointmentDate, -weightedPick([
+            toIsoDate(addDays(scheduledAppointmentDate, -weightedPick([
               { value: 1, weight: 22 },
               { value: 3, weight: 54 },
               { value: 5, weight: 24 },
             ]))),
             appointmentStatus === 'no-show' ? 'overdue' : 'scheduled',
             null,
-            addDays(appointmentDate, -randomInt(12, 20)),
-            addDays(appointmentDate, -randomInt(0, 3)),
+            addDays(scheduledAppointmentDate, -randomInt(12, 20)),
+            addDays(scheduledAppointmentDate, -randomInt(0, 3)),
             child.patientId,
             child.guardianId,
             template.vaccines[0].dose,
-            toIsoDate(appointmentDate),
+            toIsoDate(scheduledAppointmentDate),
             null,
             false,
             false,
@@ -1955,9 +2089,9 @@ async function reseedDefenseDemoDataset() {
                 { value: 'notified', weight: 22 },
                 { value: 'resolved', weight: 26 },
               ]),
-              chance(0.45) ? addDays(appointmentDate, -1) : null,
-              addDays(appointmentDate, -randomInt(18, 32)),
-              addDays(appointmentDate, -randomInt(2, 8)),
+              chance(0.45) ? addDays(scheduledAppointmentDate, -1) : null,
+              addDays(scheduledAppointmentDate, -randomInt(18, 32)),
+              addDays(scheduledAppointmentDate, -randomInt(2, 8)),
             ]);
           }
         }
@@ -2246,7 +2380,7 @@ async function reseedDefenseDemoDataset() {
     });
 
     const adminNotificationRows = inventoryDetails
-      .filter((detail) => detail.stockOnHand <= 45)
+      .filter((detail) => detail.stockOnHand <= 45 && detail.periodStart <= CURRENT_DATE)
       .slice(0, 1200)
       .map((detail) => {
         const vaccine = [...referenceData.vaccinesByCode.values()].find((row) => row.id === detail.vaccineId);

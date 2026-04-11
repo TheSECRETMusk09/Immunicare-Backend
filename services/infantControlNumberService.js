@@ -108,7 +108,7 @@ const getPatientControlNumberById = async (patientId, client = pool) => {
   const result = await client.query(
     `
       SELECT control_number
-      FROM patients
+      FROM public.patients
       WHERE id = $1
       LIMIT 1
     `,
@@ -128,7 +128,7 @@ const ensurePatientControlNumber = async (patientId, client = pool) => {
 
   await client.query(
     `
-      UPDATE patients
+      UPDATE public.patients
       SET control_number = $1,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = $2
@@ -150,7 +150,7 @@ const findMatchingActivePatients = async (
   const result = await client.query(
     `
       SELECT id, control_number, created_at
-      FROM patients
+      FROM public.patients
       WHERE guardian_id = $1
         AND is_active = true
         AND LOWER(REGEXP_REPLACE(TRIM(first_name), '\\s+', ' ', 'g')) = $2
@@ -296,7 +296,7 @@ const resolveOrCreateInfantPatient = async (
 
   const insertResult = await client.query(
     `
-      INSERT INTO patients (${columns.join(', ')})
+      INSERT INTO public.patients (${columns.join(', ')})
       VALUES (${placeholders.join(', ')})
       RETURNING id, control_number
     `,

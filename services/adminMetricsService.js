@@ -2,7 +2,6 @@ const pool = require('../db');
 const inventoryCalculationService = require('./inventoryCalculationService');
 const {
   CLINIC_TODAY_SQL,
-  excludeWeekendVaccinationAppointmentsSql,
   rollForwardWeekendDateSql,
   toClinicDateKey,
   toClinicDateSql,
@@ -315,11 +314,6 @@ const executeMetricsQueries = async ({
   );
   const appointmentStatusExpression = buildNormalizedAppointmentStatusExpression('a');
   const appointmentDateExpression = toClinicDateSql('a.scheduled_date');
-  const appointmentWeekendPredicate = excludeWeekendVaccinationAppointmentsSql(
-    'a',
-    appointmentDateExpression,
-  );
-
   const vaccinationParams = [];
   const vaccinationScopeClause = buildScopeMatchClause({
     expressions: [patientScopeExpression, guardianScopeExpression],
@@ -421,7 +415,6 @@ const executeMetricsQueries = async ({
     ${appointmentJoins}
     WHERE ${appointmentActiveExpression}
       ${appointmentPatientEligibilityClause}
-      AND ${appointmentWeekendPredicate}
       ${appointmentScopeClause}
       ${appointmentDateClause}
   `;
