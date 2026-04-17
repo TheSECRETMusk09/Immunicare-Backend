@@ -28,7 +28,7 @@ const resolveCanonicalRole = (role) => {
 };
 
 // Token configuration
-const ACCESS_TOKEN_EXPIRATION = process.env.JWT_ACCESS_EXPIRATION || '15m';
+const ACCESS_TOKEN_EXPIRATION = process.env.JWT_ACCESS_EXPIRATION || '8h';
 const REFRESH_TOKEN_EXPIRATION = process.env.JWT_REFRESH_EXPIRATION || '7d';
 
 /**

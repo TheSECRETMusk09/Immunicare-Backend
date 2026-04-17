@@ -5,11 +5,13 @@ const {
 const analyticsRepository = require('../repositories/analyticsRepository');
 const { getAdminMetricsSummary } = require('./adminMetricsService');
 const inventoryCalculationService = require('./inventoryCalculationService');
+const blockedDatesService = require('./blockedDatesService');
 const { AsyncResultCache, stableStringify } = require('../utils/asyncResultCache');
 const {
   getClinicTodayDateKey,
   shiftClinicDateKey,
 } = require('../utils/clinicCalendar');
+const { isDateAvailableForBooking } = require('../config/holidays');
 
 const ANALYTICS_DASHBOARD_CACHE_TTL_MS = 30 * 1000;
 const analyticsDashboardCache = new AsyncResultCache({ maxEntries: 150 });
@@ -487,6 +489,20 @@ const collectDashboardData = async ({ filters }) => {
     inventoryCalculationService.getUnifiedSummary(filters.facilityId),
   ]);
 
+  const todayKey = getClinicTodayDateKey();
+  const blockedDate = todayKey
+    ? await blockedDatesService.isDateBlocked({
+        date: todayKey,
+        clinicId: filters.facilityId,
+      })
+    : null;
+  const currentDateAvailability = todayKey
+    ? isDateAvailableForBooking(todayKey, {
+        allowPast: true,
+        blockedDate,
+      })
+    : null;
+
   const totalInfants = mapInt(totals.total_infants);
   const totalGuardians = mapInt(totals.total_guardians);
   const normalizedInventoryByVaccine = inventoryByVaccine.map((item) => ({
@@ -502,7 +518,10 @@ const collectDashboardData = async ({ filters }) => {
   const summary = {
     totalRegisteredInfants: totalInfants,
     totalGuardians,
-    vaccinationsCompletedToday: mapInt(vaccinationSnapshot.completed_children_today),
+    vaccinationsCompletedToday: mapInt(vaccinationSnapshot.completed_today),
+    vaccinationsCompletedTodayUnique: mapInt(
+      vaccinationSnapshot.completed_children_today ?? vaccinationSnapshot.completed_today,
+    ),
     vaccinationsCompletedTodayDoses: mapInt(vaccinationSnapshot.completed_today),
     completedDoseTotal: mapInt(vaccinationSnapshot.administered_total),
     administeredInPeriod: mapInt(vaccinationSnapshot.administered_in_period),
@@ -517,6 +536,7 @@ const collectDashboardData = async ({ filters }) => {
       + mapInt(inventorySummary.out_of_stock_count),
     totalAvailableVaccineDoses: mapInt(inventorySummary.stock_on_hand),
     uniqueInfantsServed: mapInt(vaccinationSnapshot.unique_infants_served),
+    currentDateAvailability,
   };
 
   const appointmentFollowup = {
@@ -575,7 +595,7 @@ const collectDashboardData = async ({ filters }) => {
 
   const inventoryAlerts = [
     ...lowStockAlerts.map((alert, index) => ({
-      id: alert.id || `inventory-alert-${index}`,
+      id: `inventory-alert-${index}`,
       type: alert.type || 'inventory',
       severity: normalizeAlertSeverity(alert.severity),
       message: alert.message || 'Low stock alert',
@@ -786,20 +806,103 @@ const getDemographicsAnalytics = async ({ query, user }) => {
 
 const getDashboardSummaryAnalytics = async ({ query, user }) => {
   const filters = validateFilters(query, user);
-  const dashboard = await collectCachedDashboardData({ filters });
+  const { vaccineIds } = await buildDimensionAndLookup({
+    vaccineType: filters.vaccineType,
+  });
+  const statusFilters = getStatusFilters(filters.vaccinationStatus);
+
+  const [
+    totals,
+    vaccinationSnapshot,
+    appointmentSnapshot,
+    appointmentStatusBreakdown,
+    vaccinationTrend,
+    inventorySummary,
+  ] = await Promise.all([
+    analyticsRepository.getInfantGuardianTotals({
+      facilityId: filters.facilityId,
+      guardianId: filters.guardianId,
+    }),
+    analyticsRepository.getVaccinationSnapshot({
+      facilityId: filters.facilityId,
+      startDate: filters.startDate,
+      endDate: filters.endDate,
+      vaccineIds,
+      statuses: statusFilters.vaccinationStatuses,
+      overdueOnly: statusFilters.overdueOnly,
+      guardianId: filters.guardianId,
+    }),
+    analyticsRepository.getAppointmentSnapshot({
+      scopeIds: filters.appointmentScopeIds,
+      startDate: filters.startDate,
+      endDate: filters.endDate,
+      statuses: statusFilters.appointmentStatuses,
+      overdueOnly: statusFilters.overdueOnly,
+      guardianId: filters.guardianId,
+    }),
+    analyticsRepository.getAppointmentStatusBreakdown({
+      scopeIds: filters.appointmentScopeIds,
+      startDate: filters.startDate,
+      endDate: filters.endDate,
+      statuses: statusFilters.appointmentStatuses,
+      guardianId: filters.guardianId,
+    }),
+    analyticsRepository.getDailyVaccinationTrend({
+      facilityId: filters.facilityId,
+      startDate: filters.startDate,
+      endDate: filters.endDate,
+      vaccineIds,
+      statuses: statusFilters.vaccinationStatuses,
+      guardianId: filters.guardianId,
+    }),
+    inventoryCalculationService.getUnifiedSummary(filters.facilityId),
+  ]);
+
+  const todayKey = getClinicTodayDateKey();
+  const blockedDate = todayKey
+    ? await blockedDatesService.isDateBlocked({
+      date: todayKey,
+      clinicId: filters.facilityId,
+    })
+    : null;
+  const currentDateAvailability = todayKey
+    ? isDateAvailableForBooking(todayKey, {
+      allowPast: true,
+      blockedDate,
+    })
+    : null;
 
   return {
     summary: {
-      infants: dashboard.summary.totalRegisteredInfants,
-      guardians: dashboard.summary.totalGuardians,
-      appointmentsToday: dashboard.appointmentFollowup.today,
-      lowStock: dashboard.summary.lowStockVaccines,
-      overdueVaccinations: dashboard.summary.overdueVaccinations,
-      completedToday: dashboard.summary.vaccinationsCompletedToday,
+      infants: mapInt(totals.total_infants),
+      totalRegisteredInfants: mapInt(totals.total_infants),
+      guardians: mapInt(totals.total_guardians),
+      totalGuardians: mapInt(totals.total_guardians),
+      appointmentsToday: mapInt(appointmentSnapshot.today_total),
+      lowStock:
+        mapInt(inventorySummary.low_stock_count)
+        + mapInt(inventorySummary.critical_count)
+        + mapInt(inventorySummary.out_of_stock_count),
+      overdueVaccinations: mapInt(vaccinationSnapshot.overdue_count),
+      overdue: mapInt(vaccinationSnapshot.overdue_count),
+      completedToday: mapInt(vaccinationSnapshot.completed_today),
+      vaccinationsCompletedToday: mapInt(vaccinationSnapshot.completed_today),
+      completedDoseTotal: mapInt(vaccinationSnapshot.administered_total),
+      administeredInPeriod: mapInt(vaccinationSnapshot.administered_in_period),
+      dueSoon7Days: mapInt(vaccinationSnapshot.due_soon_7_days),
+      dueToday: mapInt(vaccinationSnapshot.due_today),
+      uniqueInfantsServed: mapInt(vaccinationSnapshot.unique_infants_served),
+      currentDateAvailability,
     },
-    vaccinationActivity: dashboard.trends.vaccination,
-    appointmentDistribution: dashboard.appointmentFollowup.statusBreakdown,
-    generatedAt: dashboard.metadata.generatedAt,
+    vaccinationActivity: mergeTrendWithDateSpine(vaccinationTrend, {
+      startDate: filters.startDate,
+      endDate: filters.endDate,
+    }),
+    appointmentDistribution: appointmentStatusBreakdown.map((item) => ({
+      status: item.status,
+      count: mapInt(item.count),
+    })),
+    generatedAt: new Date().toISOString(),
   };
 };
 

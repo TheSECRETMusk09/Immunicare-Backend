@@ -629,6 +629,51 @@ app.use(errorHandler);
 // Start server with database connection verification
 const pool = require('./db');
 const { healthCheck } = require('./db');
+const backgroundStartupJobs = new Map();
+let gracefulShutdownInProgress = false;
+
+const trackBackgroundStartupJob = (label, promise) => {
+  const trackedPromise = Promise.resolve(promise)
+    .catch((error) => {
+      if (typeof pool.isPoolEndedError === 'function' && pool.isPoolEndedError(error)) {
+        console.warn(`Background startup job "${label}" stopped because the database pool is unavailable.`);
+        return null;
+      }
+
+      console.error(`Background startup job "${label}" failed:`, error);
+      return null;
+    })
+    .finally(() => {
+      backgroundStartupJobs.delete(label);
+    });
+
+  backgroundStartupJobs.set(label, trackedPromise);
+  return trackedPromise;
+};
+
+const waitForBackgroundStartupJobs = async (timeoutMs = 5000) => {
+  if (backgroundStartupJobs.size === 0) {
+    return;
+  }
+
+  const labels = Array.from(backgroundStartupJobs.keys());
+  console.log(`Waiting for background startup jobs before database shutdown: ${labels.join(', ')}`);
+
+  const timeoutPromise = new Promise((resolve) => {
+    setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+
+  const result = await Promise.race([
+    Promise.allSettled(Array.from(backgroundStartupJobs.values())),
+    timeoutPromise,
+  ]);
+
+  if (result === 'timeout') {
+    console.warn(
+      `Continuing graceful shutdown with ${backgroundStartupJobs.size} background startup job(s) still running.`,
+    );
+  }
+};
 
 // Fix for unexpected errors on idle clients
 pool.on('error', (err, client) => {
@@ -912,6 +957,45 @@ async function startServer() {
       console.warn('Warning: Could not initialize Scheduler:', err.message);
     }
 
+    try {
+      const { startGlobalAtBirthVaccinationBackfill } = require('./services/atBirthVaccinationService');
+      const backfillJob = startGlobalAtBirthVaccinationBackfill()
+        .then(() => {
+          console.log('At-birth vaccination backfill initialization completed');
+        })
+        .catch((error) => {
+          if (typeof pool.isPoolEndedError === 'function' && pool.isPoolEndedError(error)) {
+            console.warn('At-birth vaccination backfill stopped because the database pool is unavailable.');
+            return;
+          }
+          console.error('Failed to initialize at-birth vaccination backfill:', error);
+        });
+      trackBackgroundStartupJob('at-birth-vaccination-backfill', backfillJob);
+    } catch (err) {
+      console.warn('Warning: Could not start at-birth vaccination backfill:', err.message);
+    }
+
+    (async () => {
+      try {
+        await pool.query(`
+          CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_immunization_records_patient_id
+            ON immunization_records (patient_id)
+        `);
+        await pool.query(`
+          CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_infant_vaccine_readiness_infant_id
+            ON infant_vaccine_readiness (infant_id)
+        `);
+        await pool.query(`
+          CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_appointments_infant_id_active
+            ON appointments (infant_id)
+            WHERE is_active = true
+        `);
+        console.log('Readiness performance indexes ensured');
+      } catch (err) {
+        console.warn('Warning: Could not ensure readiness indexes:', err.message);
+      }
+    })();
+
     // Export the actual port being used
     process.env.ACTUAL_PORT = currentPort;
     writeRuntimePortState(currentPort, 'running');
@@ -962,6 +1046,12 @@ async function startServer() {
 
 // Graceful shutdown handler with Socket.io cleanup
 async function gracefulShutdown(signal) {
+  if (gracefulShutdownInProgress) {
+    console.log(`Graceful shutdown already in progress; ignoring ${signal}.`);
+    return;
+  }
+
+  gracefulShutdownInProgress = true;
   console.log(`\n${signal} received, initiating graceful shutdown...`);
   writeRuntimePortState(process.env.ACTUAL_PORT || BASE_PORT, 'stopping');
 
@@ -1020,9 +1110,15 @@ async function gracefulShutdown(signal) {
     await Promise.all([closeHttpServer(), closeHttpsServer()]);
     console.log('All servers closed gracefully');
 
+    await waitForBackgroundStartupJobs();
+
     // Close database pool
     try {
-      await pool.end();
+      if (typeof pool.close === 'function') {
+        await pool.close();
+      } else {
+        await pool.end();
+      }
       console.log('Database pool closed');
     } catch (err) {
       console.error('Error closing database pool:', err.message);

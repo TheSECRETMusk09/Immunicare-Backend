@@ -441,7 +441,7 @@ router.put('/:id', requireGuardianOwnership, async (req, res) => {
 
     const patient = await patientService.updatePatient(patientId, patientData, req.user.id);
 
-    // Sync to legacy infants table for compatibility
+    // Compatibility hook only; canonical child records stay in patients.
     await patientService.syncToLegacyInfants(patient);
 
     // Send real-time update

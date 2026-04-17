@@ -21,6 +21,87 @@ const ensureUploadDirectory = async () => {
 };
 ensureUploadDirectory();
 
+const METADATA_SUFFIX = '.metadata.json';
+const STAFF_UPLOAD_ROLES = new Set([
+  'admin',
+  'administrator',
+  'system_admin',
+  'super_admin',
+  'clinic_manager',
+  'doctor',
+  'nurse',
+  'staff',
+]);
+
+const getSafeFilename = (filename = '') => path.basename(String(filename || ''));
+
+const isMetadataFilename = (filename = '') => String(filename || '').endsWith(METADATA_SUFFIX);
+
+const getUserRole = (req) =>
+  String(req.user?.role_name || req.user?.role || req.user?.type || '')
+    .trim()
+    .toLowerCase();
+
+const isStaffUploadRole = (req) => STAFF_UPLOAD_ROLES.has(getUserRole(req));
+
+const getUploadMetadataPath = (filename) => path.join(uploadDir, `${filename}${METADATA_SUFFIX}`);
+
+const writeUploadMetadata = async (req, file) => {
+  const metadata = {
+    filename: file.filename,
+    originalName: file.originalname,
+    mimeType: file.mimetype,
+    size: file.size,
+    user_id: req.user?.id || null,
+    guardian_id: req.user?.guardian_id || null,
+    role: getUserRole(req) || null,
+    uploaded_at: new Date().toISOString(),
+  };
+
+  await fs.writeFile(getUploadMetadataPath(file.filename), JSON.stringify(metadata, null, 2));
+  return metadata;
+};
+
+const readUploadMetadata = async (filename) => {
+  try {
+    const rawMetadata = await fs.readFile(getUploadMetadataPath(filename), 'utf8');
+    return JSON.parse(rawMetadata);
+  } catch (_error) {
+    return null;
+  }
+};
+
+const canAccessUpload = (req, metadata) => {
+  if (isStaffUploadRole(req)) {
+    return true;
+  }
+
+  if (!metadata) {
+    return false;
+  }
+
+  const requestUserId = req.user?.id !== undefined && req.user?.id !== null
+    ? String(req.user.id)
+    : null;
+  const requestGuardianId =
+    req.user?.guardian_id !== undefined && req.user?.guardian_id !== null
+      ? String(req.user.guardian_id)
+      : null;
+
+  return (
+    (requestUserId && metadata.user_id !== undefined && String(metadata.user_id) === requestUserId) ||
+    (requestGuardianId &&
+      metadata.guardian_id !== undefined &&
+      String(metadata.guardian_id) === requestGuardianId)
+  );
+};
+
+const respondForbiddenUpload = (res) =>
+  res.status(403).json({
+    success: false,
+    message: 'You do not have access to this file',
+  });
+
 // Multer configuration for file storage
 const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
@@ -75,6 +156,8 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req, res
       });
     }
 
+    await writeUploadMetadata(req, req.file);
+
     res.json({
       success: true,
       message: 'File uploaded successfully',
@@ -107,6 +190,8 @@ router.post('/upload-multiple', authenticateToken, upload.array('files', 10), as
       });
     }
 
+    await Promise.all(req.files.map((file) => writeUploadMetadata(req, file)));
+
     const files = req.files.map((file) => ({
       filename: file.filename,
       originalName: file.originalname,
@@ -134,7 +219,14 @@ router.post('/upload-multiple', authenticateToken, upload.array('files', 10), as
 // Download file
 router.get('/download/:filename', authenticateToken, async (req, res) => {
   try {
-    const { filename } = req.params;
+    const filename = getSafeFilename(req.params.filename);
+    if (!filename || isMetadataFilename(filename)) {
+      return res.status(404).json({
+        success: false,
+        message: 'File not found'
+      });
+    }
+
     const filePath = path.join(uploadDir, filename);
 
     // Check if file exists
@@ -145,6 +237,11 @@ router.get('/download/:filename', authenticateToken, async (req, res) => {
         success: false,
         message: 'File not found'
       });
+    }
+
+    const metadata = await readUploadMetadata(filename);
+    if (!canAccessUpload(req, metadata)) {
+      return respondForbiddenUpload(res);
     }
 
     // Get file stats
@@ -173,7 +270,14 @@ router.get('/download/:filename', authenticateToken, async (req, res) => {
 // Get file info
 router.get('/info/:filename', authenticateToken, async (req, res) => {
   try {
-    const { filename } = req.params;
+    const filename = getSafeFilename(req.params.filename);
+    if (!filename || isMetadataFilename(filename)) {
+      return res.status(404).json({
+        success: false,
+        message: 'File not found'
+      });
+    }
+
     const filePath = path.join(uploadDir, filename);
 
     // Check if file exists
@@ -184,6 +288,11 @@ router.get('/info/:filename', authenticateToken, async (req, res) => {
         success: false,
         message: 'File not found'
       });
+    }
+
+    const metadata = await readUploadMetadata(filename);
+    if (!canAccessUpload(req, metadata)) {
+      return respondForbiddenUpload(res);
     }
 
     // Get file stats
@@ -216,6 +325,15 @@ router.get('/list', authenticateToken, async (req, res) => {
     const fileInfos = [];
 
     for (const filename of files) {
+      if (isMetadataFilename(filename)) {
+        continue;
+      }
+
+      const metadata = await readUploadMetadata(filename);
+      if (!canAccessUpload(req, metadata)) {
+        continue;
+      }
+
       const filePath = path.join(uploadDir, filename);
       const stats = await fs.stat(filePath);
       fileInfos.push({
@@ -244,7 +362,14 @@ router.get('/list', authenticateToken, async (req, res) => {
 // Delete file
 router.delete('/delete/:filename', authenticateToken, async (req, res) => {
   try {
-    const { filename } = req.params;
+    const filename = getSafeFilename(req.params.filename);
+    if (!filename || isMetadataFilename(filename)) {
+      return res.status(404).json({
+        success: false,
+        message: 'File not found'
+      });
+    }
+
     const filePath = path.join(uploadDir, filename);
 
     // Check if file exists
@@ -257,7 +382,13 @@ router.delete('/delete/:filename', authenticateToken, async (req, res) => {
       });
     }
 
+    const metadata = await readUploadMetadata(filename);
+    if (!canAccessUpload(req, metadata)) {
+      return respondForbiddenUpload(res);
+    }
+
     await fs.unlink(filePath);
+    await fs.unlink(getUploadMetadataPath(filename)).catch(() => {});
 
     res.json({
       success: true,

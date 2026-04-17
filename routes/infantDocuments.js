@@ -20,6 +20,7 @@ const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 const { getUserNameExpressions } = require('../utils/queryCompatibility');
 const { resolveStorageRoot } = require('../utils/runtimeStorage');
+const patientService = require('../services/patientService');
 
 // Middleware to authenticate all infant document routes
 router.use(authenticateToken);
@@ -59,6 +60,7 @@ const infantDocFilter = (req, file, cb) => {
     'application/pdf',
     'image/jpeg',
     'image/png',
+    'image/webp',
     'image/gif',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -67,7 +69,7 @@ const infantDocFilter = (req, file, cb) => {
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type. Allowed types: PDF, JPEG, PNG, GIF, DOC, DOCX'), false);
+    cb(new Error('Invalid file type. Allowed types: PDF, JPEG, PNG, WEBP, GIF, DOC, DOCX'), false);
   }
 };
 
@@ -83,6 +85,26 @@ const uploadInfantDoc = multer({
 const VALID_DOCUMENT_TYPES = ['vaccination_card', 'birth_certificate', 'medical_record', 'image', 'other'];
 
 const normalizeRuntimeRole = (role) => String(role || '').trim().toLowerCase();
+
+const serializeInfantDocument = (doc = {}) => {
+  if (!doc || typeof doc !== 'object') {
+    return doc;
+  }
+
+  const documentId = doc.id || doc.document_id || doc.documentId || null;
+  const downloadUrl = documentId ? `/api/infant-documents/file/${documentId}` : null;
+
+  return {
+    ...doc,
+    id: documentId,
+    document_id: documentId,
+    documentId,
+    file_name: doc.original_filename || doc.file_name || doc.filename || null,
+    file_type: doc.mime_type || doc.file_type || null,
+    downloadUrl: doc.downloadUrl || doc.download_url || downloadUrl,
+    download_url: doc.download_url || doc.downloadUrl || downloadUrl,
+  };
+};
 
 const ADMIN_DOCUMENT_ROLES = new Set([
   'system_admin',
@@ -190,10 +212,16 @@ router.post('/:infantId', uploadInfantDoc.single('file'), async (req, res) => {
       ],
     );
 
+    const documentRecord = serializeInfantDocument(result.rows[0]);
+
     res.status(201).json({
       success: true,
       message: 'Document uploaded successfully',
-      data: result.rows[0],
+      id: documentRecord.id,
+      document_id: documentRecord.id,
+      documentId: documentRecord.id,
+      data: documentRecord,
+      document: documentRecord,
     });
   } catch (error) {
     // Use caught error objects for structured logging and error-response context
@@ -287,7 +315,7 @@ router.get('/:infantId', async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows,
+      data: result.rows.map(serializeInfantDocument),
       pagination: {
         limit: parseInt(limit),
         offset: parseInt(offset),
@@ -451,7 +479,7 @@ router.get('/info/:documentId', async (req, res) => {
 
     res.json({
       success: true,
-      data: doc,
+      data: serializeInfantDocument(doc),
     });
   } catch (error) {
     console.error('Error fetching infant document info:', error);

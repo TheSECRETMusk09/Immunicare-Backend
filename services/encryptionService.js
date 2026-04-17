@@ -1,6 +1,31 @@
 const pool = require('../db');
 const logger = require('../config/logger');
 
+let patientBirthCertificateColumnPromise = null;
+
+const resolvePatientBirthCertificateColumn = async () => {
+  if (!patientBirthCertificateColumnPromise) {
+    patientBirthCertificateColumnPromise = pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'patients'
+          AND column_name = ANY($1::text[])
+        ORDER BY CASE column_name
+          WHEN 'encrypted_birth_certificate_number' THEN 1
+          WHEN 'encrypted_birth_certificate' THEN 2
+          ELSE 3
+        END
+        LIMIT 1
+      `,
+      [['encrypted_birth_certificate_number', 'encrypted_birth_certificate']],
+    ).then((result) => result.rows[0]?.column_name || null);
+  }
+
+  return patientBirthCertificateColumnPromise;
+};
+
 /**
  * Encryption Service
  * Provides methods for encrypting and decrypting sensitive data using pgcrypto
@@ -473,10 +498,15 @@ const encryptInfantBirthCertificate = async (infantId, birthCertificateNumber) =
       'infants_birth_certificate'
     );
 
-    const query = 'UPDATE infants SET encrypted_birth_certificate_number = $1 WHERE id = $2';
+    const birthCertificateColumn = await resolvePatientBirthCertificateColumn();
+    if (!birthCertificateColumn) {
+      throw new Error('Patient birth certificate encryption column is not available');
+    }
+
+    const query = `UPDATE patients SET ${birthCertificateColumn} = $1 WHERE id = $2`;
     await pool.query(query, [encryptedBirthCertificate, infantId]);
 
-    await logEncryptionOperation('encrypt', 'infants', infantId, 'infants_birth_certificate');
+    await logEncryptionOperation('encrypt', 'patients', infantId, 'infants_birth_certificate');
 
     logger.info(`Encrypted birth certificate for infant ${infantId}`);
   } catch (error) {
@@ -496,10 +526,15 @@ const decryptInfantBirthCertificate = async (infantId) => {
       throw new Error('InfantId is required');
     }
 
+    const birthCertificateColumn = await resolvePatientBirthCertificateColumn();
+    if (!birthCertificateColumn) {
+      return null;
+    }
+
     const query = `
-      SELECT encrypted_birth_certificate_number
-      FROM infants
-      WHERE id = $1 AND encrypted_birth_certificate_number IS NOT NULL
+      SELECT ${birthCertificateColumn} AS encrypted_birth_certificate_number
+      FROM patients
+      WHERE id = $1 AND ${birthCertificateColumn} IS NOT NULL
     `;
     const result = await pool.query(query, [infantId]);
 
@@ -512,7 +547,7 @@ const decryptInfantBirthCertificate = async (infantId) => {
       'infants_birth_certificate'
     );
 
-    await logEncryptionOperation('decrypt', 'infants', infantId, 'infants_birth_certificate');
+    await logEncryptionOperation('decrypt', 'patients', infantId, 'infants_birth_certificate');
 
     return decryptedBirthCertificate;
   } catch (error) {

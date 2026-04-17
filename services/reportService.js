@@ -411,6 +411,8 @@ class ReportService {
   normalizeReportFilters(reportType, rawFilters = {}) {
     const startDate = this.normalizeDateInput(rawFilters.startDate, 'Start date');
     const endDate = this.normalizeDateInput(rawFilters.endDate, 'End date');
+    const scopeIds = this.normalizeScopeIds(rawFilters.scopeIds || rawFilters.scope_ids || []);
+    const facilityId = this.toInteger(rawFilters.facilityId || rawFilters.facility_id, 0) || null;
 
     if (startDate && endDate && endDate < startDate) {
       throw this.createHttpError(
@@ -426,6 +428,9 @@ class ReportService {
       userId: Number.isInteger(Number(rawFilters.userId))
         ? Number(rawFilters.userId)
         : null,
+      scopeIds,
+      facilityId: facilityId || scopeIds[0] || null,
+      scopeType: scopeIds.length > 0 || facilityId ? 'clinic' : 'system',
     };
 
     switch (reportType) {
@@ -972,8 +977,12 @@ class ReportService {
     const normalizedScopeIds = this.normalizeScopeIds(scopeIds);
     const scopedExpressions = expressions.filter(Boolean);
 
-    if (normalizedScopeIds.length === 0 || scopedExpressions.length === 0) {
+    if (normalizedScopeIds.length === 0) {
       return '';
+    }
+
+    if (scopedExpressions.length === 0) {
+      return ' AND false';
     }
 
     const scopeParam = normalizedScopeIds.length === 1
@@ -1005,7 +1014,7 @@ class ReportService {
 
   buildDisplayFilters(filters = {}) {
     return Object.entries(filters).reduce((accumulator, [key, value]) => {
-      if (key === 'userId') {
+      if (['userId', 'scopeIds', 'facilityId', 'scopeType'].includes(key)) {
         return accumulator;
       }
 
@@ -1016,6 +1025,85 @@ class ReportService {
       accumulator[key] = value;
       return accumulator;
     }, {});
+  }
+
+  buildPersistedReportParameters(filters = {}) {
+    const displayFilters = this.buildDisplayFilters(filters);
+    const scopeIds = this.normalizeScopeIds(filters.scopeIds || []);
+    const facilityId = this.toInteger(filters.facilityId, 0) || scopeIds[0] || null;
+
+    return {
+      ...displayFilters,
+      scopeType: scopeIds.length > 0 || facilityId ? 'clinic' : 'system',
+      ...(facilityId ? { facilityId } : {}),
+      ...(scopeIds.length > 0 ? { scopeIds } : {}),
+    };
+  }
+
+  parseReportParameters(parameters = {}) {
+    if (!parameters) {
+      return {};
+    }
+
+    if (typeof parameters === 'string') {
+      try {
+        const parsed = JSON.parse(parameters);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+
+    return typeof parameters === 'object' && !Array.isArray(parameters) ? parameters : {};
+  }
+
+  isReportInScope(report = {}, scopeIds = []) {
+    const normalizedScopeIds = this.normalizeScopeIds(scopeIds);
+    if (normalizedScopeIds.length === 0) {
+      return true;
+    }
+
+    const parameters = this.parseReportParameters(report.parameters);
+    const reportFacilityId = this.toInteger(parameters.facilityId || parameters.facility_id, 0);
+    const reportScopeIds = this.normalizeScopeIds(parameters.scopeIds || parameters.scope_ids || []);
+    const allowedScopes = new Set([...reportScopeIds, reportFacilityId].filter((value) => value > 0));
+
+    if (allowedScopes.size === 0) {
+      return false;
+    }
+
+    return normalizedScopeIds.some((scopeId) => allowedScopes.has(scopeId));
+  }
+
+  buildReportScopePredicate(scopeIds = [], params = [], alias = 'reports') {
+    const normalizedScopeIds = this.normalizeScopeIds(scopeIds);
+    if (normalizedScopeIds.length === 0) {
+      return '';
+    }
+
+    const scopeParam = normalizedScopeIds.length === 1
+      ? normalizedScopeIds[0]
+      : normalizedScopeIds;
+    params.push(scopeParam);
+    const placeholder = `$${params.length}`;
+    const predicate = normalizedScopeIds.length === 1
+      ? `= ${placeholder}`
+      : `= ANY(${placeholder}::int[])`;
+
+    return `
+      AND (
+        (
+          (${alias}.parameters->>'facilityId') ~ '^\\d+$'
+          AND (${alias}.parameters->>'facilityId')::int ${predicate}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(COALESCE(${alias}.parameters->'scopeIds', '[]'::jsonb)) AS report_scope(scope_id)
+          WHERE report_scope.scope_id ~ '^\\d+$'
+            AND report_scope.scope_id::int ${predicate}
+        )
+      )
+    `;
   }
 
   buildInventoryMovementLabel(row = {}) {
@@ -1191,7 +1279,7 @@ class ReportService {
     return Array.isArray(reportData.rows) && reportData.rows.length > 0;
   }
 
-  async generateReport(reportType, filters = {}, format = 'pdf', userId = null) {
+  async generateReport(reportType, filters = {}, format = 'pdf', userId = null, options = {}) {
     const normalizedType = this.normalizeReportType(reportType);
     if (!normalizedType) {
       throw this.createHttpError(
@@ -1244,10 +1332,11 @@ class ReportService {
 
     try {
       const savedReport = await this.saveReportToDatabase({
+        id: options.existingReportId || options.reportId || null,
         type: normalizedType,
         title: this.getReportTitle(normalizedType),
         description: this.getReportDescription(normalizedType),
-        parameters: this.buildDisplayFilters(normalizedFilters),
+        parameters: this.buildPersistedReportParameters(normalizedFilters),
         file_path: filePath,
         file_format: normalizedFormat,
         file_size: this.toInteger(fileStats.size, buffer.length),
@@ -1261,6 +1350,69 @@ class ReportService {
       await fs.unlink(filePath).catch(() => {});
       throw error;
     }
+  }
+
+  async createReportHistoryPlaceholder(reportType, filters = {}, format = 'pdf', userId = null) {
+    const normalizedType = this.normalizeReportType(reportType);
+    if (!normalizedType) {
+      throw this.createHttpError(
+        `Invalid report type. Allowed values: ${REPORT_TYPES.join(', ')}`,
+        400,
+        'REPORT_INVALID_TYPE',
+      );
+    }
+
+    const normalizedFormat = this.normalizeReportFormat(format);
+    if (!normalizedFormat) {
+      throw this.createHttpError(
+        `Invalid report format. Allowed values: ${REPORT_FORMATS.join(', ')}`,
+        400,
+        'REPORT_INVALID_FORMAT',
+      );
+    }
+
+    const normalizedFilters = this.normalizeReportFilters(normalizedType, {
+      ...(filters || {}),
+      userId: userId || filters.userId,
+    });
+
+    return this.saveReportToDatabase({
+      type: normalizedType,
+      title: this.getReportTitle(normalizedType),
+      description: this.getReportDescription(normalizedType),
+      parameters: this.buildPersistedReportParameters(normalizedFilters),
+      file_path: null,
+      file_format: normalizedFormat,
+      file_size: 0,
+      generated_by: normalizedFilters.userId || null,
+      date_generated: new Date(),
+      status: 'generating',
+    });
+  }
+
+  async markReportGenerationFailed(reportId, error) {
+    const reportIdNumber = this.toInteger(reportId, 0);
+    if (!reportIdNumber) {
+      return null;
+    }
+
+    const hasUpdatedAt = await this.hasColumn('reports', 'updated_at');
+    const result = await this.pool.query(
+      `
+        UPDATE reports
+        SET status = 'failed',
+            error_message = $2
+            ${hasUpdatedAt ? ', updated_at = NOW()' : ''}
+        WHERE id = $1
+        RETURNING *
+      `,
+      [
+        reportIdNumber,
+        this.sanitizeFilterText(error?.message || error || 'Report generation failed', 500),
+      ],
+    );
+
+    return result.rows[0] || null;
   }
 
   async buildReportBuffer(reportData, format) {
@@ -2321,6 +2473,8 @@ class ReportService {
     const hasFileSize = await this.hasColumn('reports', 'file_size');
     const hasGeneratedBy = await this.hasColumn('reports', 'generated_by');
     const hasDateGenerated = await this.hasColumn('reports', 'date_generated');
+    const hasErrorMessage = await this.hasColumn('reports', 'error_message');
+    const hasUpdatedAt = await this.hasColumn('reports', 'updated_at');
 
     const columns = ['type', 'title', 'description', 'parameters', 'file_path', 'file_format', 'status'];
     const values = [
@@ -2348,7 +2502,58 @@ class ReportService {
       values.push(this.toInteger(reportData.file_size, 0));
     }
 
+    if (hasErrorMessage) {
+      columns.push('error_message');
+      values.push(reportData.error_message || null);
+    }
+
     const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
+
+    const reportIdNumber = this.toInteger(reportData.id || reportData.reportId, 0);
+    if (reportIdNumber) {
+      const setClauses = columns.map((column, index) => `${column} = $${index + 2}`);
+      if (hasUpdatedAt) {
+        setClauses.push('updated_at = NOW()');
+      }
+
+      const updateQuery = `
+          UPDATE reports
+          SET ${setClauses.join(', ')}
+          WHERE id = $1
+          RETURNING *
+        `;
+      const executeUpdate = async (updateValues) => (
+        this.pool.query(updateQuery, [reportIdNumber, ...updateValues])
+      );
+
+      let updateResult;
+      try {
+        updateResult = await executeUpdate(values);
+      } catch (error) {
+        if (error.code === '23503' && hasGeneratedBy) {
+          const generatedByIndex = columns.indexOf('generated_by');
+          if (generatedByIndex >= 0) {
+            const retryValues = [...values];
+            retryValues[generatedByIndex] = null;
+            updateResult = await executeUpdate(retryValues);
+          } else {
+            throw error;
+          }
+        } else {
+          throw error;
+        }
+      }
+
+      if (updateResult.rows.length === 0) {
+        throw this.createHttpError(
+          'Failed to update report history row.',
+          500,
+          'REPORT_HISTORY_UPDATE_FAILED',
+        );
+      }
+
+      return updateResult.rows[0];
+    }
 
     const executeInsert = async (insertValues) => {
       const insertQuery = `
@@ -2407,81 +2612,105 @@ class ReportService {
     const offset = Math.max(this.toInteger(filters.offset, 0), 0);
     const generatedBy = this.toInteger(filters.generatedBy, 0) || null;
     const hasFileSize = await this.hasColumn('reports', 'file_size');
+    const hasIsActive = await this.hasColumn('reports', 'is_active');
+    const scopeIds = this.normalizeScopeIds(filters.scopeIds || filters.scope_ids || []);
 
     let query = `
         SELECT
-          id,
-          type,
-          title,
-          description,
-          parameters,
-          file_path,
-          file_format,
-          status,
-          generated_by,
-          date_generated,
-          download_count,
-          error_message,
-          created_at,
-          updated_at
-          ${hasFileSize ? ', file_size' : ''}
-        FROM reports
+          r.id,
+          r.type,
+          r.title,
+          r.description,
+          r.parameters,
+          r.file_path,
+          r.file_format,
+          r.status,
+          r.generated_by,
+          r.date_generated,
+          r.download_count,
+          r.error_message,
+          r.created_at,
+          r.updated_at
+          ${hasFileSize ? ', r.file_size' : ''}
+        FROM reports r
         WHERE 1=1
       `;
 
     const params = [];
     let paramIndex = 1;
 
+    if (hasIsActive) {
+      query += ' AND COALESCE(r.is_active, true) = true';
+    }
+
     if (normalizedType) {
-      query += ` AND type = $${paramIndex}`;
+      query += ` AND r.type = $${paramIndex}`;
       params.push(normalizedType);
       paramIndex += 1;
     }
 
     if (startDate) {
-      query += ` AND date_generated::date >= $${paramIndex}`;
+      query += ` AND (r.date_generated AT TIME ZONE 'Asia/Manila')::date >= $${paramIndex}`;
       params.push(startDate);
       paramIndex += 1;
     }
 
     if (endDate) {
-      query += ` AND date_generated::date <= $${paramIndex}`;
+      query += ` AND (r.date_generated AT TIME ZONE 'Asia/Manila')::date <= $${paramIndex}`;
       params.push(endDate);
       paramIndex += 1;
     }
 
     if (generatedBy) {
-      query += ` AND generated_by = $${paramIndex}`;
+      query += ` AND r.generated_by = $${paramIndex}`;
       params.push(generatedBy);
       paramIndex += 1;
     }
 
-    query += ` ORDER BY date_generated DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-    params.push(limit, offset);
+    query += this.buildReportScopePredicate(scopeIds, params, 'r');
 
-    const result = await this.pool.query(query, params);
-    return result.rows.map((row) => ({
+    const countQuery = `SELECT COUNT(*)::int AS total FROM (${query}) scoped_reports`;
+    const countResult = await this.pool.query(countQuery, params);
+
+    query += ` ORDER BY r.date_generated DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    const result = await this.pool.query(query, [...params, limit, offset]);
+    const rows = result.rows.map((row) => ({
       ...row,
       file_size: hasFileSize ? this.toInteger(row.file_size, 0) : 0,
     }));
+
+    return {
+      rows,
+      total: this.toInteger(countResult.rows?.[0]?.total, rows.length),
+    };
   }
 
-  async getReportStatus(reportId) {
+  async getActiveReportById(reportId, { scopeIds = [] } = {}) {
     const reportIdNumber = this.toInteger(reportId, 0);
     if (!reportIdNumber) {
       throw this.createHttpError('Invalid report ID.', 400, 'REPORT_INVALID_ID');
     }
 
+    const hasIsActive = await this.hasColumn('reports', 'is_active');
+    const hasFileSize = await this.hasColumn('reports', 'file_size');
     const result = await this.pool.query(
       `
           SELECT
             id,
             type,
+            title,
+            description,
+            parameters,
+            file_path,
             status,
             error_message,
             file_format,
+            ${hasFileSize ? 'file_size,' : '0 AS file_size,'}
+            generated_by,
             date_generated,
             download_count,
+            ${hasIsActive ? 'is_active,' : 'true AS is_active,'}
+            created_at,
             updated_at
           FROM reports
           WHERE id = $1
@@ -2494,39 +2723,31 @@ class ReportService {
       throw this.createHttpError('Report not found.', 404, 'REPORT_NOT_FOUND');
     }
 
-    return result.rows[0];
-  }
-
-  async downloadReport(reportId) {
-    const reportIdNumber = this.toInteger(reportId, 0);
-    if (!reportIdNumber) {
-      throw this.createHttpError('Invalid report ID.', 400, 'REPORT_INVALID_ID');
-    }
-
-    const result = await this.pool.query(
-      `
-          SELECT
-            id,
-            type,
-            title,
-            file_path,
-            file_format,
-            status,
-            parameters,
-            generated_by,
-            date_generated
-          FROM reports
-          WHERE id = $1
-          LIMIT 1
-        `,
-      [reportIdNumber],
-    );
-
-    if (result.rows.length === 0) {
+    const report = result.rows[0];
+    if (hasIsActive && report.is_active === false) {
       throw this.createHttpError('Report not found.', 404, 'REPORT_NOT_FOUND');
     }
 
-    const report = result.rows[0];
+    if (!this.isReportInScope(report, scopeIds)) {
+      throw this.createHttpError(
+        'You do not have access to this report.',
+        403,
+        'REPORT_SCOPE_FORBIDDEN',
+      );
+    }
+
+    return {
+      ...report,
+      file_size: this.toInteger(report.file_size, 0),
+    };
+  }
+
+  async getReportStatus(reportId, options = {}) {
+    return this.getActiveReportById(reportId, options);
+  }
+
+  async downloadReport(reportId, options = {}) {
+    const report = await this.getActiveReportById(reportId, options);
     if (String(report.status || '').toLowerCase() !== 'completed') {
       throw this.createHttpError(
         'Report is not ready for download.',
@@ -2779,14 +3000,22 @@ class ReportService {
         });
 
     const reportsTable = await this.resolveFirstExistingTable(['reports'], null);
+    const reportsHasIsActive = reportsTable ? await this.hasColumn(reportsTable, 'is_active') : false;
+    const reportActivityParams = [];
+    let reportActivityWhere = 'WHERE 1=1';
+    if (reportsHasIsActive) {
+      reportActivityWhere += ' AND COALESCE(r.is_active, true) = true';
+    }
+    reportActivityWhere += this.buildReportScopePredicate(scopeIds, reportActivityParams, 'r');
     const reportActivityQuery = reportsTable
       ? `
           SELECT
             COUNT(*)::int AS total_reports,
-            COALESCE(SUM(download_count), 0)::int AS total_downloads,
-            COUNT(CASE WHEN date_generated >= NOW() - INTERVAL '7 days' THEN 1 END)::int AS reports_last_7_days,
-            COUNT(CASE WHEN date_generated >= NOW() - INTERVAL '30 days' THEN 1 END)::int AS reports_last_30_days
-          FROM ${reportsTable}
+            COALESCE(SUM(r.download_count), 0)::int AS total_downloads,
+            COUNT(CASE WHEN r.date_generated >= NOW() - INTERVAL '7 days' THEN 1 END)::int AS reports_last_7_days,
+            COUNT(CASE WHEN r.date_generated >= NOW() - INTERVAL '30 days' THEN 1 END)::int AS reports_last_30_days
+          FROM ${reportsTable} r
+          ${reportActivityWhere}
         `
       : null;
     const transferCasesTable = await this.resolveFirstExistingTable(['transfer_in_cases'], null);
@@ -2836,7 +3065,7 @@ class ReportService {
 
     const [reports, transfers] = await Promise.all([
       reportActivityQuery
-        ? this.pool.query(reportActivityQuery)
+        ? this.pool.query(reportActivityQuery, reportActivityParams)
         : Promise.resolve({
           rows: [
             {
@@ -2962,6 +3191,15 @@ class ReportService {
     const hasBarangay = await this.hasColumn(patientsTable, 'barangay');
     const hasDob = await this.hasColumn(patientsTable, 'dob');
     const statusExpression = await this.getStatusExpressionForImmunizationRecords('ir');
+    const [
+      patientScopeColumn,
+      guardianScopeColumn,
+      batchScopeColumn,
+    ] = await Promise.all([
+      this.resolveFirstExistingColumn(patientsTable, ['facility_id', 'clinic_id'], null),
+      this.resolveFirstExistingColumn('guardians', ['facility_id', 'clinic_id'], null),
+      this.resolveFirstExistingColumn('vaccine_batches', ['facility_id', 'clinic_id'], null),
+    ]);
 
     let query = `
         SELECT
@@ -2974,6 +3212,8 @@ class ReportService {
         FROM immunization_records ir
         JOIN ${patientsTable} p ON p.id = ir.patient_id
         JOIN vaccines v ON v.id = ir.vaccine_id
+        ${guardianScopeColumn ? 'LEFT JOIN guardians g_scope ON g_scope.id = p.guardian_id' : ''}
+        ${batchScopeColumn ? 'LEFT JOIN vaccine_batches vb_scope ON vb_scope.id = ir.batch_id' : ''}
         WHERE COALESCE(ir.is_active, true) = true
       `;
 
@@ -3022,6 +3262,16 @@ class ReportService {
       query += ` AND ${ageCondition}`;
     }
 
+    query += this.buildScopeFilter(
+      [
+        patientScopeColumn ? `p.${patientScopeColumn}` : null,
+        guardianScopeColumn ? `g_scope.${guardianScopeColumn}` : null,
+        batchScopeColumn ? `vb_scope.${batchScopeColumn}` : null,
+      ],
+      filters.scopeIds,
+      params,
+    );
+
     query += ' ORDER BY ir.admin_date DESC NULLS LAST, child_name ASC';
 
     const result = await this.pool.query(query, params);
@@ -3045,6 +3295,10 @@ class ReportService {
     const appointmentsFacilityColumn = await this.getAppointmentsFacilityColumn();
     const clinicsTable = await this.getClinicsTableName();
     const hasPatientHealthCenter = await this.hasColumn(patientsTable, 'health_center');
+    const [patientScopeColumn, guardianScopeColumn] = await Promise.all([
+      this.resolveFirstExistingColumn(patientsTable, ['facility_id', 'clinic_id'], null),
+      this.resolveFirstExistingColumn('guardians', ['facility_id', 'clinic_id'], null),
+    ]);
 
     let query = `
         SELECT
@@ -3110,6 +3364,16 @@ class ReportService {
         paramIndex += 1;
       }
     }
+
+    query += this.buildScopeFilter(
+      [
+        appointmentsFacilityColumn ? `a.${appointmentsFacilityColumn}` : null,
+        patientScopeColumn ? `p.${patientScopeColumn}` : null,
+        guardianScopeColumn ? `g.${guardianScopeColumn}` : null,
+      ],
+      filters.scopeIds,
+      params,
+    );
 
     query += ` ORDER BY a.${dateColumn} DESC NULLS LAST, infant ASC`;
     const result = await this.pool.query(query, params);
@@ -3253,6 +3517,12 @@ class ReportService {
       query += ` AND ${stockOnHandExpression} <= ${lowStockThresholdExpression}`;
     }
 
+    query += this.buildScopeFilter(
+      [facilityColumn ? `vi.${facilityColumn}` : null],
+      filters.scopeIds,
+      params,
+    );
+
     query += ` ORDER BY v.name ASC, vi.${periodStartColumn} DESC`;
 
     const result = await this.pool.query(query, params);
@@ -3267,6 +3537,10 @@ class ReportService {
     const hasPatientIsActive = await this.hasColumn(patientsTable, 'is_active');
     const hasPatientBarangay = await this.hasColumn(patientsTable, 'barangay');
     const hasGuardianIsActive = await this.hasColumn('guardians', 'is_active');
+    const [patientScopeColumn, guardianScopeColumn] = await Promise.all([
+      this.resolveFirstExistingColumn(patientsTable, ['facility_id', 'clinic_id'], null),
+      this.resolveFirstExistingColumn('guardians', ['facility_id', 'clinic_id'], null),
+    ]);
     const activeStatusExpression = hasGuardianIsActive
       ? 'CASE WHEN COALESCE(g.is_active, true) THEN \'Active\' ELSE \'Inactive\' END'
       : '\'Active\'';
@@ -3316,6 +3590,15 @@ class ReportService {
       params.push(filters.barangay.toLowerCase());
       paramIndex += 1;
     }
+
+    query += this.buildScopeFilter(
+      [
+        guardianScopeColumn ? `g.${guardianScopeColumn}` : null,
+        patientScopeColumn ? `p.${patientScopeColumn}` : null,
+      ],
+      filters.scopeIds,
+      params,
+    );
 
     query += `
         GROUP BY g.id, g.name, g.phone, g.email, g.relationship, g.address
@@ -3422,6 +3705,12 @@ class ReportService {
       }
     }
 
+    query += this.buildScopeFilter(
+      [facilityColumn ? `u.${facilityColumn}` : null],
+      filters.scopeIds,
+      params,
+    );
+
     query += ' ORDER BY u.username ASC';
 
     const result = await this.pool.query(query, params);
@@ -3451,6 +3740,10 @@ class ReportService {
     const hasBarangay = await this.hasColumn(patientsTable, 'barangay');
     const hasDob = await this.hasColumn(patientsTable, 'dob');
     const statusExpression = await this.getStatusExpressionForImmunizationRecords('ir');
+    const [patientScopeColumn, guardianScopeColumn] = await Promise.all([
+      this.resolveFirstExistingColumn(patientsTable, ['facility_id', 'clinic_id'], null),
+      this.resolveFirstExistingColumn('guardians', ['facility_id', 'clinic_id'], null),
+    ]);
 
     let query = `
         SELECT
@@ -3496,6 +3789,15 @@ class ReportService {
       query += ` AND ${ageCondition}`;
     }
 
+    query += this.buildScopeFilter(
+      [
+        patientScopeColumn ? `p.${patientScopeColumn}` : null,
+        guardianScopeColumn ? `g.${guardianScopeColumn}` : null,
+      ],
+      filters.scopeIds,
+      params,
+    );
+
     query += `
         GROUP BY p.id, p.first_name, p.last_name, p.dob, p.sex, g.name
         ORDER BY infant_name ASC
@@ -3540,6 +3842,12 @@ class ReportService {
       await this.getAppointmentsDateColumn(),
       'Unable to resolve appointment date column for barangay report.',
     );
+    const patientScopeColumn = await this.resolveFirstExistingColumn(
+      patientsTable,
+      ['facility_id', 'clinic_id'],
+      null,
+    );
+    const appointmentFacilityColumn = await this.getAppointmentsFacilityColumn();
 
     const barangayExpression = hasBarangay
       ? 'COALESCE(NULLIF(p.barangay, \'\'), \'Unknown\')'
@@ -3589,6 +3897,15 @@ class ReportService {
       paramIndex += 1;
     }
 
+    query += this.buildScopeFilter(
+      [
+        patientScopeColumn ? `p.${patientScopeColumn}` : null,
+        appointmentFacilityColumn ? `a.${appointmentFacilityColumn}` : null,
+      ],
+      filters.scopeIds,
+      params,
+    );
+
     query += `
         GROUP BY ${barangayExpression}
         ORDER BY barangay ASC
@@ -3616,6 +3933,11 @@ class ReportService {
     );
     const hasDob = await this.hasColumn(patientsTable, 'dob');
     const statusExpression = await this.getStatusExpressionForImmunizationRecords('ir');
+    const patientScopeColumn = await this.resolveFirstExistingColumn(
+      patientsTable,
+      ['facility_id', 'clinic_id'],
+      null,
+    );
 
     let query = `
         SELECT
@@ -3671,6 +3993,12 @@ class ReportService {
         query += ` AND ${ageCondition}`;
       }
     }
+
+    query += this.buildScopeFilter(
+      [patientScopeColumn ? `p.${patientScopeColumn}` : null],
+      filters.scopeIds,
+      params,
+    );
 
     query += `
         GROUP BY v.name

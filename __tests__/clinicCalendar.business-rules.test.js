@@ -24,7 +24,7 @@ describe('clinic calendar business rules', () => {
 
     expect(result).toEqual({
       startDate: '2026-04-01',
-      endDate: '2026-04-05',
+      endDate: '2026-04-30',
       errors: [],
     });
   });

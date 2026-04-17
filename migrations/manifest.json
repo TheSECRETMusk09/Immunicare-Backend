@@ -173,5 +173,12 @@
     "type": "sql",
     "deprecated": false,
     "description": "Create user settings tables, audit trigger, default settings bootstrap, and summary view"
+  },
+  {
+    "id": "vaccinations_dashboard_search_indexes_20260411",
+    "file": "20260411_vaccinations_dashboard_search_indexes.sql",
+    "type": "sql",
+    "deprecated": false,
+    "description": "Add trigram search indexes for Vaccinations dashboard infant lookups"
   }
 ]

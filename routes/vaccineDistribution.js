@@ -91,14 +91,14 @@ router.post('/inventory/import', auth, distributionController.importInventoryFro
 // Generate schedule for infant
 router.post('/schedules/generate', auth, distributionController.generateInfantSchedule);
 
+// Get overdue schedules
+router.get('/schedules/overdue', auth, distributionController.getOverdueSchedules);
+
 // Get infant schedule
 router.get('/schedules/:infantId', auth, distributionController.getInfantSchedule);
 
 // Update schedule status
 router.put('/schedules/:id', auth, distributionController.updateScheduleStatus);
-
-// Get overdue schedules
-router.get('/schedules/overdue', auth, distributionController.getOverdueSchedules);
 
 // Create reminder
 router.post('/schedules/:id/reminder', auth, distributionController.createScheduleReminder);

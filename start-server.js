@@ -87,7 +87,7 @@ function startServer() {
   console.log(
     `  Database: ${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || 5432}/${process.env.DB_NAME || 'immunicare_dev'}`
   );
-  console.log(`  JWT Access Expiration: ${process.env.JWT_ACCESS_EXPIRATION || '15m'}`);
+  console.log(`  JWT Access Expiration: ${process.env.JWT_ACCESS_EXPIRATION || '8h'}`);
   console.log(`  JWT Refresh Expiration: ${process.env.JWT_REFRESH_EXPIRATION || '7d'}`);
   console.log(
     `  Cache: ${process.env.CACHE_DISABLED === 'true' ? 'Disabled (Memory fallback)' : 'Enabled'}`

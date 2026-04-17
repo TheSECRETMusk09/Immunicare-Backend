@@ -27,6 +27,11 @@ const {
   isScopeRequestAllowed,
   resolveEffectiveScope,
 } = require('../services/entityScopeService');
+const {
+  CLINIC_TODAY_SQL,
+  getClinicBlockedDateKeys,
+  resolveClinicDateRange,
+} = require('../utils/clinicCalendar');
 
 const reminderService = new VaccinationReminderService();
 
@@ -116,6 +121,11 @@ const sanitizeOptionalText = (value) => {
   return normalized.length > 0 ? normalized : null;
 };
 
+const sanitizeNullableInt = (value) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
 const OPERATIONAL_YEAR_START = '2026-01-01';
 const OPERATIONAL_YEAR_END = '2026-12-31';
 
@@ -148,9 +158,287 @@ const appendDateRangeFilter = ({
   }
 
   if (endDate) {
-    whereParts.push(`${expression} <= $${params.length + 1}::date`);
+    whereParts.push(`${expression} < ($${params.length + 1}::date + INTERVAL '1 day')`);
     params.push(endDate);
   }
+};
+
+const VACCINATION_MODULE_PERIODS = new Set(['today', 'week', 'month', 'custom', 'all']);
+
+const normalizeVaccinationModulePeriod = (value) => {
+  const normalized = String(value || 'month').trim().toLowerCase();
+  return VACCINATION_MODULE_PERIODS.has(normalized) ? normalized : 'month';
+};
+
+const resolveVaccinationModulePeriodRange = (query = {}) => {
+  const period = normalizeVaccinationModulePeriod(query.period);
+
+  if (period === 'all') {
+    return {
+      period,
+      startDate: null,
+      endDate: null,
+      errors: [],
+    };
+  }
+
+  const resolvedRange = resolveClinicDateRange({
+    period,
+    startDateInput:
+      query.startDate ||
+      query.start_date ||
+      query.period_start_date ||
+      query.periodStartDate,
+    endDateInput:
+      query.endDate ||
+      query.end_date ||
+      query.period_end_date ||
+      query.periodEndDate,
+  });
+
+  return {
+    period,
+    startDate: resolvedRange.startDate,
+    endDate: resolvedRange.endDate,
+    errors: resolvedRange.errors || [],
+  };
+};
+
+const buildVaccinationModuleBaseQuery = ({
+  params,
+  scopeContext,
+  searchTerm,
+  infantIdFilter,
+}) => {
+  const patientWhere = [
+    'p.is_active = true',
+    'p.dob IS NOT NULL',
+    `p.dob::date <= ${CLINIC_TODAY_SQL}`,
+  ];
+
+  if (scopeContext.useScope) {
+    patientWhere.push(`p.facility_id = ANY($${params.length + 1}::int[])`);
+    params.push(scopeContext.scopeIds);
+  }
+
+  if (infantIdFilter) {
+    patientWhere.push(`p.id = $${params.length + 1}`);
+    params.push(infantIdFilter);
+  }
+
+  if (searchTerm) {
+    patientWhere.push(`
+      (
+        COALESCE(p.first_name, '') ILIKE $${params.length + 1}
+        OR COALESCE(p.middle_name, '') ILIKE $${params.length + 1}
+        OR COALESCE(p.last_name, '') ILIKE $${params.length + 1}
+        OR CONCAT_WS(
+          ' ',
+          NULLIF(BTRIM(p.first_name), ''),
+          NULLIF(BTRIM(p.middle_name), ''),
+          NULLIF(BTRIM(p.last_name), '')
+        ) ILIKE $${params.length + 1}
+        OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
+        OR COALESCE(g.name, '') ILIKE $${params.length + 1}
+        OR COALESCE(TO_CHAR(p.dob, 'YYYY-MM-DD'), '') ILIKE $${params.length + 1}
+        OR COALESCE(TO_CHAR(p.dob, 'MM/DD/YYYY'), '') ILIKE $${params.length + 1}
+      )
+    `);
+    params.push(`%${searchTerm}%`);
+  }
+
+  return `
+    WITH schedule_defs AS (
+      SELECT
+        vs.id AS schedule_id,
+        vs.vaccine_id,
+        vs.vaccine_name,
+        vs.dose_number,
+        vs.total_doses,
+        COALESCE(vs.age_in_months, 0)::int AS age_in_months,
+        vs.description
+      FROM vaccination_schedules vs
+      WHERE vs.is_active = true
+        AND vs.vaccine_name = ANY($1::text[])
+    ),
+    eligible_patients AS (
+      SELECT
+        p.id,
+        p.first_name,
+        p.middle_name,
+        p.last_name,
+        p.dob,
+        p.control_number,
+        p.guardian_id,
+        p.facility_id,
+        CONCAT_WS(
+          ' ',
+          NULLIF(BTRIM(p.first_name), ''),
+          NULLIF(BTRIM(p.middle_name), ''),
+          NULLIF(BTRIM(p.last_name), '')
+        ) AS full_name,
+        CONCAT_WS(
+          ' ',
+          p.first_name,
+          p.middle_name,
+          p.last_name,
+          p.control_number,
+          TO_CHAR(p.dob, 'YYYY-MM-DD'),
+          TO_CHAR(p.dob, 'MM/DD/YYYY')
+        ) AS search_text
+      FROM patients p
+      LEFT JOIN guardians g ON g.id = p.guardian_id
+      WHERE ${patientWhere.join('\n        AND ')}
+    ),
+    latest_records AS (
+      SELECT DISTINCT ON (ir.patient_id, ir.vaccine_id, COALESCE(ir.dose_no, 1))
+        ir.id AS record_id,
+        ir.patient_id,
+        ir.vaccine_id,
+        COALESCE(ir.dose_no, 1)::int AS dose_no,
+        ir.admin_date::date AS admin_date,
+        LOWER(TRIM(COALESCE(ir.status::text, ''))) AS record_status,
+        ir.next_due_date::date AS next_due_date
+      FROM immunization_records ir
+      JOIN eligible_patients ep ON ep.id = ir.patient_id
+      WHERE ir.is_active = true
+      ORDER BY
+        ir.patient_id ASC,
+        ir.vaccine_id ASC,
+        COALESCE(ir.dose_no, 1) ASC,
+        (ir.admin_date IS NOT NULL) DESC,
+        ir.admin_date DESC NULLS LAST,
+        COALESCE(ir.updated_at, ir.created_at) DESC NULLS LAST,
+        ir.id DESC
+    ),
+    raw_schedule_rows AS (
+      SELECT
+        CONCAT(ep.id, '-', sd.vaccine_id, '-', sd.dose_number) AS row_id,
+        ep.id AS infant_id,
+        ep.first_name AS infant_first_name,
+        ep.middle_name AS infant_middle_name,
+        ep.last_name AS infant_last_name,
+        ep.full_name AS infant_name,
+        ep.full_name AS infant_display_name,
+        ep.full_name AS infant_full_name,
+        ep.control_number AS infant_control_number,
+        ep.dob::date AS infant_dob,
+        ep.guardian_id AS infant_guardian_id,
+        ep.facility_id AS infant_facility_id,
+        ep.search_text,
+        sd.schedule_id,
+        sd.vaccine_id,
+        sd.vaccine_name,
+        COALESCE(sd.description, '-') AS disease_prevented,
+        sd.age_in_months,
+        CASE
+          WHEN COALESCE(sd.age_in_months, 0) = 0 THEN 'At Birth'
+          WHEN sd.age_in_months = 1 THEN '1 month'
+          ELSE CONCAT(sd.age_in_months, ' months')
+        END AS age_label,
+        sd.dose_number::int AS dose_number,
+        sd.total_doses::int AS total_doses,
+        (ep.dob::date + make_interval(months => COALESCE(sd.age_in_months, 0)::int))::date AS due_date,
+        lr.record_id,
+        lr.admin_date,
+        lr.record_status,
+        lr.next_due_date
+      FROM eligible_patients ep
+      CROSS JOIN schedule_defs sd
+      LEFT JOIN latest_records lr
+        ON lr.patient_id = ep.id
+       AND lr.vaccine_id = sd.vaccine_id
+       AND lr.dose_no = sd.dose_number
+    ),
+    schedule_rows AS (
+      SELECT
+        raw_schedule_rows.*,
+        CASE
+          WHEN admin_date IS NOT NULL OR record_status IN ('completed', 'attended') THEN 'completed'
+          WHEN record_status IN ('overdue', 'missed') THEN 'overdue'
+          WHEN record_status = 'due' THEN 'due'
+          WHEN record_status IN ('upcoming', 'scheduled') THEN 'upcoming'
+          WHEN due_date < ${CLINIC_TODAY_SQL} THEN 'overdue'
+          WHEN due_date <= (${CLINIC_TODAY_SQL} + INTERVAL '7 days')::date THEN 'due'
+          ELSE 'upcoming'
+        END AS status_key
+      FROM raw_schedule_rows
+    )
+  `;
+};
+
+const appendSchedulePeriodFilter = (whereParts, params, periodRange) => {
+  if (periodRange.startDate) {
+    whereParts.push(`due_date >= $${params.length + 1}::date`);
+    params.push(periodRange.startDate);
+  }
+
+  if (periodRange.endDate) {
+    whereParts.push(`due_date <= $${params.length + 1}::date`);
+    params.push(periodRange.endDate);
+  }
+};
+
+const appendTrackingPeriodFilter = (whereParts, params, periodRange) => {
+  whereParts.push("status_key IN ('completed', 'due', 'overdue')");
+
+  if (periodRange.startDate || periodRange.endDate) {
+    const completedParts = ['status_key = \'completed\'', 'admin_date IS NOT NULL'];
+    const actionableParts = ['status_key <> \'completed\''];
+
+    if (periodRange.startDate) {
+      const placeholder = `$${params.length + 1}`;
+      completedParts.push(`admin_date >= ${placeholder}::date`);
+      actionableParts.push(`due_date >= ${placeholder}::date`);
+      params.push(periodRange.startDate);
+    }
+
+    if (periodRange.endDate) {
+      const placeholder = `$${params.length + 1}`;
+      completedParts.push(`admin_date <= ${placeholder}::date`);
+      actionableParts.push(`due_date <= ${placeholder}::date`);
+      params.push(periodRange.endDate);
+    }
+
+    whereParts.push(`
+      (
+        (${completedParts.join(' AND ')})
+        OR (${actionableParts.join(' AND ')})
+      )
+    `);
+  }
+};
+
+const resolveBlockedDateWindow = ({
+  dateView = 'all',
+  administeredStart = null,
+  administeredEnd = null,
+  nextDueStart = null,
+  nextDueEnd = null,
+} = {}) => {
+  const startCandidates = [administeredStart, nextDueStart].filter(Boolean);
+  const endCandidates = [administeredEnd, nextDueEnd].filter(Boolean);
+
+  if (dateView === 'present') {
+    startCandidates.push(OPERATIONAL_YEAR_START);
+    endCandidates.push(OPERATIONAL_YEAR_END);
+  }
+
+  const startDate = startCandidates.sort()[0] || null;
+  const endDate = endCandidates.sort().slice(-1)[0] || null;
+
+  if (startDate && !endDate) {
+    return { startDate, endDate: startDate };
+  }
+
+  if (!startDate && endDate) {
+    return { startDate: endDate, endDate };
+  }
+
+  return {
+    startDate,
+    endDate,
+  };
 };
 
 const resolveLotBatchValue = (...values) => {
@@ -166,7 +454,20 @@ const resolveLotBatchValue = (...values) => {
 
 const ensureVaccinationTrackingColumns = async () => {
   if (!vaccinationTrackingColumnsPromise) {
-    vaccinationTrackingColumnsPromise = Promise.resolve();
+    vaccinationTrackingColumnsPromise = pool
+      .query(
+        `
+          ALTER TABLE immunization_records
+            ADD COLUMN IF NOT EXISTS site_of_injection VARCHAR(255),
+            ADD COLUMN IF NOT EXISTS route_of_injection VARCHAR(50),
+            ADD COLUMN IF NOT EXISTS time_administered TIME,
+            ADD COLUMN IF NOT EXISTS expiration_date DATE
+        `,
+      )
+      .catch((error) => {
+        vaccinationTrackingColumnsPromise = null;
+        throw error;
+      });
   }
 
   return vaccinationTrackingColumnsPromise;
@@ -933,6 +1234,27 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
       return res.status(scopeContext.status).json({ error: scopeContext.error });
     }
 
+    const blockingClinicId =
+      sanitizeNullableInt(req.query.clinic_id) ||
+      sanitizeNullableInt(req.user?.clinic_id) ||
+      sanitizeNullableInt(req.user?.facility_id) ||
+      null;
+    const blockedDateWindow = resolveBlockedDateWindow({
+      dateView,
+      administeredStart: administeredStart.value,
+      administeredEnd: administeredEnd.value,
+      nextDueStart: nextDueStart.value,
+      nextDueEnd: nextDueEnd.value,
+    });
+    const blockedDateKeys =
+      blockedDateWindow.startDate && blockedDateWindow.endDate
+        ? await getClinicBlockedDateKeys({
+          startDate: blockedDateWindow.startDate,
+          endDate: blockedDateWindow.endDate,
+          clinicId: blockingClinicId,
+        })
+        : [];
+
     const params = [];
     let whereClause = `
       WHERE ir.is_active = true
@@ -949,11 +1271,19 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
         AND (
           COALESCE(p.first_name, '') ILIKE $${params.length + 1}
           OR COALESCE(p.last_name, '') ILIKE $${params.length + 1}
+          OR CONCAT_WS(
+            ' ',
+            NULLIF(BTRIM(p.first_name), ''),
+            NULLIF(BTRIM(p.middle_name), ''),
+            NULLIF(BTRIM(p.last_name), '')
+          ) ILIKE $${params.length + 1}
           OR COALESCE(g.name, '') ILIKE $${params.length + 1}
           OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
           OR COALESCE(v.name, '') ILIKE $${params.length + 1}
           OR COALESCE(ir.status::text, '') ILIKE $${params.length + 1}
           OR COALESCE(${providerValueExpression}, '') ILIKE $${params.length + 1}
+          OR COALESCE(TO_CHAR(p.dob, 'YYYY-MM-DD'), '') ILIKE $${params.length + 1}
+          OR COALESCE(TO_CHAR(p.dob, 'MM/DD/YYYY'), '') ILIKE $${params.length + 1}
         )
       `;
       params.push(`%${searchTerm}%`);
@@ -990,7 +1320,7 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
         },
       },
       params,
-      expression: 'ir.admin_date::date',
+      expression: 'ir.admin_date',
       startDate: administeredStart.value,
       endDate: administeredEnd.value,
     });
@@ -1002,7 +1332,7 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
         },
       },
       params,
-      expression: 'ir.next_due_date::date',
+      expression: 'ir.next_due_date',
       startDate: nextDueStart.value,
       endDate: nextDueEnd.value,
     });
@@ -1022,6 +1352,22 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
       whereClause += ` AND ${operationalDateExpression} < $${params.length + 1}::date`;
       params.push(OPERATIONAL_YEAR_START);
     }
+
+    if (blockedDateKeys.length > 0) {
+      whereClause += ` AND ${operationalDateExpression} <> ALL($${params.length + 1}::date[])`;
+      params.push(blockedDateKeys);
+    }
+
+    const countNeedsVaccineJoin = Boolean(
+      searchTerm || (vaccineNameFilter && vaccineNameFilter.toLowerCase() !== 'all'),
+    );
+    const countNeedsSearchJoins = Boolean(searchTerm);
+    const countJoinsSql = [
+      'JOIN patients p ON p.id = ir.patient_id',
+      countNeedsVaccineJoin ? 'JOIN vaccines v ON v.id = ir.vaccine_id' : '',
+      countNeedsSearchJoins ? 'LEFT JOIN guardians g ON g.id = p.guardian_id' : '',
+      countNeedsSearchJoins ? providerJoinsSql : '',
+    ].filter(Boolean).join('\n');
 
     const result = await pool.query(
       `
@@ -1057,7 +1403,7 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
           ${providerValueExpression} as administered_by_name
         FROM immunization_records ir
         JOIN vaccines v ON v.id = ir.vaccine_id
-        LEFT JOIN patients p ON p.id = ir.patient_id
+        JOIN patients p ON p.id = ir.patient_id
         LEFT JOIN guardians g ON g.id = p.guardian_id
         LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
         ${providerJoinsSql}
@@ -1086,11 +1432,7 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
               OR ir.admin_date IS NOT NULL
           )::INT AS completed
         FROM immunization_records ir
-        JOIN vaccines v ON v.id = ir.vaccine_id
-        LEFT JOIN patients p ON p.id = ir.patient_id
-        LEFT JOIN guardians g ON g.id = p.guardian_id
-        LEFT JOIN vaccine_batches batch ON batch.id = ir.batch_id
-        ${providerJoinsSql}
+        ${countJoinsSql}
         ${whereClause}
       `,
       params,
@@ -1114,6 +1456,345 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
   } catch (error) {
     console.error('Error fetching vaccination records:', error);
     res.status(500).json({ error: 'Failed to fetch vaccination records' });
+  }
+});
+
+router.get('/tracking', requirePermission('vaccination:view'), async (req, res) => {
+  try {
+    await ensureVaccinationTrackingColumns();
+
+    const limit = sanitizeLimit(req.query.limit, 9, 100);
+    const page = sanitizeLimit(req.query.page, 1, 100000);
+    const offset = (page - 1) * limit;
+    const searchTerm = sanitizeOptionalText(req.query.search || req.query.query);
+    const infantIdFilter = sanitizeNullableInt(
+      req.query.infant_id || req.query.infantId || req.query.patient_id || req.query.patientId,
+    );
+    const periodRange = resolveVaccinationModulePeriodRange(req.query);
+
+    if (periodRange.errors.length > 0) {
+      return res.status(400).json({
+        error: 'Invalid vaccination tracking filters',
+        errors: periodRange.errors,
+      });
+    }
+
+    const scopeContext = resolveVaccinationScopeContext(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({ error: scopeContext.error });
+    }
+
+    const params = [getOperationalVaccineSourceNames()];
+    const baseSql = buildVaccinationModuleBaseQuery({
+      params,
+      scopeContext,
+      searchTerm,
+      infantIdFilter,
+    });
+    const trackingWhereParts = [];
+    appendTrackingPeriodFilter(trackingWhereParts, params, periodRange);
+
+    const limitPlaceholder = `$${params.length + 1}`;
+    const offsetPlaceholder = `$${params.length + 2}`;
+    const result = await pool.query(
+      `
+        ${baseSql},
+        period_rows AS (
+          SELECT *
+          FROM schedule_rows
+          WHERE ${trackingWhereParts.join('\n            AND ')}
+        ),
+        infant_rollups_raw AS (
+          SELECT
+            infant_id,
+            infant_first_name,
+            infant_middle_name,
+            infant_last_name,
+            infant_name,
+            infant_display_name,
+            infant_full_name,
+            infant_control_number,
+            infant_dob,
+            infant_guardian_id,
+            infant_facility_id,
+            search_text,
+            COUNT(*) FILTER (WHERE status_key = 'completed')::int AS completed,
+            COUNT(*) FILTER (WHERE status_key = 'due')::int AS due,
+            COUNT(*) FILTER (WHERE status_key = 'overdue')::int AS overdue,
+            JSON_AGG(
+              JSON_BUILD_OBJECT(
+                'row_id', row_id,
+                'infant_id', infant_id,
+                'vaccine_id', vaccine_id,
+                'vaccine_name', vaccine_name,
+                'disease_prevented', disease_prevented,
+                'age_in_months', age_in_months,
+                'age_label', age_label,
+                'dose_number', dose_number,
+                'dose_no', dose_number,
+                'total_doses', total_doses,
+                'due_date', due_date,
+                'admin_date', admin_date,
+                'status', status_key,
+                'status_key', status_key,
+                'status_label', INITCAP(status_key)
+              )
+              ORDER BY due_date ASC, vaccine_name ASC, dose_number ASC
+            ) AS timeline
+          FROM period_rows
+          GROUP BY
+            infant_id,
+            infant_first_name,
+            infant_middle_name,
+            infant_last_name,
+            infant_name,
+            infant_display_name,
+            infant_full_name,
+            infant_control_number,
+            infant_dob,
+            infant_guardian_id,
+            infant_facility_id,
+            search_text
+        ),
+        infant_rollups AS (
+          SELECT
+            infant_id,
+            JSON_BUILD_OBJECT(
+              'id', infant_id,
+              'first_name', infant_first_name,
+              'middle_name', infant_middle_name,
+              'last_name', infant_last_name,
+              'full_name', infant_full_name,
+              'display_name', infant_display_name,
+              'control_number', infant_control_number,
+              'dob', infant_dob,
+              'guardian_id', infant_guardian_id,
+              'facility_id', infant_facility_id,
+              'is_active', true
+            ) AS infant,
+            infant_name,
+            infant_display_name,
+            infant_full_name,
+            infant_control_number,
+            infant_dob,
+            search_text,
+            completed,
+            due AS due_count,
+            (due + overdue)::int AS pending,
+            overdue,
+            CASE
+              WHEN (completed + due + overdue) > 0
+                THEN ROUND((completed::numeric / NULLIF((completed + due + overdue), 0)) * 100)::int
+              ELSE 0
+            END AS completion_rate,
+            COALESCE(timeline, '[]'::json) AS timeline
+          FROM infant_rollups_raw
+        ),
+        summary AS (
+          SELECT
+            COALESCE(SUM(completed), 0)::int AS completed,
+            COALESCE(SUM(due_count), 0)::int AS due_soon,
+            COALESCE(SUM(overdue), 0)::int AS overdue,
+            COUNT(*)::int AS tracked_infants
+          FROM infant_rollups
+        )
+        SELECT
+          COALESCE(JSON_AGG(ROW_TO_JSON(paged_rows)), '[]'::json) AS rows,
+          COALESCE((SELECT ROW_TO_JSON(summary) FROM summary), '{}'::json) AS summary,
+          (SELECT COUNT(*)::int FROM infant_rollups) AS total
+        FROM (
+          SELECT *
+          FROM infant_rollups
+          ORDER BY overdue DESC, due_count DESC, completed DESC, infant_name ASC, infant_id ASC
+          LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}
+        ) paged_rows
+      `,
+      [...params, limit, offset],
+    );
+
+    const payload = result.rows[0] || {};
+    const rows = Array.isArray(payload.rows) ? payload.rows : [];
+    const total = Number.parseInt(payload.total, 10) || 0;
+    const summary = payload.summary || {};
+
+    res.json({
+      rows,
+      summary: {
+        completed: Number(summary.completed || 0),
+        dueSoon: Number(summary.due_soon || 0),
+        overdue: Number(summary.overdue || 0),
+        trackedInfants: Number(summary.tracked_infants || 0),
+      },
+      metadata: {
+        page,
+        limit,
+        offset,
+        total,
+        totalPages: limit > 0 ? Math.ceil(total / limit) : 0,
+        hasNext: offset + limit < total,
+        hasPrev: offset > 0,
+      },
+      period: {
+        key: periodRange.period,
+        startDate: periodRange.startDate,
+        endDate: periodRange.endDate,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching vaccination tracking overview:', error);
+    res.status(500).json({ error: 'Failed to fetch vaccination tracking overview' });
+  }
+});
+
+router.get('/schedule-overview', requirePermission('vaccination:view'), async (req, res) => {
+  try {
+    await ensureVaccinationTrackingColumns();
+
+    const limit = sanitizeLimit(req.query.limit, 20, 100);
+    const page = sanitizeLimit(req.query.page, 1, 100000);
+    const offset = (page - 1) * limit;
+    const searchTerm = sanitizeOptionalText(req.query.search || req.query.query);
+    const infantIdFilter = sanitizeNullableInt(
+      req.query.infant_id || req.query.infantId || req.query.patient_id || req.query.patientId,
+    );
+    const periodRange = resolveVaccinationModulePeriodRange(req.query);
+
+    if (periodRange.errors.length > 0) {
+      return res.status(400).json({
+        error: 'Invalid vaccination schedule filters',
+        errors: periodRange.errors,
+      });
+    }
+
+    const scopeContext = resolveVaccinationScopeContext(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({ error: scopeContext.error });
+    }
+
+    const params = [getOperationalVaccineSourceNames()];
+    const baseSql = buildVaccinationModuleBaseQuery({
+      params,
+      scopeContext,
+      searchTerm,
+      infantIdFilter,
+    });
+    const scheduleWhereParts = [];
+    appendSchedulePeriodFilter(scheduleWhereParts, params, periodRange);
+    const scheduleWhereSql = scheduleWhereParts.length > 0
+      ? `WHERE ${scheduleWhereParts.join('\n            AND ')}`
+      : '';
+
+    const limitPlaceholder = `$${params.length + 1}`;
+    const offsetPlaceholder = `$${params.length + 2}`;
+    const result = await pool.query(
+      `
+        ${baseSql},
+        period_rows AS (
+          SELECT *
+          FROM schedule_rows
+          ${scheduleWhereSql}
+        ),
+        summary AS (
+          SELECT
+            COUNT(*) FILTER (WHERE status_key = 'upcoming')::int AS upcoming,
+            COUNT(*) FILTER (WHERE status_key = 'due')::int AS due,
+            COUNT(*) FILTER (WHERE status_key = 'completed')::int AS completed,
+            COUNT(*) FILTER (WHERE status_key = 'overdue')::int AS overdue,
+            COUNT(DISTINCT infant_id)::int AS tracked_infants,
+            COUNT(*)::int AS total_rows
+          FROM period_rows
+        )
+        SELECT
+          COALESCE(JSON_AGG(ROW_TO_JSON(paged_rows)), '[]'::json) AS rows,
+          COALESCE((SELECT ROW_TO_JSON(summary) FROM summary), '{}'::json) AS summary,
+          (SELECT COUNT(*)::int FROM period_rows) AS total
+        FROM (
+          SELECT
+            row_id,
+            infant_id,
+            JSON_BUILD_OBJECT(
+              'id', infant_id,
+              'first_name', infant_first_name,
+              'middle_name', infant_middle_name,
+              'last_name', infant_last_name,
+              'full_name', infant_full_name,
+              'display_name', infant_display_name,
+              'control_number', infant_control_number,
+              'dob', infant_dob,
+              'guardian_id', infant_guardian_id,
+              'facility_id', infant_facility_id,
+              'is_active', true
+            ) AS infant_context,
+            infant_name,
+            infant_display_name,
+            infant_full_name,
+            infant_control_number,
+            infant_dob,
+            search_text,
+            schedule_id,
+            vaccine_id,
+            vaccine_name,
+            disease_prevented,
+            age_in_months,
+            age_label,
+            dose_number,
+            total_doses,
+            due_date,
+            admin_date,
+            status_key,
+            INITCAP(status_key) AS status_label
+          FROM period_rows
+          ORDER BY
+            CASE status_key
+              WHEN 'overdue' THEN 0
+              WHEN 'due' THEN 1
+              WHEN 'upcoming' THEN 2
+              WHEN 'completed' THEN 3
+              ELSE 4
+            END ASC,
+            due_date ASC,
+            infant_name ASC,
+            vaccine_name ASC,
+            dose_number ASC
+          LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}
+        ) paged_rows
+      `,
+      [...params, limit, offset],
+    );
+
+    const payload = result.rows[0] || {};
+    const rows = Array.isArray(payload.rows) ? payload.rows : [];
+    const total = Number.parseInt(payload.total, 10) || 0;
+    const summary = payload.summary || {};
+
+    res.json({
+      rows,
+      summary: {
+        upcoming: Number(summary.upcoming || 0),
+        due: Number(summary.due || 0),
+        completed: Number(summary.completed || 0),
+        overdue: Number(summary.overdue || 0),
+        trackedInfants: Number(summary.tracked_infants || 0),
+        totalRows: Number(summary.total_rows || 0),
+      },
+      metadata: {
+        page,
+        limit,
+        offset,
+        total,
+        totalPages: limit > 0 ? Math.ceil(total / limit) : 0,
+        hasNext: offset + limit < total,
+        hasPrev: offset > 0,
+      },
+      period: {
+        key: periodRange.period,
+        startDate: periodRange.startDate,
+        endDate: periodRange.endDate,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching vaccination schedule overview:', error);
+    res.status(500).json({ error: 'Failed to fetch vaccination schedule overview' });
   }
 });
 
@@ -1486,6 +2167,9 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
       administered_by,
       health_care_provider,
       site_of_injection,
+      route_of_injection,
+      time_administered,
+      expiration_date,
       reactions,
       next_due_date,
       notes,
@@ -1515,6 +2199,9 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
     }
 
     const normalizedAdminDate = adminDateValidation.normalizedAdminDate;
+    const normalizedRouteOfInjection = sanitizeOptionalText(route_of_injection);
+    const normalizedTimeAdministered = sanitizeOptionalText(time_administered);
+    const normalizedExpirationDate = normalizeDateOnly(expiration_date);
 
     // Validate vaccine is approved
     console.log('[VACCINATION CREATE] Validating vaccine_id:', vaccine_id);
@@ -1583,20 +2270,23 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
                   administered_by = COALESCE($2, administered_by),
                   health_care_provider = $3,
                   site_of_injection = $4,
-                  reactions = $5,
-                  next_due_date = $6,
-                  notes = $7,
+                  route_of_injection = $5,
+                  time_administered = $6,
+                  expiration_date = $7,
+                  reactions = $8,
+                  next_due_date = $9,
+                  notes = $10,
                   status = 'completed',
-                  batch_id = COALESCE($8, batch_id),
-                  batch_number = COALESCE($9, batch_number),
-                  lot_number = COALESCE($10, lot_number),
-                  schedule_id = COALESCE(schedule_id, $11),
+                  batch_id = COALESCE($11, batch_id),
+                  batch_number = COALESCE($12, batch_number),
+                  lot_number = COALESCE($13, lot_number),
+                  schedule_id = COALESCE(schedule_id, $14),
                   source_facility = CASE
-                    WHEN source_facility = $12 THEN NULL
+                    WHEN source_facility = $15 THEN NULL
                     ELSE source_facility
                   END,
                   updated_at = CURRENT_TIMESTAMP
-              WHERE id = $13
+              WHERE id = $16
               RETURNING *
             `,
             [
@@ -1604,6 +2294,9 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
               administered_by || req.user.id,
               health_care_provider || null,
               site_of_injection || null,
+              normalizedRouteOfInjection,
+              normalizedTimeAdministered,
+              normalizedExpirationDate,
               reactions || null,
               next_due_date || null,
               notes || null,
@@ -1643,6 +2336,9 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
              administered_by,
              health_care_provider,
              site_of_injection,
+             route_of_injection,
+             time_administered,
+             expiration_date,
              reactions,
              next_due_date,
              notes,
@@ -1652,7 +2348,7 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
              lot_number,
              schedule_id
            )
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
            RETURNING *
          `,
         [
@@ -1663,6 +2359,9 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
           administered_by || req.user.id,
           health_care_provider || null,
           site_of_injection || null,
+          normalizedRouteOfInjection,
+          normalizedTimeAdministered,
+          normalizedExpirationDate,
           reactions || null,
           next_due_date || null,
           notes || null,
@@ -1683,6 +2382,33 @@ router.post('/records', requirePermission('vaccination:create'), async (req, res
            `,
           [resolvedBatchId],
         );
+
+        // CRITICAL FIX: Record stock movement to track inventory deduction
+        // This ensures vaccination records update the physical inventory (Flow Break 1)
+        try {
+          await client.query(
+            `
+              INSERT INTO inventory_transactions (batch_id, txn_type, qty, user_id, notes, created_at)
+              VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+              ON CONFLICT DO NOTHING
+            `,
+            [
+              resolvedBatchId,
+              'ISSUE',
+              1,
+              req.user.id,
+              `Vaccination administered to patient ${patient_id} for vaccine ${vaccine_id}`,
+            ],
+          );
+        } catch (inventoryError) {
+          // Log but don't fail vaccination record creation if stock movement fails
+          console.error(
+            '[VACCINATION CREATE] Failed to record stock movement for batch',
+            resolvedBatchId,
+            'Error:',
+            inventoryError.message,
+          );
+        }
       }
 
       await client.query('COMMIT');

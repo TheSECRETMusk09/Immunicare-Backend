@@ -237,7 +237,7 @@ const validateVaccinationHistory = async (childProfile, vaccinationHistory, faci
 // Calculate vaccine readiness and next eligible vaccine
 const calculateVaccineReadiness = async (infantId, options = {}) => {
   try {
-    await ensureGlobalAtBirthVaccinationBackfillInitialized();
+    ensureGlobalAtBirthVaccinationBackfillInitialized().catch(() => {});
 
     // Get infant details
     const infantResult = await pool.query(

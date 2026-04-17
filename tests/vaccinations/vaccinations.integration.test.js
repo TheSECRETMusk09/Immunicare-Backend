@@ -129,6 +129,51 @@ describe('Vaccinations Module API Integration Tests', () => {
     });
   });
 
+  describe('GET /api/vaccinations/tracking', () => {
+    test('should return period-scoped tracking overview rows and summary', async () => {
+      const response = await request(app)
+        .get('/api/vaccinations/tracking?period=month&page=1&limit=5&scope=system')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body.rows)).toBe(true);
+      expect(response.body.summary).toEqual(expect.objectContaining({
+        completed: expect.any(Number),
+        dueSoon: expect.any(Number),
+        overdue: expect.any(Number),
+        trackedInfants: expect.any(Number),
+      }));
+      expect(response.body.metadata).toEqual(expect.objectContaining({
+        page: 1,
+        limit: 5,
+        total: expect.any(Number),
+      }));
+    });
+  });
+
+  describe('GET /api/vaccinations/schedule-overview', () => {
+    test('should return period-scoped schedule overview rows and summary', async () => {
+      const response = await request(app)
+        .get('/api/vaccinations/schedule-overview?period=month&page=1&limit=5&scope=system')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body.rows)).toBe(true);
+      expect(response.body.summary).toEqual(expect.objectContaining({
+        upcoming: expect.any(Number),
+        due: expect.any(Number),
+        completed: expect.any(Number),
+        overdue: expect.any(Number),
+        trackedInfants: expect.any(Number),
+      }));
+      expect(response.body.metadata).toEqual(expect.objectContaining({
+        page: 1,
+        limit: 5,
+        total: expect.any(Number),
+      }));
+    });
+  });
+
   describe('GET /api/vaccinations/batches', () => {
     test('should return vaccine batches for admin', async () => {
       const response = await request(app)

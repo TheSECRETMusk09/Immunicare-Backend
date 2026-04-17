@@ -332,6 +332,38 @@ router.post('/infant/:infantId/batch', requirePermission('vaccination:create'), 
   }
 });
 
+const READINESS_ROUTE_TIMEOUT_MS = 20000;
+const READINESS_CACHE_TTL_MS = 60000;
+
+const readinessCache = new Map();
+
+const getCachedReadiness = (cacheKey) => {
+  const entry = readinessCache.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > READINESS_CACHE_TTL_MS) {
+    readinessCache.delete(cacheKey);
+    return null;
+  }
+  return entry.promise;
+};
+
+const setCachedReadiness = (cacheKey, promise) => {
+  readinessCache.set(cacheKey, { promise, timestamp: Date.now() });
+  promise.catch(() => readinessCache.delete(cacheKey));
+};
+
+const withRouteTimeout = (promise, ms) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => {
+        const err = new Error('Readiness calculation timed out');
+        err.code = 'READINESS_TIMEOUT';
+        reject(err);
+      }, ms),
+    ),
+  ]);
+
 /**
  * Get simplified vaccine readiness snapshot
  * GET /api/vaccination-readiness/:childId
@@ -353,10 +385,14 @@ router.get('/:childId', async (req, res) => {
       }
     }
 
-    // Use the vaccine rules engine to calculate readiness
-    const readinessResult = await calculateVaccineReadiness(infantId, {
-      scheduledDate,
-    });
+    const cacheKey = `${infantId}:${scheduledDate || ''}`;
+    let readinessPromise = getCachedReadiness(cacheKey);
+    if (!readinessPromise) {
+      readinessPromise = calculateVaccineReadiness(infantId, { scheduledDate });
+      setCachedReadiness(cacheKey, readinessPromise);
+    }
+
+    const readinessResult = await withRouteTimeout(readinessPromise, READINESS_ROUTE_TIMEOUT_MS);
 
     if (!readinessResult.success) {
       return res.status(500).json(readinessResult);
@@ -367,10 +403,14 @@ router.get('/:childId', async (req, res) => {
       data: readinessResult.data,
     });
   } catch (error) {
-    console.error('Error fetching vaccine readiness:', error);
     if (res.headersSent) {
       return;
     }
+    if (error.code === 'READINESS_TIMEOUT') {
+      console.error(`Readiness timeout for child ${req.params.childId}`);
+      return res.status(504).json({ success: false, error: 'Readiness calculation timed out. Please try again.' });
+    }
+    console.error('Error fetching vaccine readiness:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch vaccine readiness' });
   }
 });

@@ -1,6 +1,23 @@
 const pool = require('../db');
 const socketService = require('./socketService');
 
+const isPoolUnavailableError = (error) =>
+  (typeof pool.isPoolEndedError === 'function' && pool.isPoolEndedError(error)) ||
+  String(error?.message || '').toLowerCase().includes('cannot use a pool after calling end on the pool');
+
+const isDatabaseAvailable = (context) => {
+  if (typeof pool.warnIfPoolUnavailable === 'function') {
+    return !pool.warnIfPoolUnavailable(`notificationAutomation.${context}`);
+  }
+
+  if (pool.ended) {
+    console.warn(`[Automation Service] Skipping ${context}; database pool is closed.`);
+    return false;
+  }
+
+  return true;
+};
+
 /**
  * Core Automation Service for Routing and Emitting Real-Time System Events
  * Satisfies Task 2 (Admin Notification Automation) and Task 14 (Guardian Real-Time Alerts)
@@ -49,6 +66,10 @@ class NotificationAutomationService {
     const severity = this.inferSeverity(category, message);
 
     try {
+      if (!isDatabaseAvailable('dispatchEvent')) {
+        return null;
+      }
+
       let query, params;
 
       if (targetRole === 'admin' && !userId) {
@@ -79,6 +100,10 @@ class NotificationAutomationService {
 
       return notification;
     } catch (error) {
+      if (isPoolUnavailableError(error)) {
+        console.warn('[Automation Service] Skipped real-time event persistence because database pool is unavailable.');
+        return null;
+      }
       console.error('[Automation Service] Failed to dispatch real-time event:', error);
     }
   }

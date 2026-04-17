@@ -284,14 +284,14 @@ const projectTransferBookingReadiness = async ({ client, infantId }) => {
         vs.vaccine_id,
         COALESCE(vs.dose_number, 1) AS dose_number,
         vs.age_in_months,
-        vs.minimum_age_days,
+        ROUND(COALESCE(vs.age_in_months, 0) * 30.44)::INT AS minimum_age_days,
         v.name AS vaccine_name
       FROM vaccination_schedules vs
       JOIN vaccines v ON v.id = vs.vaccine_id
       WHERE COALESCE(vs.is_active, true) = true
         AND COALESCE(v.is_active, true) = true
       ORDER BY
-        COALESCE(vs.minimum_age_days, vs.age_in_months * 30) ASC,
+        COALESCE(vs.age_in_months * 30, 0) ASC,
         vs.vaccine_id ASC,
         COALESCE(vs.dose_number, 1) ASC
     `,
@@ -830,9 +830,13 @@ router.post('/register-child', async (req, res) => {
       infant,
       source_facility,
       submitted_vaccines,
+      prior_doses,
       vaccination_card_url,
       remarks,
     } = req.body;
+    const submittedVaccinesPayload = Array.isArray(submitted_vaccines)
+      ? submitted_vaccines
+      : prior_doses;
 
     if (!infant || typeof infant !== 'object') {
       return res.status(400).json({
@@ -848,25 +852,55 @@ router.post('/register-child', async (req, res) => {
     try {
       await client.query('BEGIN');
 
-      childResult = await createGuardianChildRecord({
-        guardianId,
-        payload: {
-          ...infant,
-          guardian_id: guardianId,
-        },
-        client,
-      });
+      try {
+        childResult = await createGuardianChildRecord({
+          guardianId,
+          payload: {
+            ...infant,
+            guardian_id: guardianId,
+          },
+          client,
+        });
+      } catch (childError) {
+        console.error('[Transfer-In Register Child] createGuardianChildRecord failed', {
+          guardianId,
+          infantPayloadKeys: Object.keys(infant || {}),
+          source_facility,
+          submittedVaccinesCount: Array.isArray(submittedVaccinesPayload)
+            ? submittedVaccinesPayload.length
+            : null,
+          vaccination_card_url: vaccination_card_url || null,
+          message: childError?.message,
+          stack: childError?.stack,
+        });
+        throw childError;
+      }
 
-      outcome = await createGuardianTransferCase({
-        client,
-        req,
-        guardianId,
-        infantId: childResult.patient.id,
-        sourceFacility: source_facility,
-        submittedVaccines: submitted_vaccines,
-        vaccinationCardUrl: vaccination_card_url,
-        remarks,
-      });
+      try {
+        outcome = await createGuardianTransferCase({
+          client,
+          req,
+          guardianId,
+          infantId: childResult.patient.id,
+          sourceFacility: source_facility,
+          submittedVaccines: submittedVaccinesPayload,
+          vaccinationCardUrl: vaccination_card_url,
+          remarks,
+        });
+      } catch (transferError) {
+        console.error('[Transfer-In Register Child] createGuardianTransferCase failed', {
+          guardianId,
+          infantId: childResult?.patient?.id || null,
+          source_facility,
+          submittedVaccinesCount: Array.isArray(submittedVaccinesPayload)
+            ? submittedVaccinesPayload.length
+            : null,
+          vaccination_card_url: vaccination_card_url || null,
+          message: transferError?.message,
+          stack: transferError?.stack,
+        });
+        throw transferError;
+      }
 
       await client.query('COMMIT');
     } catch (error) {
@@ -923,7 +957,13 @@ router.post('/register-child', async (req, res) => {
       message: outcome.message,
     });
   } catch (error) {
-    console.error('Error creating transfer-in case:', error);
+    console.error('[Transfer-In Register Child] Error creating transfer-in case', {
+      message: error?.message,
+      code: error?.code,
+      statusCode: error?.statusCode,
+      fields: error?.fields,
+      stack: error?.stack,
+    });
     if (error.code === 'VALIDATION_ERROR') {
       return res.status(400).json({
         success: false,
@@ -958,6 +998,7 @@ router.post('/register-child', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to register child and submit transfer-in case.',
+      code: 'TRANSFER_IN_REGISTER_CHILD_FAILED',
     });
   }
 });
@@ -1191,6 +1232,9 @@ router.get('/:id', async (req, res) => {
 // Admin: Get all transfer-in cases with filters
 router.get('/', requirePermission('transfer:view'), async (req, res) => {
   try {
+    await ensureTransferCaseSchemaColumnsExist();
+    await ensurePatientTransferColumnsExist();
+
     const {
       status,
       priority,
@@ -1200,6 +1244,11 @@ router.get('/', requirePermission('transfer:view'), async (req, res) => {
       limit = 1000,
       offset = 0,
     } = req.query;
+
+    const parsedLimit = Number.parseInt(limit, 10);
+    const parsedOffset = Number.parseInt(offset, 10);
+    const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 5000) : 1000;
+    const safeOffset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
 
     const startDateFilter = normalizeDateOnlyFilter(start_date, 'start_date');
     const endDateFilter = normalizeDateOnlyFilter(end_date, 'end_date');
@@ -1256,7 +1305,7 @@ router.get('/', requirePermission('transfer:view'), async (req, res) => {
       paramIndex++;
     }
 
-    params.push(parseInt(limit, 10), parseInt(offset, 10));
+    params.push(safeLimit, safeOffset);
 
     const result = await pool.query(
       `
@@ -1270,7 +1319,7 @@ router.get('/', requirePermission('transfer:view'), async (req, res) => {
           g.phone as guardian_phone
         FROM transfer_in_cases tic
         JOIN patients p ON p.id = tic.infant_id
-        JOIN guardians g ON g.id = tic.guardian_id
+        LEFT JOIN guardians g ON g.id = tic.guardian_id
         ${whereClause}
         ORDER BY
           CASE tic.validation_priority
@@ -1297,15 +1346,19 @@ router.get('/', requirePermission('transfer:view'), async (req, res) => {
       data: result.rows || [],
       pagination: {
         total,
-        limit: parseInt(limit, 10),
-        offset: parseInt(offset, 10),
+        limit: safeLimit,
+        offset: safeOffset,
       },
     });
   } catch (error) {
-    console.error('Error fetching transfer-in cases:', error);
-    res.status(500).json({
+    console.error('[Transfer-In Cases] Error fetching transfer-in cases:', error);
+    if (error?.stack) {
+      console.error('[Transfer-In Cases] Stack:', error.stack);
+    }
+    return res.status(500).json({
       success: false,
       error: 'Failed to fetch transfer-in cases.',
+      message: error?.message || String(error),
     });
   }
 });

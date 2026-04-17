@@ -14,6 +14,10 @@ const resendEmailService = require('../../services/resendEmailService');
 const rateLimiter = require('../../middleware/rateLimiter');
 const { bruteForceProtection, checkBruteForce } = require('../../middleware/bruteForceProtection');
 const { normalizeRole, CANONICAL_ROLES, getRolePermissions } = require('../../middleware/rbac');
+const {
+  getAccessTokenCookieOptions,
+  getRefreshTokenCookieOptions,
+} = require('../../utils/authCookies');
 
 const router = express.Router();
 
@@ -237,7 +241,7 @@ router.post(
       };
 
       const accessToken = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
-        expiresIn: process.env.JWT_ACCESS_EXPIRATION || '15m',
+        expiresIn: process.env.JWT_ACCESS_EXPIRATION || '8h',
         issuer: 'immunicare-system',
         audience: 'immunicare-users',
       });
@@ -310,20 +314,8 @@ router.post(
         layout: 'AdminLayout',
       };
 
-      const cookieOptions = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-        maxAge: 15 * 60 * 1000,
-        path: '/',
-      };
-
-      res.cookie('token', accessToken, cookieOptions);
-
-      res.cookie('refreshToken', refreshToken, {
-        ...cookieOptions,
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
+      res.cookie('token', accessToken, getAccessTokenCookieOptions());
+      res.cookie('refreshToken', refreshToken, getRefreshTokenCookieOptions());
 
       res.json({
         message: 'Admin login successful',
@@ -331,7 +323,7 @@ router.post(
         token: accessToken,
         accessToken: accessToken,
         refreshToken: refreshToken,
-        expiresIn: process.env.JWT_ACCESS_EXPIRATION || '15m',
+        expiresIn: process.env.JWT_ACCESS_EXPIRATION || '8h',
         layout: 'AdminLayout',
         dashboardRoute: '/dashboard',
         permissions: getRolePermissions(canonicalRole),

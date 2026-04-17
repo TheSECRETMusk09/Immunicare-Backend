@@ -10,6 +10,7 @@ const db = require('../db');
 // Cache for resolved schema information
 const schemaCache = {
   patientColumn: null,
+  patientTable: null,
   patientScopeColumns: null,
   systemAccountTable: null,
   authSchemaCompatibility: null,
@@ -62,13 +63,58 @@ const resolvePatientColumn = async () => {
 };
 
 /**
- * Get the corresponding patients/infants table name
+ * Get the table targeted by the appointment child foreign key.
  * 
- * @returns {Promise<string>} - Table name ('infants' or 'patients')
+ * Some deployments kept the appointment column name as `infant_id` while
+ * repointing the foreign key to `patients.id`, so the column name alone is
+ * not enough to choose the correct table.
+ * 
+ * @returns {Promise<string>} - Table name ('patients' or legacy 'infants')
  */
 const resolvePatientTable = async () => {
+  const now = Date.now();
+  if (schemaCache.patientTable && schemaCache.lastChecked) {
+    if (now - schemaCache.lastChecked < schemaCache.cacheDuration) {
+      return schemaCache.patientTable;
+    }
+  }
+
   const column = await resolvePatientColumn();
-  return column === 'patient_id' ? 'patients' : 'infants';
+
+  try {
+    const result = await db.query(
+      `
+        SELECT ccu.table_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+          ON ccu.constraint_name = tc.constraint_name
+          AND ccu.table_schema = tc.table_schema
+        WHERE tc.table_schema = 'public'
+          AND tc.table_name = 'appointments'
+          AND tc.constraint_type = 'FOREIGN KEY'
+          AND kcu.column_name = $1
+          AND ccu.table_name IN ('patients', 'infants')
+        ORDER BY CASE ccu.table_name
+          WHEN 'patients' THEN 1
+          WHEN 'infants' THEN 2
+        END
+        LIMIT 1
+      `,
+      [column],
+    );
+
+    const tableName = result.rows[0]?.table_name || 'patients';
+
+    schemaCache.patientTable = tableName;
+    schemaCache.lastChecked = now;
+    return tableName;
+  } catch (error) {
+    console.error('Error resolving patient table:', error);
+    return 'patients';
+  }
 };
 
 /**
@@ -164,6 +210,7 @@ const buildAppointmentPatientFilter = async (appointmentAlias = 'a', parameterIn
  */
 const clearSchemaCache = () => {
   schemaCache.patientColumn = null;
+  schemaCache.patientTable = null;
   schemaCache.patientScopeColumns = null;
   schemaCache.systemAccountTable = null;
   schemaCache.authSchemaCompatibility = null;

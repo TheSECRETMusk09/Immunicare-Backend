@@ -11,6 +11,8 @@ const {
   toClinicDateKey,
 } = require('../utils/clinicCalendar');
 
+const ACTIONABLE_DUE_WINDOW_DAYS = 7;
+
 const SCHEDULE_SCHEMA_COLUMNS = [
   'is_active',
   'age_in_months',
@@ -21,6 +23,9 @@ const SCHEDULE_SCHEMA_COLUMNS = [
 ];
 
 let scheduleSchemaPromise = null;
+let schedulesCache = null;
+let schedulesCacheExpiry = 0;
+const SCHEDULES_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const resolveScheduleSchema = async () => {
   if (!scheduleSchemaPromise) {
@@ -207,6 +212,9 @@ class ImmunizationScheduleService {
    * @returns {Promise<Array>} - Array of vaccination schedules
    */
   async getAllSchedules() {
+    if (schedulesCache && Date.now() < schedulesCacheExpiry) {
+      return schedulesCache;
+    }
     try {
       const { columns, ageColumn } = await resolveScheduleSchema();
       const activeFilter = columns.has('is_active')
@@ -237,7 +245,9 @@ class ImmunizationScheduleService {
             vs.dose_number ASC
         `,
       );
-      return result.rows;
+      schedulesCache = result.rows;
+      schedulesCacheExpiry = Date.now() + SCHEDULES_CACHE_TTL_MS;
+      return schedulesCache;
     } catch (error) {
       console.error('Error in getAllSchedules:', error);
       return [];
@@ -532,14 +542,7 @@ class ImmunizationScheduleService {
     const diffTime = today - due;
     const daysDiff = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-    // Facility-aware adjustment: In some facilities, we might have different grace periods
-    // For example, rural health centers might have extended grace periods due to access issues
-    let gracePeriodDays = 14; // Default 2 weeks grace period
-    if (facilityContext === 'rural_health_unit') {
-      gracePeriodDays = 21; // Extended grace period for rural facilities
-    } else if (facilityContext === 'san_nicolas') {
-      gracePeriodDays = 10; // Stricter grace period for main hospital
-    }
+    const gracePeriodDays = ACTIONABLE_DUE_WINDOW_DAYS;
 
     if (daysDiff > 0) {
       // Overdue
@@ -953,10 +956,15 @@ class ImmunizationScheduleService {
         scheduleItems,
         readinessLookupByPatient.get(patient.id) || new Map(),
       );
+      const scheduleSummary = this.summarizeScheduleItems(scheduleItems);
 
       summaryMap.set(patient.id, {
         ...guardianProjection.summary,
-        pendingActionCount:
+        completed: scheduleSummary.completedCount,
+        dueCount: scheduleSummary.upcomingCount,
+        pendingCount: scheduleSummary.pendingCount,
+        pendingActionCount: scheduleSummary.pendingCount,
+        readinessActionCount:
           guardianProjection.summary.ready +
           guardianProjection.summary.pendingConfirmation +
           guardianProjection.summary.overdue,
@@ -1004,6 +1012,7 @@ class ImmunizationScheduleService {
             overdueCount: 0,
             upcomingCount: 0,
             futureCount: 0,
+            pendingCount: 0,
             overallStatus: 'on_track',
           },
           schedules: [],
@@ -1049,6 +1058,7 @@ class ImmunizationScheduleService {
           overdueCount: summary.overdueCount,
           upcomingCount: summary.upcomingCount,
           futureCount: summary.futureCount,
+          pendingCount: summary.pendingCount,
           overallStatus: summary.overallStatus,
         },
         schedules: scheduleItems,

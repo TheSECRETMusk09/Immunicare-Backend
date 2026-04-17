@@ -7,7 +7,8 @@ const { ensureAtBirthVaccinationRecords } = require('./atBirthVaccinationService
  * 
  * This service provides unified access to patient/infant data
  * Canonical source: patients table
- * Legacy fallback: infants table (for compatibility)
+ * Legacy infant naming is still used in some route labels, but persisted
+ * child records are stored in the canonical patients table.
  * 
  * All modules should use this service instead of direct table access
  */
@@ -163,6 +164,7 @@ const mergePendingDoseCounts = (rows = [], scheduleSummaryMap = new Map()) =>
 
     return {
       ...row,
+      completed_vaccinations: scheduleSummary?.completedCount || 0,
       pending_vaccinations: scheduleSummary?.pendingCount || 0,
       overdue_vaccinations: scheduleSummary?.overdueCount || 0,
       upcoming_vaccinations: scheduleSummary?.upcomingCount || 0,
@@ -309,6 +311,18 @@ const buildPatientFilterClause = (filters = {}) => {
     whereClause += ` AND p.dob <= CURRENT_DATE`;
   }
 
+  if (filters.createdFrom) {
+    whereClause += ` AND p.created_at >= $${paramIndex}`;
+    params.push(filters.createdFrom);
+    paramIndex += 1;
+  }
+
+  if (filters.createdTo) {
+    whereClause += ` AND p.created_at <= $${paramIndex}`;
+    params.push(filters.createdTo);
+    paramIndex += 1;
+  }
+
   return { whereClause, params };
 };
 
@@ -396,7 +410,8 @@ const getPatients = async (filters = {}) => {
           'needs_clarification',
           'pending_validation'
         )
-      )::int AS needs_review
+      )::int AS needs_review,
+      COALESCE(SUM(CASE WHEN has_pending_doses THEN 1 ELSE 0 END)::int, 0) AS pending_vaccinations_count
     FROM (
       SELECT
         p.id,
@@ -413,7 +428,15 @@ const getPatients = async (filters = {}) => {
           WHERE tic.infant_id = p.id
           ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
           LIMIT 1
-        ) AS latest_transfer_case_status
+        ) AS latest_transfer_case_status,
+        EXISTS (
+          SELECT 1
+          FROM public.immunization_records ir
+          WHERE ir.patient_id = p.id
+            AND COALESCE(ir.is_active, true) = true
+            AND LOWER(COALESCE(ir.status, '')) NOT IN ('completed', 'cancelled', 'skipped')
+            AND ir.admin_date IS NULL
+        ) AS has_pending_doses
       FROM public.patients p
       LEFT JOIN public.guardians g ON g.id = p.guardian_id
       ${whereClause}
@@ -434,6 +457,8 @@ const getPatients = async (filters = {}) => {
   const needsReview = Number.parseInt(countResult.rows[0]?.needs_review || 0, 10) || 0;
   const withImportedHistory =
     Number.parseInt(countResult.rows[0]?.with_imported_history || 0, 10) || 0;
+  const pendingVaccinations =
+    Number.parseInt(countResult.rows[0]?.pending_vaccinations_count || 0, 10) || 0;
 
   return {
     patients,
@@ -451,7 +476,7 @@ const getPatients = async (filters = {}) => {
       total,
       needsReview,
       withImportedHistory,
-      pendingVaccinations: sumPendingDoseCounts(scheduleSummaryMap),
+      pendingVaccinations,
     },
   };
 };
@@ -576,7 +601,6 @@ const createPatient = async (patientData) => {
     }
 
     await client.query('COMMIT');
-    await syncToLegacyInfants(newPatient);
     return newPatient;
   } catch (error) {
     await client.query('ROLLBACK');
@@ -833,35 +857,12 @@ const patientExists = async (id) => {
 };
 
 /**
- * Sync patient to legacy infants table
+ * No-op compatibility hook.
+ *
+ * The legacy infants table is retired; callers that still invoke this hook
+ * should not write duplicate patient rows.
  */
-const syncToLegacyInfants = async (patientData) => {
-  try {
-    // Create new record in infants table for compatibility
-    await pool.query(`
-      INSERT INTO public.infants (
-        first_name, last_name, dob, sex, national_id, 
-        address, contact, guardian_id, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    `, [
-      patientData.firstName,
-      patientData.lastName,
-      patientData.dob,
-      patientData.sex,
-      patientData.nationalId,
-      patientData.address,
-      patientData.contact,
-      patientData.guardianId
-    ]);
-  } catch (error) {
-    if (error?.code === '42P01') {
-      return;
-    }
-
-    // Log error but don't fail the main operation
-    console.warn('Failed to sync to legacy infants table:', error.message);
-  }
-};
+const syncToLegacyInfants = async () => null;
 
 /**
  * Get patients with vaccination filters

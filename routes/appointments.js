@@ -42,10 +42,17 @@ const { calculateVaccineReadiness } = require('../services/vaccineRulesEngine');
 const logger = require('../config/logger');
 const {
   CLINIC_TODAY_SQL,
+  getClinicBlockedDateKeys,
   getClinicTodayDateKey,
   toClinicDateKey,
   toClinicDateSql,
 } = require('../utils/clinicCalendar');
+const {
+  isAllowedAppointmentTimeSlot,
+  formatClinicDateTime,
+  normalizeAppointmentRecordForResponse,
+  parseAppointmentDateTimeInput,
+} = require('../utils/appointmentDateTime');
 const { mergeScopeIds } = require('../services/entityScopeService');
 
 const router = express.Router();
@@ -144,7 +151,7 @@ const getAppointmentFacilityColumns = async () => {
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 const requireAppointmentReadAccess = (req, res, next) => {
   if (isGuardian(req)) {
-    return requirePermission('appointment:view:own')(req, res, next);
+    return next();
   }
 
   return requirePermission('appointment:view')(req, res, next);
@@ -215,11 +222,13 @@ const normalizeAppointmentRecord = (appointment) => {
   }
 
   const normalizedStatus = normalizeAppointmentStatus(appointment.status);
-  return {
+  const normalizedAppointment = normalizeAppointmentRecordForResponse({
     ...appointment,
     raw_status: appointment.status,
     status: normalizedStatus || appointment.status,
-  };
+  });
+
+  return normalizedAppointment;
 };
 
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
@@ -231,6 +240,19 @@ const isVaccinationAppointmentType = (value) => {
   }
 
   return normalized.includes('vacc');
+};
+
+const isStockAvailabilityIssue = (availability = {}) => {
+  const code = String(availability?.code || '').trim().toUpperCase();
+  const message = String(availability?.message || availability?.error || '').trim().toLowerCase();
+
+  return (
+    code.includes('STOCK') ||
+    code.includes('INVENTORY') ||
+    message.includes('stock') ||
+    message.includes('inventory') ||
+    message.includes('vaccine availability')
+  );
 };
 
 const getEligibleGuardianVaccines = (readinessData = {}) => {
@@ -385,18 +407,20 @@ const sanitizeAppointmentMutablePayload = (payload = {}, { allowStatus = true } 
     if (!scheduledDate) {
       errors.scheduled_date = 'scheduled_date is required';
     } else {
-      const parsedDate = new Date(scheduledDate);
-      if (Number.isNaN(parsedDate.getTime())) {
-        errors.scheduled_date = 'scheduled_date must be a valid date';
+      const parsedDate = parseAppointmentDateTimeInput(scheduledDate, { requireTime: true });
+      if (!parsedDate) {
+        errors.scheduled_date = 'scheduled_date must be a valid date and time';
+      } else if (!isAllowedAppointmentTimeSlot(parsedDate.time)) {
+        errors.scheduled_date = 'scheduled_date must be between 8:00 AM and 4:00 PM in 30-minute slots';
       } else {
         const todayManila = getClinicTodayDateKey();
-        const parsedManila = toClinicDateKey(parsedDate);
+        const parsedManila = parsedDate.dateKey;
 
         if (parsedManila < todayManila) {
           errors.scheduled_date =
             'Cannot schedule appointments in the past. Please select today or a future date.';
         } else {
-          normalized.scheduled_date = scheduledDate;
+          normalized.scheduled_date = parsedDate.normalizedIsoString;
         }
       }
     }
@@ -599,7 +623,7 @@ const fetchInfantOwnership = async (infantId) => {
   return {
     id: patient.id,
     guardian_id: patient.guardianId,
-    clinic_id: patient.clinicId || null
+    clinic_id: patient.clinicId || null,
   };
 };
 
@@ -648,7 +672,7 @@ const fetchAppointmentById = async (id) => {
     [id],
   );
 
-  return result.rows[0] || null;
+  return normalizeAppointmentRecord(result.rows[0] || null);
 };
 
 // Get all appointments
@@ -720,6 +744,21 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       return res.status(400).json({ error: 'end_date must be a valid date' });
     }
 
+    const blockingClinicId =
+      sanitizeNullableInt(clinic_id) ||
+      sanitizeNullableInt(facility_id) ||
+      sanitizeNullableInt(req.user?.clinic_id) ||
+      sanitizeNullableInt(req.user?.facility_id) ||
+      null;
+    const blockedDateKeys =
+      date || normalizedStartDate || normalizedEndDate
+        ? await getClinicBlockedDateKeys({
+          startDate: normalizedStartDate || date || normalizedEndDate,
+          endDate: normalizedEndDate || date || normalizedStartDate,
+          clinicId: blockingClinicId,
+        })
+        : [];
+
     const params = [];
     let query = `
       SELECT
@@ -784,6 +823,11 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       params.push(normalizedEndDate);
     }
 
+    if (blockedDateKeys.length > 0) {
+      query += ` AND ${APPOINTMENT_LOCAL_DATE_EXPRESSION} <> ALL($${params.length + 1}::date[])`;
+      params.push(blockedDateKeys);
+    }
+
     if (infant_id) {
       query += ` AND a.${appointmentPatientColumn} = $${params.length + 1}`;
       params.push(parseInt(infant_id, 10));
@@ -794,9 +838,17 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
         AND (
           COALESCE(p.first_name, '') ILIKE $${params.length + 1}
           OR COALESCE(p.last_name, '') ILIKE $${params.length + 1}
+          OR CONCAT_WS(
+            ' ',
+            NULLIF(BTRIM(p.first_name), ''),
+            NULLIF(BTRIM(p.middle_name), ''),
+            NULLIF(BTRIM(p.last_name), '')
+          ) ILIKE $${params.length + 1}
           OR COALESCE(g.name, '') ILIKE $${params.length + 1}
           OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
           OR COALESCE(g.phone, '') ILIKE $${params.length + 1}
+          OR COALESCE(TO_CHAR(p.dob, 'YYYY-MM-DD'), '') ILIKE $${params.length + 1}
+          OR COALESCE(TO_CHAR(p.dob, 'MM/DD/YYYY'), '') ILIKE $${params.length + 1}
           OR COALESCE(a.type, '') ILIKE $${params.length + 1}
           OR COALESCE(a.status::text, '') ILIKE $${params.length + 1}
         )
@@ -924,7 +976,13 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
     }
 
     if (hasFieldErrors(errors)) {
-      return respondValidationError(res, errors);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        error: 'Validation failed',
+        fields: errors,
+        details: errors,
+      });
     }
 
     const normalizedScheduledDate = normalized.scheduled_date;
@@ -995,33 +1053,88 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       }
     }
 
-    const availability = await appointmentSchedulingService.checkBookingAvailability({
-      scheduledDate: normalizedScheduledDate,
-      vaccineId: finalVaccineId,
-      clinicId: sanitizeNullableInt(finalClinicId),
-      appointmentType: normalizedType,
-    });
+    let stockWarning = null;
+    let stockUnverified = false;
+    let availability = {
+      available: true,
+      code: 'BOOKING_AVAILABLE',
+      message: 'Booking date is available',
+    };
 
-    if (!availability.available) {
-      if (availability.code === 'SELECTED_VACCINE_OUT_OF_STOCK' && guardianFlow) {
-        try {
-          await appointmentSchedulingService.notifyGuardianVaccineUnavailable({
-            guardianId: parseInt(req.user.guardian_id, 10),
-            infantId,
-            vaccineId: finalVaccineId,
-            scheduledDate: normalizedScheduledDate,
-            clinicId: sanitizeNullableInt(finalClinicId),
-          });
-        } catch (notifyError) {
-          console.error('Failed to send vaccine unavailable notification:', notifyError.message);
-        }
+    try {
+      availability = await appointmentSchedulingService.checkBookingAvailability({
+        scheduledDate: normalizedScheduledDate,
+        vaccineId: finalVaccineId,
+        clinicId: sanitizeNullableInt(finalClinicId),
+        appointmentType: normalizedType,
+      });
+    } catch (availabilityError) {
+      if (!guardianFlow) {
+        throw availabilityError;
       }
 
-      return res.status(400).json({
-        error: availability.message,
-        code: availability.code,
-        availability,
+      stockUnverified = true;
+      stockWarning = 'Could not verify vaccine stock availability. The health center will confirm stock before the appointment.';
+      logger.warn('Guardian appointment availability check failed; continuing with stock warning', {
+        infantId,
+        vaccineId: finalVaccineId,
+        clinicId: finalClinicId,
+        scheduledDate: normalizedScheduledDate,
+        errorMessage: availabilityError?.message || 'Unknown availability error',
       });
+    }
+
+    if (availability?.stock_warning) {
+      stockUnverified = true;
+      stockWarning =
+        availability.stock_warning ||
+        'Could not verify vaccine stock availability. The health center will confirm stock before the appointment.';
+    }
+
+    if (!availability.available) {
+      if (guardianFlow && isStockAvailabilityIssue(availability)) {
+        stockUnverified = true;
+        stockWarning =
+          availability.message ||
+          'Could not verify vaccine stock availability. The health center will confirm stock before the appointment.';
+
+        logger.warn('Guardian appointment stock availability issue converted to soft warning', {
+          infantId,
+          vaccineId: finalVaccineId,
+          clinicId: finalClinicId,
+          scheduledDate: normalizedScheduledDate,
+          availabilityCode: availability.code,
+          availabilityMessage: availability.message,
+        });
+
+        if (availability.code === 'SELECTED_VACCINE_OUT_OF_STOCK') {
+          try {
+            await appointmentSchedulingService.notifyGuardianVaccineUnavailable({
+              guardianId: parseInt(req.user.guardian_id, 10),
+              infantId,
+              vaccineId: finalVaccineId,
+              scheduledDate: normalizedScheduledDate,
+              clinicId: sanitizeNullableInt(finalClinicId),
+            });
+          } catch (notifyError) {
+            console.error('Failed to send vaccine unavailable notification:', notifyError.message);
+          }
+        }
+      } else {
+        return res.status(400).json({
+          error: availability.message,
+          code: availability.code,
+          availability,
+        });
+      }
+    }
+
+    if (!stockWarning && stockUnverified) {
+      stockWarning = 'Could not verify vaccine stock availability. The health center will confirm stock before the appointment.';
+    }
+
+    if (!availability.available && guardianFlow && !stockWarning) {
+      stockWarning = availability.message || 'Vaccine stock could not be verified.';
     }
 
     const conflictingAppointment = await appointmentSchedulingService.findConflictingActiveAppointment({
@@ -1084,7 +1197,12 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
     console.log('[DEBUG] Appointment created:', JSON.stringify(result.rows[0], null, 2));
 
     const appointment = result.rows[0];
-    const fullAppointment = (await fetchAppointmentById(appointment.id)) || appointment;
+    let fullAppointment = appointment;
+    try {
+      fullAppointment = (await fetchAppointmentById(appointment.id)) || appointment;
+    } catch (fetchError) {
+      console.error('Failed to fetch full appointment after creation:', fetchError.message);
+    }
 
     if (fullAppointment?.owner_guardian_id) {
       try {
@@ -1103,13 +1221,17 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
     }
 
     if (guardianFlow) {
-      await notifyAdminsOfGuardianAppointmentEvent({
-        event: 'created',
-        appointment: fullAppointment,
-        actorUserId: req.user.id,
-        guardianName: fullAppointment.guardian_name || null,
-        infantName: `${fullAppointment.first_name || ''} ${fullAppointment.last_name || ''}`.trim(),
-      });
+      try {
+        await notifyAdminsOfGuardianAppointmentEvent({
+          event: 'created',
+          appointment: fullAppointment,
+          actorUserId: req.user.id,
+          guardianName: fullAppointment.guardian_name || null,
+          infantName: `${fullAppointment.first_name || ''} ${fullAppointment.last_name || ''}`.trim(),
+        });
+      } catch (notifyError) {
+        console.error('Failed to notify admins of guardian appointment event:', notifyError.message);
+      }
     }
 
     if (sendConfirmationSms) {
@@ -1120,20 +1242,31 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       }
     }
 
-    const normalizedAppointment = normalizeAppointmentRecord(fullAppointment);
+    const normalizedAppointment = {
+      ...normalizeAppointmentRecord(fullAppointment),
+      stock_unverified: stockUnverified,
+      stock_warning: stockWarning,
+      stockWarning,
+    };
 
-    await recordAppointmentAuditEvent({
-      req,
-      eventType: guardianFlow ? 'GUARDIAN_APPOINTMENT_CREATED' : 'APPOINTMENT_CREATED',
-      appointmentId: appointment.id,
-      newValues: normalizedAppointment,
-      metadata: {
-        guardian_flow: guardianFlow,
-        vaccine_id: finalVaccineId,
-        clinic_id: finalClinicId,
-        control_number: appointmentControlNumber,
-      },
-    });
+    try {
+      await recordAppointmentAuditEvent({
+        req,
+        eventType: guardianFlow ? 'GUARDIAN_APPOINTMENT_CREATED' : 'APPOINTMENT_CREATED',
+        appointmentId: appointment.id,
+        newValues: normalizedAppointment,
+        metadata: {
+          guardian_flow: guardianFlow,
+          vaccine_id: finalVaccineId,
+          clinic_id: finalClinicId,
+          control_number: appointmentControlNumber,
+          stock_unverified: stockUnverified,
+          stock_warning: stockWarning,
+        },
+      });
+    } catch (auditError) {
+      console.error('Failed to record appointment audit event:', auditError.message);
+    }
 
     socketService.broadcast('appointment_created', normalizedAppointment);
     res.status(201).json(normalizedAppointment);
@@ -1236,6 +1369,21 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       return res.status(400).json({ error: 'scheduled_date is required' });
     }
 
+    const parsedScheduledDate = parseAppointmentDateTimeInput(scheduled_date, { requireTime: true });
+    if (!parsedScheduledDate) {
+      return res.status(400).json({
+        error: 'scheduled_date must be a valid date and time',
+      });
+    }
+
+    if (!isAllowedAppointmentTimeSlot(parsedScheduledDate.time)) {
+      return res.status(400).json({
+        error: 'scheduled_date must be between 8:00 AM and 4:00 PM in 30-minute slots',
+      });
+    }
+
+    const normalizedScheduledDate = parsedScheduledDate.normalizedIsoString;
+
     // Validate vaccine_id if provided
     let finalVaccineId = appointment.vaccine_id; // Keep existing vaccine by default
     if (vaccine_id !== undefined && vaccine_id !== null && vaccine_id !== '') {
@@ -1268,7 +1416,7 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
 
     // Check booking availability for the new date
     const availability = await appointmentSchedulingService.checkBookingAvailability({
-      scheduledDate: scheduled_date,
+      scheduledDate: normalizedScheduledDate,
       vaccineId: finalVaccineId,
       clinicId: finalClinicId,
       appointmentType: appointment.type,
@@ -1282,7 +1430,7 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
             guardianId: appointment.owner_guardian_id,
             infantId: appointment.infant_id,
             vaccineId: finalVaccineId,
-            scheduledDate: scheduled_date,
+            scheduledDate: normalizedScheduledDate,
             clinicId: finalClinicId,
           });
         } catch (notifyError) {
@@ -1312,7 +1460,7 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
         RETURNING *
       `,
       [
-        scheduled_date,
+        normalizedScheduledDate,
         finalVaccineId,
         finalClinicId,
         notes || null,
@@ -1373,7 +1521,7 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
           notificationType: 'appointment_rescheduled',
           category: 'appointment',
           title: 'Appointment Rescheduled',
-          message: `${`${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment was rescheduled from ${new Date(appointment.scheduled_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })} to ${new Date(updatedAppointment.scheduled_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}.`,
+          message: `${`${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment was rescheduled from ${formatClinicDateTime(appointment.scheduled_date)} to ${formatClinicDateTime(updatedAppointment.scheduled_date)}.`,
         });
       } catch (notificationError) {
         console.error('Failed to create reschedule in-app notification:', notificationError.message);
@@ -1547,6 +1695,22 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
       return res.status(scopeContext.status).json({ error: scopeContext.error });
     }
 
+    const blockingClinicId =
+      sanitizeNullableInt(req.query?.clinic_id) ||
+      sanitizeNullableInt(req.query?.facility_id) ||
+      sanitizeNullableInt(req.user?.clinic_id) ||
+      sanitizeNullableInt(req.user?.facility_id) ||
+      null;
+    const blockedDateKeys = await getClinicBlockedDateKeys({
+      startDate: date,
+      endDate: date,
+      clinicId: blockingClinicId,
+    });
+
+    if (blockedDateKeys.includes(date)) {
+      return res.json({ data: [] });
+    }
+
     const params = [date];
     let scopeClause = '';
     if (scopeContext.useScope) {
@@ -1575,7 +1739,7 @@ router.get('/date/:date', requirePermission('appointment:view'), async (req, res
       params,
     );
 
-    res.json({ data: result.rows });
+    res.json({ data: result.rows.map(normalizeAppointmentRecord) });
   } catch (error) {
     console.error('Appointments by date error:', error);
     res.status(500).json({ error: 'Failed to fetch appointments by date' });
@@ -1641,7 +1805,7 @@ router.get('/upcoming', requirePermission('appointment:view'), async (req, res) 
       [...params, limit],
     );
 
-    res.json({ data: result.rows });
+    res.json({ data: result.rows.map(normalizeAppointmentRecord) });
   } catch (error) {
     console.error('Upcoming appointments error:', error);
     res.status(500).json({ error: 'Failed to fetch upcoming appointments' });
@@ -2073,7 +2237,7 @@ router.put('/:id(\\d+)', async (req, res) => {
           notificationType: 'appointment_updated',
           category: 'appointment',
           title: 'Appointment Updated',
-          message: `${`${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment details were updated. Current schedule: ${new Date(updatedAppointment.scheduled_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}.`,
+          message: `${`${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment details were updated. Current schedule: ${formatClinicDateTime(updatedAppointment.scheduled_date)}.`,
         });
       } catch (notificationError) {
         console.error('Failed to create appointment update notification:', notificationError.message);
@@ -2188,7 +2352,7 @@ router.put('/:id(\\d+)/cancel', async (req, res) => {
           notificationType: 'appointment_cancelled',
           category: 'appointment',
           title: 'Appointment Cancelled',
-          message: `${`${cancelledAppointment.first_name || ''} ${cancelledAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment on ${new Date(cancelledAppointment.scheduled_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })} was cancelled.`,
+          message: `${`${cancelledAppointment.first_name || ''} ${cancelledAppointment.last_name || ''}`.trim() || 'Your child'}'s appointment on ${formatClinicDateTime(cancelledAppointment.scheduled_date)} was cancelled.`,
         });
       } catch (notificationError) {
         console.error('Failed to create appointment cancellation notification:', notificationError.message);
@@ -2431,10 +2595,11 @@ router.delete('/:id(\\d+)', requirePermission('appointment:delete'), async (req,
   }
 });
 
-// ============ BLOCKED DATES MANAGEMENT (ADMIN ONLY) ============
+// ============ BLOCKED DATES MANAGEMENT ============
 
-// Get all blocked dates for a month
-router.get('/blocked-dates', requirePermission('appointment:view'), async (req, res) => {
+// Get all blocked dates for a month. Read-only and available to authenticated
+// guardians so booking can validate unavailable dates without admin permissions.
+router.get('/blocked-dates', async (req, res) => {
   try {
     const { month, clinic_id } = req.query;
 

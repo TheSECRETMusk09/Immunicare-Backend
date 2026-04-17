@@ -21,6 +21,39 @@ const DELIVERY_STATUS_VALUES = ['pending', 'queued', 'sent', 'delivered', 'read'
 const TABLE_COLUMN_CACHE_TTL_MS = 5 * 60 * 1000;
 const tableColumnCache = new Map();
 let announcementsSchemaPromise = null;
+let announcementsSchemaFailed = false;
+let notificationCreatedByReferenceCache = {
+  cachedAt: 0,
+  hasValue: false,
+  tableName: null,
+};
+const notificationCreatedByValidityCache = new Map();
+const NOTIFICATION_CREATED_BY_REFERENCE_TABLES = new Set(['admin', 'users']);
+
+const isPoolUnavailableError = (error) =>
+  (typeof pool.isPoolEndedError === 'function' && pool.isPoolEndedError(error)) ||
+  String(error?.message || '').toLowerCase().includes('cannot use a pool after calling end on the pool');
+
+const isDatabaseClientAvailable = (client, context) => {
+  if (client && client !== pool) {
+    if (client._ending || client._queryable === false) {
+      console.warn(`[Announcements] Skipping ${context}; database client is unavailable.`);
+      return false;
+    }
+    return true;
+  }
+
+  if (typeof pool.warnIfPoolUnavailable === 'function') {
+    return !pool.warnIfPoolUnavailable(`announcements.${context}`);
+  }
+
+  if (pool.ended) {
+    console.warn(`[Announcements] Skipping ${context}; database pool is closed.`);
+    return false;
+  }
+
+  return true;
+};
 
 const sanitizeAnnouncementPayload = (payload = {}) => {
   const errors = {};
@@ -185,6 +218,10 @@ const toPositiveInteger = (rawValue, fallback, options = {}) => {
 };
 
 const getTableColumns = async (client, tableName) => {
+  if (!isDatabaseClientAvailable(client, `getTableColumns:${tableName}`)) {
+    return new Set();
+  }
+
   const cacheKey = String(tableName);
   const now = Date.now();
   const cached = tableColumnCache.get(cacheKey);
@@ -193,15 +230,24 @@ const getTableColumns = async (client, tableName) => {
     return cached.columns;
   }
 
-  const result = await client.query(
-    `
-      SELECT column_name
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = $1
-    `,
-    [tableName],
-  );
+  let result;
+  try {
+    result = await client.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+      `,
+      [tableName],
+    );
+  } catch (error) {
+    if (isPoolUnavailableError(error)) {
+      console.warn(`[Announcements] Skipping column lookup for ${tableName}; database pool is unavailable.`);
+      return new Set();
+    }
+    throw error;
+  }
 
   const columns = new Set(result.rows.map((row) => row.column_name));
   tableColumnCache.set(cacheKey, { columns, cachedAt: now });
@@ -211,6 +257,105 @@ const getTableColumns = async (client, tableName) => {
 const isTableAvailable = async (client, tableName) => {
   const columns = await getTableColumns(client, tableName);
   return columns.size > 0;
+};
+
+const getNotificationCreatedByReferenceTable = async (client) => {
+  if (!isDatabaseClientAvailable(client, 'getNotificationCreatedByReferenceTable')) {
+    return null;
+  }
+
+  const now = Date.now();
+  if (
+    notificationCreatedByReferenceCache.hasValue &&
+    now - notificationCreatedByReferenceCache.cachedAt < TABLE_COLUMN_CACHE_TTL_MS
+  ) {
+    return notificationCreatedByReferenceCache.tableName;
+  }
+
+  const result = await client.query(
+    `
+      SELECT ccu.table_name AS referenced_table_name
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+       AND tc.table_schema = kcu.table_schema
+      JOIN information_schema.constraint_column_usage ccu
+        ON ccu.constraint_name = tc.constraint_name
+       AND ccu.constraint_schema = tc.table_schema
+      WHERE tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_schema = 'public'
+        AND tc.table_name = 'notifications'
+        AND kcu.column_name = 'created_by'
+      LIMIT 1
+    `,
+  );
+
+  const tableName = result.rows[0]?.referenced_table_name || null;
+  notificationCreatedByReferenceCache = {
+    cachedAt: now,
+    hasValue: true,
+    tableName,
+  };
+  return tableName;
+};
+
+const resolveValidNotificationCreatedBy = async (client, rawCreatedBy) => {
+  const createdBy = parseInt(rawCreatedBy, 10);
+  if (!Number.isInteger(createdBy) || createdBy <= 0) {
+    return null;
+  }
+
+  let referenceTableName;
+  try {
+    referenceTableName = await getNotificationCreatedByReferenceTable(client);
+  } catch (error) {
+    if (isPoolUnavailableError(error)) {
+      console.warn('[Announcements] Skipping notification created_by validation because database pool is unavailable.');
+      return null;
+    }
+    console.warn('[Announcements] Unable to inspect notifications.created_by constraint; omitting created_by.', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+
+  if (!referenceTableName) {
+    return createdBy;
+  }
+
+  if (!NOTIFICATION_CREATED_BY_REFERENCE_TABLES.has(referenceTableName)) {
+    console.warn('[Announcements] Unsupported notifications.created_by reference table; omitting created_by.', {
+      referenceTableName,
+    });
+    return null;
+  }
+
+  const cacheKey = `${referenceTableName}:${createdBy}`;
+  const now = Date.now();
+  const cached = notificationCreatedByValidityCache.get(cacheKey);
+  if (cached && now - cached.cachedAt < TABLE_COLUMN_CACHE_TTL_MS) {
+    return cached.isValid ? createdBy : null;
+  }
+
+  try {
+    const result = await client.query(
+      `SELECT 1 FROM ${referenceTableName} WHERE id = $1 LIMIT 1`,
+      [createdBy],
+    );
+    const isValid = result.rows.length > 0;
+    notificationCreatedByValidityCache.set(cacheKey, { cachedAt: now, isValid });
+    return isValid ? createdBy : null;
+  } catch (error) {
+    if (isPoolUnavailableError(error)) {
+      console.warn('[Announcements] Skipping notification created_by validation because database pool is unavailable.');
+      return null;
+    }
+    console.warn('[Announcements] Unable to validate notifications.created_by; omitting created_by.', {
+      message: error instanceof Error ? error.message : String(error),
+      referenceTableName,
+    });
+    return null;
+  }
 };
 
 const clearTableColumnCache = (...tableNames) => {
@@ -242,6 +387,13 @@ const ensureConstraint = async (client, tableName, constraintName, definitionSql
 };
 
 const ensureAnnouncementsSchema = async (client = pool) => {
+  if (!isDatabaseClientAvailable(client, 'ensureAnnouncementsSchema')) {
+    return;
+  }
+
+  if (announcementsSchemaFailed) {
+    return;
+  }
   if (!announcementsSchemaPromise) {
     announcementsSchemaPromise = (async () => {
       const [usersAvailable, adminAvailable] = await Promise.all([
@@ -419,8 +571,20 @@ const ensureAnnouncementsSchema = async (client = pool) => {
 
       clearTableColumnCache('announcements', 'announcement_recipient_deliveries');
     })().catch((error) => {
+      if (isPoolUnavailableError(error)) {
+        announcementsSchemaPromise = null;
+        console.warn('[Announcements] Schema initialization skipped because database pool is unavailable.', {
+          message: error.message,
+        });
+        return;
+      }
+
+      announcementsSchemaFailed = true;
       announcementsSchemaPromise = null;
-      throw error;
+      console.error(
+        '[Announcements] Schema initialization failed permanently. Announcement routes will be disabled until server restart.',
+        { message: error.message, code: error.code, detail: error.detail },
+      );
     });
   }
 
@@ -557,14 +721,34 @@ const buildNotificationInsertPayload = ({ announcement, recipient, actorUserId }
   };
 };
 
-const insertNotificationForRecipient = async (client, payload) => {
-  const notificationColumns = await getTableColumns(client, 'notifications');
+const insertNotificationForRecipient = async (client, payload, options = {}) => {
+  const { useSavepoint = true } = options || {};
+  if (!isDatabaseClientAvailable(client, 'insertNotificationForRecipient')) {
+    return null;
+  }
+
+  let notificationColumns;
+  try {
+    notificationColumns = await getTableColumns(client, 'notifications');
+  } catch (error) {
+    if (isPoolUnavailableError(error)) {
+      console.warn('[Announcements] Skipping notification insert because database pool is unavailable.');
+      return null;
+    }
+    throw error;
+  }
+
   if (notificationColumns.size === 0) {
     return null;
   }
 
-  const keys = Object.keys(payload).filter(
-    (key) => notificationColumns.has(key) && payload[key] !== undefined,
+  const insertPayload = { ...(payload || {}) };
+  if (notificationColumns.has('created_by')) {
+    insertPayload.created_by = await resolveValidNotificationCreatedBy(client, insertPayload.created_by);
+  }
+
+  const keys = Object.keys(insertPayload).filter(
+    (key) => notificationColumns.has(key) && insertPayload[key] !== undefined,
   );
 
   if (keys.length === 0 || !keys.includes('message')) {
@@ -572,10 +756,12 @@ const insertNotificationForRecipient = async (client, payload) => {
   }
 
   const placeholders = keys.map((_, index) => `$${index + 1}`);
-  const values = keys.map((key) => payload[key]);
+  const values = keys.map((key) => insertPayload[key]);
 
   try {
-    await client.query('SAVEPOINT notify_insert');
+    if (useSavepoint) {
+      await client.query('SAVEPOINT notify_insert');
+    }
     const result = await client.query(
       `
         INSERT INTO notifications (${keys.join(', ')})
@@ -584,15 +770,30 @@ const insertNotificationForRecipient = async (client, payload) => {
       `,
       values,
     );
-    await client.query('RELEASE SAVEPOINT notify_insert');
+    if (useSavepoint) {
+      await client.query('RELEASE SAVEPOINT notify_insert');
+    }
     return result.rows[0]?.id || null;
   } catch (error) {
-    try {
-      await client.query('ROLLBACK TO SAVEPOINT notify_insert');
-    } catch (rollbackError) {
-      console.error('Error rolling back notify_insert savepoint:', rollbackError.message);
+    if (isPoolUnavailableError(error)) {
+      console.warn('[Announcements] Skipping notification insert because database pool is unavailable.', {
+        message: error.message,
+      });
+      return null;
     }
-    console.error('Error inserting announcement notification:', error instanceof Error ? error.message : String(error));
+
+    if (useSavepoint) {
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT notify_insert');
+      } catch (rollbackError) {
+        console.error('Error rolling back notify_insert savepoint:', rollbackError.message);
+      }
+    }
+    console.error('Error inserting announcement notification:', {
+      message: error instanceof Error ? error.message : String(error),
+      code: error?.code ?? null,
+      detail: error?.detail ?? null,
+    });
     return null;
   }
 };
@@ -612,10 +813,18 @@ const insertDeliveryRecord = async (
     failedAt = null,
     failureReason = null,
     metadata = {},
+    throwOnError = false,
+    useSavepoint = true,
   },
 ) => {
+  if (!isDatabaseClientAvailable(client, 'insertDeliveryRecord')) {
+    return;
+  }
+
   try {
-    await client.query('SAVEPOINT delivery_insert');
+    if (useSavepoint) {
+      await client.query('SAVEPOINT delivery_insert');
+    }
     await client.query(
       `
         INSERT INTO announcement_recipient_deliveries (
@@ -652,14 +861,29 @@ const insertDeliveryRecord = async (
         JSON.stringify(metadata || {}),
       ],
     );
-    await client.query('RELEASE SAVEPOINT delivery_insert');
+    if (useSavepoint) {
+      await client.query('RELEASE SAVEPOINT delivery_insert');
+    }
   } catch (error) {
-    try {
-      await client.query('ROLLBACK TO SAVEPOINT delivery_insert');
-    } catch (rollbackError) {
-      console.error('Error rolling back delivery_insert savepoint:', rollbackError.message);
+    if (isPoolUnavailableError(error)) {
+      console.warn('[Announcements] Skipping delivery record insert because database pool is unavailable.', {
+        announcementId,
+        message: error.message,
+      });
+      return;
+    }
+
+    if (useSavepoint) {
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT delivery_insert');
+      } catch (rollbackError) {
+        console.error('Error rolling back delivery_insert savepoint:', rollbackError.message);
+      }
     }
     console.error('Error inserting delivery record:', error instanceof Error ? error.message : String(error));
+    if (throwOnError) {
+      throw error;
+    }
   }
 };
 
@@ -715,6 +939,188 @@ const fetchDeliverySummary = async (client, announcementId) => {
     failed_count: parseCount(row.failed_count),
     cancelled_count: parseCount(row.cancelled_count),
   };
+};
+
+const resolveAnnouncementRecipientsWithCache = async (client, targetAudienceValue, recipientCache) => {
+  const normalizedAudience = sanitizeText(targetAudienceValue).toLowerCase();
+  if (!recipientCache) {
+    return resolveAnnouncementRecipients(client, normalizedAudience);
+  }
+
+  if (recipientCache.has(normalizedAudience)) {
+    return recipientCache.get(normalizedAudience);
+  }
+
+  const recipients = await resolveAnnouncementRecipients(client, normalizedAudience);
+  recipientCache.set(normalizedAudience, recipients);
+  return recipients;
+};
+
+const getValidGuardianIds = async (client, recipients) => {
+  const guardianIds = [...new Set(
+    (recipients || [])
+      .map((recipient) => parseInt(recipient.recipient_guardian_id, 10))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  )];
+
+  if (guardianIds.length === 0 || !(await isTableAvailable(client, 'guardians'))) {
+    return new Set();
+  }
+
+  const result = await client.query(
+    'SELECT id FROM guardians WHERE id = ANY($1::int[])',
+    [guardianIds],
+  );
+  return new Set(result.rows.map((row) => parseInt(row.id, 10)));
+};
+
+const bulkInsertBackfilledDeliveryRecords = async (client, announcement, recipients) => {
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    return;
+  }
+
+  const backfilledAt = new Date();
+  const deliveredAt = announcement.published_at || announcement.created_at || backfilledAt;
+  const validGuardianIds = await getValidGuardianIds(client, recipients);
+  const recipientRows = recipients
+    .map((recipient) => {
+      const userId = parseInt(recipient.user_id, 10);
+      const guardianId = parseInt(recipient.recipient_guardian_id, 10);
+      return {
+        recipient_user_id: Number.isInteger(userId) && userId > 0 ? userId : null,
+        recipient_guardian_id:
+          Number.isInteger(guardianId) && guardianId > 0 && validGuardianIds.has(guardianId)
+            ? guardianId
+            : null,
+      };
+    })
+    .filter((recipient) => recipient.recipient_user_id || recipient.recipient_guardian_id);
+
+  if (recipientRows.length === 0) {
+    return;
+  }
+
+  await client.query(
+    `
+      WITH recipient_rows AS (
+        SELECT recipient_user_id, recipient_guardian_id
+        FROM jsonb_to_recordset($5::jsonb)
+          AS r(recipient_user_id INTEGER, recipient_guardian_id INTEGER)
+      )
+      INSERT INTO announcement_recipient_deliveries (
+        announcement_id,
+        recipient_user_id,
+        recipient_guardian_id,
+        notification_id,
+        resolved_target_audience,
+        delivery_channel,
+        delivery_status,
+        delivery_attempts,
+        queued_at,
+        sent_at,
+        delivered_at,
+        failed_at,
+        failure_reason,
+        metadata
+      )
+      SELECT
+        $1::integer,
+        recipient_user_id,
+        recipient_guardian_id,
+        NULL::integer,
+        $2::varchar,
+        'in_app',
+        'delivered',
+        1,
+        $3::timestamp,
+        $3::timestamp,
+        $3::timestamp,
+        NULL::timestamp,
+        NULL::text,
+        $4::jsonb
+      FROM recipient_rows
+      WHERE recipient_user_id IS NOT NULL OR recipient_guardian_id IS NOT NULL
+      ON CONFLICT DO NOTHING
+    `,
+    [
+      announcement.id,
+      sanitizeText(announcement.target_audience).toLowerCase() || 'all',
+      deliveredAt,
+      JSON.stringify({
+        backfilled: true,
+        backfilled_at: backfilledAt.toISOString(),
+        notification_created: false,
+        source: 'announcement_delivery_tracking_backfill',
+      }),
+      JSON.stringify(recipientRows),
+    ],
+  );
+};
+
+const healBackfilledNotificationPersistenceFailures = async (client, announcementId) => {
+  await client.query(
+    `
+      UPDATE announcement_recipient_deliveries
+      SET
+        delivery_status = 'delivered',
+        sent_at = COALESCE(sent_at, queued_at, CURRENT_TIMESTAMP),
+        delivered_at = COALESCE(delivered_at, sent_at, queued_at, CURRENT_TIMESTAMP),
+        failed_at = NULL,
+        failure_reason = NULL,
+        metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE announcement_id = $1
+        AND delivery_status = 'failed'
+        AND failure_reason = 'Notification record could not be persisted'
+        AND COALESCE(metadata, '{}'::jsonb)->>'backfilled' = 'true'
+    `,
+    [
+      announcementId,
+      JSON.stringify({
+        notification_created: false,
+        healed_notification_fk_failure: true,
+        healed_at: new Date().toISOString(),
+      }),
+    ],
+  );
+};
+
+const ensureAnnouncementDeliveryBackfill = async (client, announcement, options = {}) => {
+  if (!announcement || announcement.status !== 'published') {
+    return;
+  }
+
+  const deliveryTableExists = await isTableAvailable(client, 'announcement_recipient_deliveries');
+  if (!deliveryTableExists) {
+    return;
+  }
+
+  await healBackfilledNotificationPersistenceFailures(client, announcement.id);
+
+  const existingCountResult = await client.query(
+    `
+      SELECT COUNT(*)::int AS count
+      FROM announcement_recipient_deliveries
+      WHERE announcement_id = $1
+    `,
+    [announcement.id],
+  );
+
+  const existingCount = parseCount(existingCountResult.rows[0]?.count);
+  const recipients = await resolveAnnouncementRecipientsWithCache(
+    client,
+    announcement.target_audience,
+    options.recipientCache,
+  );
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    return;
+  }
+
+  if (existingCount >= recipients.length) {
+    return;
+  }
+
+  await bulkInsertBackfilledDeliveryRecords(client, announcement, recipients);
 };
 
 const emitAnnouncementDeliverySummary = (announcementId, summary) => {
@@ -813,9 +1219,15 @@ router.get('/delivery/summary', requireManagementRole, async (req, res) => {
       };
     });
 
-    res.json(summaryByAnnouncement);
+    if (!res.headersSent) {
+      return res.json(summaryByAnnouncement);
+    }
+    return undefined;
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: error.message });
+    }
+    return undefined;
   }
 });
 
@@ -1190,6 +1602,7 @@ router.get('/:id/delivery-summary', requireManagementRole, async (req, res) => {
       return res.status(404).json({ error: 'Announcement not found' });
     }
 
+    await ensureAnnouncementDeliveryBackfill(pool, announcementResult.rows[0]);
     const summary = await fetchDeliverySummary(pool, announcementId);
     res.json({
       announcement: announcementResult.rows[0],
@@ -1398,6 +1811,7 @@ router.put('/:id/publish', requireManagementRole, async (req, res) => {
           metadata: {
             published_by: req.user.id,
           },
+          throwOnError: true,
         });
       }
     }
@@ -1430,11 +1844,14 @@ router.put('/:id/publish', requireManagementRole, async (req, res) => {
       socketService.sendToUser(userId, 'notification', { notification });
     });
 
-    res.json({
-      ...announcement,
-      recipient_count: recipients.length,
-      delivery_summary: deliverySummary,
-    });
+    if (!res.headersSent) {
+      return res.json({
+        ...announcement,
+        recipient_count: recipients.length,
+        delivery_summary: deliverySummary,
+      });
+    }
+    return undefined;
   } catch (error) {
     if (client) {
       try {
@@ -1442,8 +1859,9 @@ router.put('/:id/publish', requireManagementRole, async (req, res) => {
       } catch (_e) { /* ignore */ }
     }
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: error.message });
     }
+    return undefined;
   } finally {
     if (client) {
       client.release();

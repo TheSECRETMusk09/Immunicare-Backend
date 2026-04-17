@@ -14,6 +14,7 @@ const {
   CLINIC_TODAY_SQL,
   CLINIC_TIMEZONE,
   MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+  getClinicBlockedDateKeys,
   endOfClinicMonthKey,
   getClinicTodayDateKey,
   isVaccinationAppointmentType,
@@ -22,6 +23,15 @@ const {
   startOfClinicMonthKey,
   toClinicDateKey,
 } = require('../utils/clinicCalendar');
+const {
+  combineClinicDateTime,
+  formatClinicDateTime,
+  formatClinicTime,
+  isAllowedAppointmentTimeSlot,
+  normalizeAppointmentDateTimeForDisplay,
+  normalizeAppointmentRecordForResponse,
+  parseAppointmentDateTimeInput,
+} = require('../utils/appointmentDateTime');
 
 const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
   appointmentsPatient: 'infant_id',
@@ -329,9 +339,17 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
       };
     }
 
+    if (!isAllowedAppointmentTimeSlot(time)) {
+      return {
+        available: false,
+        code: 'INVALID_TIME',
+        message: 'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
+      };
+    }
+
     // Parse the date and time
-    const appointmentDateTime = new Date(`${date}T${time}:00`);
-    if (isNaN(appointmentDateTime.getTime())) {
+    const appointmentDateTime = combineClinicDateTime(date, time);
+    if (!appointmentDateTime) {
       return {
         available: false,
         code: 'INVALID_DATE_TIME',
@@ -474,7 +492,27 @@ const checkBookingAvailability = async ({
   excludeAppointmentId = null,
 }) => {
   try {
-    const dateOnly = parseDate(scheduledDate);
+    const parsedAppointmentDate = parseAppointmentDateTimeInput(scheduledDate, {
+      requireTime: false,
+    });
+    if (!parsedAppointmentDate) {
+      return {
+        available: false,
+        code: 'INVALID_DATE',
+        message: 'Invalid appointment date',
+      };
+    }
+
+    const effectiveTime = time || (parsedAppointmentDate.hasTime ? parsedAppointmentDate.time : null);
+    if (effectiveTime && !isAllowedAppointmentTimeSlot(effectiveTime)) {
+      return {
+        available: false,
+        code: 'INVALID_TIME',
+        message: 'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
+      };
+    }
+
+    const dateOnly = parseDate(parsedAppointmentDate.dateKey);
     if (!dateOnly) {
       return {
         available: false,
@@ -484,7 +522,7 @@ const checkBookingAvailability = async ({
     }
 
     const todayManila = getClinicTodayDateKey();
-    const scheduledManila = toDateKey(dateOnly);
+    const scheduledManila = parsedAppointmentDate.dateKey;
 
     if (scheduledManila < todayManila) {
       return {
@@ -557,13 +595,23 @@ const checkBookingAvailability = async ({
     }
 
     // If time is provided, use stock-aware checking for specific date/time
-    if (time && vaccineId) {
+    if (effectiveTime && vaccineId) {
       const stockCheck = await checkVaccineStockForDateTime({
         date: scheduledManila,
-        time,
+        time: effectiveTime,
         vaccineId,
         clinicId,
       });
+
+      if (stockCheck.code === 'STOCK_CHECK_FAILED') {
+        console.warn('[checkBookingAvailability] Vaccine stock check failed; allowing booking with stock_warning:', stockCheck.message);
+        return {
+          available: true,
+          code: 'STOCK_UNVERIFIED',
+          message: 'Booking date is available (vaccine stock could not be verified)',
+          stock_warning: 'Could not verify vaccine stock availability',
+        };
+      }
 
       return {
         available: stockCheck.available,
@@ -690,17 +738,13 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
 
     const days = [];
     const cursor = new Date(start);
-
-    // Get admin-blocked dates for the month
-    let adminBlockedDates = {};
-    try {
-      adminBlockedDates = await blockedDatesService.getBlockedDatesForCalendar({
-        month: toMonthKey(start),
+    const blockedDateKeys = new Set(
+      await getClinicBlockedDateKeys({
+        startDate: start,
+        endDate: end,
         clinicId,
-      });
-    } catch (blockError) {
-      console.error('Error getting blocked dates:', blockError.message);
-    }
+      }),
+    );
 
     while (cursor <= end) {
       const dateKey = toDateKey(cursor);
@@ -709,28 +753,29 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
       const noVaccineAvailability = stock.totalAvailableStock <= 0;
 
       let blockedReason = null;
-      const adminBlocked = adminBlockedDates[dateKey];
 
       if (weekend) {
         blockedReason = 'weekend';
       } else if (holiday) {
         blockedReason = 'holiday';
+      } else if (blockedDateKeys.has(dateKey)) {
+        blockedReason = 'admin_blocked';
       } else if (noVaccineAvailability) {
         blockedReason = 'no_vaccine_available';
-      } else if (adminBlocked && adminBlocked.is_blocked) {
-        blockedReason = 'admin_blocked';
       }
 
       days.push({
         date: dateKey,
-        totalAppointments: dailyCounts[dateKey] || 0,
+        totalAppointments: blockedReason ? 0 : (dailyCounts[dateKey] || 0),
         isWeekend: weekend,
         isHoliday: Boolean(holiday),
         holidayName: holiday?.name || null,
         noVaccineAvailability,
         hasVaccineAvailability: stock.totalAvailableStock > 0,
-        isAdminBlocked: adminBlocked ? adminBlocked.is_blocked : false,
-        adminBlockReason: adminBlocked?.reason || null,
+        isAdminBlocked: blockedDateKeys.has(dateKey) && !weekend && !holiday,
+        adminBlockReason: blockedDateKeys.has(dateKey) && !weekend && !holiday
+          ? 'blocked by clinic rule'
+          : null,
         blocked: Boolean(blockedReason),
         blockedReason,
       });
@@ -764,6 +809,35 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
     }
 
     const dateKey = toDateKey(parsedDate);
+    const blockedDate = await blockedDatesService.isDateBlocked({
+      date: dateKey,
+      clinicId,
+    });
+    const availability = isDateAvailableForBooking(parsedDate, {
+      allowPast: true,
+      blockedDate,
+    });
+
+    if (!availability.isAvailable) {
+      const stock = await getVaccineStockSummary(clinicId);
+      return {
+        date: dateKey,
+        isWeekend: isWeekend(parsedDate),
+        holiday: getHolidayInfo(parsedDate),
+        availability,
+        summary: {
+          total: 0,
+          byStatus: {},
+        },
+        appointments: [],
+        inventory: {
+          totalAvailableStock: stock.totalAvailableStock,
+          availableVaccines: stock.availableVaccines,
+          vaccines: stock.vaccines,
+        },
+      };
+    }
+
     const params = [dateKey];
     const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
     let query = `
@@ -793,13 +867,12 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
 
     query += ' ORDER BY a.scheduled_date ASC';
 
-    const [appointmentsResult, availability, stock] = await Promise.all([
+    const [appointmentsResult, stock] = await Promise.all([
       pool.query(query, params),
-      checkBookingAvailability({ scheduledDate: dateKey, clinicId }),
       getVaccineStockSummary(clinicId),
     ]);
 
-    const appointments = appointmentsResult.rows || [];
+    const appointments = (appointmentsResult.rows || []).map(normalizeAppointmentRecordForResponse);
 
     const summary = appointments.reduce(
       (acc, appointment) => {
@@ -867,9 +940,10 @@ const getBookedTimeSlots = async ({ scheduledDate, clinicId = null, excludeAppoi
           return null;
         }
 
-        const value = row.scheduled_date instanceof Date
-          ? row.scheduled_date
-          : new Date(row.scheduled_date);
+        const value = normalizeAppointmentDateTimeForDisplay(row.scheduled_date)
+          || (row.scheduled_date instanceof Date
+            ? row.scheduled_date
+            : new Date(row.scheduled_date));
         if (Number.isNaN(value.getTime())) {
           return null;
         }
@@ -1004,7 +1078,7 @@ const getAppointmentsByGuardian = async (guardianId, limit = 5) => {
       LIMIT $2
     `;
     const result = await pool.query(query, [guardianId, limit]);
-    return result.rows;
+    return (result.rows || []).map(normalizeAppointmentRecordForResponse);
   } catch (error) {
     console.error('Error fetching guardian appointments:', error);
     return [];
@@ -1054,14 +1128,27 @@ const createAppointmentAndNotify = async (appointmentData) => {
 
   // In a real app, you would wrap this in a database transaction
   try {
+    const parsedScheduledDate = parseAppointmentDateTimeInput(scheduled_date, {
+      requireTime: true,
+    });
+
+    if (!parsedScheduledDate || !isAllowedAppointmentTimeSlot(parsedScheduledDate.time)) {
+      const error = new Error('Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.');
+      error.statusCode = 400;
+      error.code = 'INVALID_TIME';
+      throw error;
+    }
+
+    const normalizedScheduledDate = parsedScheduledDate.normalizedIsoString;
+
     // 1. Insert the appointment into the database
     const insertQuery = `
       INSERT INTO appointments (infant_id, scheduled_date, vaccine_id, clinic_id, notes, status)
       VALUES ($1, $2, $3, $4, $5, 'scheduled')
       RETURNING *;
     `;
-    const result = await pool.query(insertQuery, [infant_id, scheduled_date, vaccine_id, clinic_id, notes]);
-    const newAppointment = result.rows[0];
+    const result = await pool.query(insertQuery, [infant_id, normalizedScheduledDate, vaccine_id, clinic_id, notes]);
+    const newAppointment = normalizeAppointmentRecordForResponse(result.rows[0]);
 
     // 2. Fetch related data for notifications
     const detailsQuery = `
@@ -1084,8 +1171,8 @@ const createAppointmentAndNotify = async (appointmentData) => {
 
     // 3. Send notifications (offloaded, doesn't block the response)
     if (details && details.guardianPhone) {
-      const appointmentDate = new Date(scheduled_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-      const appointmentTime = new Date(scheduled_date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const appointmentDate = formatClinicDateTime(normalizedScheduledDate);
+      const appointmentTime = formatClinicTime(normalizedScheduledDate);
 
       // Send SMS using the improved smsService
       const smsService = require('./smsService');
@@ -1094,7 +1181,7 @@ const createAppointmentAndNotify = async (appointmentData) => {
         guardianName: details.guardianName,
         childName: details.infantName,
         vaccineName: details.vaccineName,
-        scheduledDate: scheduled_date,
+        scheduledDate: normalizedScheduledDate,
         location: details.clinicName,
       }).catch(err => console.error('Appointment confirmation SMS failed:', err.message));
 
@@ -1549,7 +1636,8 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
     }
 
     // Check if appointment is actually missed (scheduled in past and not attended)
-    const appointmentDate = new Date(appointment.scheduled_date);
+    const appointmentDate = normalizeAppointmentDateTimeForDisplay(appointment.scheduled_date)
+      || new Date(appointment.scheduled_date);
     const now = new Date();
     if (appointmentDate >= now || !['scheduled', 'no-show'].includes(appointment.status)) {
       return {
@@ -1727,13 +1815,19 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
     }
 
     // Step 3: Check vaccine stock availability
-    const scheduledDateKey = toDateKey(scheduled_date);
-    const scheduledTime = new Intl.DateTimeFormat('en-GB', {
-      timeZone: CLINIC_TIMEZONE,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(new Date(scheduled_date));
+    const parsedAppointmentDate = parseAppointmentDateTimeInput(scheduled_date, {
+      requireTime: true,
+    });
+    if (!parsedAppointmentDate || !isAllowedAppointmentTimeSlot(parsedAppointmentDate.time)) {
+      return {
+        eligible: false,
+        autoApproved: false,
+        reason: 'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
+      };
+    }
+
+    const scheduledDateKey = parsedAppointmentDate.dateKey;
+    const scheduledTime = parsedAppointmentDate.time;
     const stockCheck = await checkVaccineStockForDateTime({
       date: scheduledDateKey,
       time: scheduledTime,

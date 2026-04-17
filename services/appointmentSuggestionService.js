@@ -378,6 +378,17 @@ const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId =
     if (normalizedGuardianId && suggestions.length > 0) {
       try {
         const primarySuggestion = suggestions[0];
+        const suggestionDedupeKey = [
+          'appointment_suggested',
+          normalizedGuardianId,
+          infant.id,
+          nextDoseInfo.vaccineId || 'vaccine',
+          nextDoseInfo.vaccineCode || 'code',
+          nextDoseInfo.doseNumber || 'dose',
+          primarySuggestion.date,
+          normalizedClinicId || 'clinic',
+        ].join(':');
+
         await notificationService.sendNotification({
           notification_type: 'appointment_suggested',
           target_type: 'guardian',
@@ -388,13 +399,18 @@ const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId =
           subject: 'Suggested appointment available',
           title: 'Suggested appointment available',
           message: `A suggested appointment is available for ${infant.first_name} ${infant.last_name}: ${nextDoseInfo.label} on ${primarySuggestion.date} at ${primarySuggestion.time}.`,
+          idempotency_key: suggestionDedupeKey,
           target_role: 'guardian',
           category: 'appointment',
           metadata: {
             infant_id: infant.id,
             vaccine_id: nextDoseInfo.vaccineId,
+            vaccine_code: nextDoseInfo.vaccineCode || null,
+            dose_number: nextDoseInfo.doseNumber || null,
             suggested_date: primarySuggestion.date,
             suggested_time: primarySuggestion.time,
+            clinic_id: normalizedClinicId || null,
+            dedupe_key: suggestionDedupeKey,
           },
         });
       } catch (notificationError) {

@@ -46,6 +46,19 @@ const queryAppointmentsInfantForeignKeys = async () => {
 };
 
 const initializeAppointmentRuntimeSchema = async () => {
+  // Ensure optional booking columns exist regardless of which schema variant is running.
+  // These columns are referenced in the appointment INSERT and may be absent in older deployments.
+  try {
+    await pool.query(`
+      ALTER TABLE appointments
+        ADD COLUMN IF NOT EXISTS vaccine_id INTEGER,
+        ADD COLUMN IF NOT EXISTS control_number VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS guardian_id INTEGER
+    `);
+  } catch (colError) {
+    console.warn('[appointmentRuntimeSchema] Could not ensure optional appointment columns:', colError.message);
+  }
+
   const appointmentColumns = await queryExistingColumns('appointments', ['infant_id']);
   if (!appointmentColumns.has('infant_id')) {
     return true;

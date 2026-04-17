@@ -100,6 +100,59 @@ const resolveReportsSummaryScope = (req) => {
   };
 };
 
+const resolveReportsRouteScope = (req) => resolveReportsSummaryScope(req);
+
+const isSystemAdminRequest = (req) => {
+  const canonicalRole =
+    typeof getCanonicalRole === 'function'
+      ? getCanonicalRole(req)
+      : req.user?.runtime_role || req.user?.role_type || req.user?.role || null;
+  return canonicalRole === (CANONICAL_ROLES?.SYSTEM_ADMIN || 'SYSTEM_ADMIN');
+};
+
+const appendScopeFilters = (filters = {}, scopeContext = {}) => ({
+  ...(filters && typeof filters === 'object' ? filters : {}),
+  scopeIds: scopeContext.scopeIds || [],
+  facilityId: scopeContext.scopeIds?.[0] || null,
+});
+
+const validateReportGenerationBody = (body = {}) => {
+  const { type, format } = body || {};
+  const allowedTypes = reportService.getReportTypes();
+  const allowedFormats = reportService.getReportFormats();
+  const normalizedType = normalizeReportTypeInput(type, allowedTypes);
+  const normalizedFormat = normalizeReportFormatInput(format, allowedFormats);
+  const fields = {};
+
+  if (!type) {
+    fields.type = 'type is required';
+  } else if (!normalizedType) {
+    fields.type = `type must be one of: ${allowedTypes.join(', ')}`;
+  }
+
+  if (!format) {
+    fields.format = 'format is required';
+  } else if (!normalizedFormat) {
+    fields.format = `format must be one of: ${allowedFormats.join(', ')}`;
+  }
+
+  return {
+    fields,
+    normalizedType,
+    normalizedFormat,
+    allowedTypes,
+    allowedFormats,
+  };
+};
+
+const sendValidationError = (res, fields) =>
+  res.status(400).json({
+    success: false,
+    message: 'Invalid report request',
+    error: 'REPORT_VALIDATION_ERROR',
+    fields,
+  });
+
 router.use(authenticateToken);
 
 // Root route - return API info
@@ -112,6 +165,8 @@ router.get('/info', async (req, res) => {
       'GET /reports/admin/summary - Get admin dashboard summary',
       'GET /reports/templates - Get available report templates',
       'POST /reports/generate - Generate new report',
+      'POST /reports/generate-job - Start async report generation',
+      'GET /reports/:id/status - Get generated report status',
       'GET /reports/:id/download - Download report',
       'DELETE /reports/:id - Delete report',
     ],
@@ -123,14 +178,26 @@ router.get('/', requirePermission('reports:view'), async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 50, 1), 200);
     const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
-    const reports = await reportService.getReportHistory({
+    const scopeContext = resolveReportsRouteScope(req);
+
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({
+        success: false,
+        error: scopeContext.error,
+      });
+    }
+
+    const reportHistory = await reportService.getReportHistory({
       type: req.query.type,
       startDate: req.query.startDate || req.query.start_date,
       endDate: req.query.endDate || req.query.end_date,
       generatedBy: Number.parseInt(req.query.generatedBy || req.query.generated_by, 10) || null,
       limit,
       offset,
+      scopeIds: scopeContext.scopeIds,
     });
+    const reports = Array.isArray(reportHistory) ? reportHistory : reportHistory.rows || [];
+    const total = Array.isArray(reportHistory) ? reports.length : reportHistory.total || reports.length;
 
     res.json({
       success: true,
@@ -138,10 +205,10 @@ router.get('/', requirePermission('reports:view'), async (req, res) => {
       pagination: {
         limit,
         offset,
-        total: reports.length,
+        total,
       },
       meta: {
-        total: reports.length,
+        total,
         generatedAt: new Date(),
       },
     });
@@ -211,40 +278,29 @@ router.post('/generate', requirePermission('reports:create'), async (req, res) =
     res.setTimeout?.(300000);
 
     const { type, format, startDate, endDate, filters } = req.body || {};
-    const allowedTypes = reportService.getReportTypes();
-    const allowedFormats = reportService.getReportFormats();
-    const normalizedType = normalizeReportTypeInput(type, allowedTypes);
-    const normalizedFormat = normalizeReportFormatInput(format, allowedFormats);
-    const fields = {};
-
-    if (!type) {
-      fields.type = 'type is required';
-    } else if (!normalizedType) {
-      fields.type = `type must be one of: ${allowedTypes.join(', ')}`;
-    }
-
-    if (!format) {
-      fields.format = 'format is required';
-    } else if (!normalizedFormat) {
-      fields.format = `format must be one of: ${allowedFormats.join(', ')}`;
-    }
+    const { fields, normalizedType, normalizedFormat } =
+      validateReportGenerationBody(req.body || {});
 
     if (Object.keys(fields).length > 0) {
-      return res.status(400).json({
+      return sendValidationError(res, fields);
+    }
+
+    const scopeContext = resolveReportsRouteScope(req);
+
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({
         success: false,
-        message: 'Invalid report request',
-        error: 'REPORT_VALIDATION_ERROR',
-        fields,
+        error: scopeContext.error,
       });
     }
 
     const report = await reportService.generateReport(
       normalizedType,
-      {
+      appendScopeFilters({
         startDate,
         endDate,
         ...(filters && typeof filters === 'object' ? filters : {}),
-      },
+      }, scopeContext),
       normalizedFormat,
       req.user?.id || null,
     );
@@ -267,6 +323,113 @@ router.post('/generate', requirePermission('reports:create'), async (req, res) =
   }
 });
 
+// Start async report generation job — returns 202 immediately with a jobId
+router.post('/generate-job', requirePermission('reports:create'), async (req, res) => {
+  try {
+    const { type, format, startDate, endDate, filters } = req.body || {};
+    const { fields, normalizedType, normalizedFormat } =
+      validateReportGenerationBody(req.body || {});
+
+    if (Object.keys(fields).length > 0) {
+      return sendValidationError(res, fields);
+    }
+
+    const scopeContext = resolveReportsRouteScope(req);
+
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({
+        success: false,
+        error: scopeContext.error,
+      });
+    }
+
+    const scopedFilters = appendScopeFilters({
+      startDate,
+      endDate,
+      ...(filters && typeof filters === 'object' ? filters : {}),
+    }, scopeContext);
+    const reportRow = await reportService.createReportHistoryPlaceholder(
+      normalizedType,
+      scopedFilters,
+      normalizedFormat,
+      req.user?.id || null,
+    );
+
+    // Fire generation without blocking the HTTP response
+    (async () => {
+      try {
+        await reportService.generateReport(
+          normalizedType,
+          scopedFilters,
+          normalizedFormat,
+          req.user?.id || null,
+          { existingReportId: reportRow.id },
+        );
+      } catch (err) {
+        await reportService.markReportGenerationFailed(reportRow.id, err);
+        console.error('Async report job failed [reportId=%s]:', reportRow.id, err);
+      }
+    })();
+
+    res.status(202).json({
+      success: true,
+      jobId: String(reportRow.id),
+      reportId: reportRow.id,
+      status: reportRow.status || 'generating',
+      message: 'Report generation started',
+    });
+  } catch (error) {
+    console.error('Error creating report job:', error);
+    sendReportError(res, error, 'Failed to start report generation');
+  }
+});
+
+// Backward-compatible async report job status. New frontend polling uses /reports/:id/status.
+router.get('/job/:jobId/status', requirePermission('reports:view'), async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const reportId = parseInt(jobId, 10);
+    if (!Number.isInteger(reportId) || reportId <= 0) {
+      return res.status(400).json({ success: false, error: 'Invalid job ID' });
+    }
+
+    const unscopedStatus = await reportService.getReportStatus(reportId);
+    if (
+      !isSystemAdminRequest(req) &&
+      unscopedStatus.generated_by &&
+      Number(unscopedStatus.generated_by) !== Number(req.user?.id)
+    ) {
+      return res.status(404).json({ success: false, error: 'Job not found or expired' });
+    }
+
+    const scopeContext = resolveReportsRouteScope(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({
+        success: false,
+        error: scopeContext.error,
+      });
+    }
+
+    const reportStatus = await reportService.getReportStatus(reportId, {
+      scopeIds: scopeContext.scopeIds,
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        jobId: String(reportStatus.id),
+        status: reportStatus.status,
+        reportId: reportStatus.id,
+        report: reportStatus.status === 'completed' ? reportStatus : null,
+        error: reportStatus.error_message || null,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching job status:', error);
+    return sendReportError(res, error, 'Failed to fetch job status');
+  }
+});
+
 // Get report status
 router.get('/:id/status', requirePermission('reports:view'), async (req, res) => {
   try {
@@ -279,7 +442,17 @@ router.get('/:id/status', requirePermission('reports:view'), async (req, res) =>
       });
     }
 
-    const reportStatus = await reportService.getReportStatus(reportId);
+    const scopeContext = resolveReportsRouteScope(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({
+        success: false,
+        error: scopeContext.error,
+      });
+    }
+
+    const reportStatus = await reportService.getReportStatus(reportId, {
+      scopeIds: scopeContext.scopeIds,
+    });
     res.json({
       success: true,
       data: reportStatus,
@@ -302,7 +475,17 @@ router.get('/:id/download', requirePermission('reports:download'), async (req, r
       });
     }
 
-    const reportFile = await reportService.downloadReport(reportId);
+    const scopeContext = resolveReportsRouteScope(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({
+        success: false,
+        error: scopeContext.error,
+      });
+    }
+
+    const reportFile = await reportService.downloadReport(reportId, {
+      scopeIds: scopeContext.scopeIds,
+    });
 
     res.setHeader('Content-Type', reportFile.mimeType || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${reportFile.filename || `report-${reportId}`}"`);
@@ -341,8 +524,20 @@ router.delete('/:id', requirePermission('reports:delete'), async (req, res) => {
       });
     }
 
+    const scopeContext = resolveReportsRouteScope(req);
+    if (scopeContext.error) {
+      return res.status(scopeContext.status).json({
+        success: false,
+        error: scopeContext.error,
+      });
+    }
+
+    await reportService.getReportStatus(reportId, {
+      scopeIds: scopeContext.scopeIds,
+    });
+
     const result = await pool.query(
-      'UPDATE reports SET is_active = false WHERE id = $1 RETURNING id',
+      'UPDATE reports SET is_active = false WHERE id = $1 AND COALESCE(is_active, true) = true RETURNING id',
       [reportId],
     );
 

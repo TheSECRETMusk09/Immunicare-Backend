@@ -294,6 +294,7 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
 
     let inventoryTransactionId = null;
     let batchUpdated = false;
+    let updatedBatchRecord = null;
     let inventoryDeducted = false;
     let updatedInventoryRecord = null;
 
@@ -417,6 +418,14 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
           'UPDATE vaccine_batches SET qty_current = qty_current - 1 WHERE id = $1',
           [batch_id],
         );
+        const updatedBatchResult = await client.query(
+          `SELECT *
+           FROM vaccine_batches
+           WHERE id = $1
+           LIMIT 1`,
+          [batch_id],
+        );
+        updatedBatchRecord = updatedBatchResult.rows[0] || null;
         batchUpdated = true;
       }
 
@@ -471,6 +480,7 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       const inventoryUpdateResult = await client.query(
         `UPDATE vaccine_inventory
          SET issuance = COALESCE(issuance, 0) + 1,
+             stock_on_hand = $2,
              updated_by = $1,
              is_low_stock = CASE
                WHEN ($2 <= COALESCE(low_stock_threshold, 10)) THEN true
@@ -591,11 +601,41 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
 
     // Broadcast updates
     socketService.broadcast(socketEventName, vaccinationRecord);
+    if (updatedInventoryRecord) {
+      socketService.broadcast('vaccine_inventory_updated', updatedInventoryRecord);
+    }
+    if (inventoryTransactionId) {
+      socketService.broadcast('vaccine_inventory_transaction_created', {
+        id: inventoryTransactionId,
+        vaccine_inventory_id,
+        vaccine_id,
+        transaction_type: 'ISSUE',
+        quantity: 1,
+        previous_balance: updatedInventoryRecord
+          ? Number(updatedInventoryRecord.stock_on_hand || 0) + 1
+          : null,
+        new_balance: updatedInventoryRecord
+          ? Number(updatedInventoryRecord.stock_on_hand || 0)
+          : null,
+        performed_by: administered_by || req.user.id,
+        notes: `Vaccination administered to infant ID ${patient_id}, dose ${dose_no}`,
+      });
+    }
     if (batchUpdated) {
+      socketService.broadcast('vaccine_batch_updated', {
+        ...updatedBatchRecord,
+        change: -1,
+      });
       socketService.broadcast('inventory_updated', {
         batchId: batch_id,
         vaccineId: vaccine_id,
         change: -1,
+      });
+    }
+    if (linkedAppointment?.id) {
+      socketService.broadcast('appointment_updated', {
+        id: linkedAppointment.id,
+        status: 'attended',
       });
     }
 

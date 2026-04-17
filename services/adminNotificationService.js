@@ -14,6 +14,7 @@ const NotificationService = require('./notificationService');
 const notificationService = new NotificationService();
 const socketService = require('./socketService');
 const smsService = require('./smsService');
+const { toClinicDateKey } = require('../utils/clinicCalendar');
 
 // Deduplication cache - stores recent alert keys to prevent spam
 const alertDeduplication = new Map();
@@ -372,8 +373,9 @@ const sendExpiryAlert = async (vaccineName, vaccineId, expiryDate, daysUntilExpi
   const title = isCritical
     ? 'CRITICAL: Vaccine Expiring Soon'
     : 'Warning: Vaccine Expiring';
+  const expiryDateKey = toClinicDateKey(expiryDate) || 'unknown date';
 
-  const message = `${vaccineName} (Lot: ${lotNumber}) will expire on ${expiryDate.toISOString().split('T')[0]} (${daysUntilExpiry} days remaining)`;
+  const message = `${vaccineName} (Lot: ${lotNumber}) will expire on ${expiryDateKey} (${daysUntilExpiry} days remaining)`;
 
   return sendAdminNotification({
     category,
@@ -385,7 +387,7 @@ const sendExpiryAlert = async (vaccineName, vaccineId, expiryDate, daysUntilExpi
     metadata: {
       vaccineId,
       vaccineName,
-      expiryDate: expiryDate.toISOString(),
+      expiryDate: expiryDateKey || null,
       daysUntilExpiry,
       lotNumber,
     },

@@ -670,7 +670,7 @@ router.put('/appointments/:id', auth, async (req, res) => {
             g.phone as "phoneNumber",
             a.scheduled_date as "date"
           FROM appointments a
-          JOIN infants i ON a.infant_id = i.id
+          JOIN patients i ON a.infant_id = i.id
           JOIN guardians g ON i.guardian_id = g.id
           WHERE a.id = $1
         `;

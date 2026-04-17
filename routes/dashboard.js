@@ -5,10 +5,16 @@ const { authenticateToken } = require('../middleware/auth');
 const { requirePermission, getCanonicalRole, CANONICAL_ROLES } = require('../middleware/rbac');
 const { getDashboardMetrics } = require('../services/adminMetricsService');
 const {
+  getAdminInfantVaccinationMonitoring,
+} = require('../services/adminVaccinationMonitoringService');
+const {
   resolvePatientColumn,
   resolvePatientTable,
   resolvePatientScopeExpression,
 } = require('../utils/schemaHelpers');
+const {
+  resolveFirstExistingColumn,
+} = require('../utils/queryCompatibility');
 const { resolveGuardianId } = require('../middleware/guardianScope');
 const {
   resolveEffectiveScope,
@@ -35,6 +41,21 @@ const sanitizeLimit = (value, fallback = 10, max = 100) => {
   return Math.min(parsed, max);
 };
 
+const normalizeOptionalDateFilter = (value, fieldName) => {
+  const normalizedValue = String(value || '').trim();
+  if (!normalizedValue) {
+    return { value: null };
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedValue)) {
+    return {
+      error: `${fieldName} must be a valid date`,
+    };
+  }
+
+  return { value: normalizedValue };
+};
+
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 const canAccessGuardian = (req, guardianId) => {
@@ -53,6 +74,17 @@ const guardianScopeFilterSql = `
 const PROVIDER_FALLBACK_LABEL = 'Provider unavailable';
 const PROVIDER_FALLBACK_LABEL_SQL = PROVIDER_FALLBACK_LABEL.replace(/'/g, '\'\'');
 const PROVIDER_NAME_COLUMNS = ['full_name', 'name', 'username', 'email'];
+const APPOINTMENT_PROVIDER_ROLES = [
+  'nurse',
+  'midwife',
+  'healthcare_worker',
+  'health_worker',
+  'physician',
+  'doctor',
+];
+const APPOINTMENT_PROVIDER_ROLE_SQL = `ARRAY[${APPOINTMENT_PROVIDER_ROLES
+  .map((roleName) => `'${roleName.replace(/'/g, '\'\'')}'`)
+  .join(', ')}]::text[]`;
 const GUARDIAN_READINESS_TIMEOUT_MS = 4000;
 
 let providerSchemaPromise = null;
@@ -65,9 +97,9 @@ const resolveProviderSchema = async () => {
           SELECT table_name
           FROM information_schema.tables
           WHERE table_schema = current_schema()
-            AND table_name = ANY($1::text[])
+          AND table_name = ANY($1::text[])
         `,
-        [['users', 'admin']],
+        [['users', 'admin', 'roles']],
       ),
       db.query(
         `
@@ -150,6 +182,85 @@ const getProviderSqlFragments = async () => {
   return {
     providerJoinsSql: providerJoins.join('\n'),
     providerValueExpression,
+  };
+};
+
+const getAppointmentProviderSqlFragments = async (appointmentAlias = 'a') => {
+  const schema = await getProviderSchema();
+  const usersColumns = schema.columnsByTable.users || new Set();
+
+  if (!schema.tables.has('users') || !schema.tables.has('roles')) {
+    return {
+      appointmentProviderJoinSql: '',
+      appointmentProviderValueExpression: `'${PROVIDER_FALLBACK_LABEL_SQL}'`,
+    };
+  }
+
+  const createdByNameCandidates = buildProviderNameCandidates(
+    'appointment_created_by_user',
+    usersColumns,
+  );
+  const fallbackNameCandidates = buildProviderNameCandidates(
+    'appointment_fallback_user',
+    usersColumns,
+  );
+  const createdByNameExpression =
+    createdByNameCandidates.length > 0
+      ? `COALESCE(${createdByNameCandidates.join(', ')})`
+      : 'NULL';
+  const fallbackNameExpression =
+    fallbackNameCandidates.length > 0
+      ? `COALESCE(${fallbackNameCandidates.join(', ')})`
+      : 'NULL';
+
+  const appointmentProviderJoinSql = `
+    LEFT JOIN LATERAL (
+      SELECT provider_name
+      FROM (
+        SELECT
+          ${createdByNameExpression} AS provider_name,
+          0 AS provider_priority,
+          0 AS clinic_priority,
+          appointment_created_by_user.id AS provider_user_id
+        FROM users appointment_created_by_user
+        JOIN roles appointment_created_by_role
+          ON appointment_created_by_role.id = appointment_created_by_user.role_id
+        WHERE appointment_created_by_user.id = ${appointmentAlias}.created_by
+          AND appointment_created_by_user.is_active = true
+          AND LOWER(appointment_created_by_role.name) = ANY(${APPOINTMENT_PROVIDER_ROLE_SQL})
+
+        UNION ALL
+
+        SELECT
+          ${fallbackNameExpression} AS provider_name,
+          1 AS provider_priority,
+          CASE
+            WHEN ${appointmentAlias}.clinic_id IS NOT NULL
+              AND appointment_fallback_user.clinic_id = ${appointmentAlias}.clinic_id THEN 0
+            ELSE 1
+          END AS clinic_priority,
+          appointment_fallback_user.id AS provider_user_id
+        FROM users appointment_fallback_user
+        JOIN roles appointment_fallback_role
+          ON appointment_fallback_role.id = appointment_fallback_user.role_id
+        WHERE appointment_fallback_user.is_active = true
+          AND LOWER(appointment_fallback_role.name) = ANY(${APPOINTMENT_PROVIDER_ROLE_SQL})
+          AND (
+            ${appointmentAlias}.clinic_id IS NULL
+            OR appointment_fallback_user.clinic_id = ${appointmentAlias}.clinic_id
+            OR appointment_fallback_user.clinic_id IS NULL
+          )
+      ) provider_candidates
+      WHERE provider_name IS NOT NULL
+      ORDER BY provider_priority, clinic_priority, provider_user_id
+      LIMIT 1
+    ) appointment_provider ON true
+  `;
+
+  return {
+    appointmentProviderJoinSql,
+    appointmentProviderValueExpression:
+      `COALESCE(appointment_provider.provider_name, '${PROVIDER_FALLBACK_LABEL_SQL}')`,
   };
 };
 
@@ -472,15 +583,22 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
 
     const patientColumn = await resolvePatientColumn();
     const patientTable = await resolvePatientTable();
+    const {
+      appointmentProviderJoinSql,
+      appointmentProviderValueExpression,
+    } = await getAppointmentProviderSqlFragments('a');
     
     const nextAppointmentResult = await db.query(
       `
         SELECT
           a.*,
           p.first_name,
-          p.last_name
+          p.last_name,
+          ${appointmentProviderValueExpression} as provider_name,
+          ${appointmentProviderValueExpression} as health_worker_name
         FROM appointments a
         LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
+        ${appointmentProviderJoinSql}
         WHERE ${guardianScopeFilterSql} = $1
           AND (a.scheduled_date AT TIME ZONE 'Asia/Manila')::date >= ${CLINIC_TODAY_SQL}
           AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
@@ -536,6 +654,10 @@ router.get('/guardian/:guardianId/overview', authenticateToken, async (req, res,
 
     const patientColumn = await resolvePatientColumn();
     const patientTable = await resolvePatientTable();
+    const {
+      appointmentProviderJoinSql,
+      appointmentProviderValueExpression,
+    } = await getAppointmentProviderSqlFragments('a');
 
     const [childrenResult, appointmentsResult] = await Promise.all([
       db.query(
@@ -580,9 +702,12 @@ router.get('/guardian/:guardianId/overview', authenticateToken, async (req, res,
             p.last_name,
             p.dob as infant_dob,
             COALESCE(a.location, 'Main Health Center') as location,
-            COALESCE(a.type, 'Vaccination Appointment') as type
+            COALESCE(a.type, 'Vaccination Appointment') as type,
+            ${appointmentProviderValueExpression} as provider_name,
+            ${appointmentProviderValueExpression} as health_worker_name
           FROM appointments a
           LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
+          ${appointmentProviderJoinSql}
           WHERE ${guardianScopeFilterSql} = $1
             AND (a.scheduled_date AT TIME ZONE 'Asia/Manila')::date >= ${CLINIC_TODAY_SQL}
             AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
@@ -614,6 +739,8 @@ router.get('/guardian/:guardianId/overview', authenticateToken, async (req, res,
       );
     }
 
+    const nextBookedAppointment = appointments[0] || null;
+    const nextScheduleAction = allDueVaccines[0] || null;
     const stats = {
       childrenCount: children.length,
       completedVaccinations: Array.from(guardianSummaryMap.values()).reduce(
@@ -632,7 +759,15 @@ router.get('/guardian/:guardianId/overview', authenticateToken, async (req, res,
         (total, summary) => total + Number(summary?.overdue || 0),
         0,
       ),
-      nextAppointment: appointments[0] || null,
+      nextAppointment: nextBookedAppointment,
+      nextActionDate:
+        nextBookedAppointment?.scheduled_date ||
+        nextBookedAppointment?.scheduledDate ||
+        nextScheduleAction?.dueDate ||
+        null,
+      nextActionLabel: nextBookedAppointment
+        ? 'Booked appointment'
+        : nextScheduleAction?.vaccineName || null,
     };
 
     res.json({
@@ -706,6 +841,12 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
     }
 
     params.push(limit);
+    const patientColumn = await resolvePatientColumn();
+    const patientTable = await resolvePatientTable();
+    const {
+      appointmentProviderJoinSql,
+      appointmentProviderValueExpression,
+    } = await getAppointmentProviderSqlFragments('a');
 
     const result = await db.query(
       `
@@ -715,9 +856,12 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
           p.last_name,
           p.dob as infant_dob,
           COALESCE(a.location, 'Main Health Center') as location,
-          COALESCE(a.type, 'Vaccination Appointment') as type
+          COALESCE(a.type, 'Vaccination Appointment') as type,
+          ${appointmentProviderValueExpression} as provider_name,
+          ${appointmentProviderValueExpression} as health_worker_name
         FROM appointments a
-        LEFT JOIN patients p ON p.id = a.infant_id
+        LEFT JOIN ${patientTable} p ON p.id = a.${patientColumn}
+        ${appointmentProviderJoinSql}
         ${whereClause}
         ${orderClause}
         LIMIT $${params.length}
@@ -1012,8 +1156,41 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
       String(req.query.include_guardian_name || '')
         .trim()
         .toLowerCase() === 'true';
+    const dobStart = normalizeOptionalDateFilter(
+      req.query.start_date || req.query.dob_start || req.query.date_of_birth_start,
+      'start_date',
+    );
+    const dobEnd = normalizeOptionalDateFilter(
+      req.query.end_date || req.query.dob_end || req.query.date_of_birth_end,
+      'end_date',
+    );
+    const excludeFutureDob =
+      ['true', '1', 'yes'].includes(
+        String(req.query.exclude_future_dob || req.query.excludeFutureDob || '')
+          .trim()
+          .toLowerCase(),
+      );
+    if (dobStart.error || dobEnd.error) {
+      return res.status(400).json({
+        error: 'Invalid infant filters',
+        errors: {
+          ...(dobStart.error ? { start_date: dobStart.error } : {}),
+          ...(dobEnd.error ? { end_date: dobEnd.error } : {}),
+        },
+      });
+    }
     const patientTable = await resolvePatientTable();
-    const patientScopeExpression = await resolvePatientScopeExpression('i');
+    const controlNumberColumn =
+      patientTable === 'patients' ? 'control_number' : 'patient_control_number';
+    const scopeColumn = await resolveFirstExistingColumn(
+      patientTable,
+      ['facility_id', 'clinic_id'],
+      null,
+    );
+    const scopeColumnSelect = scopeColumn
+      ? `i.${scopeColumn} AS facility_id`
+      : 'NULL::int AS facility_id';
+    const scopeExpression = scopeColumn ? `i.${scopeColumn}` : null;
     let whereClause = 'WHERE i.is_active = true';
     const params = [];
     const joinClause = includeGuardianJoin ? 'LEFT JOIN guardians g ON i.guardian_id = g.id' : '';
@@ -1021,9 +1198,23 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
       ? `COALESCE(NULLIF(TRIM(g.name), ''), 'Guardian unavailable') as guardian_name`
       : 'NULL::text as guardian_name';
     
-    if (useClinicScope && patientScopeExpression) {
-      whereClause += ` AND ${patientScopeExpression} = ANY($1::int[])`;
+    if (useClinicScope && scopeExpression) {
+      whereClause += ` AND ${scopeExpression} = ANY($${params.length + 1}::int[])`;
       params.push(scopeIds);
+    }
+
+    if (dobStart.value) {
+      whereClause += ` AND i.dob::date >= $${params.length + 1}::date`;
+      params.push(dobStart.value);
+    }
+
+    if (dobEnd.value) {
+      whereClause += ` AND i.dob::date <= $${params.length + 1}::date`;
+      params.push(dobEnd.value);
+    }
+
+    if (excludeFutureDob) {
+      whereClause += ` AND i.dob::date <= ${CLINIC_TODAY_SQL}`;
     }
 
     if (searchTerm) {
@@ -1048,7 +1239,7 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
             NULLIF(BTRIM(i.last_name), ''),
             NULLIF(BTRIM(i.first_name), '')
           ) ILIKE $${params.length}
-          OR COALESCE(i.control_number, '') ILIKE $${params.length}
+          OR COALESCE(i.${controlNumberColumn}, '') ILIKE $${params.length}
           ${includeGuardianJoin ? `OR COALESCE(g.name, '') ILIKE $${params.length}` : ''}
           OR CAST(i.dob AS TEXT) ILIKE $${params.length}
         )
@@ -1068,16 +1259,16 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
             NULLIF(BTRIM(i.last_name), '')
           ) AS full_name,
           i.dob,
-          i.control_number,
+          i.${controlNumberColumn} AS control_number,
           i.guardian_id,
-          i.facility_id,
+          ${scopeColumnSelect},
           i.sex,
           i.is_active,
           i.created_at,
           i.updated_at,
           ${guardianNameSelect}
         `
-      : `i.*, ${guardianNameSelect}`;
+      : `i.*, i.${controlNumberColumn} AS control_number, ${guardianNameSelect}`;
 
     const result = await db.query(
       `
@@ -1133,12 +1324,12 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
     const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
     const useClinicScope = scopeIds.length > 0 && !allowSystemScope;
     
-    const patientColumn = await resolvePatientColumn();
+    const patientScopeExpression = await resolvePatientScopeExpression('p');
     let scopeFilter = '';
     const vaccinationParams = [days];
     
-    if (useClinicScope) {
-      scopeFilter = ` AND p.${patientColumn} = ANY($2::int[])`;
+    if (useClinicScope && patientScopeExpression) {
+      scopeFilter = ` AND ${patientScopeExpression} = ANY($2::int[])`;
       vaccinationParams.push(scopeIds);
     }
 
@@ -1164,10 +1355,11 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
     );
     vaccinations.rows.forEach((item) => activity.push(item));
 
+    const patientColumn = await resolvePatientColumn();
     const patientTable = await resolvePatientTable();
     
     const appointmentParams = [days];
-    if (useClinicScope) {
+    if (useClinicScope && patientScopeExpression) {
       appointmentParams.push(scopeIds);
     }
     

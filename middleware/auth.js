@@ -7,6 +7,7 @@ const {
   requireRole: requireCanonicalRole,
 } = require('./rbac');
 const refreshTokenService = require('../services/refreshTokenService');
+const sessionService = require('../services/sessionService');
 const logger = require('../config/logger');
 const {
   getBaseAuthCookieOptions,
@@ -134,6 +135,12 @@ const authenticateToken = (req, res, next) => {
       res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=()');
 
       req.user = canonicalUser;
+      sessionService.updateSessionActivity(token).catch((sessionError) => {
+        logger.warn('Session activity update failed during authenticateToken', {
+          message: sessionError?.message || sessionError,
+          userId: canonicalUser.id,
+        });
+      });
       next();
     });
   } catch (error) {

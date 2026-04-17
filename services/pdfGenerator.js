@@ -1,6 +1,52 @@
 const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs').promises;
+const {
+  getPaperTemplateTypeDisplayName,
+  getPaperTemplateTypeSlug,
+  normalizePaperTemplateType,
+} = require('../utils/paperTemplateTypeCompatibility');
+
+const safeArray = (value) => (Array.isArray(value) ? value : []);
+
+const escapeHtml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const formatDateValue = (value, fallback = '-') => {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime())
+    ? fallback
+    : parsed.toLocaleDateString();
+};
+
+const resolveInfantName = (infant = {}) =>
+  [
+    infant?.first_name,
+    infant?.middle_name,
+    infant?.last_name,
+  ]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim() ||
+  String(infant?.full_name || infant?.name || infant?.display_name || 'N/A').trim();
+
+const sanitizeFilenamePart = (value) =>
+  String(value ?? '')
+    .trim()
+    .replace(/[\/\\?%*:|"<>]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'document';
 
 class PDFGenerator {
   constructor() {
@@ -14,17 +60,16 @@ class PDFGenerator {
 
   async generatePDF(templateType, data, options = {}) {
     try {
-      if (!this.templates[templateType]) {
-        throw new Error(`Template type ${templateType} not supported`);
-      }
+      const normalizedTemplateType = normalizePaperTemplateType(templateType);
+      const renderer = this.templates[normalizedTemplateType] || this.generateGenericDocument;
 
-      const html = await this.templates[templateType](data);
+      const html = await renderer.call(this, data, normalizedTemplateType);
       const pdfBuffer = await this.htmlToPDF(html, options);
 
       return {
         success: true,
         buffer: pdfBuffer,
-        filename: this.generateFilename(templateType, data)
+        filename: this.generateFilename(normalizedTemplateType, data)
       };
     } catch (error) {
       console.error('PDF generation error:', error);
@@ -33,6 +78,121 @@ class PDFGenerator {
         error: error.message
       };
     }
+  }
+
+  async generateGenericDocument(data = {}, templateType = '') {
+    const safeData = data && typeof data === 'object' ? data : {};
+    const infant = safeData.infant && typeof safeData.infant === 'object' ? safeData.infant : {};
+    const guardian = safeData.guardian && typeof safeData.guardian === 'object' ? safeData.guardian : {};
+    const template = safeData.template && typeof safeData.template === 'object' ? safeData.template : {};
+
+    const title = template.name || getPaperTemplateTypeDisplayName(templateType);
+    const subtitle =
+      template.description || `Generated ${getPaperTemplateTypeDisplayName(templateType).toLowerCase()} document`;
+    const infantName = resolveInfantName(infant);
+    const guardianName = String(
+      guardian.name ||
+      guardian.full_name ||
+      [
+        guardian.first_name,
+        guardian.middle_name,
+        guardian.last_name,
+      ]
+        .map((part) => String(part || '').trim())
+        .filter(Boolean)
+        .join(' ') ||
+      'N/A',
+    ).trim();
+
+    const additionalRows = Object.entries(safeData)
+      .filter(([key, value]) => !['infant', 'guardian', 'template', 'user'].includes(key) && value !== undefined && value !== null && value !== '')
+      .map(
+        ([key, value]) => `
+          <tr>
+            <td>${escapeHtml(getPaperTemplateTypeDisplayName(key))}</td>
+            <td>${escapeHtml(
+              Array.isArray(value)
+                ? value.length > 0
+                  ? value.map((entry) => (typeof entry === 'object' ? JSON.stringify(entry) : String(entry))).join(', ')
+                  : '-'
+                : typeof value === 'object'
+                  ? JSON.stringify(value)
+                  : String(value),
+            )}</td>
+          </tr>
+        `,
+      )
+      .join('');
+
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>${escapeHtml(title)}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .title { font-size: 24px; font-weight: bold; margin-bottom: 10px; }
+        .subtitle { font-size: 16px; color: #666; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
+        .info-card { background: #f8f9fa; padding: 15px; border-radius: 8px; }
+        .info-label { font-weight: bold; color: #333; }
+        .info-value { margin-top: 5px; color: #666; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; vertical-align: top; }
+        th { background-color: #f2f2f2; font-weight: bold; width: 28%; }
+        .footer { margin-top: 30px; font-size: 12px; color: #666; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">${escapeHtml(title)}</div>
+        <div class="subtitle">${escapeHtml(subtitle)}</div>
+    </div>
+
+    <div class="info-grid">
+        <div class="info-card">
+            <div class="info-label">Infant Name:</div>
+            <div class="info-value">${escapeHtml(infantName)}</div>
+        </div>
+        <div class="info-card">
+            <div class="info-label">Date of Birth:</div>
+            <div class="info-value">${escapeHtml(
+              formatDateValue(infant.dob || infant.date_of_birth || infant.birth_date),
+            )}</div>
+        </div>
+        <div class="info-card">
+            <div class="info-label">Guardian:</div>
+            <div class="info-value">${escapeHtml(guardianName)}</div>
+        </div>
+        <div class="info-card">
+            <div class="info-label">Generated:</div>
+            <div class="info-value">${escapeHtml(new Date().toLocaleDateString())}</div>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Field</th>
+                <th>Value</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${
+              additionalRows ||
+              '<tr><td colspan="2">No additional document data available</td></tr>'
+            }
+        </tbody>
+    </table>
+
+    <div class="footer">
+        This document was generated from the active Digital Papers template and available record data.
+    </div>
+</body>
+</html>
+    `;
   }
 
   async htmlToPDF(html, options = {}) {
@@ -67,7 +227,12 @@ class PDFGenerator {
   }
 
   async generateVaccineSchedule(data) {
-    const { infant, vaccinations, schedule } = data;
+    const safeData = data && typeof data === 'object' ? data : {};
+    const infant = safeData.infant && typeof safeData.infant === 'object' ? safeData.infant : {};
+    const vaccinations = safeArray(safeData.vaccinations);
+    const schedule = safeArray(safeData.schedule);
+    const infantName = resolveInfantName(infant);
+    const dobDisplay = formatDateValue(infant.dob || infant.date_of_birth || infant.birth_date);
 
     return `
 <!DOCTYPE html>
@@ -93,28 +258,22 @@ class PDFGenerator {
 <body>
     <div class="header">
         <div class="title">VACCINE SCHEDULE</div>
-        <div class="subtitle">Immunization Schedule for ${infant.first_name} ${
-  infant.last_name
-}</div>
+        <div class="subtitle">Immunization Schedule for ${escapeHtml(infantName)}</div>
     </div>
 
     <div class="info-grid">
         <div class="info-card">
             <div class="info-label">Infant Name:</div>
-            <div class="info-value">${infant.first_name} ${
-  infant.last_name
-}</div>
+            <div class="info-value">${escapeHtml(infantName)}</div>
         </div>
         <div class="info-card">
             <div class="info-label">Date of Birth:</div>
-            <div class="info-value">${new Date(
-    infant.dob
-  ).toLocaleDateString()}</div>
+            <div class="info-value">${escapeHtml(dobDisplay)}</div>
         </div>
         <div class="info-card">
             <div class="info-label">Age:</div>
             <div class="info-value">${this.calculateAge(
-    infant.dob
+    infant.dob || infant.date_of_birth || infant.birth_date,
   )} months</div>
         </div>
         <div class="info-card">
@@ -149,7 +308,25 @@ class PDFGenerator {
   }
 
   async generateImmunizationRecord(data) {
-    const { infant, vaccinations, guardian } = data;
+    const safeData = data && typeof data === 'object' ? data : {};
+    const infant = safeData.infant && typeof safeData.infant === 'object' ? safeData.infant : {};
+    const vaccinations = safeArray(safeData.vaccinations);
+    const guardian = safeData.guardian && typeof safeData.guardian === 'object' ? safeData.guardian : {};
+    const infantName = resolveInfantName(infant);
+    const dobDisplay = formatDateValue(infant.dob || infant.date_of_birth || infant.birth_date);
+    const guardianName = String(
+      guardian.name ||
+      guardian.full_name ||
+      [
+        guardian.first_name,
+        guardian.middle_name,
+        guardian.last_name,
+      ]
+        .map((part) => String(part || '').trim())
+        .filter(Boolean)
+        .join(' ') ||
+      'N/A',
+    ).trim();
 
     return `
 <!DOCTYPE html>
@@ -177,33 +354,27 @@ class PDFGenerator {
 <body>
     <div class="header">
         <div class="title">IMMUNIZATION RECORD</div>
-        <div class="subtitle">Complete Vaccination History for ${
-  infant.first_name
-} ${infant.last_name}</div>
+        <div class="subtitle">Complete Vaccination History for ${escapeHtml(infantName)}</div>
     </div>
 
     <div class="info-grid">
         <div class="info-card">
             <div class="info-label">Infant Name:</div>
-            <div class="info-value">${infant.first_name} ${
-  infant.last_name
-}</div>
+            <div class="info-value">${escapeHtml(infantName)}</div>
         </div>
         <div class="info-card">
             <div class="info-label">Date of Birth:</div>
-            <div class="info-value">${new Date(
-    infant.dob
-  ).toLocaleDateString()}</div>
+            <div class="info-value">${escapeHtml(dobDisplay)}</div>
         </div>
         <div class="info-card">
             <div class="info-label">Sex:</div>
             <div class="info-value">${
-  infant.sex === 'M' ? 'Male' : 'Female'
+  String(infant.sex || '').toUpperCase() === 'M' ? 'Male' : 'Female'
 }</div>
         </div>
         <div class="info-card">
             <div class="info-label">Guardian:</div>
-            <div class="info-value">${guardian ? guardian.name : 'N/A'}</div>
+            <div class="info-value">${escapeHtml(guardianName)}</div>
         </div>
     </div>
 
@@ -244,7 +415,10 @@ class PDFGenerator {
   }
 
   async generateInventoryLogbook(data) {
-    const { inventory, transactions, clinic } = data;
+    const safeData = data && typeof data === 'object' ? data : {};
+    const inventory = safeArray(safeData.inventory);
+    const transactions = safeArray(safeData.transactions);
+    const clinic = safeData.clinic && typeof safeData.clinic === 'object' ? safeData.clinic : null;
 
     return `
 <!DOCTYPE html>
@@ -330,7 +504,11 @@ class PDFGenerator {
   }
 
   async generateGrowthChart(data) {
-    const { infant, growthRecords } = data;
+    const safeData = data && typeof data === 'object' ? data : {};
+    const infant = safeData.infant && typeof safeData.infant === 'object' ? safeData.infant : {};
+    const growthRecords = safeArray(safeData.growthRecords);
+    const infantName = resolveInfantName(infant);
+    const dobDisplay = formatDateValue(infant.dob || infant.date_of_birth || infant.birth_date);
 
     return `
 <!DOCTYPE html>
@@ -356,28 +534,22 @@ class PDFGenerator {
 <body>
     <div class="header">
         <div class="title">GROWTH CHART</div>
-        <div class="subtitle">Growth Monitoring for ${infant.first_name} ${
-  infant.last_name
-}</div>
+        <div class="subtitle">Growth Monitoring for ${escapeHtml(infantName)}</div>
     </div>
 
     <div class="info-grid">
         <div class="info-card">
             <div class="info-label">Infant Name:</div>
-            <div class="info-value">${infant.first_name} ${
-  infant.last_name
-}</div>
+            <div class="info-value">${escapeHtml(infantName)}</div>
         </div>
         <div class="info-card">
             <div class="info-label">Date of Birth:</div>
-            <div class="info-value">${new Date(
-    infant.dob
-  ).toLocaleDateString()}</div>
+            <div class="info-value">${escapeHtml(dobDisplay)}</div>
         </div>
         <div class="info-card">
             <div class="info-label">Sex:</div>
             <div class="info-value">${
-  infant.sex === 'M' ? 'Male' : 'Female'
+  String(infant.sex || '').toUpperCase() === 'M' ? 'Male' : 'Female'
 }</div>
         </div>
         <div class="info-card">
@@ -415,6 +587,10 @@ class PDFGenerator {
   // Helper methods
   calculateAge(dob) {
     const birthDate = new Date(dob);
+    if (Number.isNaN(birthDate.getTime())) {
+      return 0;
+    }
+
     const today = new Date();
     const ageInMonths =
       (today.getFullYear() - birthDate.getFullYear()) * 12 +
@@ -423,13 +599,16 @@ class PDFGenerator {
   }
 
   generateVaccineScheduleRows(schedule, vaccinations) {
-    if (!schedule || schedule.length === 0) {
+    const scheduleItems = safeArray(schedule);
+    const vaccinationItems = safeArray(vaccinations);
+
+    if (scheduleItems.length === 0) {
       return '<tr><td colspan="6">No schedule data available</td></tr>';
     }
 
-    return schedule
+    return scheduleItems
       .map((item) => {
-        const administered = vaccinations.find(
+        const administered = vaccinationItems.find(
           (v) =>
             v.vaccine_name === item.vaccine_name &&
             v.dose_no === item.dose_number
@@ -454,15 +633,17 @@ class PDFGenerator {
   }
 
   generateImmunizationRecordRows(vaccinations) {
-    if (!vaccinations || vaccinations.length === 0) {
+    const vaccinationItems = safeArray(vaccinations);
+
+    if (vaccinationItems.length === 0) {
       return '<tr><td colspan="6">No vaccination records available</td></tr>';
     }
 
-    return vaccinations
+    return vaccinationItems
       .map(
         (v) => `
       <tr>
-        <td>${new Date(v.admin_date).toLocaleDateString()}</td>
+        <td>${formatDateValue(v.admin_date)}</td>
         <td>${v.vaccine_name || v.vaccine_code}</td>
         <td>${v.dose_no}</td>
         <td>${v.batch_number || '-'}</td>
@@ -475,11 +656,13 @@ class PDFGenerator {
   }
 
   generateInventoryRows(inventory) {
-    if (!inventory || inventory.length === 0) {
+    const inventoryItems = safeArray(inventory);
+
+    if (inventoryItems.length === 0) {
       return '<tr><td colspan="6">No inventory data available</td></tr>';
     }
 
-    return inventory
+    return inventoryItems
       .map(
         (item) => `
       <tr>
@@ -502,15 +685,17 @@ class PDFGenerator {
   }
 
   generateTransactionRows(transactions) {
-    if (!transactions || transactions.length === 0) {
+    const transactionItems = safeArray(transactions);
+
+    if (transactionItems.length === 0) {
       return '<tr><td colspan="7">No transaction data available</td></tr>';
     }
 
-    return transactions
+    return transactionItems
       .map(
         (t) => `
       <tr>
-        <td>${new Date(t.created_at).toLocaleDateString()}</td>
+        <td>${formatDateValue(t.created_at)}</td>
         <td>${t.transaction_type}</td>
         <td>${t.vaccine_name}</td>
         <td>${t.quantity}</td>
@@ -524,15 +709,17 @@ class PDFGenerator {
   }
 
   generateGrowthRows(growthRecords) {
-    if (!growthRecords || growthRecords.length === 0) {
+    const growthItems = safeArray(growthRecords);
+
+    if (growthItems.length === 0) {
       return '<tr><td colspan="7">No growth records available</td></tr>';
     }
 
-    return growthRecords
+    return growthItems
       .map(
         (g) => `
       <tr>
-        <td>${new Date(g.measurement_date).toLocaleDateString()}</td>
+        <td>${formatDateValue(g.measurement_date)}</td>
         <td>${Math.floor(g.age_in_days / 30)}</td>
         <td>${g.weight_kg}</td>
         <td>${g.length_cm}</td>
@@ -547,8 +734,9 @@ class PDFGenerator {
 
   generateFilename(templateType, data) {
     const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-    const infantName = data.infant
-      ? `${data.infant.first_name}_${data.infant.last_name}`
+    const normalizedTemplateType = normalizePaperTemplateType(templateType);
+    const infantName = data?.infant
+      ? sanitizeFilenamePart(resolveInfantName(data.infant))
       : 'document';
 
     const filenameMap = {
@@ -558,7 +746,7 @@ class PDFGenerator {
       GROWTH_CHART: `growth_chart_${infantName}_${timestamp}.pdf`
     };
 
-    return filenameMap[templateType] || `document_${timestamp}.pdf`;
+    return filenameMap[normalizedTemplateType] || `${getPaperTemplateTypeSlug(normalizedTemplateType) || 'document'}_${infantName}_${timestamp}.pdf`;
   }
 }
 

@@ -10,6 +10,7 @@ const {
   requireSystemAdmin,
 } = require('../middleware/rbac');
 const securityEventService = require('../services/securityEventService');
+const passwordResetService = require('../services/passwordResetService');
 const socketService = require('../services/socketService');
 const { writeAuditLog } = require('../services/auditLogService');
 const {
@@ -155,6 +156,7 @@ const ensureGuardianUserAccount = async (
   {
     syncExplicitGuardianEmail = false,
     throwOnEmailConflict = false,
+    initialPassword = null,
   } = {},
 ) => {
   const guardianId = parseInt(guardianRecord.id, 10);
@@ -165,6 +167,9 @@ const ensureGuardianUserAccount = async (
   await client.query('SELECT id FROM guardians WHERE id = $1 FOR UPDATE', [guardianId]);
 
   const guardianName = String(guardianRecord.name || '').trim() || 'guardian user';
+  const normalizedInitialPassword =
+    typeof initialPassword === 'string' ? initialPassword.trim() : '';
+  const hasInitialPassword = normalizedInitialPassword.length > 0;
 
   const linkedUserResult = await client.query(
     `SELECT id, username, email
@@ -248,6 +253,14 @@ const ensureGuardianUserAccount = async (
       updateParams.push(targetEmail);
     }
 
+    if (hasInitialPassword) {
+      const initialPasswordHash = await bcrypt.hash(normalizedInitialPassword, 10);
+      updateClauses.push(`password_hash = $${updateParams.length + 1}`);
+      updateParams.push(initialPasswordHash);
+      updateClauses.push('force_password_change = false');
+      updateClauses.push('password_changed_at = CURRENT_TIMESTAMP');
+    }
+
     let userRecord = {
       id: existingUser.id,
       username: targetUsername,
@@ -282,12 +295,26 @@ const ensureGuardianUserAccount = async (
       );
     }
 
+    if (hasInitialPassword) {
+      await client.query(
+        `UPDATE guardians
+         SET is_password_set = true,
+             must_change_password = false,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [guardianId],
+      );
+    }
+
     return userRecord;
   }
 
   const guardianRoleId = await ensureGuardianRoleId(client);
   const guardianPortalClinicId = await ensureGuardianPortalClinicId(client);
-  const generatedPasswordHash = await bcrypt.hash(buildProvisionedGuardianPassword(), 10);
+  const generatedPasswordHash = await bcrypt.hash(
+    hasInitialPassword ? normalizedInitialPassword : buildProvisionedGuardianPassword(),
+    10,
+  );
 
   if (targetEmail) {
     const availableEmail = await resolveGuardianUserEmail(client, targetEmail);
@@ -316,7 +343,7 @@ const ensureGuardianUserAccount = async (
        is_active,
        force_password_change
      )
-     VALUES ($1, $2, $3, $4, $5, $6, true, true)
+     VALUES ($1, $2, $3, $4, $5, $6, true, $7)
      RETURNING id, username, email`,
     [
       targetUsername,
@@ -325,6 +352,7 @@ const ensureGuardianUserAccount = async (
       guardianRoleId,
       guardianId,
       guardianPortalClinicId,
+      !hasInitialPassword,
     ],
   );
 
@@ -344,11 +372,11 @@ const ensureGuardianUserAccount = async (
 
   await client.query(
     `UPDATE guardians
-     SET is_password_set = false,
-         must_change_password = true,
+     SET is_password_set = $1,
+         must_change_password = $2,
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = $1`,
-    [guardianId],
+     WHERE id = $3`,
+    [hasInitialPassword, !hasInitialPassword, guardianId],
   );
 
   return createdUserResult.rows[0];
@@ -1109,13 +1137,32 @@ router.get('/guardians', requirePermission('user:view'), async (req, res) => {
 router.post('/guardians', requirePermission('user:create'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { name, phone, email, address, relationship } = req.body;
+    const {
+      name,
+      phone,
+      email,
+      address,
+      relationship,
+      password,
+      initial_password,
+      initialPassword,
+    } = req.body;
     const clinicId = resolvePrimaryUserScopeId(req.user);
+    const requestedInitialPassword =
+      [password, initial_password, initialPassword]
+        .find((value) => typeof value === 'string' && value.trim()) || null;
 
     if (!name || !phone) {
       return res.status(400).json({
         success: false,
         error: 'Name and phone are required',
+      });
+    }
+
+    if (requestedInitialPassword && requestedInitialPassword.trim().length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Initial password must be at least 6 characters long',
       });
     }
 
@@ -1142,14 +1189,46 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
     const guardianUser = await ensureGuardianUserAccount(client, guardian, {
       syncExplicitGuardianEmail: true,
       throwOnEmailConflict: true,
+      initialPassword: requestedInitialPassword,
     });
 
     await client.query('COMMIT');
+
+    let resetToken = null;
+    let resetLink = null;
+    let resetTokenError = null;
+
+    if (!requestedInitialPassword && guardianUser?.id) {
+      try {
+        await passwordResetService.createTables();
+        const resetEmail =
+          guardianUser.email ||
+          guardian.email ||
+          `${guardianUser.username || `guardian.${guardian.id}`}@guardian.local`;
+        resetToken = await passwordResetService.createPasswordResetToken(
+          guardianUser.id,
+          resetEmail,
+          req.ip,
+          req.get('User-Agent'),
+        );
+        const frontendUrl = (process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:3000')
+          .replace(/\/$/, '');
+        resetLink = `${frontendUrl}/reset-password?token=${encodeURIComponent(resetToken)}&email=${encodeURIComponent(resetEmail)}`;
+      } catch (resetError) {
+        resetTokenError = 'Password reset token could not be generated';
+        console.error('Failed to generate guardian password reset token:', resetError);
+      }
+    }
 
     const responsePayload = {
       ...guardian,
       email: guardianUser?.email || guardian.email || null,
       username: guardianUser?.username || null,
+      is_password_set: Boolean(requestedInitialPassword),
+      must_change_password: !requestedInitialPassword,
+      password_reset_token: resetToken,
+      password_reset_link: resetLink,
+      password_reset_error: resetTokenError,
     };
 
     socketService.broadcast('guardian_created', responsePayload);
@@ -2625,7 +2704,9 @@ router.get('/profile/:userId', async (req, res) => {
 router.put('/profile/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { username, contact, email } = req.body;
+    const { username, contact, email, name, phone } = req.body;
+    const requestedUsername = username !== undefined ? username : name;
+    const requestedContact = contact !== undefined ? contact : phone;
 
     if (!canAccessUserScope(req, userId)) {
       return res.status(403).json({ error: 'Access denied to update user profile' });
@@ -2650,9 +2731,9 @@ router.put('/profile/:userId', async (req, res) => {
 
     if (
       isGuardianManagedUsername &&
-      typeof username === 'string' &&
-      username.trim() &&
-      username.trim().toLowerCase() !== String(existingAccount.username || '').trim().toLowerCase()
+      typeof requestedUsername === 'string' &&
+      requestedUsername.trim() &&
+      requestedUsername.trim().toLowerCase() !== String(existingAccount.username || '').trim().toLowerCase()
     ) {
       return res.status(400).json({
         error: 'Guardian usernames are system-managed and follow firstname.lastname format',
@@ -2662,7 +2743,7 @@ router.put('/profile/:userId', async (req, res) => {
 
     const resolvedUsername = isGuardianManagedUsername
       ? String(existingAccount.username || '').trim()
-      : String(username || '').trim();
+      : String(requestedUsername || '').trim();
 
     // Validate input
     if (!resolvedUsername || resolvedUsername.length < 3) {
@@ -2676,9 +2757,9 @@ router.put('/profile/:userId', async (req, res) => {
     const values = [resolvedUsername];
     let paramIndex = 1;
 
-    if (contact) {
+    if (requestedContact) {
       setParts.push(`contact = $${++paramIndex}`);
-      values.push(contact);
+      values.push(requestedContact);
     }
 
     if (email) {

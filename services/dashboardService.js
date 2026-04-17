@@ -7,7 +7,7 @@ const appointmentService = require('./appointmentSchedulingService');
 const getDashboardStats = async () => {
   try {
     const [infantsRes, guardiansRes, appointmentsRes, stockRes] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM infants'),
+      pool.query('SELECT COUNT(*) FROM patients WHERE COALESCE(is_active, true) = true'),
       pool.query('SELECT COUNT(*) FROM guardians'),
       pool.query('SELECT COUNT(*) FROM appointments WHERE status = \'scheduled\' AND scheduled_date >= CURRENT_DATE'),
       appointmentService.getVaccineStockSummary(),
@@ -64,11 +64,10 @@ const getUpcomingAppointments = async (limit = 5) => {
       SELECT
         a.scheduled_date,
         a.status,
-        i.first_name || ' ' || i.last_name as patient_name,
-        v.name as vaccine_name
+        p.first_name || ' ' || p.last_name as patient_name,
+        COALESCE(a.type, 'Appointment') as vaccine_name
       FROM appointments a
-      JOIN infants i ON a.infant_id = i.id
-      LEFT JOIN vaccines v ON a.vaccine_id = v.id
+      JOIN patients p ON a.infant_id = p.id
       WHERE a.scheduled_date >= CURRENT_DATE
       ORDER BY a.scheduled_date ASC
       LIMIT $1
@@ -153,9 +152,9 @@ const getAnalytics = async (type, range = 'month') => {
 const getGuardianStats = async (guardianId) => {
   try {
     const [childrenRes, appointmentsRes, vaccinationsRes] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM infants WHERE guardian_id = $1', [guardianId]),
-      pool.query('SELECT COUNT(*) FROM appointments a JOIN infants i ON a.infant_id = i.id WHERE i.guardian_id = $1 AND a.status IN (\'scheduled\', \'pending\') AND a.scheduled_date >= CURRENT_DATE', [guardianId]),
-      pool.query('SELECT COUNT(*) FROM immunization_records ir JOIN infants i ON ir.infant_id = i.id WHERE i.guardian_id = $1', [guardianId]),
+      pool.query('SELECT COUNT(*) FROM patients WHERE guardian_id = $1 AND COALESCE(is_active, true) = true', [guardianId]),
+      pool.query('SELECT COUNT(*) FROM appointments a JOIN patients p ON a.infant_id = p.id WHERE p.guardian_id = $1 AND a.status IN (\'scheduled\', \'pending\') AND a.scheduled_date >= CURRENT_DATE', [guardianId]),
+      pool.query('SELECT COUNT(*) FROM immunization_records ir JOIN patients p ON ir.patient_id = p.id WHERE p.guardian_id = $1', [guardianId]),
     ]);
 
     return {

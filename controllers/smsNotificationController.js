@@ -193,14 +193,13 @@ const sendAppointmentConfirmation = async (req, res) => {
         a.id,
         a.scheduled_date,
         a.status,
-        g.first_name as guardian_name,
-        g.contact_number as guardian_phone,
-        i.first_name as child_name,
-        v.vaccine_name
+        COALESCE(NULLIF(TRIM(g.name), ''), NULLIF(TRIM(CONCAT_WS(' ', g.first_name, g.last_name)), ''), 'Guardian') as guardian_name,
+        COALESCE(NULLIF(TRIM(g.phone), ''), NULLIF(TRIM(g.alternate_phone), ''), NULLIF(TRIM(g.emergency_phone), '')) as guardian_phone,
+        p.first_name as child_name,
+        COALESCE(a.type, 'Vaccination Appointment') as vaccine_name
       FROM appointments a
-      JOIN guardians g ON a.guardian_id = g.id
-      JOIN infants i ON a.infant_id = i.id
-      JOIN vaccines v ON a.vaccine_id = v.id
+      JOIN patients p ON a.infant_id = p.id
+      JOIN guardians g ON COALESCE(a.guardian_id, p.guardian_id) = g.id
       WHERE a.id = $1
     `;
 
@@ -268,14 +267,13 @@ const sendAppointmentReminder = async (req, res) => {
       SELECT
         a.id,
         a.scheduled_date,
-        g.first_name as guardian_name,
-        g.contact_number as guardian_phone,
-        i.first_name as child_name,
-        v.vaccine_name
+        COALESCE(NULLIF(TRIM(g.name), ''), NULLIF(TRIM(CONCAT_WS(' ', g.first_name, g.last_name)), ''), 'Guardian') as guardian_name,
+        COALESCE(NULLIF(TRIM(g.phone), ''), NULLIF(TRIM(g.alternate_phone), ''), NULLIF(TRIM(g.emergency_phone), '')) as guardian_phone,
+        p.first_name as child_name,
+        COALESCE(a.type, 'Vaccination Appointment') as vaccine_name
       FROM appointments a
-      JOIN guardians g ON a.guardian_id = g.id
-      JOIN infants i ON a.infant_id = i.id
-      JOIN vaccines v ON a.vaccine_id = v.id
+      JOIN patients p ON a.infant_id = p.id
+      JOIN guardians g ON COALESCE(a.guardian_id, p.guardian_id) = g.id
       WHERE a.id = $1
     `;
 
@@ -341,15 +339,15 @@ const sendVaccinationDueReminder = async (req, res) => {
     // Get details
     const query = `
       SELECT
-        g.first_name as guardian_name,
-        g.contact_number as guardian_phone,
-        i.first_name as child_name,
-        v.vaccine_name,
-        v.dose_number
+        COALESCE(NULLIF(TRIM(g.name), ''), NULLIF(TRIM(CONCAT_WS(' ', g.first_name, g.last_name)), ''), 'Guardian') as guardian_name,
+        COALESCE(NULLIF(TRIM(g.phone), ''), NULLIF(TRIM(g.alternate_phone), ''), NULLIF(TRIM(g.emergency_phone), '')) as guardian_phone,
+        p.first_name as child_name,
+        v.name as vaccine_name,
+        NULL::int as dose_number
       FROM guardians g
-      JOIN infants i ON i.guardian_id = g.id
+      JOIN patients p ON p.guardian_id = g.id
       CROSS JOIN vaccines v
-      WHERE g.id = $1 AND i.id = $2 AND v.id = $3
+      WHERE g.id = $1 AND p.id = $2 AND v.id = $3
     `;
 
     const result = await pool.query(query, [guardianId, infantId, vaccineId]);
@@ -379,7 +377,9 @@ const sendVaccinationDueReminder = async (req, res) => {
       phoneNumber: data.guardian_phone,
       guardianName: data.guardian_name,
       childName: data.child_name,
-      vaccineName: `${data.vaccine_name} (Dose ${data.dose_number})`,
+      vaccineName: data.dose_number
+        ? `${data.vaccine_name} (Dose ${data.dose_number})`
+        : data.vaccine_name,
       dueDate: dueDate,
     });
 
@@ -418,19 +418,18 @@ const bulkSendAppointmentReminders = async (req, res) => {
       SELECT
         a.id,
         a.scheduled_date,
-        a.reminder_sent,
-        g.first_name as guardian_name,
-        g.contact_number as guardian_phone,
-        i.first_name as child_name,
-        v.vaccine_name
+        a.reminder_sent_24h as reminder_sent,
+        COALESCE(NULLIF(TRIM(g.name), ''), NULLIF(TRIM(CONCAT_WS(' ', g.first_name, g.last_name)), ''), 'Guardian') as guardian_name,
+        COALESCE(NULLIF(TRIM(g.phone), ''), NULLIF(TRIM(g.alternate_phone), ''), NULLIF(TRIM(g.emergency_phone), '')) as guardian_phone,
+        p.first_name as child_name,
+        COALESCE(a.type, 'Vaccination Appointment') as vaccine_name
       FROM appointments a
-      JOIN guardians g ON a.guardian_id = g.id
-      JOIN infants i ON a.infant_id = i.id
-      JOIN vaccines v ON a.vaccine_id = v.id
+      JOIN patients p ON a.infant_id = p.id
+      JOIN guardians g ON COALESCE(a.guardian_id, p.guardian_id) = g.id
       WHERE a.scheduled_date BETWEEN NOW() AND NOW() + INTERVAL '24 hours'
-        AND a.status = 'scheduled'
-        AND (a.reminder_sent IS NULL OR a.reminder_sent = false)
-        AND g.contact_number IS NOT NULL
+        AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) IN ('scheduled', 'confirmed', 'rescheduled')
+        AND COALESCE(a.reminder_sent_24h, false) = false
+        AND COALESCE(NULLIF(TRIM(g.phone), ''), NULLIF(TRIM(g.alternate_phone), ''), NULLIF(TRIM(g.emergency_phone), '')) IS NOT NULL
     `;
 
     const result = await pool.query(query);
@@ -457,7 +456,7 @@ const bulkSendAppointmentReminders = async (req, res) => {
         if (smsResult.success) {
           // Mark reminder as sent
           await pool.query(
-            'UPDATE appointments SET reminder_sent = true WHERE id = $1',
+            'UPDATE appointments SET reminder_sent_24h = true WHERE id = $1',
             [appointment.id],
           );
           results.sent++;

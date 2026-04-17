@@ -115,7 +115,7 @@ class CriticalStockMonitor {
   async synchronizeStockFlagsAndAlerts() {
     try {
       const facilityResult = await pool.query(
-        `SELECT id FROM clinics WHERE COALESCE(is_active, true) = true ORDER BY id ASC`,
+        `SELECT id FROM clinics ORDER BY id ASC`,
       );
       const facilityIds = facilityResult.rows
         .map((row) => Number.parseInt(row.id, 10))

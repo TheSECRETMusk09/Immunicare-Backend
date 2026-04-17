@@ -29,6 +29,7 @@ const {
   isValidPurok,
   isValidStreetColorForPurok,
 } = require('../utils/purokOptions');
+const { resolvePatientColumn } = require('../utils/schemaHelpers');
 
 const router = express.Router();
 
@@ -80,6 +81,7 @@ const mergePendingDoseCounts = (rows = [], scheduleSummaryMap = new Map()) =>
 
     return {
       ...row,
+      completed_vaccinations: scheduleSummary?.completedCount || 0,
       pending_vaccinations: scheduleSummary?.pendingCount || 0,
       overdue_vaccinations: scheduleSummary?.overdueCount || 0,
       upcoming_vaccinations: scheduleSummary?.upcomingCount || 0,
@@ -217,7 +219,7 @@ const validatePurokSelection = (
 };
 
 const validateInfantPayload = (payload = {}, options = {}) => {
-  const { requirePurokFields = false } = options;
+  const { requirePurokFields = true } = options;
   const errors = {};
 
   const firstName = String(payload.first_name || '').trim();
@@ -521,6 +523,10 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
       facilityId: scopedFacilityContext.useScope && scopedFacilityContext.scopeIds.length > 0 ? scopedFacilityContext.scopeIds[0] : undefined,
       dateFrom: req.query.start_date || req.query.dob_start || req.query.date_of_birth_start,
       dateTo: req.query.end_date || req.query.dob_end || req.query.date_of_birth_end,
+      createdFrom: req.query.created_from || undefined,
+      createdTo: req.query.created_to || undefined,
+      orderBy: req.query.order_by || req.query.orderBy || undefined,
+      orderDirection: req.query.order_direction || req.query.orderDirection || undefined,
       excludeFutureDob:
         ['true', '1', 'yes'].includes(
           String(req.query.exclude_future_dob || req.query.excludeFutureDob || '')
@@ -830,7 +836,7 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    const validationResult = validateInfantPayload(req.body);
+    const validationResult = validateInfantPayload(req.body, { requirePurokFields: false });
     if (!validationResult.isValid) {
       return respondInfantValidationError(res, validationResult.errors);
     }
@@ -893,19 +899,22 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
     }
 
     // Validate required fields
-    const validationResult = validateInfantPayload(payload);
+    const validationResult = validateInfantPayload(payload, { requirePurokFields: true });
     if (!validationResult.isValid) {
       return respondInfantValidationError(res, validationResult.errors);
     }
 
-    // Ensure guardian_id is set to current guardian
-    const patientData = {
-      ...validationResult.data,
-      guardian_id: guardianId,
+    const childResult = await createGuardianChildRecord({
+      guardianId,
+      payload: {
+        ...validationResult.data,
+        guardian_id: guardianId,
+      },
+    });
+    const newPatient = {
+      ...childResult.patient,
+      control_number: childResult.patient.control_number || childResult.controlNumber,
     };
-
-    // Use canonical patient service to create patient
-    const newPatient = await patientService.createPatient(patientData, req.user.id);
 
     socketService.broadcast('infant_created', newPatient);
 
@@ -913,6 +922,7 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
       success: true,
       data: newPatient,
       control_number: newPatient.control_number,
+      existed: Boolean(childResult.existed),
       message: 'Child registered successfully.',
     });
   } catch (error) {
@@ -978,7 +988,7 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
     }
 
     // Use extended validation with allergy_information and health_care_provider
-    const validationResult = validateInfantPayloadExtended(updatePayload);
+    const validationResult = validateInfantPayloadExtended(updatePayload, { requirePurokFields: false });
     if (!validationResult.isValid) {
       return respondInfantValidationError(
         res,
@@ -1119,9 +1129,11 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
     );
     const guardian = guardianResult.rows[0];
 
+    const appointmentPatientColumn = await resolvePatientColumn();
+
     // Get count of appointments to be deleted
     const appointmentCountResult = await client.query(
-      'SELECT COUNT(*) as count FROM appointments WHERE infant_id = $1 AND COALESCE(is_active, true) = true',
+      `SELECT COUNT(*) as count FROM appointments WHERE ${appointmentPatientColumn} = $1 AND COALESCE(is_active, true) = true`,
       [infantId],
     );
     const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
@@ -1132,7 +1144,7 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
         UPDATE appointments
         SET is_active = false,
             updated_at = CURRENT_TIMESTAMP
-        WHERE infant_id = $1
+        WHERE ${appointmentPatientColumn} = $1
           AND COALESCE(is_active, true) = true
       `,
       [infantId],
@@ -1389,9 +1401,11 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
       guardian = guardianResult.rows[0];
     }
 
+    const appointmentPatientColumn = await resolvePatientColumn();
+
     // Get count of appointments to be deleted
     const appointmentCountResult = await client.query(
-      'SELECT COUNT(*) as count FROM appointments WHERE infant_id = $1 AND COALESCE(is_active, true) = true',
+      `SELECT COUNT(*) as count FROM appointments WHERE ${appointmentPatientColumn} = $1 AND COALESCE(is_active, true) = true`,
       [infantId],
     );
     const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
@@ -1402,7 +1416,7 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
         UPDATE appointments
         SET is_active = false,
             updated_at = CURRENT_TIMESTAMP
-        WHERE infant_id = $1
+        WHERE ${appointmentPatientColumn} = $1
           AND COALESCE(is_active, true) = true
       `,
       [infantId],
@@ -1493,9 +1507,16 @@ router.get('/search/:query', requirePermission('patient:view'), async (req, res)
         AND (
           p.first_name ILIKE $1 OR
           p.last_name ILIKE $1 OR
+          CONCAT_WS(
+            ' ',
+            NULLIF(BTRIM(p.first_name), ''),
+            NULLIF(BTRIM(p.middle_name), ''),
+            NULLIF(BTRIM(p.last_name), '')
+          ) ILIKE $1 OR
           p.national_id ILIKE $1 OR
           p.control_number ILIKE $1 OR
-          g.name ILIKE $1
+          g.name ILIKE $1 OR
+          CAST(p.dob AS TEXT) ILIKE $1
         )
     `;
 

@@ -5,6 +5,13 @@ const { authenticateToken: auth } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 const socketService = require('../services/socketService');
 const { body, validationResult } = require('express-validator');
+const {
+  normalizePaperTemplateFields,
+  normalizePaperTemplateRecord,
+} = require('../utils/paperTemplateFields');
+const {
+  normalizePaperTemplateType,
+} = require('../utils/paperTemplateTypeCompatibility');
 
 // Helper function to handle validation errors
 const handleValidationErrors = (req, res) => {
@@ -28,8 +35,8 @@ router.get('/', auth, requirePermission('document:view'), async (req, res) => {
     let paramIndex = 1;
 
     if (type) {
-      query += ` AND template_type = $${paramIndex}`;
-      params.push(type);
+      query += ` AND UPPER(template_type) = $${paramIndex}`;
+      params.push(normalizePaperTemplateType(type));
       paramIndex++;
     }
 
@@ -44,7 +51,7 @@ router.get('/', auth, requirePermission('document:view'), async (req, res) => {
     const result = await db.query(query, params);
     res.json({
       success: true,
-      data: result.rows,
+      data: result.rows.map(normalizePaperTemplateRecord),
     });
   } catch (error) {
     console.error('Error fetching paper templates:', error);
@@ -74,7 +81,7 @@ router.get('/:id', auth, requirePermission('document:view'), async (req, res) =>
 
     res.json({
       success: true,
-      data: result.rows[0],
+      data: normalizePaperTemplateRecord(result.rows[0]),
     });
   } catch (error) {
     console.error('Error fetching paper template:', error);
@@ -94,13 +101,9 @@ router.post(
     requirePermission('document:create'),
     body('name').notEmpty().withMessage('Template name is required'),
     body('template_type')
-      .isIn([
-        'VACCINE_SCHEDULE',
-        'IMMUNIZATION_RECORD',
-        'INVENTORY_LOGBOOK',
-        'GROWTH_CHART',
-      ])
-      .withMessage('Invalid template type'),
+      .customSanitizer((value) => normalizePaperTemplateType(value))
+      .notEmpty()
+      .withMessage('Template type is required'),
     body('fields').isArray().withMessage('Fields must be an array'),
   ],
   async (req, res) => {
@@ -121,18 +124,20 @@ router.post(
         [
           name,
           description,
-          template_type,
+          normalizePaperTemplateType(template_type),
           fields ? JSON.stringify(fields) : null,
           validation_rules ? JSON.stringify(validation_rules) : null,
           created_by,
         ],
       );
 
-      socketService.broadcast('paper_template_created', result.rows[0]);
+      const normalizedTemplate = normalizePaperTemplateRecord(result.rows[0]);
+
+      socketService.broadcast('paper_template_created', normalizedTemplate);
       res.status(201).json({
         success: true,
         message: 'Paper template created successfully',
-        data: result.rows[0],
+        data: normalizedTemplate,
       });
     } catch (error) {
       console.error('Error creating paper template:', error);
@@ -157,13 +162,9 @@ router.put(
       .withMessage('Template name cannot be empty'),
     body('template_type')
       .optional()
-      .isIn([
-        'VACCINE_SCHEDULE',
-        'IMMUNIZATION_RECORD',
-        'INVENTORY_LOGBOOK',
-        'GROWTH_CHART',
-      ])
-      .withMessage('Invalid template type'),
+      .customSanitizer((value) => normalizePaperTemplateType(value))
+      .notEmpty()
+      .withMessage('Template type is required'),
     body('fields').optional().isArray().withMessage('Fields must be an array'),
   ],
   async (req, res) => {
@@ -214,7 +215,7 @@ router.put(
       }
       if (template_type !== undefined) {
         updates.push(`template_type = $${paramIndex}`);
-        params.push(template_type);
+        params.push(normalizePaperTemplateType(template_type));
         paramIndex++;
       }
       if (fields !== undefined) {
@@ -246,11 +247,13 @@ router.put(
 
       const result = await db.query(query, params);
 
-      socketService.broadcast('paper_template_updated', result.rows[0]);
+      const normalizedTemplate = normalizePaperTemplateRecord(result.rows[0]);
+
+      socketService.broadcast('paper_template_updated', normalizedTemplate);
       res.json({
         success: true,
         message: 'Paper template updated successfully',
-        data: result.rows[0],
+        data: normalizedTemplate,
       });
     } catch (error) {
       console.error('Error updating paper template:', error);
@@ -315,7 +318,7 @@ router.get('/:id/fields', auth, requirePermission('document:view'), async (req, 
 
     res.json({
       success: true,
-      data: result.rows[0].fields ? JSON.parse(result.rows[0].fields) : [],
+      data: normalizePaperTemplateFields(result.rows[0].fields),
     });
   } catch (error) {
     console.error('Error fetching template fields:', error);

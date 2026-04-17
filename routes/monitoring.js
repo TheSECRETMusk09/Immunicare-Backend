@@ -8,7 +8,6 @@ const { ensureDigitalPapersCompatibility } = require('../services/digitalPapersC
 const {
   getUserNameExpressions,
   resolveFirstExistingColumn,
-  tableExists,
 } = require('../utils/queryCompatibility');
 
 // Root route - return API info
@@ -60,21 +59,12 @@ const normalizeDateFilter = (value) => {
   return parsed.toISOString().split('T')[0];
 };
 
-const getLegacyInfantsJoinConfig = async (alias = 'i', foreignKeyExpression) => {
-  if (!(await tableExists('infants'))) {
-    return {
-      joinClause: '',
-      firstNameExpression: '\'\'',
-      lastNameExpression: '\'\'',
-      dobExpression: 'NULL',
-    };
-  }
-
+const getLegacyInfantsJoinConfig = async () => {
   return {
-    joinClause: `LEFT JOIN infants ${alias} ON ${foreignKeyExpression} = ${alias}.id`,
-    firstNameExpression: `${alias}.first_name`,
-    lastNameExpression: `${alias}.last_name`,
-    dobExpression: `${alias}.dob`,
+    joinClause: '',
+    firstNameExpression: '\'\'',
+    lastNameExpression: '\'\'',
+    dobExpression: 'NULL',
   };
 };
 

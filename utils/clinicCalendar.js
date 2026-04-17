@@ -1,3 +1,6 @@
+const blockedDatesService = require('../services/blockedDatesService');
+const { getHolidayInfo: getHolidayInfoFromConfig } = require('../config/holidays');
+
 const CLINIC_TIMEZONE = 'Asia/Manila';
 const MAX_VACCINATION_APPOINTMENTS_PER_DAY = 83;
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -113,6 +116,53 @@ const isWeekendDateKey = (value) => {
   return dow === 0 || dow === 6;
 };
 
+const getClinicBlockedDateKeys = async ({
+  startDate,
+  endDate,
+  clinicId = null,
+} = {}) => {
+  const startKey = toClinicDateKey(startDate);
+  const endKey = toClinicDateKey(endDate);
+  if (!startKey || !endKey || startKey > endKey) {
+    return [];
+  }
+
+  const blockedKeys = new Set();
+  const cursor = parseClinicDate(startKey);
+  const finalDate = parseClinicDate(endKey);
+
+  while (cursor && finalDate && cursor <= finalDate) {
+    const dateKey = toClinicDateKey(cursor);
+    if (dateKey) {
+      if (isWeekendDateKey(dateKey)) {
+        blockedKeys.add(dateKey);
+      } else if (getHolidayInfoFromConfig(cursor)) {
+        blockedKeys.add(dateKey);
+      }
+    }
+
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  try {
+    const blockedDates = await blockedDatesService.getBlockedDates({
+      startDate: startKey,
+      endDate: endKey,
+      clinicId,
+    });
+
+    blockedDates.forEach((record) => {
+      if (record?.is_blocked && record.blocked_date) {
+        blockedKeys.add(record.blocked_date);
+      }
+    });
+  } catch (_error) {
+    // Fall back to weekend and holiday rules if the blocked-date lookup fails.
+  }
+
+  return Array.from(blockedKeys).sort();
+};
+
 const rollForwardWeekendDateKey = (value) => {
   const dateKey = toClinicDateKey(value);
   if (!dateKey) {
@@ -161,7 +211,7 @@ const resolveClinicDateRange = ({
   if (period === 'month') {
     return {
       startDate: startOfClinicMonthKey(today),
-      endDate: today,
+      endDate: endOfClinicMonthKey(today),
       errors: [],
     };
   }
@@ -250,6 +300,7 @@ module.exports = {
   getClinicTodayDateKey,
   isVaccinationAppointmentType,
   isWeekendDateKey,
+  getClinicBlockedDateKeys,
   parseClinicDate,
   resolveClinicDateRange,
   rollForwardWeekendDateKey,

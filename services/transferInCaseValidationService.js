@@ -1,5 +1,6 @@
 const pool = require('../db');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
+const { toClinicDateKey } = require('../utils/clinicCalendar');
 
 const resolveClient = (client) => client || pool;
 
@@ -8,12 +9,7 @@ const normalizeDateOnly = (value) => {
     return null;
   }
 
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-
-  return parsed.toISOString().split('T')[0];
+  return toClinicDateKey(value) || null;
 };
 
 const parsePositiveDoseNumber = (value) => {
@@ -58,15 +54,9 @@ const loadVaccineScheduleBundle = async (client, vaccineName) => {
         v.name AS vaccine_name,
         vs.id AS schedule_id,
         COALESCE(vs.dose_number, 1) AS dose_number,
-        COALESCE(
-          vs.minimum_age_days,
-          CASE
-            WHEN vs.age_months IS NOT NULL THEN ROUND(vs.age_months * 30.44)::INT
-            ELSE NULL
-          END
-        ) AS minimum_age_days,
-        vs.age_months,
-        vs.age_description
+        ROUND(COALESCE(vs.age_in_months, 0) * 30.44)::INT AS minimum_age_days,
+        vs.age_in_months,
+        vs.description AS age_description
       FROM vaccines v
       LEFT JOIN vaccination_schedules vs
         ON vs.vaccine_id = v.id

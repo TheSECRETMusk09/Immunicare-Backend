@@ -8,6 +8,25 @@ const smsService = require('./smsService');
 const logger = require('../config/logger');
 const socketService = require('./socketService');
 
+const isPoolUnavailableError = (error) =>
+  (typeof pool.isPoolEndedError === 'function' && pool.isPoolEndedError(error)) ||
+  String(error?.message || '').toLowerCase().includes('cannot use a pool after calling end on the pool');
+
+const isDatabaseAvailable = (context) => {
+  if (typeof pool.warnIfPoolUnavailable === 'function') {
+    return !pool.warnIfPoolUnavailable(`appointmentConfirmation.${context}`);
+  }
+
+  if (pool.ended) {
+    logger.warn('Skipping appointment notification database operation because pool is closed', {
+      context,
+    });
+    return false;
+  }
+
+  return true;
+};
+
 class AppointmentConfirmationService {
   formatScheduledDateParts(scheduledDate) {
     const scheduledDateObj = new Date(scheduledDate);
@@ -475,6 +494,10 @@ class AppointmentConfirmationService {
     sound = false,
   }) {
     try {
+      if (!isDatabaseAvailable('createGuardianNotification')) {
+        return { success: false, error: 'Database pool unavailable', skipped: true };
+      }
+
       const { shortDateStr, timeStr } = this.formatScheduledDateParts(scheduledDate);
       const resolvedMessage =
         message ||
@@ -527,6 +550,15 @@ class AppointmentConfirmationService {
       logger.info(`In-app notification created for guardian ${guardianId} for appointment ${appointmentId}`);
       return { success: true, notificationId: notificationResult.rows[0]?.id };
     } catch (error) {
+      if (isPoolUnavailableError(error)) {
+        logger.warn('Guardian appointment notification skipped because database pool is unavailable', {
+          guardianId,
+          appointmentId,
+          message: error.message,
+        });
+        return { success: false, error: 'Database pool unavailable', skipped: true };
+      }
+
       logger.error('Error creating guardian notification:', error);
       return { success: false, error: error.message };
     }

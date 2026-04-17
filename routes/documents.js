@@ -13,8 +13,10 @@ const { ensureDigitalPapersCompatibility } = require('../services/digitalPapersC
 const {
   getGuardianNameExpression,
   getUserNameExpressions,
-  tableExists,
 } = require('../utils/queryCompatibility');
+const {
+  normalizePaperTemplateFields,
+} = require('../utils/paperTemplateFields');
 
 const documentService = new DocumentService();
 
@@ -90,29 +92,13 @@ const resolveFirstExistingColumn = async (
 const getPatientFacilityColumn = () =>
   resolveFirstExistingColumn('patients', ['clinic_id', 'facility_id'], 'clinic_id');
 
-const getLegacyInfantFacilityColumn = () =>
-  resolveFirstExistingColumn('infants', ['clinic_id', 'facility_id'], 'clinic_id');
-
-const getLegacyInfantSupport = async (alias = 'li', foreignKeyExpression = 'dg.infant_id') => {
-  const hasLegacyInfantsTable = await tableExists('infants');
-  if (!hasLegacyInfantsTable) {
-    return {
-      joinClause: '',
-      firstNameExpression: '\'\'',
-      lastNameExpression: '\'\'',
-      guardianIdExpression: 'NULL',
-      clinicExpression: 'NULL',
-    };
-  }
-
-  const legacyInfantFacilityColumn = await getLegacyInfantFacilityColumn();
-
+const getLegacyInfantSupport = async () => {
   return {
-    joinClause: `LEFT JOIN infants ${alias} ON ${foreignKeyExpression} = ${alias}.id`,
-    firstNameExpression: `${alias}.first_name`,
-    lastNameExpression: `${alias}.last_name`,
-    guardianIdExpression: `${alias}.guardian_id`,
-    clinicExpression: `${alias}.${legacyInfantFacilityColumn}`,
+    joinClause: '',
+    firstNameExpression: '\'\'',
+    lastNameExpression: '\'\'',
+    guardianIdExpression: 'NULL',
+    clinicExpression: 'NULL',
   };
 };
 
@@ -223,6 +209,20 @@ const buildDocumentSelectQuery = async () => {
 
   return `
     SELECT
+      dg.id,
+      dg.template_id,
+      dg.infant_id,
+      dg.guardian_id,
+      dg.generated_by,
+      dg.file_path,
+      dg.file_name,
+      dg.file_size,
+      dg.mime_type,
+      dg.status,
+      dg.download_count,
+      dg.created_at,
+      dg.updated_at,
+      dg.last_downloaded,
       dp.document_type,
       t.name AS template_name,
       t.template_type,
@@ -660,7 +660,15 @@ router.post('/generate/:templateId', requireDocumentGenerationAccess, async (req
       customData,
     );
 
-    res.status(201).json({
+    if (!result || result.success !== true) {
+      return res.status(result?.statusCode || 500).json({
+        success: false,
+        message: result?.message || 'Failed to generate document',
+        error: result?.error || 'Document generation failed',
+      });
+    }
+
+    return res.status(201).json({
       success: true,
       message: 'Document generated successfully',
       data: result,
@@ -705,28 +713,43 @@ router.get('/download/:id', requirePermission('document:export'), async (req, re
 
     const downloadResult = await documentService.downloadDocument(id);
 
-    if (!downloadResult.success) {
-      return res.status(500).json({
+    if (!downloadResult || downloadResult.success !== true) {
+      const statusCode = downloadResult?.statusCode || 500;
+      return res.status(statusCode).json({
         success: false,
         message: 'Failed to download document',
-        error: downloadResult.error,
+        error: downloadResult?.error || 'Document download failed',
+        ...(downloadResult?.path ? { path: downloadResult.path } : {}),
       });
     }
 
-    await documentService.incrementDownloadCount(id);
+    // Don't fail download if the counter update fails.
+    void documentService.incrementDownloadCount(id).catch((error) => {
+      console.error('[Document Download] Failed to increment download count:', error);
+    });
 
-    res.setHeader('Content-Type', downloadResult.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${downloadResult.filename}"`);
+    const safeFilename = String(downloadResult.filename || `document_${id}.pdf`)
+      .replace(/["\r\n]/g, '_')
+      .trim() || `document_${id}.pdf`;
+
+    res.setHeader('Content-Type', downloadResult.mimeType || 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
     res.setHeader('Content-Length', downloadResult.buffer.length);
 
-    res.send(downloadResult.buffer);
+    return res.send(downloadResult.buffer);
   } catch (error) {
-    console.error('Error downloading document:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to download document',
-      error: error.message,
-    });
+    console.error('[Document Download] Error:', error);
+    if (error?.stack) {
+      console.error('[Document Download] Stack:', error.stack);
+    }
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to download document',
+        message: error?.message || String(error),
+      });
+    }
+    return undefined;
   }
 });
 
@@ -799,17 +822,9 @@ router.get('/templates/:templateId/fields', requirePermission('document:view'), 
       });
     }
 
-    const rawFields = result.rows[0].fields;
-    const fields =
-      typeof rawFields === 'string'
-        ? JSON.parse(rawFields)
-        : Array.isArray(rawFields)
-          ? rawFields
-          : [];
-
     res.json({
       success: true,
-      data: fields,
+      data: normalizePaperTemplateFields(result.rows[0].fields),
     });
   } catch (error) {
     console.error('Error fetching template fields:', error);

@@ -1,4 +1,5 @@
 const pool = require('../db');
+const immunizationScheduleService = require('./immunizationScheduleService');
 
 const getAdminInfantVaccinationMonitoring = async ({
   infantId = null,
@@ -169,7 +170,31 @@ const getAdminInfantVaccinationMonitoring = async ({
     params,
   );
 
-  return result.rows;
+  const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
+    result.rows.map((row) => ({
+      id: row.infant_id,
+      dob: row.dob,
+    })),
+  );
+
+  return result.rows.map((row) => {
+    const summary = scheduleSummaryMap.get(Number.parseInt(row.infant_id, 10));
+    if (!summary) {
+      return row;
+    }
+
+    return {
+      ...row,
+      completed_count: Number(summary.completedCount || 0),
+      pending_count: Number(summary.pendingCount || 0),
+      next_status:
+        Number(summary.overdueCount || 0) > 0
+          ? 'overdue'
+          : Number(summary.upcomingCount || 0) > 0
+            ? 'due_soon'
+            : 'no_pending_dose',
+    };
+  });
 };
 
 module.exports = {

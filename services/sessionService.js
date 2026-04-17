@@ -5,9 +5,55 @@
 
 const pool = require('../db');
 
+const DEFAULT_SESSION_TIMEOUT_MS = 8 * 60 * 60 * 1000;
+
+const parseSessionDurationMs = (value, fallbackMs) => {
+  if (value === null || value === undefined || value === '') {
+    return fallbackMs;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  const match = normalized.match(/^(\d+)(ms|s|m|h|d)?$/);
+  if (!match) {
+    return fallbackMs;
+  }
+
+  const amount = Number.parseInt(match[1], 10);
+  const unit = match[2];
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return fallbackMs;
+  }
+
+  if (!unit) {
+    // Historical environment files store session durations as minutes.
+    return amount * 60 * 1000;
+  }
+
+  switch (unit) {
+    case 'd':
+      return amount * 24 * 60 * 60 * 1000;
+    case 'h':
+      return amount * 60 * 60 * 1000;
+    case 'm':
+      return amount * 60 * 1000;
+    case 's':
+      return amount * 1000;
+    case 'ms':
+    default:
+      return amount;
+  }
+};
+
 // Configuration
-const SESSION_TIMEOUT = parseInt(process.env.SESSION_TIMEOUT) || 15 * 60 * 1000; // 15 minutes inactivity
-const ABSOLUTE_TIMEOUT = parseInt(process.env.ABSOLUTE_SESSION_TIMEOUT) || 8 * 60 * 60 * 1000; // 8 hours max
+const SESSION_TIMEOUT = parseSessionDurationMs(
+  process.env.SESSION_TIMEOUT,
+  DEFAULT_SESSION_TIMEOUT_MS,
+);
+const ABSOLUTE_TIMEOUT = parseSessionDurationMs(
+  process.env.ABSOLUTE_SESSION_TIMEOUT,
+  DEFAULT_SESSION_TIMEOUT_MS,
+);
 const MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS) || 5;
 const ABSOLUTE_TIMEOUT_SECONDS = Math.floor(ABSOLUTE_TIMEOUT / 1000);
 
@@ -105,9 +151,8 @@ const validateSession = async (sessionToken) => {
       return null;
     }
 
-    // Check if session has exceeded absolute timeout
-    const loginTime = new Date(session.login_time);
-    if (Date.now() - loginTime.getTime() > ABSOLUTE_TIMEOUT) {
+    const expiresAt = session.expires_at ? new Date(session.expires_at) : null;
+    if (expiresAt && !Number.isNaN(expiresAt.getTime()) && Date.now() > expiresAt.getTime()) {
       await endSession(sessionToken, 'expired');
       return null;
     }
@@ -128,9 +173,10 @@ const updateSessionActivity = async (sessionToken) => {
   try {
     await pool.query(
       `UPDATE user_sessions
-       SET last_activity = NOW()
+       SET last_activity = NOW(),
+           expires_at = NOW() + ($2 * INTERVAL '1 second')
        WHERE session_token = $1 AND is_active = true AND logout_time IS NULL`,
-      [sessionToken],
+      [sessionToken, ABSOLUTE_TIMEOUT_SECONDS],
     );
     return true;
   } catch (error) {
@@ -332,10 +378,14 @@ const cleanupExpiredSessions = async () => {
     const result = await pool.query(
       `UPDATE user_sessions
        SET is_active = false,
+           logout_time = COALESCE(logout_time, NOW()),
            session_duration = EXTRACT(EPOCH FROM (NOW() - login_time))::INTEGER
        WHERE is_active = true
-       AND (logout_time IS NULL AND NOW() - login_time > INTERVAL '${ABSOLUTE_TIMEOUT / 1000} seconds')
-       OR (last_activity < NOW() - INTERVAL '${SESSION_TIMEOUT / 1000} seconds' AND logout_time IS NULL)`,
+       AND logout_time IS NULL
+       AND (
+         (expires_at IS NOT NULL AND expires_at < NOW())
+         OR last_activity < NOW() - INTERVAL '${SESSION_TIMEOUT / 1000} seconds'
+       )`,
     );
 
     if (result.rowCount > 0) {
@@ -360,7 +410,7 @@ const isSessionValid = (session) => {
   }
 
   const lastActivity = new Date(session.last_activity);
-  const loginTime = new Date(session.login_time);
+  const expiresAt = session.expires_at ? new Date(session.expires_at) : null;
   const now = Date.now();
 
   // Check inactivity timeout
@@ -368,9 +418,8 @@ const isSessionValid = (session) => {
     return { valid: false, reason: 'Session expired due to inactivity' };
   }
 
-  // Check absolute timeout
-  if (now - loginTime.getTime() > ABSOLUTE_TIMEOUT) {
-    return { valid: false, reason: 'Session exceeded maximum duration' };
+  if (expiresAt && !Number.isNaN(expiresAt.getTime()) && now > expiresAt.getTime()) {
+    return { valid: false, reason: 'Session expired' };
   }
 
   return { valid: true };

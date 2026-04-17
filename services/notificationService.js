@@ -7,20 +7,54 @@ const NOTIFICATION_COLUMNS_CACHE_TTL = 5 * 60 * 1000;
 let notificationColumnsCache = null;
 let notificationColumnsCachedAt = 0;
 
+const isPoolUnavailableError = (error) =>
+  (typeof pool.isPoolEndedError === 'function' && pool.isPoolEndedError(error)) ||
+  String(error?.message || '').toLowerCase().includes('cannot use a pool after calling end on the pool');
+
+const isDatabaseAvailable = (context) => {
+  if (typeof pool.warnIfPoolUnavailable === 'function') {
+    return !pool.warnIfPoolUnavailable(`notificationService.${context}`);
+  }
+
+  if (pool.ended) {
+    logger.warn('Skipping notification database operation because PostgreSQL pool is closed', {
+      context,
+    });
+    return false;
+  }
+
+  return true;
+};
+
 const getNotificationColumns = async () => {
+  if (!isDatabaseAvailable('getNotificationColumns')) {
+    return new Map();
+  }
+
   const now = Date.now();
   if (notificationColumnsCache && now - notificationColumnsCachedAt < NOTIFICATION_COLUMNS_CACHE_TTL) {
     return notificationColumnsCache;
   }
 
-  const result = await pool.query(
-    `
-      SELECT column_name, data_type, udt_name
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = 'notifications'
-    `,
-  );
+  let result;
+  try {
+    result = await pool.query(
+      `
+        SELECT column_name, data_type, udt_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'notifications'
+      `,
+    );
+  } catch (error) {
+    if (isPoolUnavailableError(error)) {
+      logger.warn('Skipping notification column lookup because PostgreSQL pool is unavailable', {
+        message: error.message,
+      });
+      return new Map();
+    }
+    throw error;
+  }
 
   notificationColumnsCache = new Map(
     result.rows.map((row) => [row.column_name, { dataType: row.data_type, udtName: row.udt_name }]),
@@ -115,6 +149,8 @@ class NotificationService {
   }
 
   async sendNotification(notificationData) {
+    let idempotencyKeyForDuplicate = notificationData?.idempotency_key || null;
+
     try {
       const {
         notification_type,
@@ -228,6 +264,10 @@ class NotificationService {
       }
 
       // Create notification record (adapt to schema columns)
+      if (!isDatabaseAvailable('sendNotification')) {
+        return { success: false, reason: 'database_pool_unavailable', skipped: true };
+      }
+
       const columns = await getNotificationColumns();
       const resolvePriority = (value) => {
         if (!columns.has('priority')) {
@@ -284,6 +324,7 @@ class NotificationService {
         category: notificationData.category || 'general',
         is_read: notificationData.is_read ?? false,
       };
+      idempotencyKeyForDuplicate = payload.idempotency_key || idempotencyKeyForDuplicate;
 
       const keys = Object.keys(payload).filter((key) => {
         if (!columns.has(key) || payload[key] === undefined) {
@@ -306,7 +347,25 @@ class NotificationService {
       });
 
       if (keys.length === 0) {
+        if (!isDatabaseAvailable('sendNotification.columns')) {
+          return { success: false, reason: 'database_pool_unavailable', skipped: true };
+        }
         throw new Error('Notification table schema is missing required columns');
+      }
+
+      if (payload.idempotency_key && columns.has('idempotency_key')) {
+        const existingResult = await pool.query(
+          'SELECT * FROM notifications WHERE idempotency_key = $1 LIMIT 1',
+          [payload.idempotency_key],
+        );
+
+        if (existingResult.rows.length > 0) {
+          return {
+            success: true,
+            notification: existingResult.rows[0],
+            duplicate: true,
+          };
+        }
       }
 
       const placeholders = keys.map((_, index) => `$${index + 1}`);
@@ -333,7 +392,27 @@ class NotificationService {
         notification,
       };
     } catch (error) {
+      if (isPoolUnavailableError(error)) {
+        logger.warn('Notification insert skipped because PostgreSQL pool is unavailable', {
+          message: error.message,
+        });
+        return { success: false, reason: 'database_pool_unavailable', skipped: true };
+      }
       logger.error('Error creating notification:', error);
+      if (error?.code === '23505' && idempotencyKeyForDuplicate) {
+        const existingResult = await pool.query(
+          'SELECT * FROM notifications WHERE idempotency_key = $1 LIMIT 1',
+          [idempotencyKeyForDuplicate],
+        );
+
+        if (existingResult.rows.length > 0) {
+          return {
+            success: true,
+            notification: existingResult.rows[0],
+            duplicate: true,
+          };
+        }
+      }
       throw error;
     }
   }

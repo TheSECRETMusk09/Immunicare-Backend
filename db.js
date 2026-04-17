@@ -187,6 +187,65 @@ const poolConfig = {
 };
 
 const pool = new Pool(poolConfig);
+const originalPoolEnd = pool.end.bind(pool);
+let poolEndStarted = false;
+let poolEndFinished = false;
+let poolEndPromise = null;
+
+const isPoolEnding = () => Boolean(poolEndStarted || pool.ended);
+const isPoolUsable = () => !poolEndStarted && !pool.ended;
+const isPoolEndedError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    error?.code === 'POOL_ENDED' ||
+    message.includes('cannot use a pool after calling end on the pool') ||
+    message.includes('pool has already been closed') ||
+    message.includes('database pool is closing')
+  );
+};
+
+const warnIfPoolUnavailable = (context = 'database operation', details = {}) => {
+  if (isPoolUsable()) {
+    return false;
+  }
+
+  logger.warn('Skipping database operation because PostgreSQL pool is closing or closed', {
+    context,
+    poolEndStarted,
+    poolEndFinished,
+    poolEnded: Boolean(pool.ended),
+    ...details,
+  });
+  return true;
+};
+
+pool.end = async (...args) => {
+  if (poolEndFinished || pool.ended) {
+    logger.debug('PostgreSQL pool end requested after pool was already closed');
+    return undefined;
+  }
+
+  if (poolEndPromise) {
+    logger.debug('PostgreSQL pool end already in progress');
+    return poolEndPromise;
+  }
+
+  poolEndStarted = true;
+  poolEndPromise = originalPoolEnd(...args)
+    .then((result) => {
+      poolEndFinished = true;
+      return result;
+    })
+    .catch((error) => {
+      if (!pool.ended) {
+        poolEndStarted = false;
+        poolEndPromise = null;
+      }
+      throw error;
+    });
+
+  return poolEndPromise;
+};
 
 // Pool event listeners with structured logging
 pool.on('connect', (client) => {
@@ -240,6 +299,11 @@ const queryWithRetry = async (text, params, options = {}) => {
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      if (warnIfPoolUnavailable('queryWithRetry')) {
+        const poolError = new Error('Database pool is closing or closed');
+        poolError.code = 'POOL_ENDED';
+        throw poolError;
+      }
       const result = await pool.query(text, params);
       return result;
     } catch (err) {
@@ -282,6 +346,12 @@ const queryWithRetry = async (text, params, options = {}) => {
  * @returns {Promise<Object>} Query result
  */
 const queryWithTimeout = async (text, params, timeoutMs = 10000) => {
+  if (warnIfPoolUnavailable('queryWithTimeout')) {
+    const poolError = new Error('Database pool is closing or closed');
+    poolError.code = 'POOL_ENDED';
+    throw poolError;
+  }
+
   const client = await pool.connect();
   try {
     // Set statement timeout for this query
@@ -310,6 +380,12 @@ const transaction = async (callback, options = {}) => {
   let client;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (warnIfPoolUnavailable('transaction')) {
+      const poolError = new Error('Database pool is closing or closed');
+      poolError.code = 'POOL_ENDED';
+      throw poolError;
+    }
+
     client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -410,6 +486,11 @@ const healthCheck = async () => {
  * @returns {Promise<void>}
  */
 const close = async () => {
+  if (poolEndFinished || pool.ended) {
+    logger.info('Database pool already closed');
+    return;
+  }
+
   logger.info('Closing database pool...');
   await pool.end();
   logger.info('Database pool closed');
@@ -422,4 +503,8 @@ module.exports.transaction = transaction;
 module.exports.getPoolStats = getPoolStats;
 module.exports.healthCheck = healthCheck;
 module.exports.close = close;
+module.exports.isPoolEnding = isPoolEnding;
+module.exports.isPoolUsable = isPoolUsable;
+module.exports.isPoolEndedError = isPoolEndedError;
+module.exports.warnIfPoolUnavailable = warnIfPoolUnavailable;
 module.exports.poolConfig = poolConfig;

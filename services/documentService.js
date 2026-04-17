@@ -3,11 +3,79 @@ const path = require('path');
 const fs = require('fs').promises;
 const pool = require('../db');
 const { resolveStorageRoot } = require('../utils/runtimeStorage');
+const {
+  normalizePaperTemplateType,
+} = require('../utils/paperTemplateTypeCompatibility');
 
 class DocumentService {
   constructor() {
     this.pdfGenerator = new PDFGenerator();
     this.documentDir = resolveStorageRoot('uploads', 'documents');
+  }
+
+  async getTableColumns(tableName) {
+    try {
+      const result = await pool.query(
+        `
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = $1
+        `,
+        [tableName],
+      );
+      return new Set((result.rows || []).map((row) => row.column_name));
+    } catch (_error) {
+      return new Set();
+    }
+  }
+
+  async tryResolveLegacyInfantId(patient = null) {
+    if (!patient || typeof patient !== 'object') {
+      return null;
+    }
+
+    const columns = await this.getTableColumns('patients');
+    if (!columns.has('id')) {
+      return null;
+    }
+
+    const candidates = [];
+
+    const controlNumber = patient.control_number || patient.controlNumber || null;
+    if (controlNumber && columns.has('control_number')) {
+      candidates.push({
+        query: 'SELECT id FROM patients WHERE control_number = $1 LIMIT 1',
+        params: [controlNumber],
+      });
+    }
+
+    const firstName = patient.first_name || patient.firstName || null;
+    const lastName = patient.last_name || patient.lastName || null;
+    const dob = patient.dob || patient.date_of_birth || patient.birth_date || null;
+
+    if (firstName && lastName && dob && columns.has('first_name') && columns.has('last_name') && columns.has('dob')) {
+      candidates.push({
+        query:
+          'SELECT id FROM patients WHERE LOWER(TRIM(first_name)) = LOWER($1) AND LOWER(TRIM(last_name)) = LOWER($2) AND dob = $3 LIMIT 1',
+        params: [firstName, lastName, dob],
+      });
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const result = await pool.query(candidate.query, candidate.params);
+        const resolved = result.rows[0]?.id ?? null;
+        if (resolved) {
+          const parsed = parseInt(resolved, 10);
+          return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+        }
+      } catch (_error) {
+        // ignore and try next candidate
+      }
+    }
+
+    return null;
   }
 
   async ensureDocumentDirectory() {
@@ -24,19 +92,29 @@ class DocumentService {
 
   async generateDocument(templateId, infantId, guardianId, userId, data) {
     try {
-      // Get template details
       const templateResult = await pool.query(
         'SELECT * FROM paper_templates WHERE id = $1 AND is_active = true',
-        [templateId]
+        [templateId],
       );
 
       if (templateResult.rows.length === 0) {
-        throw new Error('Template not found or inactive');
+        return {
+          success: false,
+          statusCode: 404,
+          message: 'Template not found or inactive',
+        };
       }
 
       const template = templateResult.rows[0];
+      const rawTemplateType = String(template.template_type || '').trim();
+      if (!rawTemplateType) {
+        return {
+          success: false,
+          statusCode: 400,
+          message: 'Template type is missing for this template',
+        };
+      }
 
-      // Get infant and guardian data
       let infant = null;
       let guardian = null;
       let resolvedGuardianId = guardianId || null;
@@ -44,7 +122,7 @@ class DocumentService {
       if (infantId) {
         const infantResult = await pool.query(
           'SELECT * FROM patients WHERE id = $1 AND is_active = true',
-          [infantId]
+          [infantId],
         );
         if (infantResult.rows.length > 0) {
           infant = infantResult.rows[0];
@@ -55,64 +133,88 @@ class DocumentService {
       if (resolvedGuardianId) {
         const guardianResult = await pool.query(
           'SELECT * FROM guardians WHERE id = $1',
-          [resolvedGuardianId]
+          [resolvedGuardianId],
         );
         if (guardianResult.rows.length > 0) {
           guardian = guardianResult.rows[0];
         }
       }
 
-      // Prepare document data
+      const normalizedTemplateType = normalizePaperTemplateType(rawTemplateType);
+      const templateTypeToRender = normalizedTemplateType || rawTemplateType;
+
       const documentData = {
         infant,
         guardian,
         template,
         user: { id: userId },
-        ...data
+        ...(data && typeof data === 'object' ? data : {}),
       };
 
-      // Generate PDF
       const pdfResult = await this.pdfGenerator.generatePDF(
-        template.template_type,
-        documentData
+        templateTypeToRender,
+        documentData,
       );
 
       if (!pdfResult.success) {
-        throw new Error(pdfResult.error);
+        return {
+          success: false,
+          statusCode: 500,
+          message: 'Failed to render document template',
+          error: pdfResult.error || 'Unknown PDF rendering error',
+        };
       }
 
-      // Save to document generation table
       await this.ensureDocumentDirectory();
       const filename = pdfResult.filename;
       const filePath = path.join(this.documentDir, filename);
 
-      // Save PDF file
       await fs.writeFile(filePath, pdfResult.buffer);
 
-      // Save to database
-      const generationResult = await pool.query(
-        `INSERT INTO document_generation (
-          template_id, infant_id, guardian_id, generated_by, 
-          file_path, file_name, file_size, mime_type, status, generated_data
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING *`,
-        [
-          templateId,
-          infantId,
-          resolvedGuardianId,
-          userId,
-          filePath,
-          filename,
-          pdfResult.buffer.length,
-          'application/pdf',
-          'generated',
-          JSON.stringify(documentData)
-        ]
-      );
+      const insertGeneration = async ({ persistedInfantId } = {}) => {
+        return pool.query(
+          `INSERT INTO document_generation (
+            template_id, infant_id, guardian_id, generated_by,
+            file_path, file_name, file_size, mime_type, status, generated_data
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          RETURNING *`,
+          [
+            templateId,
+            persistedInfantId ?? null,
+            resolvedGuardianId,
+            userId,
+            filePath,
+            filename,
+            pdfResult.buffer.length,
+            'application/pdf',
+            'generated',
+            JSON.stringify(documentData),
+          ],
+        );
+      };
+
+      let generationResult;
+      try {
+        generationResult = await insertGeneration({ persistedInfantId: infantId ?? null });
+      } catch (insertError) {
+        const isForeignKeyViolation = insertError?.code === '23503';
+        const constraint = insertError?.constraint || insertError?.detail || '';
+        const isInfantFk =
+          String(constraint).includes('document_generation_infant_id_fkey') ||
+          String(insertError?.detail || '').includes('infant_id');
+
+        if (isForeignKeyViolation && isInfantFk) {
+          const resolvedLegacyInfantId = await this.tryResolveLegacyInfantId(infant);
+          generationResult = await insertGeneration({
+            persistedInfantId: resolvedLegacyInfantId ?? null,
+          });
+        } else {
+          throw insertError;
+        }
+      }
 
       const generationRecord = generationResult.rows[0];
 
-      // Create digital paper record
       const digitalPaperResult = await pool.query(
         `INSERT INTO digital_papers (
           document_generation_id, title, document_type, content, metadata
@@ -121,27 +223,32 @@ class DocumentService {
         [
           generationRecord.id,
           template.name,
-          template.template_type,
+          templateTypeToRender,
           'PDF Document',
           JSON.stringify({
             template_id: templateId,
             infant_id: infantId,
-            guardian_id: guardianId,
+            guardian_id: resolvedGuardianId,
             generated_at: new Date().toISOString(),
-            file_size: pdfResult.buffer.length
-          })
-        ]
+            file_size: pdfResult.buffer.length,
+          }),
+        ],
       );
 
       return {
         success: true,
         documentGeneration: generationRecord,
         digitalPaper: digitalPaperResult.rows[0],
-        downloadUrl: `/api/documents/download/${generationRecord.id}`
+        downloadUrl: `/api/documents/download/${generationRecord.id}`,
       };
     } catch (error) {
       console.error('Document generation error:', error);
-      throw error;
+      return {
+        success: false,
+        statusCode: 500,
+        message: 'Unexpected error generating document',
+        error: error?.message || String(error),
+      };
     }
   }
 
@@ -228,43 +335,90 @@ class DocumentService {
       const generation = await this.getDocumentGeneration(id);
 
       if (!generation) {
-        throw new Error('Document not found');
+        return {
+          success: false,
+          statusCode: 404,
+          error: 'Document not found',
+        };
       }
 
-      const filePath = generation.file_path;
+      const filePath = generation.file_path || generation.filePath || generation.path || null;
 
-      try {
-        const fileBuffer = await fs.readFile(filePath);
-
+      if (!filePath || typeof filePath !== 'string' || !filePath.trim()) {
         return {
-          success: true,
-          buffer: fileBuffer,
-          filename: generation.file_name,
-          mimeType: generation.mime_type
+          success: false,
+          statusCode: 500,
+          error: 'Document has no associated file path',
         };
-      } catch (fileError) {
-        console.error('Error reading file:', fileError);
+      }
 
-        // Try to regenerate the document if file is missing
-        if (fileError.code === 'ENOENT') {
-          console.log('File not found, attempting to regenerate...');
-          const regenerateResult = await this.regenerateDocument(id);
-          if (regenerateResult.success) {
-            const newFileBuffer = await fs.readFile(regenerateResult.filePath);
-            return {
-              success: true,
-              buffer: newFileBuffer,
-              filename: regenerateResult.filename,
-              mimeType: 'application/pdf'
-            };
+      const attemptRead = async (targetPath) => {
+        try {
+          await fs.access(targetPath);
+        } catch (accessError) {
+          if (accessError?.code === 'ENOENT') {
+            return { ok: false, code: 'ENOENT', error: accessError };
           }
+          return { ok: false, code: 'EACCESS', error: accessError };
         }
 
-        throw fileError;
+        const fileBuffer = await fs.readFile(targetPath);
+        return { ok: true, buffer: fileBuffer };
+      };
+
+      const readResult = await attemptRead(filePath);
+      if (readResult.ok) {
+        return {
+          success: true,
+          buffer: readResult.buffer,
+          filename: generation.file_name || `document_${id}.pdf`,
+          mimeType: generation.mime_type || 'application/pdf',
+          filePath,
+        };
       }
+
+      if (readResult.code === 'ENOENT') {
+        // Best-effort regeneration for missing local files.
+        try {
+          const regenerateResult = await this.regenerateDocument(id);
+          if (regenerateResult?.success && regenerateResult.filePath) {
+            const regenReadResult = await attemptRead(regenerateResult.filePath);
+            if (regenReadResult.ok) {
+              return {
+                success: true,
+                buffer: regenReadResult.buffer,
+                filename: regenerateResult.filename || `document_${id}.pdf`,
+                mimeType: 'application/pdf',
+                filePath: regenerateResult.filePath,
+                regenerated: true,
+              };
+            }
+          }
+        } catch (regenerateError) {
+          console.error('Document regeneration error:', regenerateError);
+        }
+
+        return {
+          success: false,
+          statusCode: 404,
+          error: 'Document file not found on disk',
+          path: filePath,
+        };
+      }
+
+      return {
+        success: false,
+        statusCode: 500,
+        error: 'Failed to read document file',
+        path: filePath,
+      };
     } catch (error) {
       console.error('Document download error:', error);
-      throw error;
+      return {
+        success: false,
+        statusCode: 500,
+        error: error?.message || String(error),
+      };
     }
   }
 
@@ -290,10 +444,11 @@ class DocumentService {
 
       // Get original data
       const originalData = JSON.parse(generation.generated_data || '{}');
+      const normalizedTemplateType = normalizePaperTemplateType(template.template_type);
 
       // Regenerate PDF
       const pdfResult = await this.pdfGenerator.generatePDF(
-        template.template_type,
+        normalizedTemplateType || template.template_type,
         originalData
       );
 

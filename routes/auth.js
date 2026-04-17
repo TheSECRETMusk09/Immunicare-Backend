@@ -1131,7 +1131,7 @@ router.post(
       }
 
       const accessToken = jwt.sign(tokenPayload, process.env.JWT_SECRET, {
-        expiresIn: process.env.JWT_ACCESS_EXPIRATION || '15m',
+        expiresIn: process.env.JWT_ACCESS_EXPIRATION || '8h',
         issuer: 'immunicare-system',
         audience: 'immunicare-users',
       });
@@ -1233,7 +1233,7 @@ router.post(
         token: accessToken,
         accessToken: accessToken,
         refreshToken: refreshToken,
-        expiresIn: process.env.JWT_ACCESS_EXPIRATION || '15m',
+        expiresIn: process.env.JWT_ACCESS_EXPIRATION || '8h',
         layout: canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN ? 'AdminLayout' : 'GuardianLayout',
         dashboardRoute: canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN ? '/dashboard' : '/guardian/dashboard',
         permissions: getRolePermissions(canonicalRole),
@@ -2070,7 +2070,7 @@ router.post('/refresh', async (req, res) => {
       accessToken: refreshResult.accessToken,
       refreshToken: refreshResult.refreshToken,
       user: userResponse,
-      expiresIn: process.env.JWT_ACCESS_EXPIRATION || '15m',
+      expiresIn: process.env.JWT_ACCESS_EXPIRATION || '8h',
       permissions: getRolePermissions(canonicalRole),
     });
   } catch (error) {
@@ -2189,7 +2189,7 @@ router.get('/verify', async (req, res) => {
     res.json({
       authenticated: true,
       user: userResponse,
-      expiresIn: process.env.JWT_ACCESS_EXPIRATION || '15m',
+      expiresIn: process.env.JWT_ACCESS_EXPIRATION || '8h',
       permissions: getRolePermissions(canonicalRole),
     });
   } catch (error) {

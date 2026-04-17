@@ -26,6 +26,23 @@ const isScramPasswordTypeError = (error) => {
   const message = String(error?.message || '').toLowerCase();
   return message.includes('sasl') && message.includes('client password must be a string');
 };
+const isPoolUnavailableError = (error) =>
+  (typeof pool.isPoolEndedError === 'function' && pool.isPoolEndedError(error)) ||
+  String(error?.message || '').toLowerCase().includes('cannot use a pool after calling end on the pool');
+const isDatabaseAvailable = (context) => {
+  if (typeof pool.warnIfPoolUnavailable === 'function') {
+    return !pool.warnIfPoolUnavailable(`notificationAnalytics.${context}`);
+  }
+
+  if (pool.ended) {
+    logger.warn('Skipping notification analytics database operation because pool is closed', {
+      context,
+    });
+    return false;
+  }
+
+  return true;
+};
 
 class NotificationAnalytics {
   constructor() {
@@ -68,6 +85,10 @@ class NotificationAnalytics {
 
   // Track notification delivery
   async trackDelivery(notificationId, channel, status, metadata = {}) {
+    if (!isDatabaseAvailable('trackDelivery')) {
+      return null;
+    }
+
     const ready = await this.ensureAnalyticsReady();
     if (!ready) {
       return null;
@@ -85,6 +106,14 @@ class NotificationAnalytics {
       logger.info(`Tracked delivery for notification ${notificationId}: ${status}`);
       return result.rows[0];
     } catch (error) {
+      if (isPoolUnavailableError(error)) {
+        logger.warn('Notification delivery analytics skipped because database pool is unavailable', {
+          notificationId,
+          message: error.message,
+        });
+        return null;
+      }
+
       if (this.isAuthOrConfigError(error)) {
         this.markAnalyticsDisabled('db_auth_or_config', {
           code: error.code || 'DB_AUTH_CONFIG',

@@ -1162,7 +1162,7 @@ exports.generateInfantSchedule = async (req, res) => {
     const userId = req.user.id;
 
     // Get infant info
-    const infantResult = await db.query('SELECT dob FROM infants WHERE id = $1', [infantId]);
+    const infantResult = await db.query('SELECT dob FROM patients WHERE id = $1', [infantId]);
 
     if (infantResult.rows.length === 0) {
       return res.status(404).json({
@@ -1323,7 +1323,7 @@ exports.updateScheduleStatus = async (req, res) => {
     // Calculate age at administration
     let administeredAgeMonths = null;
     if (administeredDate) {
-      const infantResult = await db.query('SELECT dob FROM infants WHERE id = $1', [infantId]);
+      const infantResult = await db.query('SELECT dob FROM patients WHERE id = $1', [infantId]);
       const dob = new Date(infantResult.rows[0].dob);
       const adminDate = new Date(administeredDate);
       administeredAgeMonths =
@@ -1412,23 +1412,23 @@ exports.getOverdueSchedules = async (req, res) => {
                 iss.*,
                 ist.vaccine_name,
                 ist.vaccine_code,
-                i.first_name,
-                i.last_name,
-                i.dob,
+                p.first_name,
+                p.last_name,
+                p.dob,
                 g.name as guardian_name,
                 g.phone as guardian_phone,
                 g.email as guardian_email
             FROM infant_vaccination_schedules iss
             JOIN infant_vaccination_schedule_templates ist ON iss.schedule_template_id = ist.id
-            JOIN infants i ON iss.infant_id = i.id
-            JOIN guardians g ON i.guardian_id = g.id
+            JOIN patients p ON iss.infant_id = p.id
+            JOIN guardians g ON p.guardian_id = g.id
             WHERE iss.status IN ('scheduled', 'due', 'overdue')
             AND iss.scheduled_date < CURRENT_DATE
             AND iss.is_active = true
-        `;
+    `;
 
     if (['healthcare_worker', 'nurse', 'midwife'].includes(userRole)) {
-      query += ' AND i.clinic_id = $1';
+      query += ' AND COALESCE(p.clinic_id, p.facility_id) = $1';
     }
 
     query += ' ORDER BY iss.scheduled_date ASC';
@@ -1482,7 +1482,7 @@ exports.createScheduleReminder = async (req, res) => {
     reminderDate.setDate(reminderDate.getDate() - (daysBeforeDue || 7));
 
     // Generate message
-    const infantResult = await db.query('SELECT first_name, last_name FROM infants WHERE id = $1', [
+    const infantResult = await db.query('SELECT first_name, last_name FROM patients WHERE id = $1', [
       infantId,
     ]);
 
