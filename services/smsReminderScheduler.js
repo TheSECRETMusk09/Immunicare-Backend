@@ -27,6 +27,64 @@ const SCHEDULER_CONFIG = {
 // In-memory store for sent reminders (use Redis for production)
 const sentReminders = new Map();
 
+const SCHEDULER_FALLBACK_COLUMNS = Object.freeze({
+  appointmentsPatientJoinExpr: 'a.infant_id',
+  appointmentsScope: 'clinic_id',
+});
+
+let schedulerColumnMappingPromise = null;
+
+async function resolveSchedulerColumnMappings() {
+  const mappings = { ...SCHEDULER_FALLBACK_COLUMNS };
+
+  try {
+    const result = await pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'appointments'
+          AND column_name = ANY($1::text[])
+      `,
+      [['patient_id', 'infant_id', 'clinic_id', 'facility_id']],
+    );
+
+    const available = new Set((result.rows || []).map((row) => row.column_name));
+
+    const hasPatientId = available.has('patient_id');
+    const hasInfantId = available.has('infant_id');
+
+    if (hasPatientId && hasInfantId) {
+      mappings.appointmentsPatientJoinExpr = 'COALESCE(a.patient_id, a.infant_id)';
+    } else if (hasPatientId) {
+      mappings.appointmentsPatientJoinExpr = 'a.patient_id';
+    } else if (available.has('infant_id')) {
+      mappings.appointmentsPatientJoinExpr = 'a.infant_id';
+    }
+
+    if (available.has('facility_id')) {
+      mappings.appointmentsScope = 'facility_id';
+    } else if (available.has('clinic_id')) {
+      mappings.appointmentsScope = 'clinic_id';
+    } else {
+      mappings.appointmentsScope = null;
+    }
+  } catch (error) {
+    logger.warn('Failed to resolve reminder scheduler column mappings; using fallback columns', {
+      error: error?.message,
+    });
+  }
+
+  return mappings;
+}
+
+async function getSchedulerColumnMappings() {
+  if (!schedulerColumnMappingPromise) {
+    schedulerColumnMappingPromise = resolveSchedulerColumnMappings();
+  }
+  return schedulerColumnMappingPromise;
+}
+
 /**
  * Check if reminder was already sent
  */
@@ -50,6 +108,11 @@ async function getAppointmentsNeedingReminders(hoursBefore) {
   const now = new Date();
   const targetTime = new Date(now.getTime() + hoursBefore * 60 * 60 * 1000);
 
+  const { appointmentsPatientJoinExpr, appointmentsScope } = await getSchedulerColumnMappings();
+  const clinicsJoinClause = appointmentsScope
+    ? `LEFT JOIN clinics c ON a.${appointmentsScope} = c.id`
+    : 'LEFT JOIN clinics c ON 1 = 0';
+
   const windowStart = new Date(targetTime.getTime() - 15 * 60 * 1000); // 15 min window
   const windowEnd = new Date(targetTime.getTime() + 15 * 60 * 1000);
 
@@ -70,9 +133,9 @@ async function getAppointmentsNeedingReminders(hoursBefore) {
        c.name as clinic_name,
        c.address as clinic_address
      FROM appointments a
-     JOIN patients p ON a.infant_id = p.id
+    JOIN patients p ON ${appointmentsPatientJoinExpr} = p.id
      JOIN guardians g ON p.guardian_id = g.id
-     LEFT JOIN clinics c ON a.clinic_id = c.id
+     ${clinicsJoinClause}
      WHERE a.scheduled_date BETWEEN $1 AND $2
        AND a.status IN ('scheduled', 'confirmed', 'pending')
        AND a.is_active = true

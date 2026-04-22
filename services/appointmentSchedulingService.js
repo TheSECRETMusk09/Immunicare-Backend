@@ -257,6 +257,14 @@ const buildVaccinationAppointmentPredicate = (mappings, alias = 'a') => {
   return `(${textPredicates.join(' OR ')})`;
 };
 
+const buildNormalizedStatusSql = (alias = null) => {
+  const prefix = alias ? `${alias}.` : '';
+  return `LOWER(REPLACE(COALESCE(${prefix}status::text, ''), '-', '_'))`;
+};
+
+const normalizeStatusToken = (value) =>
+  String(value || '').trim().toLowerCase().replace(/-/g, '_');
+
 const getVaccineStockSummary = async (clinicId = null) => {
   try {
     const { vaccineBatchesScope } = await getSchemaColumnMappings();
@@ -405,7 +413,7 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
           AND ${appointmentTimeExpr} = $2::time
           ${appointmentVaccineFilter}
           AND a.is_active = true
-          AND a.status NOT IN ('cancelled', 'completed')
+          AND ${buildNormalizedStatusSql('a')} NOT IN ('cancelled', 'attended', 'completed')
           ${clinicId ? `AND COALESCE(p.${patientsScope}, a.${appointmentsScope}) = $4` : ''}
       `,
       clinicId
@@ -670,7 +678,7 @@ const getDailyAppointmentCounts = async ({ startDate, endDate, guardianId = null
       LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
       WHERE ${appointmentDateExpr} BETWEEN $1::date AND $2::date
         AND a.is_active = true
-        AND a.status <> 'cancelled'
+        AND ${buildNormalizedStatusSql('a')} <> 'cancelled'
     `;
 
     if (guardianId) {
@@ -919,7 +927,7 @@ const getBookedTimeSlots = async ({ scheduledDate, clinicId = null, excludeAppoi
       LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
       WHERE ${appointmentDateExpr} = $1::date
         AND a.is_active = true
-        AND a.status <> 'cancelled'
+        AND ${buildNormalizedStatusSql('a')} <> 'cancelled'
     `;
 
     if (excludeAppointmentId) {
@@ -1073,7 +1081,7 @@ const getAppointmentsByGuardian = async (guardianId, limit = 5) => {
       LEFT JOIN clinics c ON a.clinic_id = c.id
       WHERE p.guardian_id = $1
       AND (a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date >= (CURRENT_TIMESTAMP AT TIME ZONE '${CLINIC_TIMEZONE}')::date
-      AND a.status NOT IN ('cancelled', 'completed')
+      AND ${buildNormalizedStatusSql('a')} NOT IN ('cancelled', 'attended', 'completed')
       ORDER BY a.scheduled_date ASC
       LIMIT $2
     `;
@@ -1103,7 +1111,7 @@ const findConflictingActiveAppointment = async ({
     WHERE ${appointmentsPatient} = $1
       AND (scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date = $2::date
       AND is_active = true
-      AND status IN ('pending', 'scheduled')
+      AND ${buildNormalizedStatusSql()} IN ('pending', 'scheduled', 'confirmed', 'rescheduled')
   `;
 
   if (excludeAppointmentId) {
@@ -1534,7 +1542,7 @@ const processMissedAppointments = async () => {
       JOIN patients p ON a.${appointmentsPatient} = p.id
       JOIN guardians g ON p.guardian_id = g.id
       WHERE a.scheduled_date < NOW() - INTERVAL '2 hours'
-        AND a.status IN ('scheduled', 'no-show')
+        AND ${buildNormalizedStatusSql('a')} IN ('scheduled', 'confirmed', 'rescheduled', 'no_show')
         AND a.is_active = true
         AND (a.sms_missed_notification_sent IS NULL OR a.sms_missed_notification_sent = FALSE)
     `;
@@ -1619,6 +1627,85 @@ const processMissedAppointments = async () => {
   }
 };
 
+const fetchAppointmentById = async (appointmentId) => {
+  const normalizedAppointmentId = Number.parseInt(appointmentId, 10);
+  if (!normalizedAppointmentId || normalizedAppointmentId <= 0) {
+    return null;
+  }
+
+  try {
+    const {
+      appointmentsPatient,
+      appointmentsScope,
+      appointmentsVaccine,
+    } = await getSchemaColumnMappings();
+
+    const vaccineColumnSql = appointmentsVaccine
+      ? `a.${appointmentsVaccine}`
+      : 'NULL';
+
+    const appointmentResult = await pool.query(
+      `
+        SELECT
+          a.id,
+          a.${appointmentsPatient} AS infant_id,
+          a.scheduled_date,
+          a.status,
+          a.type,
+          a.location,
+          a.${appointmentsScope} AS resolved_clinic_id,
+          ${vaccineColumnSql} AS vaccine_id,
+          p.first_name,
+          p.last_name,
+          p.guardian_id,
+          g.name AS guardian_name,
+          g.phone AS guardian_phone
+        FROM appointments a
+        LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
+        LEFT JOIN guardians g ON g.id = p.guardian_id
+        WHERE a.id = $1
+        LIMIT 1
+      `,
+      [normalizedAppointmentId],
+    );
+
+    return appointmentResult.rows[0] || null;
+  } catch (error) {
+    console.error('Error fetching appointment by ID for auto-reschedule:', error);
+    return null;
+  }
+};
+
+const findEarliestValidDateFallback = async (startDateStr, clinicId = null) => {
+  const normalizedStartDate = toDateKey(startDateStr) || getClinicTodayDateKey();
+  const currentDate = parseDate(normalizedStartDate);
+  if (!currentDate) {
+    return null;
+  }
+
+  // Search up to 3 months for the next day that passes booking availability checks.
+  for (let offset = 0; offset < 90; offset += 1) {
+    const candidateDate = new Date(currentDate);
+    candidateDate.setDate(candidateDate.getDate() + offset);
+    const candidateKey = toDateKey(candidateDate);
+    if (!candidateKey) {
+      continue;
+    }
+
+    const availability = await checkBookingAvailability({
+      scheduledDate: candidateKey,
+      clinicId,
+      appointmentType: 'Vaccination',
+    });
+
+    if (availability?.available) {
+      return candidateKey;
+    }
+  }
+
+  return null;
+};
+
 /**
  * Automatically reschedule a missed appointment to the next available slot
  * @param {number} appointmentId - The ID of the missed appointment
@@ -1639,7 +1726,11 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
     const appointmentDate = normalizeAppointmentDateTimeForDisplay(appointment.scheduled_date)
       || new Date(appointment.scheduled_date);
     const now = new Date();
-    if (appointmentDate >= now || !['scheduled', 'no-show'].includes(appointment.status)) {
+    const normalizedAppointmentStatus = normalizeStatusToken(appointment.status);
+    if (
+      appointmentDate >= now ||
+      !['scheduled', 'confirmed', 'rescheduled', 'no_show'].includes(normalizedAppointmentStatus)
+    ) {
       return {
         success: false,
         error: 'Appointment is not eligible for auto-rescheduling',
@@ -1661,15 +1752,44 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
 
     const infant = infantResult.rows[0];
 
-    // Get vaccination history to determine next due vaccine
-    const vaccinationsResult = await pool.query(
-      `SELECT vr.vaccine_id, vr.dose_no, vr.administered_at, v.name as vaccine_name
-       FROM vaccination_records vr
-       JOIN vaccines v ON vr.vaccine_id = v.id
-       WHERE vr.infant_id = $1
-       ORDER BY vr.administered_at`,
-      [infant.id],
-    );
+    // Get vaccination history to determine next due vaccine.
+    // Some environments only have immunization_records, so fall back when needed.
+    let vaccinationsResult;
+    try {
+      vaccinationsResult = await pool.query(
+        `SELECT vr.vaccine_id, vr.dose_no, vr.administered_at, v.name as vaccine_name
+         FROM vaccination_records vr
+         JOIN vaccines v ON vr.vaccine_id = v.id
+         WHERE vr.infant_id = $1
+         ORDER BY vr.administered_at`,
+        [infant.id],
+      );
+    } catch (primaryHistoryError) {
+      if (primaryHistoryError?.code !== '42P01') {
+        throw primaryHistoryError;
+      }
+
+      try {
+        vaccinationsResult = await pool.query(
+          `SELECT
+             ir.vaccine_id,
+             NULL::INTEGER AS dose_no,
+             COALESCE(ir.admin_date::timestamp, ir.created_at) AS administered_at,
+             v.name AS vaccine_name
+           FROM immunization_records ir
+           LEFT JOIN vaccines v ON ir.vaccine_id = v.id
+           WHERE ir.patient_id = $1
+           ORDER BY COALESCE(ir.admin_date::timestamp, ir.created_at)`,
+          [infant.id],
+        );
+      } catch (fallbackHistoryError) {
+        if (fallbackHistoryError?.code !== '42P01') {
+          throw fallbackHistoryError;
+        }
+
+        vaccinationsResult = { rows: [] };
+      }
+    }
 
     const vaccinationHistory = vaccinationsResult.rows.map(record => ({
       vaccine: record.vaccine_name,
@@ -1677,8 +1797,10 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
       date_administered: record.administered_at,
     }));
 
-    // Calculate next valid dose
-    const nextDoseInfo = calculateNextValidDose(infant.dob, vaccinationHistory);
+    // Calculate next valid dose when helper is available.
+    const nextDoseInfo = typeof calculateNextValidDose === 'function'
+      ? calculateNextValidDose(infant.dob, vaccinationHistory)
+      : { date: getClinicTodayDateKey() };
 
     if (!nextDoseInfo) {
       return {
@@ -1688,10 +1810,15 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
     }
 
     // Find earliest valid date for the vaccine
-    const earliestValidDate = findEarliestValidDate(
-      getClinicTodayDateKey(),
-      appointment.resolved_clinic_id,
-    );
+    const earliestValidDate = typeof findEarliestValidDate === 'function'
+      ? await findEarliestValidDate(
+        getClinicTodayDateKey(),
+        appointment.resolved_clinic_id,
+      )
+      : await findEarliestValidDateFallback(
+        getClinicTodayDateKey(),
+        appointment.resolved_clinic_id,
+      );
 
     if (!earliestValidDate) {
       return {
@@ -1801,7 +1928,7 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
     const existingAppointmentResult = await pool.query(
       `SELECT id FROM appointments
        WHERE infant_id = $1 AND is_active = true
-       AND status IN ('scheduled', 'pending')
+      AND ${buildNormalizedStatusSql()} IN ('scheduled', 'confirmed', 'rescheduled', 'pending')
        AND (scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date = $2::date`,
       [infant_id, scheduled_date],
     );

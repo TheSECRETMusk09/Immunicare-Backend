@@ -81,6 +81,17 @@ describe('Guardian password reset route contract', () => {
   beforeEach(() => {
     jest.clearAllMocks();
 
+    const guardianRow = {
+      id: 42,
+      name: 'Diana Panganiban Reyes',
+      email: 'diana.reyes@example.com',
+    };
+    const linkedUserRow = {
+      id: 501,
+      username: 'diana.panganiban.reyes',
+      email: 'diana.reyes@example.com',
+    };
+
     mockClient = {
       query: mockClientQuery,
       release: jest.fn(),
@@ -88,43 +99,56 @@ describe('Guardian password reset route contract', () => {
 
     mockPoolConnect.mockResolvedValue(mockClient);
 
-    mockClientQuery
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            id: 42,
-            name: 'Diana Panganiban Reyes',
-            email: 'diana.reyes@example.com',
-          },
-        ],
-      })
-      .mockResolvedValueOnce({ rows: [{ id: 42 }] })
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            id: 501,
-            username: 'diana.panganiban.reyes',
-            email: 'diana.reyes@example.com',
-          },
-        ],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            id: 42,
-            name: 'Diana Panganiban Reyes',
-            email: 'diana.reyes@example.com',
-            is_password_set: true,
-            must_change_password: false,
-            password_visibility_updated_at: '2026-03-28T12:00:00.000Z',
-          },
-        ],
-      })
-      .mockResolvedValueOnce({ rowCount: 1 })
-      .mockResolvedValueOnce({});
+    mockClientQuery.mockImplementation(async (sql) => {
+      const statement = typeof sql === 'string' ? sql.replace(/\s+/g, ' ').trim() : '';
+
+      if (statement === 'BEGIN' || statement === 'COMMIT' || statement === 'ROLLBACK') {
+        return {};
+      }
+
+      if (statement.includes('SELECT id, name, email') && statement.includes('FROM guardians') && statement.includes('FOR UPDATE')) {
+        return { rows: [guardianRow] };
+      }
+
+      if (statement.includes('SELECT id FROM guardians WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: guardianRow.id }] };
+      }
+
+      if (statement.includes('SELECT id, username, email') && statement.includes('FROM users') && statement.includes('WHERE guardian_id = $1')) {
+        return { rows: [linkedUserRow] };
+      }
+
+      if (statement.includes('SELECT pg_advisory_xact_lock')) {
+        return { rows: [] };
+      }
+
+      if (statement.includes('SELECT username') && statement.includes('FROM users') && statement.includes('lower(username) LIKE lower($2)')) {
+        return { rows: [{ username: linkedUserRow.username }] };
+      }
+
+      if (statement.includes('SELECT email') && statement.includes('FROM users') && statement.includes('email IS NOT NULL')) {
+        return { rows: [{ email: linkedUserRow.email }] };
+      }
+
+      if (statement.includes('UPDATE guardians') && statement.includes('SET password_hash = $1')) {
+        return {
+          rows: [
+            {
+              ...guardianRow,
+              is_password_set: true,
+              must_change_password: false,
+              password_visibility_updated_at: '2026-03-28T12:00:00.000Z',
+            },
+          ],
+        };
+      }
+
+      if (statement.includes('UPDATE users') && statement.includes('SET password_hash = $1')) {
+        return { rowCount: 1 };
+      }
+
+      return { rows: [] };
+    });
 
     mockPoolQuery.mockResolvedValue({
       rows: [

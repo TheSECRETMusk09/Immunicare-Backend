@@ -67,7 +67,18 @@ const getInventoryFacilityColumn = () =>
 
 const ensureAppointmentLinkColumn = async (client) => {
   await client.query(
-    'ALTER TABLE immunization_records ADD COLUMN IF NOT EXISTS appointment_id INTEGER',
+    `
+      ALTER TABLE immunization_records
+        ADD COLUMN IF NOT EXISTS appointment_id INTEGER,
+        ADD COLUMN IF NOT EXISTS is_ready_confirmed BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS ready_confirmed_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS ready_confirmed_by INTEGER,
+        ADD COLUMN IF NOT EXISTS health_care_provider VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS route_of_injection VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS time_administered TIME,
+        ADD COLUMN IF NOT EXISTS expiration_date DATE,
+        ADD COLUMN IF NOT EXISTS schedule_id INTEGER
+    `,
   );
 };
 
@@ -197,7 +208,11 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       admin_date,
       appointment_id,
       administered_by,
+      health_care_provider,
       site_of_injection,
+      route_of_injection,
+      time_administered,
+      expiration_date,
       reactions,
       next_due_date,
       notes,
@@ -205,6 +220,7 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       lot_batch_number,
       lot_number,
       batch_number,
+      schedule_id,
       vaccine_inventory_id,
       skip_inventory_deduction = false,
     } = req.body;
@@ -227,6 +243,11 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
       toNullableString(lot_batch_number) ||
       toNullableString(lot_number) ||
       toNullableString(batch_number);
+    const normalizedHealthCareProvider = toNullableString(health_care_provider);
+    const normalizedRouteOfInjection = toNullableString(route_of_injection);
+    const normalizedTimeAdministered = toNullableString(time_administered);
+    const normalizedExpirationDate = normalizeDateOnly(expiration_date);
+    const normalizedScheduleId = Number.parseInt(schedule_id, 10) || null;
 
     // Validate vaccine is approved
     const vaccineValidation = await validateApprovedVaccine(vaccine_id);
@@ -517,8 +538,13 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
              appointment_id = COALESCE($8, appointment_id),
              lot_number = COALESCE($9, lot_number),
              batch_number = COALESCE($10, batch_number),
+             health_care_provider = $11,
+             route_of_injection = $12,
+             time_administered = $13,
+             expiration_date = $14,
+             schedule_id = COALESCE(schedule_id, $15),
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $11
+         WHERE id = $16
          RETURNING *`,
         [
           normalizedAdminDate,
@@ -531,6 +557,11 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
           linkedAppointment?.id || null,
           normalizedLotBatchNumber,
           normalizedLotBatchNumber,
+          normalizedHealthCareProvider,
+          normalizedRouteOfInjection,
+          normalizedTimeAdministered,
+          normalizedExpirationDate,
+          normalizedScheduleId,
           existingPlaceholderRecord.id,
         ],
       );
@@ -543,8 +574,9 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
           patient_id, vaccine_id, dose_no, admin_date, administered_by,
           site_of_injection, reactions, next_due_date, notes, status,
           batch_id, is_ready_confirmed, ready_confirmed_at, ready_confirmed_by, appointment_id,
-          lot_number, batch_number
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed', $10, $11, $12, $13, $14, $15, $16)
+          lot_number, batch_number, health_care_provider, route_of_injection,
+          time_administered, expiration_date, schedule_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'completed', $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
         RETURNING *`,
         [
           patient_id,
@@ -563,6 +595,11 @@ router.post('/record-with-inventory', requirePermission('vaccination:create'), a
           linkedAppointment?.id || null,
           normalizedLotBatchNumber,
           normalizedLotBatchNumber,
+          normalizedHealthCareProvider,
+          normalizedRouteOfInjection,
+          normalizedTimeAdministered,
+          normalizedExpirationDate,
+          normalizedScheduleId,
         ],
       );
 

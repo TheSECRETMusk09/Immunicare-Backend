@@ -35,6 +35,7 @@ const DEMO_CITY = 'Pasig City';
 const DEMO_REGION = 'NCR';
 const DEMO_POSTAL_CODE = '1600';
 const DEFAULT_HEALTH_CENTER = 'San Nicolas Health Center';
+const toIsoDate = (value) => new Date(value.getTime()).toISOString().slice(0, 10);
 const countOperationalDaysInWindow = (start, end) => {
   let count = 0;
   const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
@@ -110,7 +111,7 @@ const VISIT_TEMPLATES = Object.freeze([
 
 const INVENTORY_CODES = ['BCG', 'HEP-B', 'PENTA', 'OPV-20', 'PCV-13-10', 'MMR', 'IPV-MULTI'];
 
-const mulberry32 = (seed) => {  
+const mulberry32 = (seed) => {
   let value = seed >>> 0;
   return () => {
     value += 0x6d2b79f5;
@@ -147,7 +148,6 @@ const addMonths = (value, months) => {
 const startOfMonth = (value) => new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
 const endOfMonth = (value) =>
   new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 0, 23, 59, 59, 999));
-const toIsoDate = (value) => cloneDate(value).toISOString().slice(0, 10);
 const monthKey = (value) => `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}`;
 const safeJson = (value) => JSON.stringify(value || {});
 const randomDateBetween = (start, end) => {

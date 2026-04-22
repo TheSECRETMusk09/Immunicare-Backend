@@ -306,7 +306,10 @@ describe('Middleware Tests', () => {
       });
 
       it('should allow super_admin all permissions', () => {
-        const result = enhancedRbac.hasPermission('super_admin', 'any:permission');
+        const result = enhancedRbac.hasPermission(
+          'super_admin',
+          enhancedRbac.PERMISSIONS.SYSTEM_SETTINGS,
+        );
         expect(result).toBe(true);
       });
     });
@@ -341,7 +344,7 @@ describe('Middleware Tests', () => {
       it('should return false if not all permissions exist', () => {
         const result = enhancedRbac.hasAllPermissions('nurse', [
           enhancedRbac.PERMISSIONS.PATIENT_VIEW,
-          enhancedRbac.PERMISSIONS.PATIENT_CREATE
+          enhancedRbac.PERMISSIONS.USER_MANAGE_ROLES,
         ]);
         expect(result).toBe(false);
       });

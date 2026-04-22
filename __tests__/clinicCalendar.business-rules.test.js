@@ -29,6 +29,19 @@ describe('clinic calendar business rules', () => {
     });
   });
 
+  test('resolves week ranges using Monday-Sunday boundaries', () => {
+    const result = resolveClinicDateRange({
+      period: 'week',
+      now: new Date('2026-04-17T09:00:00.000Z'),
+    });
+
+    expect(result).toEqual({
+      startDate: '2026-04-13',
+      endDate: '2026-04-19',
+      errors: [],
+    });
+  });
+
   test('keeps the vaccination daily capacity fixed at 83', () => {
     expect(MAX_VACCINATION_APPOINTMENTS_PER_DAY).toBe(83);
   });

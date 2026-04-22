@@ -297,7 +297,7 @@ const resolveSchemaColumnMappings = async () => {
     if (available.has('inventory.quantity')) {
       mappings.inventoryQuantity = 'quantity';
     }
-    
+
     if (available.has('inventory.stock_on_hand') || available.has('vaccine_inventory.stock_on_hand')) {
       mappings.inventoryStockOnHand = 'stock_on_hand';
     }
@@ -528,7 +528,7 @@ const buildInventoryStockExpression = ({ alias, mappings }) => {
   if (mappings.inventoryQuantity) {
     return `COALESCE(${alias}.${mappings.inventoryQuantity}, 0)`;
   }
-  
+
   // Then check for stock_on_hand (used by vaccine_inventory table)
   if (mappings.inventoryStockOnHand) {
     return `COALESCE(${alias}.${mappings.inventoryStockOnHand}, 0)`;
@@ -800,6 +800,7 @@ const getVaccinationSnapshot = async ({
         )::int AS administered_in_period,
         COUNT(DISTINCT ir.patient_id) FILTER (
           WHERE ${adjustedDueDateExpr} = ${CLINIC_TODAY_SQL}
+            AND ${adjustedDueDateExpr} BETWEEN $1::date AND $2::date
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS due_today,
         COUNT(*) FILTER (
@@ -807,11 +808,12 @@ const getVaccinationSnapshot = async ({
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS due_in_period,
         COUNT(*) FILTER (
-          WHERE ${adjustedDueDateExpr} BETWEEN ${CLINIC_TODAY_SQL} AND (${CLINIC_TODAY_SQL} + INTERVAL '7 days')::date
+          WHERE ${adjustedDueDateExpr} BETWEEN GREATEST($1::date, ${CLINIC_TODAY_SQL}) AND LEAST($2::date, (${CLINIC_TODAY_SQL} + INTERVAL '7 days')::date)
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS due_soon_7_days,
         COUNT(*) FILTER (
-          WHERE ${adjustedDueDateExpr} < ${CLINIC_TODAY_SQL}
+          WHERE ${adjustedDueDateExpr} BETWEEN $1::date AND $2::date
+            AND ${adjustedDueDateExpr} < ${CLINIC_TODAY_SQL}
             AND ${immunizationStatusExpr} IN ('scheduled', 'pending')
         )::int AS overdue_count,
         COUNT(DISTINCT ir.patient_id) FILTER (
@@ -981,11 +983,12 @@ const getAppointmentSnapshot = async ({
             AND ${normalizedStatusExpr} = 'cancelled'
         )::int AS cancelled_in_period,
         COUNT(*) FILTER (
-          WHERE ${appointmentLocalDateExpr} BETWEEN ${CLINIC_TODAY_SQL} AND (${CLINIC_TODAY_SQL} + INTERVAL '7 days')::date
+          WHERE ${appointmentLocalDateExpr} BETWEEN GREATEST($2::date, ${CLINIC_TODAY_SQL}) AND LEAST($3::date, (${CLINIC_TODAY_SQL} + INTERVAL '7 days')::date)
             AND ${normalizedStatusExpr} IN ('scheduled', 'confirmed', 'rescheduled')
         )::int AS upcoming_7_days,
         COUNT(*) FILTER (
-          WHERE ${appointmentLocalDateExpr} < ${CLINIC_TODAY_SQL}
+          WHERE ${appointmentLocalDateExpr} BETWEEN $2::date AND $3::date
+            AND ${appointmentLocalDateExpr} < ${CLINIC_TODAY_SQL}
             AND ${normalizedStatusExpr} IN ('scheduled', 'confirmed', 'rescheduled', 'no_show')
         )::int AS overdue_followups,
         COUNT(*) FILTER (
@@ -1273,7 +1276,8 @@ const getVaccineProgress = async ({
             AND fr.status IN ('scheduled', 'pending')
         )::int AS due_count,
         COUNT(fr.*) FILTER (
-          WHERE fr.next_due_date < ${CLINIC_TODAY_SQL}
+          WHERE fr.next_due_date BETWEEN $2::date AND $3::date
+            AND fr.next_due_date < ${CLINIC_TODAY_SQL}
             AND fr.status IN ('scheduled', 'pending')
         )::int AS overdue_count
       FROM vaccine_dim vd

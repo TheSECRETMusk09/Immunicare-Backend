@@ -2990,14 +2990,29 @@ class ReportService {
       facilityId,
       scopeIds,
     });
-    const metricsSummary =
-      normalizedStartDate || normalizedEndDate
-        ? coreSummary
-        : await this.getAllTimeTruthSummary({
-          coreSummary,
-          facilityId,
-          scopeIds,
-        });
+    const hasDateWindow = Boolean(normalizedStartDate || normalizedEndDate);
+    let metricsSummary = coreSummary;
+
+    if (!hasDateWindow) {
+      const allTimeSummary = await this.getAllTimeTruthSummary({
+        coreSummary,
+        facilityId,
+        scopeIds,
+      });
+
+      const allTimeTotals =
+        this.toInteger(allTimeSummary?.infants?.total, 0) +
+        this.toInteger(allTimeSummary?.guardians?.total, 0) +
+        this.toInteger(allTimeSummary?.appointments?.total, 0) +
+        this.toInteger(allTimeSummary?.vaccination?.total, 0);
+      const coreTotals =
+        this.toInteger(coreSummary?.infants?.total, 0) +
+        this.toInteger(coreSummary?.guardians?.total, 0) +
+        this.toInteger(coreSummary?.appointments?.total, 0) +
+        this.toInteger(coreSummary?.vaccination?.total, 0);
+
+      metricsSummary = allTimeTotals > 0 || coreTotals === 0 ? allTimeSummary : coreSummary;
+    }
 
     const reportsTable = await this.resolveFirstExistingTable(['reports'], null);
     const reportsHasIsActive = reportsTable ? await this.hasColumn(reportsTable, 'is_active') : false;
@@ -3019,7 +3034,7 @@ class ReportService {
         `
       : null;
     const transferCasesTable = await this.resolveFirstExistingTable(['transfer_in_cases'], null);
-    const [
+    let [
       transferHasValidationStatus,
       transferHasValidatedAt,
       transferHasUpdatedAt,
@@ -3032,9 +3047,24 @@ class ReportService {
         this.hasColumn(transferCasesTable, 'created_at'),
       ])
       : [false, false, false, false];
+
+    if (
+      transferCasesTable &&
+      !transferHasValidationStatus &&
+      !transferHasValidatedAt &&
+      !transferHasUpdatedAt &&
+      !transferHasCreatedAt
+    ) {
+      // Some environments/tests can expose the table but not column metadata.
+      // Prefer canonical transfer timestamps to avoid generating NULL-date arithmetic.
+      transferHasValidationStatus = true;
+      transferHasValidatedAt = true;
+      transferHasUpdatedAt = true;
+      transferHasCreatedAt = true;
+    }
     const transferStatusExpression = transferHasValidationStatus
       ? 'validation_status'
-      : `'pending'`;
+      : '\'pending\'';
     const transferTurnaroundExpressionCandidates = [
       transferHasValidatedAt ? 'validated_at' : null,
       transferHasUpdatedAt ? 'updated_at' : null,

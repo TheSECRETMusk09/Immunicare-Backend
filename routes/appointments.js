@@ -44,7 +44,6 @@ const {
   CLINIC_TODAY_SQL,
   getClinicBlockedDateKeys,
   getClinicTodayDateKey,
-  toClinicDateKey,
   toClinicDateSql,
 } = require('../utils/clinicCalendar');
 const {
@@ -214,6 +213,197 @@ const normalizeAppointmentStatusFilterKey = (value) =>
 const getAppointmentStatusFilterValues = (status) => {
   const normalizedStatus = normalizeAppointmentStatusFilterKey(status);
   return APPOINTMENT_STATUS_FILTER_VALUES[normalizedStatus] || [];
+};
+
+const isRuntimeSchemaPermissionError = (error) => {
+  const message = String(error?.message || '').toLowerCase();
+
+  return (
+    error?.code === '42501' ||
+    message.includes('permission denied') ||
+    message.includes('must be owner of relation')
+  );
+};
+
+const initializeAppointmentRuntimeSchemaSafely = async () => {
+  try {
+    await ensureAppointmentRuntimeSchemaInitialized();
+  } catch (error) {
+    if (!isRuntimeSchemaPermissionError(error)) {
+      throw error;
+    }
+
+    logger.warn('Skipping appointment runtime schema initialization due to insufficient privileges', {
+      errorCode: error?.code || null,
+      errorMessage: error?.message || null,
+    });
+  }
+};
+
+const mapAppointmentPersistenceError = (error) => {
+  const code = String(error?.code || '').trim();
+  const constraint = String(error?.constraint || '').toLowerCase();
+  const detail = String(error?.detail || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  const combined = `${constraint} ${detail} ${message}`;
+
+  if (code === '23505') {
+    if (
+      (combined.includes('scheduled') || combined.includes('date')) &&
+      (combined.includes('patient') || combined.includes('infant'))
+    ) {
+      return {
+        status: 409,
+        body: {
+          error: 'This child already has an active appointment on the selected date.',
+          code: 'DUPLICATE_APPOINTMENT',
+        },
+      };
+    }
+
+    if (combined.includes('control_number')) {
+      return {
+        status: 409,
+        body: {
+          error: 'A duplicate appointment control number was generated. Please try again.',
+          code: 'DUPLICATE_CONTROL_NUMBER',
+        },
+      };
+    }
+
+    return {
+      status: 409,
+      body: {
+        error: 'A duplicate appointment record already exists.',
+        code: 'DUPLICATE_APPOINTMENT',
+      },
+    };
+  }
+
+  if (code === '23503') {
+    const field = combined.includes('clinic') || combined.includes('facility')
+      ? 'clinic_id'
+      : combined.includes('vaccine')
+        ? 'vaccine_id'
+        : combined.includes('guardian')
+          ? 'guardian_id'
+          : 'infant_id';
+
+    const fieldMessages = {
+      clinic_id: 'Selected clinic is invalid or unavailable.',
+      vaccine_id: 'Selected vaccine is invalid.',
+      guardian_id: 'Guardian reference is invalid.',
+      infant_id: 'Selected infant is invalid or inactive.',
+    };
+
+    return {
+      status: 400,
+      body: {
+        error: fieldMessages[field],
+        code: 'INVALID_REFERENCE',
+        fields: {
+          [field]: fieldMessages[field],
+        },
+      },
+    };
+  }
+
+  if (code === '23502') {
+    return {
+      status: 400,
+      body: {
+        error: 'Missing required appointment data.',
+        code: 'MISSING_REQUIRED_FIELDS',
+      },
+    };
+  }
+
+  if (code === '22P02' || code === '22007' || code === '22008' || code === '22003') {
+    const field = combined.includes('created_by')
+      ? 'created_by'
+      : combined.includes('guardian_id')
+        ? 'guardian_id'
+        : combined.includes('vaccine_id')
+          ? 'vaccine_id'
+          : combined.includes('clinic_id') || combined.includes('facility_id')
+            ? 'clinic_id'
+            : combined.includes('infant_id') || combined.includes('patient_id')
+              ? 'infant_id'
+              : combined.includes('duration_minutes')
+                ? 'duration_minutes'
+                : combined.includes('appointment_status')
+                  ? 'status'
+                  : combined.includes('scheduled_date') ||
+                      combined.includes('timestamp') ||
+                      code === '22007' ||
+                      code === '22008'
+                    ? 'scheduled_date'
+                    : null;
+
+    const fieldMessages = {
+      scheduled_date: 'scheduled_date is invalid. Please select a valid date and time slot.',
+      infant_id: 'infant_id must be a valid whole number.',
+      vaccine_id: 'vaccine_id must be a valid whole number.',
+      clinic_id: 'clinic_id must be a valid whole number.',
+      guardian_id: 'guardian_id must be a valid whole number.',
+      created_by: 'Authenticated user reference is invalid. Please sign in again.',
+      duration_minutes: 'duration_minutes must be a valid whole number.',
+      status: 'status value is invalid for this deployment.',
+    };
+
+    if (field) {
+      return {
+        status: 400,
+        body: {
+          error: fieldMessages[field],
+          code: 'INVALID_APPOINTMENT_VALUE',
+          fields: {
+            [field]: fieldMessages[field],
+          },
+        },
+      };
+    }
+
+    return {
+      status: 400,
+      body: {
+        error: 'Invalid appointment date, time, or numeric value.',
+        code: 'INVALID_APPOINTMENT_VALUE',
+      },
+    };
+  }
+
+  if (code === '23514') {
+    return {
+      status: 400,
+      body: {
+        error: 'Appointment data does not satisfy validation rules.',
+        code: 'INVALID_APPOINTMENT_STATE',
+      },
+    };
+  }
+
+  if (code === '42501') {
+    return {
+      status: 503,
+      body: {
+        error: 'Appointment service is temporarily unavailable. Please try again shortly.',
+        code: 'APPOINTMENT_SERVICE_UNAVAILABLE',
+      },
+    };
+  }
+
+  if (code === '40001' || code === '40P01') {
+    return {
+      status: 503,
+      body: {
+        error: 'Appointment request could not be completed due to concurrency. Please retry.',
+        code: 'APPOINTMENT_RETRY_REQUIRED',
+      },
+    };
+  }
+
+  return null;
 };
 
 const normalizeAppointmentRecord = (appointment) => {
@@ -623,7 +813,7 @@ const fetchInfantOwnership = async (infantId) => {
   return {
     id: patient.id,
     guardian_id: patient.guardianId,
-    clinic_id: patient.clinicId || null,
+    clinic_id: patient.clinicId || patient.facilityId || null,
   };
 };
 
@@ -729,8 +919,15 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
     const limitNum = Math.max(1, Math.min(200, parseInt(limit)));
     const offset = (pageNum - 1) * limitNum;
     const normalizedSearch = sanitizeText(search ?? searchQuery);
+    const normalizedSearchPattern = normalizedSearch
+      ? `%${normalizedSearch.replace(/\s+/g, '%')}%`
+      : null;
+    const normalizedSearchCompactPattern = normalizedSearch
+      ? `%${normalizedSearch.replace(/\s+/g, '')}%`
+      : null;
     const normalizedStartDate = sanitizeText(start_date ?? startDate);
     const normalizedEndDate = sanitizeText(end_date ?? endDate);
+    const normalizedStatusFilter = sanitizeText(status).toLowerCase();
     const normalizedSortField = APPOINTMENT_LIST_SORT_COLUMNS[sort_field || sortField]
       ? (sort_field || sortField)
       : 'scheduled_date';
@@ -795,8 +992,8 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       params.push(scopeContext.scopeIds);
     }
 
-    if (status) {
-      const statusFilterValues = getAppointmentStatusFilterValues(status);
+    if (normalizedStatusFilter && normalizedStatusFilter !== 'all') {
+      const statusFilterValues = getAppointmentStatusFilterValues(normalizedStatusFilter);
       if (statusFilterValues.length === 0) {
         return res.status(400).json({
           error: `status must be one of: ${APPOINTMENT_STATUS_VALUES.join(', ')}`,
@@ -844,7 +1041,19 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
             NULLIF(BTRIM(p.middle_name), ''),
             NULLIF(BTRIM(p.last_name), '')
           ) ILIKE $${params.length + 1}
+          OR REGEXP_REPLACE(
+            CONCAT_WS(
+              ' ',
+              NULLIF(BTRIM(p.first_name), ''),
+              NULLIF(BTRIM(p.middle_name), ''),
+              NULLIF(BTRIM(p.last_name), '')
+            ),
+            '\\s+',
+            '',
+            'g'
+          ) ILIKE $${params.length + 2}
           OR COALESCE(g.name, '') ILIKE $${params.length + 1}
+          OR REGEXP_REPLACE(COALESCE(g.name, ''), '\\s+', '', 'g') ILIKE $${params.length + 2}
           OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
           OR COALESCE(g.phone, '') ILIKE $${params.length + 1}
           OR COALESCE(TO_CHAR(p.dob, 'YYYY-MM-DD'), '') ILIKE $${params.length + 1}
@@ -853,7 +1062,7 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
           OR COALESCE(a.status::text, '') ILIKE $${params.length + 1}
         )
       `;
-      params.push(`%${normalizedSearch}%`);
+      params.push(normalizedSearchPattern, normalizedSearchCompactPattern);
     }
 
     // Get total count for pagination metadata
@@ -896,7 +1105,7 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
 router.post('/', requireAppointmentCreateAccess, async (req, res) => {
   try {
     console.log('[DEBUG] Create appointment request:', JSON.stringify(req.body, null, 2));
-    await ensureAppointmentRuntimeSchemaInitialized();
+    await initializeAppointmentRuntimeSchemaSafely();
     const payload = req.body || {};
     const { normalized, errors } = sanitizeAppointmentMutablePayload(payload, {
       allowStatus: true,
@@ -913,7 +1122,10 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
           payload.infant_details,
           req.user.guardian_id,
         );
-        infantId = infantRecord.id;
+        infantId = sanitizeNullableInt(infantRecord?.id);
+        if (!infantId) {
+          errors.infant_id = 'Failed to verify or create infant record';
+        }
       } catch (_err) {
         errors.infant_id = 'Failed to verify or create infant record';
       }
@@ -926,6 +1138,8 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       });
       if (infantIdCheck.error) {
         errors.infant_id = infantIdCheck.error;
+      } else {
+        infantId = infantIdCheck.value;
       }
     }
 
@@ -996,13 +1210,24 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       : sanitizeText(payload.location, { maxLength: 150 }) || null;
     const sendConfirmationSms = normalizeBoolean(payload.send_confirmation_sms, true);
 
-    const infant = await fetchInfantOwnership(infantId);
+    const normalizedInfantId = sanitizeNullableInt(infantId);
+    if (!normalizedInfantId) {
+      return res.status(400).json({
+        error: 'infant_id must be a valid whole number.',
+        code: 'INVALID_INFANT_ID',
+        fields: {
+          infant_id: 'infant_id must be a valid whole number.',
+        },
+      });
+    }
+
+    const infant = await fetchInfantOwnership(normalizedInfantId);
     if (!infant) {
       return res.status(404).json({ error: 'Infant not found' });
     }
 
     const storedControlNumber = String(
-      (await getPatientControlNumberById(infantId, pool)) || '',
+      (await getPatientControlNumberById(normalizedInfantId, pool)) || '',
     )
       .trim()
       .toUpperCase();
@@ -1026,15 +1251,36 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
 
     // Auto-approve all valid appointments passing availability checks
     const finalStatus = normalized.status || 'scheduled';
-    const finalClinicId = clinicIdCheck.value || infant.clinic_id || req.user.clinic_id || null;
+    const finalClinicId = sanitizeNullableInt(
+      clinicIdCheck.value ||
+        infant.clinic_id ||
+        req.user.clinic_id ||
+        req.user.facility_id ||
+        null,
+    );
     let finalVaccineId = vaccineIdCheck.value || null;
     const appointmentPatientColumn = await getAppointmentPatientColumn();
     const appointmentFacilityColumn = await getAppointmentFacilityColumn();
 
+    if (guardianFlow && !finalClinicId) {
+      return res.status(400).json({
+        error: 'Unable to resolve clinic scope for this appointment request.',
+        code: 'CLINIC_SCOPE_REQUIRED',
+      });
+    }
+
+    const actorUserId = sanitizeNullableInt(req.user?.id);
+    if (!actorUserId) {
+      return res.status(401).json({
+        error: 'Invalid authenticated user context. Please sign in again.',
+        code: 'INVALID_AUTH_CONTEXT',
+      });
+    }
+
     if (guardianFlow) {
       try {
         const guardianEligibility = await enforceGuardianVaccinationEligibility({
-          infantId,
+          infantId: normalizedInfantId,
           vaccineId: finalVaccineId,
           appointmentType: normalizedType,
           scheduledDate: normalizedScheduledDate,
@@ -1076,7 +1322,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       stockUnverified = true;
       stockWarning = 'Could not verify vaccine stock availability. The health center will confirm stock before the appointment.';
       logger.warn('Guardian appointment availability check failed; continuing with stock warning', {
-        infantId,
+        infantId: normalizedInfantId,
         vaccineId: finalVaccineId,
         clinicId: finalClinicId,
         scheduledDate: normalizedScheduledDate,
@@ -1099,7 +1345,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
           'Could not verify vaccine stock availability. The health center will confirm stock before the appointment.';
 
         logger.warn('Guardian appointment stock availability issue converted to soft warning', {
-          infantId,
+          infantId: normalizedInfantId,
           vaccineId: finalVaccineId,
           clinicId: finalClinicId,
           scheduledDate: normalizedScheduledDate,
@@ -1111,7 +1357,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
           try {
             await appointmentSchedulingService.notifyGuardianVaccineUnavailable({
               guardianId: parseInt(req.user.guardian_id, 10),
-              infantId,
+              infantId: normalizedInfantId,
               vaccineId: finalVaccineId,
               scheduledDate: normalizedScheduledDate,
               clinicId: sanitizeNullableInt(finalClinicId),
@@ -1138,7 +1384,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
     }
 
     const conflictingAppointment = await appointmentSchedulingService.findConflictingActiveAppointment({
-      infantId,
+      infantId: normalizedInfantId,
       scheduledDate: normalizedScheduledDate,
     });
 
@@ -1158,6 +1404,8 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       console.error('Failed to generate control number:', cnError.message);
       // Continue without control number - non-critical
     }
+
+    const appointmentGuardianId = sanitizeNullableInt(infant.guardian_id || req.user.guardian_id);
 
     const result = await pool.query(
       `
@@ -1179,18 +1427,18 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
         RETURNING *
       `,
       [
-        infantId,
+        normalizedInfantId,
         normalizedScheduledDate,
         normalizedType,
         finalVaccineId,
         normalizedDuration,
         normalizedNotes,
         finalStatus,
-        req.user.id,
+        actorUserId,
         finalClinicId,
         normalizedLocation,
         appointmentControlNumber,
-        infant.guardian_id,
+        appointmentGuardianId,
       ],
     );
 
@@ -1225,7 +1473,7 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
         await notifyAdminsOfGuardianAppointmentEvent({
           event: 'created',
           appointment: fullAppointment,
-          actorUserId: req.user.id,
+          actorUserId,
           guardianName: fullAppointment.guardian_name || null,
           infantName: `${fullAppointment.first_name || ''} ${fullAppointment.last_name || ''}`.trim(),
         });
@@ -1273,7 +1521,15 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
   } catch (error) {
     console.error('[DEBUG] Create appointment error:', error);
     console.error('[DEBUG] Error stack:', error.stack);
-    res.status(500).json({ error: 'Failed to create appointment' });
+    const mappedError = mapAppointmentPersistenceError(error);
+    if (mappedError) {
+      return res.status(mappedError.status).json(mappedError.body);
+    }
+
+    res.status(500).json({
+      error: 'Failed to create appointment',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
   }
 });
 
@@ -1291,7 +1547,7 @@ router.get('/availability/check', requireAppointmentReadAccess, async (req, res)
     const availability = await appointmentSchedulingService.checkBookingAvailability({
       scheduledDate: scheduled_date,
       vaccineId: sanitizeNullableInt(vaccine_id),
-      clinicId: sanitizeNullableInt(clinic_id || req.user.clinic_id),
+      clinicId: sanitizeNullableInt(clinic_id || req.user.clinic_id || req.user.facility_id),
       appointmentType: type || null,
     });
 
@@ -1318,7 +1574,7 @@ router.post('/check-stock', requireAppointmentReadAccess, async (req, res) => {
       date,
       time,
       vaccineId: sanitizeNullableInt(vaccine_id),
-      clinicId: sanitizeNullableInt(clinic_id || req.user.clinic_id),
+      clinicId: sanitizeNullableInt(clinic_id || req.user.clinic_id || req.user.facility_id),
     });
 
     res.json(stockCheck);
@@ -1400,7 +1656,14 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
     }
 
     // Validate clinic_id if provided
-    let finalClinicId = appointment.resolved_clinic_id; // Keep existing clinic by default
+    let finalClinicId = sanitizeNullableInt(
+      appointment.resolved_clinic_id ||
+        infant.clinicId ||
+        infant.facilityId ||
+        req.user.clinic_id ||
+        req.user.facility_id ||
+        null,
+    ); // Keep existing clinic by default
     if (clinic_id !== undefined && clinic_id !== null && clinic_id !== '') {
       const clinicIdCheck = validateNumberRange(clinic_id, {
         label: 'clinic_id',
@@ -1412,6 +1675,13 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
         return res.status(400).json({ error: clinicIdCheck.error });
       }
       finalClinicId = parseInt(clinic_id, 10);
+    }
+
+    if (guardianFlow && !finalClinicId) {
+      return res.status(400).json({
+        error: 'Unable to resolve clinic scope for this appointment request.',
+        code: 'CLINIC_SCOPE_REQUIRED',
+      });
     }
 
     // Check booking availability for the new date
@@ -1442,6 +1712,20 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
         error: availability.message,
         code: availability.code,
         availability,
+      });
+    }
+
+    const conflictingAppointment = await appointmentSchedulingService.findConflictingActiveAppointment({
+      infantId: appointment.infant_id,
+      scheduledDate: normalizedScheduledDate,
+      excludeAppointmentId: appointmentId,
+    });
+
+    if (conflictingAppointment) {
+      return res.status(409).json({
+        error: 'This child already has an active appointment on the selected date.',
+        code: 'DUPLICATE_APPOINTMENT',
+        conflict: normalizeAppointmentRecord(conflictingAppointment),
       });
     }
 
@@ -1532,7 +1816,15 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
     res.json(normalizedAppointment);
   } catch (error) {
     console.error('Reschedule appointment error:', error);
-    res.status(500).json({ error: 'Failed to reschedule appointment' });
+    const mappedError = mapAppointmentPersistenceError(error);
+    if (mappedError) {
+      return res.status(mappedError.status).json(mappedError.body);
+    }
+
+    res.status(500).json({
+      error: 'Failed to reschedule appointment',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
   }
 });
 
@@ -2089,7 +2381,9 @@ router.put('/:id(\\d+)', async (req, res) => {
       const availability = await appointmentSchedulingService.checkBookingAvailability({
         scheduledDate: normalizedUpdates.scheduled_date,
         vaccineId: appointment.vaccine_id,
-        clinicId: sanitizeNullableInt(appointment.resolved_clinic_id || req.user.clinic_id),
+        clinicId: sanitizeNullableInt(
+          appointment.resolved_clinic_id || req.user.clinic_id || req.user.facility_id,
+        ),
         appointmentType: normalizedUpdates.type || appointment.type,
         excludeAppointmentId: appointment.id,
       });
@@ -2268,6 +2562,11 @@ router.put('/:id(\\d+)', async (req, res) => {
       detail: error.detail,
       appointmentId,
     });
+    const mappedError = mapAppointmentPersistenceError(error);
+    if (mappedError) {
+      return res.status(mappedError.status).json(mappedError.body);
+    }
+
     res.status(500).json({
       error: 'Failed to update appointment',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined,

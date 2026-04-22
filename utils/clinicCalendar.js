@@ -90,6 +90,28 @@ const startOfClinicMonthKey = (value) => {
   return `${date.getUTCFullYear()}-${padDatePart(date.getUTCMonth() + 1)}-01`;
 };
 
+const startOfClinicWeekKey = (value) => {
+  const date = parseClinicDate(value);
+  if (!date) {
+    return null;
+  }
+
+  const dayOfWeek = date.getUTCDay();
+  const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  date.setUTCDate(date.getUTCDate() - diffToMonday);
+
+  return toClinicDateKey(date);
+};
+
+const endOfClinicWeekKey = (value) => {
+  const startKey = startOfClinicWeekKey(value);
+  if (!startKey) {
+    return null;
+  }
+
+  return shiftClinicDateKey(startKey, 6);
+};
+
 const endOfClinicMonthKey = (value) => {
   const date = parseClinicDate(value);
   if (!date) {
@@ -202,8 +224,8 @@ const resolveClinicDateRange = ({
 
   if (period === 'week') {
     return {
-      startDate: shiftClinicDateKey(today, -6),
-      endDate: today,
+      startDate: startOfClinicWeekKey(today),
+      endDate: endOfClinicWeekKey(today),
       errors: [],
     };
   }
@@ -305,6 +327,8 @@ module.exports = {
   resolveClinicDateRange,
   rollForwardWeekendDateKey,
   rollForwardWeekendDateSql,
+  startOfClinicWeekKey,
+  endOfClinicWeekKey,
   shiftClinicDateKey,
   startOfClinicMonthKey,
   endOfClinicMonthKey,

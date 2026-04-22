@@ -728,10 +728,10 @@ class ImmunizationScheduleService {
         status = 'completed';
       } else if (!isNextDueDose || !dueDateKey || (referenceDateKey && dueDateKey > referenceDateKey)) {
         status = 'upcoming';
-      } else if (!readiness.isReady) {
-        status = 'pending_confirmation';
       } else if (isPastDue) {
         status = 'overdue';
+      } else if (!readiness.isReady) {
+        status = 'pending_confirmation';
       } else if (isDueOnReferenceDate) {
         status = 'ready';
       } else {
@@ -769,11 +769,7 @@ class ImmunizationScheduleService {
           item.isReady,
       ).length,
       pendingConfirmation: projectedSchedules.filter(
-        (item) =>
-          !item.isCompleted &&
-          item.isNextDueDose &&
-          Boolean(item.isEligibleByReferenceDate) &&
-          !item.isReady,
+        (item) => item.status === 'pending_confirmation',
       ).length,
       upcoming: projectedSchedules.filter(
         (item) =>
@@ -805,8 +801,7 @@ class ImmunizationScheduleService {
         (item) =>
           !item.isCompleted &&
           item.isNextDueDose &&
-          item.isPastDue &&
-          item.isReady,
+          item.isPastDue,
       )
       .map((item) => this.buildReadinessEntry(item))
       .filter(Boolean);
@@ -814,10 +809,7 @@ class ImmunizationScheduleService {
     const blockedVaccines = projectedSchedules
       .filter(
         (item) =>
-          !item.isCompleted &&
-          item.isNextDueDose &&
-          Boolean(item.isEligibleByReferenceDate) &&
-          !item.isReady,
+          item.status === 'pending_confirmation',
       )
       .map((item) =>
         this.buildReadinessEntry(item, {

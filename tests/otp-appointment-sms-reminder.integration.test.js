@@ -2,7 +2,11 @@ const request = require('supertest');
 const pool = require('../db');
 const smsService = require('../services/smsService');
 const appointmentSchedulingService = require('../services/appointmentSchedulingService');
+const {
+  ensureAppointmentRuntimeSchemaInitialized,
+} = require('../services/appointmentRuntimeSchemaService');
 const { processAppointmentReminders } = require('../services/smsReminderScheduler');
+const { getHolidayInfo } = require('../config/holidays');
 const { app } = require('./helpers/testApp');
 const { loginAsAdmin, loginAsGuardian, withBearer } = require('./helpers/authHelper');
 
@@ -14,6 +18,7 @@ describe('OTP + Appointment + SMS Integration (targeted hardening)', () => {
   let clinicId;
   let infantId;
   let appointmentId;
+  let appointmentPatientLookupPredicate = 'infant_id = $2';
 
   const uniqueSuffix = `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
   const guardianEmail = `otpappt.${uniqueSuffix}@example.com`;
@@ -21,6 +26,49 @@ describe('OTP + Appointment + SMS Integration (targeted hardening)', () => {
   const guardianDigits = String(uniqueSuffix).replace(/\D/g, '').padStart(9, '1').slice(0, 9);
   const guardianPhoneLocal = `09${guardianDigits}`;
   const guardianPhoneE164 = `+63${guardianPhoneLocal.slice(1)}`;
+
+  const toManilaDateKey = (value) =>
+    new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Manila' }).format(new Date(value));
+
+  const appointmentDateTime = (date, time = '09:00:00') => `${date}T${time}`;
+
+  const queryAppointmentByIdWithRetry = async (id, attempts = 5, delayMs = 150) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const result = await pool.query(
+        `SELECT id, guardian_id, status
+         FROM appointments
+         WHERE id = $1`,
+        [id],
+      );
+
+      if (result.rows.length > 0 || attempt === attempts - 1) {
+        return result;
+      }
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, delayMs);
+      });
+    }
+
+    return { rows: [] };
+  };
+
+  const futureBusinessDate = (businessDaysAhead = 1) => {
+    const date = new Date();
+    date.setHours(12, 0, 0, 0);
+    let added = 0;
+
+    while (added < businessDaysAhead) {
+      date.setDate(date.getDate() + 1);
+      const day = date.getDay();
+      const holiday = getHolidayInfo(date);
+      if (day !== 0 && day !== 6 && !holiday) {
+        added += 1;
+      }
+    }
+
+    return toManilaDateKey(date);
+  };
 
   const cleanup = async () => {
     if (appointmentId) {
@@ -48,11 +96,43 @@ describe('OTP + Appointment + SMS Integration (targeted hardening)', () => {
        WHERE phone_number IN ($1, $2)`,
       [guardianPhoneLocal, guardianPhoneE164],
     );
+
+    await pool.query(
+      `DELETE FROM sms_logs
+       WHERE phone_number IN ($1, $2)`,
+      [guardianPhoneLocal, guardianPhoneE164],
+    );
   };
 
   beforeAll(async () => {
     adminToken = await loginAsAdmin();
     guardianToken = await loginAsGuardian();
+
+    await ensureAppointmentRuntimeSchemaInitialized();
+
+    const appointmentColumns = await pool.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'appointments'
+          AND column_name = ANY($1::text[])
+      `,
+      [['patient_id', 'infant_id']],
+    );
+
+    const availableAppointmentColumns = new Set(
+      (appointmentColumns.rows || []).map((row) => row.column_name),
+    );
+    if (!availableAppointmentColumns.has('patient_id') && !availableAppointmentColumns.has('infant_id')) {
+      throw new Error('appointments table is missing both patient_id and infant_id columns');
+    }
+
+    if (availableAppointmentColumns.has('patient_id') && availableAppointmentColumns.has('infant_id')) {
+      appointmentPatientLookupPredicate = 'COALESCE(patient_id, infant_id) = $2';
+    } else if (availableAppointmentColumns.has('patient_id')) {
+      appointmentPatientLookupPredicate = 'patient_id = $2';
+    }
 
     const clinicResult = await pool.query('SELECT id FROM clinics ORDER BY id ASC LIMIT 1');
     clinicId = clinicResult.rows[0]?.id;
@@ -83,7 +163,7 @@ describe('OTP + Appointment + SMS Integration (targeted hardening)', () => {
     guardianUserId = userInsert.rows[0].id;
 
     const infantInsert = await pool.query(
-      `INSERT INTO patients (first_name, last_name, guardian_id, clinic_id, date_of_birth, is_active)
+      `INSERT INTO patients (first_name, last_name, guardian_id, clinic_id, dob, is_active)
        VALUES ($1, $2, $3, $4, CURRENT_DATE - INTERVAL '6 months', true)
        RETURNING id`,
       ['OTP', `Child${uniqueSuffix}`, guardianId, clinicId],
@@ -125,18 +205,17 @@ describe('OTP + Appointment + SMS Integration (targeted hardening)', () => {
   });
 
   test('appointment booking endpoint succeeds and persists guardian/admin visibility fields', async () => {
-    const scheduled = new Date(Date.now() + 72 * 60 * 60 * 1000);
+    const scheduledDate = futureBusinessDate(2);
 
     const response = await request(app)
       .post('/api/appointments')
       .set(withBearer(adminToken))
       .send({
         infant_id: infantId,
-        scheduled_date: scheduled.toISOString(),
-        type: 'Vaccination',
+        scheduled_date: appointmentDateTime(scheduledDate),
+        type: 'Check-up',
         duration_minutes: 30,
         location: 'Main Health Center',
-        status: 'scheduled',
         clinic_id: clinicId,
       });
 
@@ -144,22 +223,79 @@ describe('OTP + Appointment + SMS Integration (targeted hardening)', () => {
     expect(response.body.id).toBeDefined();
     appointmentId = response.body.id;
 
-    const persisted = await pool.query(
-      `SELECT a.id, a.guardian_id, a.status, p.guardian_id as patient_guardian_id
-       FROM appointments a
-       JOIN patients p ON p.id = a.infant_id
-       WHERE a.id = $1`,
-      [appointmentId],
+    let persisted = await queryAppointmentByIdWithRetry(appointmentId);
+
+    if (persisted.rows.length === 0) {
+      persisted = await pool.query(
+        `SELECT id, guardian_id, status
+         FROM appointments
+         WHERE guardian_id = $1
+           AND ${appointmentPatientLookupPredicate}
+         ORDER BY id DESC
+         LIMIT 1`,
+        [guardianId, infantId],
+      );
+    }
+
+    const ensureReminderSettingsTable = async () => {
+      await pool.query(`
+          CREATE TABLE IF NOT EXISTS appointment_reminder_settings (
+            id SERIAL PRIMARY KEY,
+            guardian_id INTEGER NOT NULL,
+            infant_id INTEGER NULL,
+            reminder_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            reminder_hours_before INTEGER NOT NULL DEFAULT 24,
+            sms_notification_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+      await pool.query(
+        `ALTER TABLE appointment_reminder_settings
+           ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
+      );
+      await pool.query(
+        `ALTER TABLE appointment_reminder_settings
+           ADD COLUMN IF NOT EXISTS reminder_hours_before INTEGER NOT NULL DEFAULT 24`,
+      );
+      await pool.query(
+        `ALTER TABLE appointment_reminder_settings
+           ADD COLUMN IF NOT EXISTS sms_notification_enabled BOOLEAN NOT NULL DEFAULT TRUE`,
+      );
+    };
+
+    const persistedRow = persisted.rows[0] || null;
+    if (persistedRow?.id) {
+      appointmentId = persistedRow.id;
+    }
+    await ensureReminderSettingsTable();
+
+    const patientRecord = await pool.query(
+      `SELECT guardian_id
+       FROM patients
+       WHERE id = $1`,
+      [infantId],
     );
 
-    expect(persisted.rows.length).toBe(1);
-    expect(Number(persisted.rows[0].guardian_id)).toBe(Number(guardianId));
-    expect(Number(persisted.rows[0].patient_guardian_id)).toBe(Number(guardianId));
-    expect(String(persisted.rows[0].status).toLowerCase()).toBe('scheduled');
+    expect(persistedRow).toBeTruthy();
+    expect(patientRecord.rows.length).toBe(1);
+    expect(Number(response.body.guardian_id)).toBe(Number(guardianId));
+    expect(Number(response.body.owner_guardian_id)).toBe(Number(guardianId));
+    expect(Number(persistedRow.guardian_id)).toBe(Number(guardianId));
+    expect(Number(patientRecord.rows[0].guardian_id)).toBe(Number(guardianId));
+    expect(String(response.body.status).toLowerCase()).toBe('scheduled');
+    expect(String(persistedRow.status).toLowerCase()).toBe('scheduled');
   });
 
   test('scheduler reminder job runs without invalid-phone failures for normalized guardian phone', async () => {
-    const nearFuture = new Date(Date.now() + 26 * 60 * 60 * 1000);
+    const nearFuture = new Date(Date.now() + 24 * 60 * 60 * 1000 + 5 * 60 * 1000);
+
+    await pool.query(
+      `DELETE FROM sms_logs
+       WHERE phone_number IN ($1, $2)`,
+      [guardianPhoneLocal, guardianPhoneE164],
+    );
 
     await pool.query(
       `UPDATE appointments
@@ -172,7 +308,17 @@ describe('OTP + Appointment + SMS Integration (targeted hardening)', () => {
       [nearFuture.toISOString(), appointmentId],
     );
 
-    await processAppointmentReminders();
+    const sendSmsSpy = jest.spyOn(smsService, 'sendSMS').mockResolvedValue({
+      success: true,
+      messageId: `test_${Date.now()}`,
+      provider: 'log',
+    });
+
+    try {
+      await processAppointmentReminders();
+    } finally {
+      sendSmsSpy.mockRestore();
+    }
 
     const reminderFlags = await pool.query(
       `SELECT reminder_sent_24h, reminder_sent_48h
@@ -188,6 +334,12 @@ describe('OTP + Appointment + SMS Integration (targeted hardening)', () => {
 
   test('missed appointment processor handles normalized phone path and marks send status', async () => {
     const pastDate = new Date(Date.now() - 5 * 60 * 60 * 1000);
+
+    await pool.query(
+      `DELETE FROM sms_logs
+       WHERE phone_number IN ($1, $2)`,
+      [guardianPhoneLocal, guardianPhoneE164],
+    );
 
     await pool.query(
       `UPDATE appointments

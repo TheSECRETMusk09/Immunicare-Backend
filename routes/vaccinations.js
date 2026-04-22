@@ -110,6 +110,12 @@ const invalidateVaccinationDashboardCaches = () => {
   invalidateRouteCache('reconciliation:');
 };
 
+const logVaccinationSyncDebug = (message, payload = {}) => {
+  if (process.env.DEBUG_VACCINATION_SYNC === 'true') {
+    console.debug(`[vaccination-sync] ${message}`, payload);
+  }
+};
+
 const hasOwn = (payload, key) => Object.prototype.hasOwnProperty.call(payload || {}, key);
 
 const sanitizeOptionalText = (value) => {
@@ -368,34 +374,50 @@ const buildVaccinationModuleBaseQuery = ({
 };
 
 const appendSchedulePeriodFilter = (whereParts, params, periodRange) => {
+  if (!periodRange?.startDate && !periodRange?.endDate) {
+    return;
+  }
+
+  const completedParts = ['status_key = \'completed\''];
+  const actionableParts = ['status_key <> \'completed\''];
+
   if (periodRange.startDate) {
-    whereParts.push(`due_date >= $${params.length + 1}::date`);
+    const placeholder = `$${params.length + 1}`;
+    actionableParts.push(`due_date >= ${placeholder}::date`);
     params.push(periodRange.startDate);
   }
 
   if (periodRange.endDate) {
-    whereParts.push(`due_date <= $${params.length + 1}::date`);
+    const placeholder = `$${params.length + 1}`;
+    completedParts.push(`(admin_date IS NULL OR admin_date <= ${placeholder}::date)`);
+    actionableParts.push(`due_date <= ${placeholder}::date`);
     params.push(periodRange.endDate);
   }
+
+  whereParts.push(`
+    (
+      (${completedParts.join(' AND ')})
+      OR (${actionableParts.join(' AND ')})
+    )
+  `);
 };
 
 const appendTrackingPeriodFilter = (whereParts, params, periodRange) => {
   whereParts.push("status_key IN ('completed', 'due', 'overdue')");
 
   if (periodRange.startDate || periodRange.endDate) {
-    const completedParts = ['status_key = \'completed\'', 'admin_date IS NOT NULL'];
+    const completedParts = ['status_key = \'completed\''];
     const actionableParts = ['status_key <> \'completed\''];
 
     if (periodRange.startDate) {
       const placeholder = `$${params.length + 1}`;
-      completedParts.push(`admin_date >= ${placeholder}::date`);
       actionableParts.push(`due_date >= ${placeholder}::date`);
       params.push(periodRange.startDate);
     }
 
     if (periodRange.endDate) {
       const placeholder = `$${params.length + 1}`;
-      completedParts.push(`admin_date <= ${placeholder}::date`);
+      completedParts.push(`(admin_date IS NULL OR admin_date <= ${placeholder}::date)`);
       actionableParts.push(`due_date <= ${placeholder}::date`);
       params.push(periodRange.endDate);
     }
@@ -1203,11 +1225,26 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
       req.query.next_due_end_date || req.query.nextDueEnd,
       'next_due_end_date',
     );
+    const hasPeriodRangeInput = [
+      'period',
+      'startDate',
+      'endDate',
+      'start_date',
+      'end_date',
+      'period_start_date',
+      'period_end_date',
+      'periodStartDate',
+      'periodEndDate',
+    ].some((key) => hasOwn(req.query, key));
+    const periodRange = hasPeriodRangeInput
+      ? resolveVaccinationModulePeriodRange(req.query)
+      : { period: null, startDate: null, endDate: null, errors: [] };
     const dateFilterErrors = {
       ...(administeredStart.error ? { administered_start_date: administeredStart.error } : {}),
       ...(administeredEnd.error ? { administered_end_date: administeredEnd.error } : {}),
       ...(nextDueStart.error ? { next_due_start_date: nextDueStart.error } : {}),
       ...(nextDueEnd.error ? { next_due_end_date: nextDueEnd.error } : {}),
+      ...(periodRange.errors.length > 0 ? { period: periodRange.errors.join('; ') } : {}),
     };
 
     if (req.query.vaccine_id && (!Number.isInteger(vaccineIdFilter) || vaccineIdFilter <= 0)) {
@@ -1241,10 +1278,10 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
       null;
     const blockedDateWindow = resolveBlockedDateWindow({
       dateView,
-      administeredStart: administeredStart.value,
-      administeredEnd: administeredEnd.value,
-      nextDueStart: nextDueStart.value,
-      nextDueEnd: nextDueEnd.value,
+      administeredStart: administeredStart.value || periodRange.startDate,
+      administeredEnd: administeredEnd.value || periodRange.endDate,
+      nextDueStart: nextDueStart.value || periodRange.startDate,
+      nextDueEnd: nextDueEnd.value || periodRange.endDate,
     });
     const blockedDateKeys =
       blockedDateWindow.startDate && blockedDateWindow.endDate
@@ -1336,6 +1373,41 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
       startDate: nextDueStart.value,
       endDate: nextDueEnd.value,
     });
+
+    if (periodRange.startDate || periodRange.endDate) {
+      const periodAdminDateClauses = [];
+      const periodNextDueDateClauses = [];
+
+      if (periodRange.startDate) {
+        const periodStartPlaceholder = `$${params.length + 1}`;
+        params.push(periodRange.startDate);
+
+        periodAdminDateClauses.push(`ir.admin_date::date >= ${periodStartPlaceholder}::date`);
+        periodNextDueDateClauses.push(`ir.next_due_date::date >= ${periodStartPlaceholder}::date`);
+      }
+
+      if (periodRange.endDate) {
+        const periodEndPlaceholder = `$${params.length + 1}`;
+        params.push(periodRange.endDate);
+
+        periodAdminDateClauses.push(`ir.admin_date::date < (${periodEndPlaceholder}::date + INTERVAL '1 day')`);
+        periodNextDueDateClauses.push(`ir.next_due_date::date < (${periodEndPlaceholder}::date + INTERVAL '1 day')`);
+      }
+
+      const periodAdminDateSql = periodAdminDateClauses.join(' AND ');
+      const periodNextDueDateSql = periodNextDueDateClauses.join(' AND ');
+
+      whereClause += `
+        AND (
+          (ir.admin_date IS NULL OR (${periodAdminDateSql}))
+          AND (ir.next_due_date IS NULL OR (${periodNextDueDateSql}))
+          AND (
+            (ir.admin_date IS NOT NULL AND (${periodAdminDateSql}))
+            OR (ir.next_due_date IS NOT NULL AND (${periodNextDueDateSql}))
+          )
+        )
+      `;
+    }
 
     if (dateView === 'present') {
       whereClause += `
@@ -1617,6 +1689,17 @@ router.get('/tracking', requirePermission('vaccination:view'), async (req, res) 
     const total = Number.parseInt(payload.total, 10) || 0;
     const summary = payload.summary || {};
 
+    logVaccinationSyncDebug('vaccination-tracking-overview', {
+      infantIdFilter,
+      period: periodRange.period,
+      startDate: periodRange.startDate,
+      endDate: periodRange.endDate,
+      completed: Number(summary.completed || 0),
+      dueSoon: Number(summary.due_soon || 0),
+      overdue: Number(summary.overdue || 0),
+      trackedInfants: Number(summary.tracked_infants || 0),
+    });
+
     res.json({
       rows,
       summary: {
@@ -1766,6 +1849,16 @@ router.get('/schedule-overview', requirePermission('vaccination:view'), async (r
     const rows = Array.isArray(payload.rows) ? payload.rows : [];
     const total = Number.parseInt(payload.total, 10) || 0;
     const summary = payload.summary || {};
+
+    logVaccinationSyncDebug('vaccination-schedule-overview', {
+      infantIdFilter,
+      period: periodRange.period,
+      startDate: periodRange.startDate,
+      endDate: periodRange.endDate,
+      completed: Number(summary.completed || 0),
+      overdue: Number(summary.overdue || 0),
+      trackedInfants: Number(summary.tracked_infants || 0),
+    });
 
     res.json({
       rows,

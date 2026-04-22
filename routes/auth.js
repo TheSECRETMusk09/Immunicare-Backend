@@ -183,6 +183,31 @@ const getPendingRegistrationResendAvailableInSeconds = (pendingRegistration) => 
   );
 };
 
+const summarizeErrorForLog = (error) => {
+  if (!error) {
+    return null;
+  }
+
+  const responseData = error.response?.data;
+  let providerError = null;
+
+  if (typeof responseData === 'string') {
+    providerError = responseData;
+  } else if (responseData && typeof responseData === 'object') {
+    providerError = responseData.error || responseData.message || null;
+  }
+
+  return {
+    message: error.message || 'Unknown error',
+    ...(error.code ? { code: error.code } : {}),
+    ...(Number.isFinite(error.status) ? { status: error.status } : {}),
+    ...(Number.isFinite(error.response?.status)
+      ? { responseStatus: error.response.status }
+      : {}),
+    ...(providerError ? { providerError } : {}),
+  };
+};
+
 const buildPendingRegistrationPayload = (pendingRegistration, formattedPhone) => ({
   phone: formattedPhone || pendingRegistration?.phone_number || null,
   expiresInSeconds: getPendingRegistrationExpirySeconds(pendingRegistration),
@@ -592,7 +617,7 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
     try {
       await smsService.sendVerificationSMS(formattedPhone, otp);
     } catch (smsError) {
-      console.error('Failed to send OTP SMS:', smsError);
+      console.error('Failed to send OTP SMS', summarizeErrorForLog(smsError));
       const persistedPendingRegistrations = await findPendingRegistrations(pool, {
         formattedPhone,
         email,
@@ -621,7 +646,7 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Guardian registration error:', error);
+    console.error('Guardian registration error', summarizeErrorForLog(error));
     res.status(error.statusCode || 500).json({
       error: 'Registration failed',
       code: error.code || 'REGISTRATION_ERROR',
@@ -710,7 +735,7 @@ router.post(
       try {
         await smsService.sendVerificationSMS(formattedPhone, otp);
       } catch (smsError) {
-        console.error('Failed to resend OTP SMS:', smsError);
+        console.error('Failed to resend OTP SMS', summarizeErrorForLog(smsError));
         await pool.query(
           `UPDATE pending_registrations
            SET otp = $1,
@@ -752,7 +777,7 @@ router.post(
         ),
       });
     } catch (error) {
-      console.error('Guardian registration resend error:', error);
+      console.error('Guardian registration resend error', summarizeErrorForLog(error));
       return res.status(error.statusCode || 500).json({
         success: false,
         error: 'Failed to resend verification code',
@@ -883,7 +908,7 @@ router.post(
 
     } catch (error) {
       await client.query('ROLLBACK');
-      console.error('Registration verification error:', error);
+      console.error('Registration verification error', summarizeErrorForLog(error));
       res.status(error.statusCode || 500).json({
         error: 'Registration failed',
         code: error.code || 'SERVER_ERROR',
@@ -2013,7 +2038,7 @@ router.post('/refresh', async (req, res) => {
 
     // Get user details
     const userResult = await pool.query(
-      `SELECT u.id, u.username, u.role_id, u.clinic_id, u.facility_id, u.guardian_id, u.email,
+      `SELECT u.id, u.username, u.role_id, u.clinic_id, u.clinic_id AS facility_id, u.guardian_id, u.email,
               u.force_password_change, r.name as role_name, c.name as clinic_name
        FROM users u
        JOIN roles r ON u.role_id = r.id

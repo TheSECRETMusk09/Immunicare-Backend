@@ -257,6 +257,24 @@ const resolveNextVaccineFromReadiness = (readiness = {}) => {
   };
 };
 
+const buildSuggestionNotificationKey = ({
+  guardianId,
+  infantId,
+  vaccineId,
+  vaccineCode,
+  doseNumber,
+  suggestedDate,
+}) => {
+  return [
+    'appointment_suggested',
+    guardianId || 'guardian',
+    infantId || 'infant',
+    vaccineId || vaccineCode || 'vaccine',
+    doseNumber || 'dose',
+    toDateKey(suggestedDate) || suggestedDate || 'date',
+  ].join(':');
+};
+
 const findFirstSchedulableSlotWindow = async ({
   startDate,
   vaccineId,
@@ -378,16 +396,14 @@ const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId =
     if (normalizedGuardianId && suggestions.length > 0) {
       try {
         const primarySuggestion = suggestions[0];
-        const suggestionDedupeKey = [
-          'appointment_suggested',
-          normalizedGuardianId,
-          infant.id,
-          nextDoseInfo.vaccineId || 'vaccine',
-          nextDoseInfo.vaccineCode || 'code',
-          nextDoseInfo.doseNumber || 'dose',
-          primarySuggestion.date,
-          normalizedClinicId || 'clinic',
-        ].join(':');
+        const suggestionDedupeKey = buildSuggestionNotificationKey({
+          guardianId: normalizedGuardianId,
+          infantId: infant.id,
+          vaccineId: nextDoseInfo.vaccineId,
+          vaccineCode: nextDoseInfo.vaccineCode,
+          doseNumber: nextDoseInfo.doseNumber,
+          suggestedDate: primarySuggestion.date,
+        });
 
         await notificationService.sendNotification({
           notification_type: 'appointment_suggested',

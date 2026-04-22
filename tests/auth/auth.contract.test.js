@@ -54,9 +54,11 @@ describe('Auth contract baseline', () => {
   });
 
   test('refresh endpoint rotates and preserves authenticated session', async () => {
-    const { token: oldAccessToken } = await loginAsAdmin(adminAgent);
+    const { token: oldAccessToken, refreshToken } = await loginAsAdmin(adminAgent);
 
-    const refreshResponse = await adminAgent.post('/api/auth/refresh').send({});
+    expect(refreshToken).toBeTruthy();
+
+    const refreshResponse = await adminAgent.post('/api/auth/refresh').send({ refreshToken });
     expectStatus(refreshResponse, 200);
     expect(refreshResponse.body.token || refreshResponse.body.accessToken).toBeTruthy();
 

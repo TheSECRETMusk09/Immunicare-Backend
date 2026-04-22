@@ -51,7 +51,7 @@ describe('Route integrity + middleware guard contracts', () => {
       .get('/api/appointments')
       .set(withBearer('malformed.token.value'));
 
-    expectStatus(response, 403);
+    expectStatus(response, 401);
     expectErrorCode(response, 'INVALID_TOKEN');
   });
 

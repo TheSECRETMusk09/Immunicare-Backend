@@ -6,40 +6,157 @@ const REDACTION_PATTERNS = [
   /(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi,
 ];
 
+const SANITIZE_LIMITS = {
+  maxDepth: 8,
+  maxArrayLength: 100,
+  maxObjectKeys: 200,
+  maxStringLength: 10000,
+};
+
 const redactString = (value) => {
   if (typeof value !== 'string') {
     return value;
   }
 
-  return REDACTION_PATTERNS.reduce((acc, pattern) => acc.replace(pattern, '$1[REDACTED]'), value);
+  const redacted = REDACTION_PATTERNS.reduce(
+    (acc, pattern) => acc.replace(pattern, '$1[REDACTED]'),
+    value,
+  );
+
+  if (redacted.length <= SANITIZE_LIMITS.maxStringLength) {
+    return redacted;
+  }
+
+  return `${redacted.slice(0, SANITIZE_LIMITS.maxStringLength)}...[TRUNCATED]`;
 };
 
-const sanitizeMetadata = (value) => {
+const createSanitizeContext = (context) => ({
+  seen: context?.seen || new WeakSet(),
+  depth: Number.isFinite(context?.depth) ? context.depth : 0,
+});
+
+const createNextSanitizeContext = (context) => ({
+  seen: context.seen,
+  depth: context.depth + 1,
+});
+
+const sanitizeMetadata = (value, contextInput) => {
+  const context = createSanitizeContext(contextInput);
+
   if (value === null || value === undefined) {
     return value;
+  }
+
+  if (context.depth > SANITIZE_LIMITS.maxDepth) {
+    return '[MaxDepthReached]';
   }
 
   if (typeof value === 'string') {
     return redactString(value);
   }
 
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'bigint') {
+    return String(value);
+  }
+
+  if (typeof value === 'function') {
+    return `[Function ${value.name || 'anonymous'}]`;
+  }
+
+  if (typeof value === 'symbol') {
+    return String(value);
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? String(value) : value.toISOString();
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return `[Buffer length=${value.length}]`;
+  }
+
+  if (value instanceof Error) {
+    const nextContext = createNextSanitizeContext(context);
+    return {
+      name: value.name || 'Error',
+      message: redactString(value.message || ''),
+      stack: redactString(value.stack || ''),
+      ...(value.code ? { code: value.code } : {}),
+      ...(Number.isFinite(value.status) ? { status: value.status } : {}),
+      ...(Number.isFinite(value.response?.status)
+        ? { responseStatus: value.response.status }
+        : {}),
+      ...(value.response?.data !== undefined
+        ? { responseData: sanitizeMetadata(value.response.data, nextContext) }
+        : {}),
+      ...(value.config
+        ? {
+          requestConfig: sanitizeMetadata(
+            {
+              url: value.config.url,
+              method: value.config.method,
+              timeout: value.config.timeout,
+              baseURL: value.config.baseURL,
+            },
+            nextContext,
+          ),
+        }
+        : {}),
+    };
+  }
+
+  if (typeof value === 'object') {
+    if (context.seen.has(value)) {
+      return '[Circular]';
+    }
+
+    context.seen.add(value);
+  }
+
+  const nextContext = createNextSanitizeContext(context);
+
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeMetadata(item));
+    const limitedItems = value.slice(0, SANITIZE_LIMITS.maxArrayLength);
+    const sanitizedItems = limitedItems.map((item) => sanitizeMetadata(item, nextContext));
+
+    if (value.length > SANITIZE_LIMITS.maxArrayLength) {
+      sanitizedItems.push(
+        `[Truncated ${value.length - SANITIZE_LIMITS.maxArrayLength} additional items]`,
+      );
+    }
+
+    return sanitizedItems;
   }
 
   if (typeof value === 'object') {
     const sanitized = {};
-    for (const [key, raw] of Object.entries(value)) {
+    const entries = Object.entries(value).slice(0, SANITIZE_LIMITS.maxObjectKeys);
+
+    for (const [key, raw] of entries) {
       if (/(password|secret|token|api[_-]?key|auth[_-]?token|refresh[_-]?token)/i.test(key)) {
         sanitized[key] = '[REDACTED]';
       } else {
-        sanitized[key] = sanitizeMetadata(raw);
+        sanitized[key] = sanitizeMetadata(raw, nextContext);
       }
     }
+
+    if (Object.keys(value).length > SANITIZE_LIMITS.maxObjectKeys) {
+      sanitized.__truncated_keys__ =
+        Object.keys(value).length - SANITIZE_LIMITS.maxObjectKeys;
+    }
+
     return sanitized;
   }
 
-  return value;
+  try {
+    return redactString(String(value));
+  } catch {
+    return '[UnserializableValue]';
+  }
 };
 
 const redactFormat = winston.format((info) => {
@@ -50,7 +167,15 @@ const redactFormat = winston.format((info) => {
     if (key === 'level' || key === 'message' || key === 'timestamp') {
       continue;
     }
-    cloned[key] = sanitizeMetadata(value);
+
+    try {
+      cloned[key] = sanitizeMetadata(value);
+    } catch (sanitizeError) {
+      cloned[key] = {
+        message: '[SanitizationFailed]',
+        reason: sanitizeError.message,
+      };
+    }
   }
 
   return cloned;
@@ -230,6 +355,11 @@ logger.logRequest = (req, statusCode, durationMs) => {
   } else {
     logger.info('API Request', logData);
   }
+};
+
+logger.__testUtils = {
+  redactString,
+  sanitizeMetadata,
 };
 
 module.exports = logger;

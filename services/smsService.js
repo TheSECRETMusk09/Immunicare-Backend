@@ -230,31 +230,74 @@ async function sendViaTextBee(phoneNumber, message) {
     throw new Error('TEXTBEE_API_KEY is not configured');
   }
 
-  // TextBee API V1 format
-  const payload = {
-    recipients: [phoneNumber],
-    message: message,
-  };
+  if (!TEXTBEE_DEVICE_ID) {
+    throw new Error('TEXTBEE_DEVICE_ID is not configured');
+  }
 
   const headers = {
     'x-api-key': TEXTBEE_API_KEY,
     'Content-Type': 'application/json',
   };
 
-  const response = await axios.post(`${TEXTBEE_BASE_URL}/${TEXTBEE_DEVICE_ID}/sendSMS`, payload, {
-    headers,
-    timeout: 15000,
+  const normalizeResponse = (responseData) => ({
+    provider: 'textbee',
+    raw: responseData,
+    messageId:
+      responseData?.id ||
+      responseData?.messageId ||
+      responseData?.data?.id ||
+      responseData?.data?.messageId ||
+      null,
   });
 
-  return {
-    provider: 'textbee',
-    raw: response.data,
-    messageId:
-      response.data?.id ||
-      response.data?.messageId ||
-      response.data?.data?.id ||
-      null,
+  const primaryUrl = `${TEXTBEE_BASE_URL}/${TEXTBEE_DEVICE_ID}/sendSMS`;
+  const primaryPayload = {
+    recipients: [phoneNumber],
+    message,
   };
+
+  try {
+    const response = await axios.post(primaryUrl, primaryPayload, {
+      headers,
+      timeout: 15000,
+    });
+
+    return normalizeResponse(response.data);
+  } catch (primaryError) {
+    const statusCode = primaryError?.response?.status;
+    const shouldFallback = statusCode === 400 || statusCode === 404 || statusCode === 422;
+
+    if (!shouldFallback) {
+      throw primaryError;
+    }
+
+    const fallbackUrl = `${TEXTBEE_BASE_URL.replace(/\/gateway\/devices$/, '')}/messages/send`;
+    const fallbackPayload = {
+      deviceId: TEXTBEE_DEVICE_ID,
+      recipient: phoneNumber,
+      message,
+      sender: SMS_CONFIG.senderName,
+    };
+
+    try {
+      const fallbackResponse = await axios.post(fallbackUrl, fallbackPayload, {
+        headers,
+        timeout: 15000,
+      });
+
+      logger.warn('TextBee primary endpoint rejected request; fallback endpoint used', {
+        primaryStatus: statusCode,
+      });
+
+      return normalizeResponse(fallbackResponse.data);
+    } catch (fallbackError) {
+      fallbackError.primaryEndpoint = {
+        status: statusCode,
+        data: primaryError?.response?.data,
+      };
+      throw fallbackError;
+    }
+  }
 }
 
 async function logSms({
@@ -505,6 +548,23 @@ async function sendSMS(phoneNumber, message, messageType = 'general', metadata =
       raw: providerResult.raw,
     };
   } catch (error) {
+    const providerStatus = Number.isFinite(error?.response?.status)
+      ? error.response.status
+      : null;
+    const providerStatusText = error?.response?.statusText || null;
+    const providerErrorPayload = error?.response?.data;
+    let providerErrorDetail = null;
+
+    if (typeof providerErrorPayload === 'string') {
+      providerErrorDetail = providerErrorPayload;
+    } else if (providerErrorPayload && typeof providerErrorPayload === 'object') {
+      providerErrorDetail =
+        providerErrorPayload.error ||
+        providerErrorPayload.message ||
+        providerErrorPayload.details ||
+        JSON.stringify(providerErrorPayload);
+    }
+
     await logSms({
       phoneNumber: formattedPhone,
       message,
@@ -512,13 +572,19 @@ async function sendSMS(phoneNumber, message, messageType = 'general', metadata =
       status: 'failed',
       provider: SMS_PROVIDER,
       metadata,
-      error: error.message,
+      error: providerStatus
+        ? `${error.message} (status ${providerStatus})`
+        : error.message,
     });
 
     logger.error('SMS send failed', {
       to: formattedPhone,
       messageType,
       error: error.message,
+      provider: SMS_PROVIDER,
+      ...(providerStatus ? { providerStatus } : {}),
+      ...(providerStatusText ? { providerStatusText } : {}),
+      ...(providerErrorDetail ? { providerErrorDetail } : {}),
     });
     throw error;
   }

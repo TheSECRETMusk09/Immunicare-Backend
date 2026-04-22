@@ -186,6 +186,105 @@ describe('Appointments Module API Integration Tests', () => {
       expect(Array.isArray(collectionFrom(response.body))).toBe(true);
     });
 
+    test('should return cancelled appointment by infant name, full name, and control number without date/status filters', async () => {
+      const christianInfantResponse = await request(app)
+        .post('/api/infants/guardian')
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          first_name: 'Christian',
+          last_name: 'Samorin',
+          dob: '2023-03-20',
+          sex: 'male',
+          purok: 'Purok 1',
+          street_color: 'Son Risa St. - Pink',
+        });
+
+      expect([200, 201]).toContain(christianInfantResponse.status);
+      const christianInfantId = christianInfantResponse.body?.data?.id;
+      expect(Number.isInteger(Number.parseInt(christianInfantId, 10))).toBe(true);
+
+      const createdAppointmentResponse = await request(app)
+        .post('/api/appointments')
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          infant_id: christianInfantId,
+          scheduled_date: appointmentDateTime(futureBusinessDate(2)),
+          type: 'Check-up',
+          location: 'Main Health Center',
+          notes: 'Guardian cancellation regression fixture',
+        });
+
+      expect(createdAppointmentResponse.status).toBe(201);
+      const cancelledAppointmentId = createdAppointmentResponse.body?.id;
+      expect(Number.isInteger(Number.parseInt(cancelledAppointmentId, 10))).toBe(true);
+
+      await pool.query(
+        `
+          UPDATE appointments
+          SET scheduled_date = $1,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2
+        `,
+        ['2026-04-20T09:00:00+08:00', cancelledAppointmentId],
+      );
+
+      const cancelResponse = await request(app)
+        .put(`/api/appointments/${cancelledAppointmentId}/cancel`)
+        .set('Authorization', `Bearer ${guardianToken}`)
+        .send({
+          cancellation_reason: 'Guardian cancelled from dashboard',
+        });
+
+      expect(cancelResponse.status).toBe(200);
+      expect(String(cancelResponse.body?.status || '').toLowerCase()).toBe('cancelled');
+
+      const controlNumber =
+        cancelResponse.body?.control_number ||
+        (
+          await pool.query(
+            'SELECT control_number FROM patients WHERE id = $1',
+            [christianInfantId],
+          )
+        ).rows?.[0]?.control_number;
+
+      expect(Boolean(controlNumber)).toBe(true);
+
+      const searchTerms = ['christian', 'samorin', 'christian samorin', controlNumber];
+
+      for (const searchTerm of searchTerms) {
+        const response = await request(app)
+          .get('/api/appointments')
+          .query({ search: searchTerm })
+          .set('Authorization', `Bearer ${adminToken}`);
+
+        expect(response.status).toBe(200);
+
+        const records = collectionFrom(response.body);
+        const matchedAppointment = records.find(
+          (appointment) => Number.parseInt(appointment?.id, 10) === Number.parseInt(cancelledAppointmentId, 10),
+        );
+
+        expect(matchedAppointment).toBeDefined();
+        expect(String(matchedAppointment?.status || '').toLowerCase()).toBe('cancelled');
+        expect(toManilaDateKey(matchedAppointment?.scheduled_date)).toBe('2026-04-20');
+      }
+
+      const allStatusResponse = await request(app)
+        .get('/api/appointments')
+        .query({ search: 'christian samorin', status: 'all' })
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(allStatusResponse.status).toBe(200);
+
+      const allStatusRecords = collectionFrom(allStatusResponse.body);
+      const allStatusMatch = allStatusRecords.find(
+        (appointment) => Number.parseInt(appointment?.id, 10) === Number.parseInt(cancelledAppointmentId, 10),
+      );
+
+      expect(allStatusMatch).toBeDefined();
+      expect(String(allStatusMatch?.status || '').toLowerCase()).toBe('cancelled');
+    });
+
     test('should return 401 for unauthenticated', async () => {
       const response = await request(app)
         .get('/api/appointments');
@@ -214,6 +313,7 @@ describe('Appointments Module API Integration Tests', () => {
         .send(newAppointment);
 
       expect(response.status).toBe(201);
+      expect(response.body).toEqual(expect.any(Object));
       testAppointmentId = response.body.id;
       expect(response.body.infant_id || response.body.patient_id).toEqual(testInfantId);
       expect(toManilaDateKey(response.body.scheduled_date)).toBe(tomorrowDate);
@@ -238,6 +338,7 @@ describe('Appointments Module API Integration Tests', () => {
         .send(newAppointment);
 
       expect(response.status).toBe(201);
+      expect(response.body).toEqual(expect.any(Object));
       expect(response.body.infant_id || response.body.patient_id).toEqual(guardianInfantId);
       expect(toManilaDateKey(response.body.scheduled_date)).toBe(tomorrowDate);
     });
@@ -250,7 +351,7 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${guardianToken}`)
         .send({
           infant_id: guardianInfantId,
-          scheduled_date: targetDate,
+          scheduled_date: appointmentDateTime(targetDate),
           type: 'Vaccination',
           location: 'Main Health Center',
         });
@@ -326,12 +427,13 @@ describe('Appointments Module API Integration Tests', () => {
         .set('Authorization', `Bearer ${guardianToken}`)
         .send({
           infant_id: guardianReadyInfantId,
-          scheduled_date: futureBusinessDate(4),
+          scheduled_date: appointmentDateTime(futureBusinessDate(4)),
           type: 'Vaccination',
           location: 'Main Health Center',
         });
 
       expect(response.status).toBe(201);
+      expect(response.body).toEqual(expect.any(Object));
       expect(Number.parseInt(response.body.vaccine_id, 10)).toBe(eligibleVaccineId);
     });
 
