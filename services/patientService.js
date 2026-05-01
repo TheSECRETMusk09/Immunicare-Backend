@@ -137,6 +137,19 @@ const sanitizeOffset = (value, fallback = 0) => {
 
 const sanitizeOrderBy = (value, fallback = 'p.created_at') => {
   const normalized = String(value || '').trim().toLowerCase().replace(/^p\./, '');
+  if (normalized === 'name' || normalized === 'full_name') {
+    return `
+      LOWER(
+        CONCAT_WS(
+          ' ',
+          COALESCE(NULLIF(BTRIM(p.first_name), ''), ''),
+          COALESCE(NULLIF(BTRIM(p.middle_name), ''), ''),
+          COALESCE(NULLIF(BTRIM(p.last_name), ''), '')
+        )
+      )
+    `;
+  }
+
   const allowed = new Set([
     'created_at',
     'updated_at',
@@ -200,6 +213,9 @@ const normalizeWorkflowStatusValue = (value) =>
 const isNeedsReviewStatus = (value) =>
   REVIEW_WORKFLOW_STATUSES.has(normalizeWorkflowStatusValue(value));
 
+const resolveReviewWorkflowSource = (row = {}) =>
+  row.validation_status ?? row.latest_transfer_case_status ?? null;
+
 const logVaccinationSyncDebug = (message, payload = {}) => {
   if (process.env.DEBUG_VACCINATION_SYNC === 'true') {
     console.debug(`[vaccination-sync] ${message}`, payload);
@@ -249,6 +265,117 @@ const normalizePatientInput = (patientData = {}) => ({
   isActive: resolvePatientInputField(patientData, 'isActive', 'is_active'),
 });
 
+const normalizeSearchToken = (value = '') =>
+  String(value || '')
+    .trim()
+    .replace(/[.,]+/g, '');
+
+const tokenizeSearchValue = (value = '') =>
+  String(value || '')
+    .trim()
+    .split(/\s+/)
+    .map(normalizeSearchToken)
+    .filter(Boolean);
+
+const buildPatientNameSearchExpressions = (patientAlias = 'p') => [
+  `NULLIF(BTRIM(${patientAlias}.first_name), '')`,
+  `NULLIF(BTRIM(${patientAlias}.middle_name), '')`,
+  `NULLIF(LEFT(BTRIM(${patientAlias}.middle_name), 1), '')`,
+  `NULLIF(BTRIM(${patientAlias}.last_name), '')`,
+  `CONCAT_WS(
+    ' ',
+    NULLIF(BTRIM(${patientAlias}.first_name), ''),
+    NULLIF(BTRIM(${patientAlias}.middle_name), ''),
+    NULLIF(BTRIM(${patientAlias}.last_name), '')
+  )`,
+  `CONCAT_WS(
+    ' ',
+    NULLIF(BTRIM(${patientAlias}.first_name), ''),
+    NULLIF(LEFT(BTRIM(${patientAlias}.middle_name), 1), ''),
+    NULLIF(BTRIM(${patientAlias}.last_name), '')
+  )`,
+  `CONCAT_WS(
+    ' ',
+    NULLIF(BTRIM(${patientAlias}.first_name), ''),
+    NULLIF(BTRIM(${patientAlias}.last_name), '')
+  )`,
+  `CONCAT_WS(
+    ' ',
+    NULLIF(BTRIM(${patientAlias}.middle_name), ''),
+    NULLIF(BTRIM(${patientAlias}.last_name), '')
+  )`,
+  `CONCAT_WS(
+    ' ',
+    NULLIF(BTRIM(${patientAlias}.last_name), ''),
+    NULLIF(BTRIM(${patientAlias}.first_name), '')
+  )`,
+  `CONCAT_WS(
+    ' ',
+    NULLIF(BTRIM(${patientAlias}.last_name), ''),
+    NULLIF(BTRIM(${patientAlias}.first_name), ''),
+    NULLIF(BTRIM(${patientAlias}.middle_name), '')
+  )`,
+  `CONCAT_WS(
+    ' ',
+    NULLIF(BTRIM(${patientAlias}.last_name), ''),
+    NULLIF(BTRIM(${patientAlias}.first_name), ''),
+    NULLIF(LEFT(BTRIM(${patientAlias}.middle_name), 1), '')
+  )`,
+  `CONCAT_WS(
+    ', ',
+    NULLIF(BTRIM(${patientAlias}.last_name), ''),
+    CONCAT_WS(
+      ' ',
+      NULLIF(BTRIM(${patientAlias}.first_name), ''),
+      NULLIF(BTRIM(${patientAlias}.middle_name), '')
+    )
+  )`,
+  `CONCAT_WS(
+    ', ',
+    NULLIF(BTRIM(${patientAlias}.last_name), ''),
+    CONCAT_WS(
+      ' ',
+      NULLIF(BTRIM(${patientAlias}.first_name), ''),
+      NULLIF(LEFT(BTRIM(${patientAlias}.middle_name), 1), '')
+    )
+  )`,
+];
+
+const buildTokenizedSearchCondition = ({
+  searchValue,
+  expressions = [],
+  startingParamIndex = 1,
+}) => {
+  const tokens = tokenizeSearchValue(searchValue);
+  if (tokens.length === 0 || expressions.length === 0) {
+    return {
+      clause: '',
+      params: [],
+    };
+  }
+
+  const clause = tokens
+    .map((token, tokenIndex) => {
+      const paramIndex = startingParamIndex + tokenIndex;
+      const tokenPredicate = expressions
+        .map((expression) => `COALESCE(${expression}, '') ILIKE $${paramIndex}`)
+        .join(' OR ');
+
+      return `(${tokenPredicate})`;
+    })
+    .join(' AND ');
+
+  return {
+    clause,
+    params: tokens.map((token) => `%${token}%`),
+  };
+};
+
+const buildPatientNameSearchPredicate = (paramIndex, patientAlias = 'p') =>
+  buildPatientNameSearchExpressions(patientAlias)
+    .map((expression) => `COALESCE(${expression}, '') ILIKE $${paramIndex}`)
+    .join(' OR ');
+
 const buildPatientFilterClause = (filters = {}) => {
   const params = [];
   let paramIndex = 1;
@@ -276,34 +403,24 @@ const buildPatientFilterClause = (filters = {}) => {
 
   const searchTerm = String(filters.search || '').trim().replace(/\s+/g, ' ');
   if (searchTerm) {
-    whereClause += ` AND (
-      COALESCE(p.first_name, '') ILIKE $${paramIndex} OR
-      COALESCE(p.last_name, '') ILIKE $${paramIndex} OR
-      CONCAT_WS(
-        ' ',
-        NULLIF(BTRIM(p.first_name), ''),
-        NULLIF(BTRIM(p.middle_name), ''),
-        NULLIF(BTRIM(p.last_name), '')
-      ) ILIKE $${paramIndex} OR
-      CONCAT_WS(
-        ' ',
-        NULLIF(BTRIM(p.first_name), ''),
-        NULLIF(BTRIM(p.last_name), '')
-      ) ILIKE $${paramIndex} OR
-      CONCAT_WS(
-        ' ',
-        NULLIF(BTRIM(p.last_name), ''),
-        NULLIF(BTRIM(p.first_name), '')
-      ) ILIKE $${paramIndex} OR
-      COALESCE(p.control_number, '') ILIKE $${paramIndex} OR
-      COALESCE(p.cellphone_number, '') ILIKE $${paramIndex} OR
-      COALESCE(p.contact, '') ILIKE $${paramIndex} OR
-      COALESCE(g.name, '') ILIKE $${paramIndex} OR
-      COALESCE(g.phone, '') ILIKE $${paramIndex} OR
-      CAST(p.dob AS TEXT) ILIKE $${paramIndex}
-    )`;
-    params.push(`%${searchTerm}%`);
-    paramIndex += 1;
+    const searchCondition = buildTokenizedSearchCondition({
+      searchValue: searchTerm,
+      expressions: [
+        ...buildPatientNameSearchExpressions('p'),
+        'p.control_number',
+        'p.cellphone_number',
+        'p.contact',
+        'g.name',
+        'g.phone',
+        `TO_CHAR(p.dob, 'YYYY-MM-DD')`,
+        `TO_CHAR(p.dob, 'MM/DD/YYYY')`,
+      ],
+      startingParamIndex: paramIndex,
+    });
+
+    whereClause += ` AND (${searchCondition.clause})`;
+    params.push(...searchCondition.params);
+    paramIndex += searchCondition.params.length;
   }
 
   if (filters.sex) {
@@ -439,6 +556,7 @@ const getPatients = async (filters = {}) => {
       p.id,
       p.dob,
       p.facility_id,
+      p.validation_status,
       (
         SELECT tic.id
         FROM public.transfer_in_cases tic
@@ -472,7 +590,7 @@ const getPatients = async (filters = {}) => {
   const total = Number.parseInt(countResult.rows[0]?.total || 0, 10) || 0;
   const summaryRows = summaryPatientsResult.rows || [];
   const needsReview = summaryRows.filter((row) =>
-    isNeedsReviewStatus(row.latest_transfer_case_status),
+    isNeedsReviewStatus(resolveReviewWorkflowSource(row)),
   ).length;
   const withImportedHistory = summaryRows.filter((row) => row.latest_transfer_case_id).length;
   const pendingVaccinations = sumPendingDoseCounts(scheduleSummaryMap);
@@ -1025,4 +1143,7 @@ module.exports = {
   getPatientStatistics,
   getPatientsWithVaccinationFilters,
   syncToLegacyInfants,
+  buildPatientNameSearchPredicate,
+  buildPatientNameSearchExpressions,
+  buildTokenizedSearchCondition,
 };

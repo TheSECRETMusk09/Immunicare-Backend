@@ -919,12 +919,6 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
     const limitNum = Math.max(1, Math.min(200, parseInt(limit)));
     const offset = (pageNum - 1) * limitNum;
     const normalizedSearch = sanitizeText(search ?? searchQuery);
-    const normalizedSearchPattern = normalizedSearch
-      ? `%${normalizedSearch.replace(/\s+/g, '%')}%`
-      : null;
-    const normalizedSearchCompactPattern = normalizedSearch
-      ? `%${normalizedSearch.replace(/\s+/g, '')}%`
-      : null;
     const normalizedStartDate = sanitizeText(start_date ?? startDate);
     const normalizedEndDate = sanitizeText(end_date ?? endDate);
     const normalizedStatusFilter = sanitizeText(status).toLowerCase();
@@ -1031,38 +1025,27 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
     }
 
     if (normalizedSearch) {
+      const searchCondition = patientService.buildTokenizedSearchCondition({
+        searchValue: normalizedSearch,
+        expressions: [
+          ...patientService.buildPatientNameSearchExpressions('p'),
+          'g.name',
+          'p.control_number',
+          'g.phone',
+          `TO_CHAR(p.dob, 'YYYY-MM-DD')`,
+          `TO_CHAR(p.dob, 'MM/DD/YYYY')`,
+          'a.type',
+          `a.status::text`,
+        ],
+        startingParamIndex: params.length + 1,
+      });
+
       query += `
         AND (
-          COALESCE(p.first_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(p.last_name, '') ILIKE $${params.length + 1}
-          OR CONCAT_WS(
-            ' ',
-            NULLIF(BTRIM(p.first_name), ''),
-            NULLIF(BTRIM(p.middle_name), ''),
-            NULLIF(BTRIM(p.last_name), '')
-          ) ILIKE $${params.length + 1}
-          OR REGEXP_REPLACE(
-            CONCAT_WS(
-              ' ',
-              NULLIF(BTRIM(p.first_name), ''),
-              NULLIF(BTRIM(p.middle_name), ''),
-              NULLIF(BTRIM(p.last_name), '')
-            ),
-            '\\s+',
-            '',
-            'g'
-          ) ILIKE $${params.length + 2}
-          OR COALESCE(g.name, '') ILIKE $${params.length + 1}
-          OR REGEXP_REPLACE(COALESCE(g.name, ''), '\\s+', '', 'g') ILIKE $${params.length + 2}
-          OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
-          OR COALESCE(g.phone, '') ILIKE $${params.length + 1}
-          OR COALESCE(TO_CHAR(p.dob, 'YYYY-MM-DD'), '') ILIKE $${params.length + 1}
-          OR COALESCE(TO_CHAR(p.dob, 'MM/DD/YYYY'), '') ILIKE $${params.length + 1}
-          OR COALESCE(a.type, '') ILIKE $${params.length + 1}
-          OR COALESCE(a.status::text, '') ILIKE $${params.length + 1}
+          ${searchCondition.clause}
         )
       `;
-      params.push(normalizedSearchPattern, normalizedSearchCompactPattern);
+      params.push(...searchCondition.params);
     }
 
     // Get total count for pagination metadata

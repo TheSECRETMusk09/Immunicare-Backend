@@ -83,8 +83,116 @@ const uploadInfantDoc = multer({
 
 // Valid document types
 const VALID_DOCUMENT_TYPES = ['vaccination_card', 'birth_certificate', 'medical_record', 'image', 'other'];
+const CHECKLIST_DESCRIPTION_PREFIX = 'guardian_checklist:';
 
 const normalizeRuntimeRole = (role) => String(role || '').trim().toLowerCase();
+
+const normalizeChecklistSearchText = (...values) =>
+  values
+    .flat()
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' ');
+
+const includesChecklistKeyword = (text, keywords = []) =>
+  keywords.some((keyword) => text.includes(keyword));
+
+const inferChecklistItemId = (doc = {}) => {
+  const explicitChecklistItemId = String(
+    doc.checklist_item_id || doc.checklistItemId || '',
+  ).trim();
+  if (explicitChecklistItemId) {
+    return explicitChecklistItemId;
+  }
+
+  const description = String(doc.description || '').trim();
+  const markerMatch = description.match(
+    new RegExp(`${CHECKLIST_DESCRIPTION_PREFIX}([^\\s|]+)`),
+  );
+  if (markerMatch?.[1]) {
+    return markerMatch[1];
+  }
+
+  const searchText = normalizeChecklistSearchText(
+    description,
+    doc.original_filename,
+    doc.file_name,
+    doc.filename,
+    doc.name,
+    doc.document_type,
+  );
+
+  if (
+    doc.document_type === 'birth_certificate' ||
+    includesChecklistKeyword(searchText, ['birth certificate'])
+  ) {
+    return 'birth_cert';
+  }
+
+  if (
+    doc.document_type === 'medical_record' ||
+    includesChecklistKeyword(searchText, [
+      'medical book',
+      "mother's medical book",
+      "child's medical book",
+      'pink book',
+      'medical record',
+    ])
+  ) {
+    return 'medbook';
+  }
+
+  if (
+    doc.document_type === 'vaccination_card' ||
+    includesChecklistKeyword(searchText, [
+      'previous vaccination',
+      'vaccination record',
+      'vaccination records',
+      'vaccination card',
+      'immunization record',
+    ])
+  ) {
+    return 'previous_records';
+  }
+
+  if (
+    includesChecklistKeyword(searchText, [
+      'parent guardian valid id',
+      'parent/guardian valid id',
+      'guardian valid id',
+      'parent valid id',
+      'government id',
+      'guardian id',
+      'parent id',
+      'valid id',
+    ])
+  ) {
+    return 'parent_id';
+  }
+
+  if (
+    includesChecklistKeyword(searchText, [
+      'signed consent form',
+      'consent form',
+      'signed consent',
+    ])
+  ) {
+    return 'consent_form';
+  }
+
+  if (
+    includesChecklistKeyword(searchText, [
+      'health insurance',
+      'insurance card',
+      'insurance',
+      'philhealth',
+    ])
+  ) {
+    return 'insurance';
+  }
+
+  return null;
+};
 
 const serializeInfantDocument = (doc = {}) => {
   if (!doc || typeof doc !== 'object') {
@@ -93,6 +201,7 @@ const serializeInfantDocument = (doc = {}) => {
 
   const documentId = doc.id || doc.document_id || doc.documentId || null;
   const downloadUrl = documentId ? `/api/infant-documents/file/${documentId}` : null;
+  const checklistItemId = inferChecklistItemId(doc);
 
   return {
     ...doc,
@@ -103,6 +212,8 @@ const serializeInfantDocument = (doc = {}) => {
     file_type: doc.mime_type || doc.file_type || null,
     downloadUrl: doc.downloadUrl || doc.download_url || downloadUrl,
     download_url: doc.download_url || doc.downloadUrl || downloadUrl,
+    checklist_item_id: checklistItemId,
+    checklistItemId,
   };
 };
 

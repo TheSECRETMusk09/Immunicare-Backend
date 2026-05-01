@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { authenticateToken: auth } = require('../middleware/auth');
 const appointmentSchedulingService = require('../services/appointmentSchedulingService');
+const patientService = require('../services/patientService');
 const smsService = require('../services/smsService');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 
@@ -121,9 +122,20 @@ router.get('/patients', auth, async (req, res) => {
     }
 
     if (search) {
-      query += ` AND (p.first_name ILIKE $${paramIndex} OR p.last_name ILIKE $${paramIndex} OR p.mother_name ILIKE $${paramIndex} OR p.cellphone_number ILIKE $${paramIndex})`;
-      params.push(`%${search}%`);
-      paramIndex++;
+      const searchCondition = patientService.buildTokenizedSearchCondition({
+        searchValue: search,
+        expressions: [
+          ...patientService.buildPatientNameSearchExpressions('p'),
+          'p.mother_name',
+          'p.father_name',
+          'p.cellphone_number',
+          'p.contact',
+        ],
+        startingParamIndex: paramIndex,
+      });
+      query += ` AND (${searchCondition.clause})`;
+      params.push(...searchCondition.params);
+      paramIndex += searchCondition.params.length;
     }
 
     query += ' GROUP BY p.id ORDER BY p.last_name, p.first_name';

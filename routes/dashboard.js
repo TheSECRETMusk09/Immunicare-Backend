@@ -21,6 +21,7 @@ const {
   resolveUserScopeIds,
 } = require('../services/entityScopeService');
 const immunizationScheduleService = require('../services/immunizationScheduleService');
+const patientService = require('../services/patientService');
 const {
   CLINIC_TODAY_SQL,
   getClinicTodayDateKey,
@@ -1218,30 +1219,21 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
     }
 
     if (searchTerm) {
-      params.push(`%${searchTerm}%`);
+      const searchCondition = patientService.buildTokenizedSearchCondition({
+        searchValue: searchTerm,
+        expressions: [
+          ...patientService.buildPatientNameSearchExpressions('i'),
+          `i.${controlNumberColumn}`,
+          ...(includeGuardianJoin ? ['g.name'] : []),
+          `TO_CHAR(i.dob, 'YYYY-MM-DD')`,
+          `TO_CHAR(i.dob, 'MM/DD/YYYY')`,
+        ],
+        startingParamIndex: params.length + 1,
+      });
+      params.push(...searchCondition.params);
       whereClause += `
         AND (
-          COALESCE(i.first_name, '') ILIKE $${params.length}
-          OR COALESCE(i.last_name, '') ILIKE $${params.length}
-          OR CONCAT_WS(
-            ' ',
-            NULLIF(BTRIM(i.first_name), ''),
-            NULLIF(BTRIM(i.middle_name), ''),
-            NULLIF(BTRIM(i.last_name), '')
-          ) ILIKE $${params.length}
-          OR CONCAT_WS(
-            ' ',
-            NULLIF(BTRIM(i.first_name), ''),
-            NULLIF(BTRIM(i.last_name), '')
-          ) ILIKE $${params.length}
-          OR CONCAT_WS(
-            ' ',
-            NULLIF(BTRIM(i.last_name), ''),
-            NULLIF(BTRIM(i.first_name), '')
-          ) ILIKE $${params.length}
-          OR COALESCE(i.${controlNumberColumn}, '') ILIKE $${params.length}
-          ${includeGuardianJoin ? `OR COALESCE(g.name, '') ILIKE $${params.length}` : ''}
-          OR CAST(i.dob AS TEXT) ILIKE $${params.length}
+          ${searchCondition.clause}
         )
       `;
     }

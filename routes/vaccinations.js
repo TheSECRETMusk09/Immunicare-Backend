@@ -233,24 +233,19 @@ const buildVaccinationModuleBaseQuery = ({
   }
 
   if (searchTerm) {
-    patientWhere.push(`
-      (
-        COALESCE(p.first_name, '') ILIKE $${params.length + 1}
-        OR COALESCE(p.middle_name, '') ILIKE $${params.length + 1}
-        OR COALESCE(p.last_name, '') ILIKE $${params.length + 1}
-        OR CONCAT_WS(
-          ' ',
-          NULLIF(BTRIM(p.first_name), ''),
-          NULLIF(BTRIM(p.middle_name), ''),
-          NULLIF(BTRIM(p.last_name), '')
-        ) ILIKE $${params.length + 1}
-        OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
-        OR COALESCE(g.name, '') ILIKE $${params.length + 1}
-        OR COALESCE(TO_CHAR(p.dob, 'YYYY-MM-DD'), '') ILIKE $${params.length + 1}
-        OR COALESCE(TO_CHAR(p.dob, 'MM/DD/YYYY'), '') ILIKE $${params.length + 1}
-      )
-    `);
-    params.push(`%${searchTerm}%`);
+    const searchCondition = patientService.buildTokenizedSearchCondition({
+      searchValue: searchTerm,
+      expressions: [
+        ...patientService.buildPatientNameSearchExpressions('p'),
+        'p.control_number',
+        'g.name',
+        `TO_CHAR(p.dob, 'YYYY-MM-DD')`,
+        `TO_CHAR(p.dob, 'MM/DD/YYYY')`,
+      ],
+      startingParamIndex: params.length + 1,
+    });
+    patientWhere.push(`(${searchCondition.clause})`);
+    params.push(...searchCondition.params);
   }
 
   return `
@@ -1304,26 +1299,27 @@ router.get('/records', requirePermission('vaccination:view'), async (req, res) =
     }
 
     if (searchTerm) {
+      const searchCondition = patientService.buildTokenizedSearchCondition({
+        searchValue: searchTerm,
+        expressions: [
+          ...patientService.buildPatientNameSearchExpressions('p'),
+          'g.name',
+          'p.control_number',
+          'v.name',
+          `ir.status::text`,
+          providerValueExpression,
+          `TO_CHAR(p.dob, 'YYYY-MM-DD')`,
+          `TO_CHAR(p.dob, 'MM/DD/YYYY')`,
+        ],
+        startingParamIndex: params.length + 1,
+      });
+
       whereClause += `
         AND (
-          COALESCE(p.first_name, '') ILIKE $${params.length + 1}
-          OR COALESCE(p.last_name, '') ILIKE $${params.length + 1}
-          OR CONCAT_WS(
-            ' ',
-            NULLIF(BTRIM(p.first_name), ''),
-            NULLIF(BTRIM(p.middle_name), ''),
-            NULLIF(BTRIM(p.last_name), '')
-          ) ILIKE $${params.length + 1}
-          OR COALESCE(g.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(p.control_number, '') ILIKE $${params.length + 1}
-          OR COALESCE(v.name, '') ILIKE $${params.length + 1}
-          OR COALESCE(ir.status::text, '') ILIKE $${params.length + 1}
-          OR COALESCE(${providerValueExpression}, '') ILIKE $${params.length + 1}
-          OR COALESCE(TO_CHAR(p.dob, 'YYYY-MM-DD'), '') ILIKE $${params.length + 1}
-          OR COALESCE(TO_CHAR(p.dob, 'MM/DD/YYYY'), '') ILIKE $${params.length + 1}
+          ${searchCondition.clause}
         )
       `;
-      params.push(`%${searchTerm}%`);
+      params.push(...searchCondition.params);
     }
 
     if (Number.isInteger(vaccineIdFilter) && vaccineIdFilter > 0) {

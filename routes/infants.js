@@ -525,8 +525,8 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
       dateTo: req.query.end_date || req.query.dob_end || req.query.date_of_birth_end,
       createdFrom: req.query.created_from || undefined,
       createdTo: req.query.created_to || undefined,
-      orderBy: req.query.order_by || req.query.orderBy || undefined,
-      orderDirection: req.query.order_direction || req.query.orderDirection || undefined,
+      orderBy: req.query.order_by || req.query.orderBy || 'created_at',
+      orderDirection: req.query.order_direction || req.query.orderDirection || 'DESC',
       excludeFutureDob:
         ['true', '1', 'yes'].includes(
           String(req.query.exclude_future_dob || req.query.excludeFutureDob || '')
@@ -537,8 +537,6 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
       page,
       limit,
       offset,
-      orderBy: 'created_at',
-      orderDirection: 'DESC'
     };
 
     // Guardian can only see their own patients
@@ -1501,22 +1499,23 @@ router.get('/search/:query', requirePermission('patient:view'), async (req, res)
       });
     }
 
-    const params = [`%${query}%`];
+    const searchCondition = patientService.buildTokenizedSearchCondition({
+      searchValue: query,
+      expressions: [
+        ...patientService.buildPatientNameSearchExpressions('p'),
+        'p.national_id',
+        'p.control_number',
+        'g.name',
+        `TO_CHAR(p.dob, 'YYYY-MM-DD')`,
+        `TO_CHAR(p.dob, 'MM/DD/YYYY')`,
+      ],
+      startingParamIndex: 1,
+    });
+    const params = [...searchCondition.params];
     let whereClause = `
       WHERE p.is_active = true
         AND (
-          p.first_name ILIKE $1 OR
-          p.last_name ILIKE $1 OR
-          CONCAT_WS(
-            ' ',
-            NULLIF(BTRIM(p.first_name), ''),
-            NULLIF(BTRIM(p.middle_name), ''),
-            NULLIF(BTRIM(p.last_name), '')
-          ) ILIKE $1 OR
-          p.national_id ILIKE $1 OR
-          p.control_number ILIKE $1 OR
-          g.name ILIKE $1 OR
-          CAST(p.dob AS TEXT) ILIKE $1
+          ${searchCondition.clause}
         )
     `;
 
