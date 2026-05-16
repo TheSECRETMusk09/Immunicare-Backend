@@ -37,10 +37,8 @@ async function seedSettings() {
     { category: 'notification', key: 'email_enabled', value: 'true', type: 'boolean' },
     { category: 'notification', key: 'push_enabled', value: 'true', type: 'boolean' },
     { category: 'notification', key: 'sms_enabled', value: 'false', type: 'boolean' },
-    { category: 'notification', key: 'digest_frequency', value: 'daily', type: 'string' }
+    { category: 'notification', key: 'digest_frequency', value: 'daily', type: 'string' },
   ];
-
-  let insertedCount = 0;
 
   for (const user of usersResult.rows) {
     console.log(`Processing user: ${user.username} (ID: ${user.id})`);
@@ -53,7 +51,6 @@ async function seedSettings() {
            ON CONFLICT (user_id, category, settings_key) DO NOTHING`,
           [user.id, setting.category, setting.key, setting.value, setting.type]
         );
-        insertedCount++;
       } catch (err) {
         console.error(`Error inserting setting ${setting.key}:`, err.message);
       }

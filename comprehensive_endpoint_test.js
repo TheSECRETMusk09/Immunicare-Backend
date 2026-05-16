@@ -1,6 +1,5 @@
 const http = require('http');
 
-const BASE_URL = 'http://localhost:5000';
 const RESULTS = [];
 
 function makeRequest(options, postData = null) {
@@ -50,10 +49,13 @@ async function login() {
     },
   };
 
-  const result = await makeRequest(options, JSON.stringify({
-    username: 'admin',
-    password: 'admin123',
-  }));
+  const result = await makeRequest(
+    options,
+    JSON.stringify({
+      username: 'admin',
+      password: 'admin123',
+    })
+  );
 
   if (result.status === 200 && result.data.token) {
     console.log('✅ Login successful');
@@ -72,7 +74,7 @@ async function testEndpoint(token, method, path, name, postData = null) {
     method: method,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
+      Authorization: `Bearer ${token}`,
     },
   };
 
@@ -89,7 +91,12 @@ async function testEndpoint(token, method, path, name, postData = null) {
       return false;
     } else {
       console.log(`⚠️ Status ${result.status}`);
-      RESULTS.push({ name, status: result.status, success: false, error: result.data.message || 'Error' });
+      RESULTS.push({
+        name,
+        status: result.status,
+        success: false,
+        error: result.data.message || 'Error',
+      });
       return false;
     }
   } catch (error) {
@@ -122,13 +129,13 @@ async function runTests() {
 
     // Print summary
     console.log('\n=== Test Summary ===');
-    const passed = RESULTS.filter(r => r.success).length;
-    const failed = RESULTS.filter(r => !r.success).length;
+    const passed = RESULTS.filter((r) => r.success).length;
+    const failed = RESULTS.filter((r) => !r.success).length;
     console.log(`Total: ${RESULTS.length} | ✅ Passed: ${passed} | ❌ Failed: ${failed}`);
 
     if (failed > 0) {
       console.log('\nFailed endpoints:');
-      RESULTS.filter(r => !r.success).forEach(r => {
+      RESULTS.filter((r) => !r.success).forEach((r) => {
         console.log(`  - ${r.name}: ${r.error || `Status ${r.status}`}`);
       });
     }

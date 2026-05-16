@@ -13,26 +13,26 @@ const API_BASE_URL = 'http://localhost:5000';
 const TEST_CONFIG = {
   adminCredentials: {
     username: 'admin',
-    password: 'Admin2024!'
+    password: 'Admin2024!',
   },
   guardianCredentials: {
     email: 'maria.santos@email.com',
-    password: 'guardian123'
+    password: 'guardian123',
   },
   database: {
     host: 'localhost',
     port: 5432,
     database: 'immunicare_dev',
     user: 'immunicare_dev',
-    password: ''
-  }
+    password: '',
+  },
 };
 
 // Test results storage
 const testResults = {
   passed: [],
   failed: [],
-  warnings: []
+  warnings: [],
 };
 
 // Colors for console output
@@ -42,7 +42,7 @@ const colors = {
   red: '\x1b[31m',
   yellow: '\x1b[33m',
   blue: '\x1b[34m',
-  cyan: '\x1b[36m'
+  cyan: '\x1b[36m',
 };
 
 function log(message, color = 'reset') {
@@ -61,11 +61,6 @@ function logTest(name, passed, details = '') {
   }
 }
 
-function logWarning(name, details = '') {
-  log(`⚠ WARN: ${name}${details ? ` - ${details}` : ''}`, 'yellow');
-  testResults.warnings.push({ name, details });
-}
-
 // HTTP Request helper
 function makeRequest(method, path, body = null, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -80,8 +75,8 @@ function makeRequest(method, path, body = null, headers = {}) {
       method: method,
       headers: {
         'Content-Type': 'application/json',
-        ...headers
-      }
+        ...headers,
+      },
     };
 
     const req = lib.request(options, (res) => {
@@ -94,14 +89,14 @@ function makeRequest(method, path, body = null, headers = {}) {
             status: res.statusCode,
             headers: res.headers,
             data: jsonData,
-            raw: data
+            raw: data,
           });
         } catch (e) {
           resolve({
             status: res.statusCode,
             headers: res.headers,
             data: null,
-            raw: data
+            raw: data,
           });
         }
       });
@@ -139,7 +134,7 @@ async function testDatabaseConnection() {
       'growth_records',
       'vaccine_supply',
       'vaccine_transactions',
-      'security_events'
+      'security_events',
     ];
 
     for (const table of tables) {
@@ -192,7 +187,7 @@ async function testAuthentication() {
 
         // Test protected route with token
         const protectedResponse = await makeRequest('GET', '/api/dashboard/stats', null, {
-          Authorization: `Bearer ${global.adminToken}`
+          Authorization: `Bearer ${global.adminToken}`,
         });
         logTest(
           'Admin Protected Route Access',
@@ -220,7 +215,7 @@ async function testAuthentication() {
 
         // Test guardian dashboard access
         const dashboardResponse = await makeRequest('GET', '/api/guardians/dashboard', null, {
-          Authorization: `Bearer ${global.guardianToken}`
+          Authorization: `Bearer ${global.guardianToken}`,
         });
         logTest(
           'Guardian Dashboard Access',
@@ -237,7 +232,7 @@ async function testAuthentication() {
   try {
     const response = await makeRequest('POST', '/api/auth/login', {
       email: 'invalid@test.com',
-      password: 'wrongpassword'
+      password: 'wrongpassword',
     });
     logTest('Invalid Login Rejection', response.status === 401, `Status: ${response.status}`);
   } catch (e) {
@@ -251,14 +246,14 @@ async function testAPIEndpoints() {
 
   const adminHeaders = global.adminToken
     ? {
-      Authorization: `Bearer ${global.adminToken}`
-    }
+        Authorization: `Bearer ${global.adminToken}`,
+      }
     : {};
 
   const guardianHeaders = global.guardianToken
     ? {
-      Authorization: `Bearer ${global.guardianToken}`
-    }
+        Authorization: `Bearer ${global.guardianToken}`,
+      }
     : {};
 
   // Dashboard endpoints
@@ -268,8 +263,8 @@ async function testAPIEndpoints() {
       path: '/api/dashboard/activity',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Recent Activity'
-    }
+      name: 'Recent Activity',
+    },
   ];
 
   // User management endpoints
@@ -279,9 +274,9 @@ async function testAPIEndpoints() {
       path: '/api/users/system-users',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Get System Users'
+      name: 'Get System Users',
     },
-    { path: '/api/users/guardians', method: 'GET', headers: adminHeaders, name: 'Get Guardians' }
+    { path: '/api/users/guardians', method: 'GET', headers: adminHeaders, name: 'Get Guardians' },
   ];
 
   // Infant endpoints
@@ -291,8 +286,8 @@ async function testAPIEndpoints() {
       path: '/api/infants/stats/overview',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Infant Statistics'
-    }
+      name: 'Infant Statistics',
+    },
   ];
 
   // Vaccination endpoints
@@ -301,8 +296,8 @@ async function testAPIEndpoints() {
       path: '/api/vaccinations',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Get All Vaccinations'
-    }
+      name: 'Get All Vaccinations',
+    },
   ];
 
   // Appointment endpoints
@@ -311,14 +306,14 @@ async function testAPIEndpoints() {
       path: '/api/appointments',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Get All Appointments'
+      name: 'Get All Appointments',
     },
     {
       path: '/api/appointments/stats',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Appointment Stats'
-    }
+      name: 'Appointment Stats',
+    },
   ];
 
   // Inventory endpoints
@@ -329,13 +324,13 @@ async function testAPIEndpoints() {
       path: '/api/inventory/alerts',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Inventory Alerts'
-    }
+      name: 'Inventory Alerts',
+    },
   ];
 
   // Announcement endpoints
   const announcementEndpoints = [
-    { path: '/api/announcements', method: 'GET', headers: adminHeaders, name: 'Get Announcements' }
+    { path: '/api/announcements', method: 'GET', headers: adminHeaders, name: 'Get Announcements' },
   ];
 
   // Notification endpoints
@@ -344,14 +339,14 @@ async function testAPIEndpoints() {
       path: '/api/notifications',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Get Admin Notifications'
+      name: 'Get Admin Notifications',
     },
     {
       path: '/api/notifications/guardian',
       method: 'GET',
       headers: guardianHeaders,
-      name: 'Get Guardian Notifications'
-    }
+      name: 'Get Guardian Notifications',
+    },
   ];
 
   // Analytics endpoints
@@ -360,14 +355,14 @@ async function testAPIEndpoints() {
       path: '/api/analytics/overview',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Analytics Overview'
+      name: 'Analytics Overview',
     },
     {
       path: '/api/analytics/vaccination-rates',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Vaccination Rates'
-    }
+      name: 'Vaccination Rates',
+    },
   ];
 
   // Reports endpoints
@@ -377,18 +372,18 @@ async function testAPIEndpoints() {
       path: '/api/reports/vaccination',
       method: 'GET',
       headers: adminHeaders,
-      name: 'Vaccination Reports'
-    }
+      name: 'Vaccination Reports',
+    },
   ];
 
   // Growth tracking endpoints
   const growthEndpoints = [
-    { path: '/api/growth', method: 'GET', headers: adminHeaders, name: 'Get Growth Records' }
+    { path: '/api/growth', method: 'GET', headers: adminHeaders, name: 'Get Growth Records' },
   ];
 
   // Settings endpoints
   const settingsEndpoints = [
-    { path: '/api/settings', method: 'GET', headers: adminHeaders, name: 'Get Settings' }
+    { path: '/api/settings', method: 'GET', headers: adminHeaders, name: 'Get Settings' },
   ];
 
   // Guardian-specific endpoints
@@ -397,20 +392,20 @@ async function testAPIEndpoints() {
       path: '/api/guardians/infants',
       method: 'GET',
       headers: guardianHeaders,
-      name: 'Guardian Infants'
+      name: 'Guardian Infants',
     },
     {
       path: '/api/guardians/vaccinations',
       method: 'GET',
       headers: guardianHeaders,
-      name: 'Guardian Vaccinations'
+      name: 'Guardian Vaccinations',
     },
     {
       path: '/api/guardians/appointments',
       method: 'GET',
       headers: guardianHeaders,
-      name: 'Guardian Appointments'
-    }
+      name: 'Guardian Appointments',
+    },
   ];
 
   // Combine all endpoints
@@ -427,7 +422,7 @@ async function testAPIEndpoints() {
     ...reportEndpoints,
     ...growthEndpoints,
     ...settingsEndpoints,
-    ...guardianEndpoints
+    ...guardianEndpoints,
   ];
 
   // Test each endpoint
@@ -447,7 +442,7 @@ async function testCRUDOperations() {
   log('\n--- CRUD OPERATIONS TESTS ---', 'cyan');
 
   const adminHeaders = {
-    Authorization: `Bearer ${global.adminToken}`
+    Authorization: `Bearer ${global.adminToken}`,
   };
 
   // Test CREATE operations
@@ -462,7 +457,7 @@ async function testCRUDOperations() {
         title: 'Test Announcement',
         content: 'This is a test announcement',
         priority: 'normal',
-        target_audience: 'all'
+        target_audience: 'all',
       },
       adminHeaders
     );
@@ -500,7 +495,7 @@ async function testCRUDOperations() {
         `/api/announcements/${global.testAnnouncementId}`,
         {
           title: 'Updated Test Announcement',
-          content: 'This is an updated test announcement'
+          content: 'This is an updated test announcement',
         },
         adminHeaders
       );
@@ -587,7 +582,7 @@ async function testSessionManagement() {
   if (global.adminRefreshToken) {
     try {
       const response = await makeRequest('POST', '/api/auth/refresh', {
-        refreshToken: global.adminRefreshToken
+        refreshToken: global.adminRefreshToken,
       });
       const refreshSuccess = response.status === 200 || response.status === 201;
       logTest('Token Refresh', refreshSuccess, `Status: ${response.status}`);
@@ -608,7 +603,7 @@ async function testSessionManagement() {
         '/api/auth/logout',
         {},
         {
-          Authorization: `Bearer ${global.adminToken}`
+          Authorization: `Bearer ${global.adminToken}`,
         }
       );
       logTest(
@@ -630,7 +625,7 @@ async function testFormValidation() {
   try {
     const response = await makeRequest('POST', '/api/auth/login', {
       email: 'not-an-email',
-      password: 'password123'
+      password: 'password123',
     });
     logTest(
       'Invalid Email Validation',
@@ -645,7 +640,7 @@ async function testFormValidation() {
   try {
     const response = await makeRequest('POST', '/api/auth/login', {
       email: 'test@test.com',
-      password: ''
+      password: '',
     });
     logTest(
       'Empty Password Validation',
@@ -662,7 +657,7 @@ async function testFormValidation() {
       'POST',
       '/api/announcements',
       {
-        title: 'Test'
+        title: 'Test',
         // Missing content
       },
       { Authorization: `Bearer ${global.adminToken}` }

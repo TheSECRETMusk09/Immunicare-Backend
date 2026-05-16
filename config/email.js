@@ -268,7 +268,8 @@ async function getTransporter() {
  * Validate email configuration
  * @returns {Object} Validation result
  */
-async function validateConfig() {
+async function validateConfig(options = {}) {
+  const { skipConnectionVerification = false } = options;
   const errors = [];
   const warnings = [];
   const info = [];
@@ -349,7 +350,7 @@ async function validateConfig() {
   const isValid = errors.length === 0;
 
   // Try to verify connection if SMTP is configured
-  if (isValid && hasSmtp) {
+  if (isValid && hasSmtp && !skipConnectionVerification) {
     try {
       const transporter = createSMTPTransporter();
       await transporter.verify();
@@ -379,7 +380,7 @@ async function validateConfig() {
  * @returns {Object} Configuration status
  */
 async function getConfigStatus() {
-  const validation = await validateConfig();
+  const validation = await validateConfig({ skipConnectionVerification: true });
 
   // Determine provider
   let provider = 'SMTP';
@@ -439,7 +440,7 @@ async function getConfigStatus() {
  * @returns {boolean}
  */
 async function isProductionReady() {
-  const validation = await validateConfig();
+  const validation = await validateConfig({ skipConnectionVerification: true });
 
   // Must have valid SMTP or Resend
   if (!validation.valid) {
@@ -645,21 +646,25 @@ function generateEmailHTML(title, content) {
 }
 
 // Initialize configuration validation on module load
-validateConfig().then(validation => {
-  if (validation.valid) {
-    logger.info('Email Service Initialized', {
-      provider: EMAIL_CONFIG.mailersend.enabled ? 'MailerSend' : (EMAIL_CONFIG.resend.enabled ? 'Resend' : 'SMTP'),
-      from: EMAIL_CONFIG.from.address,
-      host: EMAIL_CONFIG.smtp.host,
+setImmediate(() => {
+  validateConfig({ skipConnectionVerification: true })
+    .then(validation => {
+      if (validation.valid) {
+        logger.info('Email Service Initialized', {
+          provider: EMAIL_CONFIG.mailersend.enabled ? 'MailerSend' : (EMAIL_CONFIG.resend.enabled ? 'Resend' : 'SMTP'),
+          from: EMAIL_CONFIG.from.address,
+          host: EMAIL_CONFIG.smtp.host,
+        });
+      } else {
+        logger.error('Email Service Initialization Issues', {
+          errors: validation.errors,
+          warnings: validation.warnings,
+        });
+      }
+    })
+    .catch(error => {
+      logger.error('Email Service Initialization Failed', { error: error.message });
     });
-  } else {
-    logger.error('Email Service Initialization Issues', {
-      errors: validation.errors,
-      warnings: validation.warnings,
-    });
-  }
-}).catch(error => {
-  logger.error('Email Service Initialization Failed', { error: error.message });
 });
 
 module.exports = {

@@ -12,14 +12,17 @@ let vaccineCatalogColumnsPromise = null;
 
 const APPROVED_VACCINE_NAMES = Object.freeze([
   'BCG',
+  'BCG, Diluent',
   'Diluent',
   'Hepa B',
   'Penta Valent',
   'OPV 20-doses',
   'PCV 13',
   'PCV 10',
+  'PCV 13/PCV 10',
   'Measles & Rubella (MR)',
   'MMR',
+  'MMR, Diluent 5ml',
   'Diluent 5ml',
   'IPV multi dose',
 ]);
@@ -61,7 +64,7 @@ const APPROVED_VACCINE_BRANDS = Object.freeze(
   }, {}),
 );
 
-const APPROVED_VACCINE_LIST_TEXT = APPROVED_VACCINE_NAMES.join(', ');
+const APPROVED_VACCINE_LIST_TEXT = APPROVED_VACCINE_NAMES.join(' | ');
 const EXACT_MATCH_REQUIREMENT_TEXT =
   `Vaccine name must exactly match one of the approved values: ${APPROVED_VACCINE_LIST_TEXT}.`;
 

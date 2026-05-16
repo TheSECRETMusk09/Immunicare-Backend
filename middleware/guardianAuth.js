@@ -1,8 +1,3 @@
-/**
- * Guardian Authentication Middleware
- * Provides authentication specifically for guardian users
- */
-
 const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const logger = require('../config/logger');
@@ -19,17 +14,10 @@ const JWT_CLOCK_TOLERANCE_SECONDS = Number.isFinite(configuredClockToleranceSeco
   ? configuredClockToleranceSeconds
   : DEFAULT_JWT_CLOCK_TOLERANCE_SECONDS;
 
-const resolveJwtSecret = () => {
-  return process.env.JWT_SECRET || null;
-};
+const resolveJwtSecret = () => process.env.JWT_SECRET || null;
 
-/**
- * Authenticate guardian user
- * Verifies JWT token and ensures user is a guardian
- */
 const authenticateGuardian = async (req, res, next) => {
   try {
-    // Get JWT secret
     const jwtSecret = resolveJwtSecret();
 
     if (!jwtSecret) {
@@ -41,7 +29,6 @@ const authenticateGuardian = async (req, res, next) => {
       });
     }
 
-    // Check for token in cookies first, then Authorization header
     let token = req.cookies?.token;
     if (!token) {
       const authHeader = req.headers['authorization'];
@@ -56,7 +43,6 @@ const authenticateGuardian = async (req, res, next) => {
       });
     }
 
-    // Verify token
     const decoded = await new Promise((resolve, reject) => {
       jwt.verify(
         token,
@@ -72,7 +58,6 @@ const authenticateGuardian = async (req, res, next) => {
       );
     });
 
-    // Check if user is a guardian (support both canonical and legacy role values)
     const canonicalRole = decoded.role?.toUpperCase();
     const isGuardianRole = canonicalRole === 'GUARDIAN' || decoded.role === 'guardian';
     if (!isGuardianRole) {
@@ -83,7 +68,6 @@ const authenticateGuardian = async (req, res, next) => {
       });
     }
 
-    // Get the guardian ID from the token (support both canonical and legacy formats)
     const guardianId = decoded.guardian_id || decoded.id;
     if (!guardianId) {
       return res.status(401).json({
@@ -93,7 +77,6 @@ const authenticateGuardian = async (req, res, next) => {
       });
     }
 
-    // Fetch guardian from database to ensure they exist and are active
     const guardianResult = await pool.query(
       `SELECT id, name, email, phone, is_active
        FROM guardians
@@ -109,7 +92,6 @@ const authenticateGuardian = async (req, res, next) => {
       });
     }
 
-    // Attach guardian to request
     req.guardian = guardianResult.rows[0];
     req.user = {
       id: guardianId,
@@ -117,7 +99,6 @@ const authenticateGuardian = async (req, res, next) => {
       guardianId: guardianId,
     };
 
-    // Add security headers
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
@@ -164,10 +145,6 @@ const authenticateGuardian = async (req, res, next) => {
   }
 };
 
-/**
- * Optional guardian authentication
- * Attaches guardian to request if valid token provided, but doesn't require it
- */
 const optionalGuardianAuth = async (req, res, next) => {
   try {
     let token = req.cookies?.token;
@@ -189,11 +166,9 @@ const optionalGuardianAuth = async (req, res, next) => {
       clockTolerance: JWT_CLOCK_TOLERANCE_SECONDS,
     });
 
-    // Support both canonical and legacy role values
     const canonicalRole = decoded.role?.toUpperCase();
     const isGuardianRole = canonicalRole === 'GUARDIAN' || decoded.role === 'guardian';
     if (isGuardianRole) {
-      // Get the guardian ID from the token (support both canonical and legacy formats)
       const guardianId = decoded.guardian_id || decoded.id;
       if (guardianId) {
         const guardianResult = await pool.query(
@@ -214,16 +189,11 @@ const optionalGuardianAuth = async (req, res, next) => {
 
     next();
   } catch {
-    // Continue without guardian context
     next();
   }
 };
 
-/**
- * Verify guardian owns the resource (by guardian_id field)
- */
-const requireGuardianOwnership = (resourceTable, resourceIdParam = 'id') => {
-  return async (req, res, next) => {
+const requireGuardianOwnership = (resourceTable, resourceIdParam = 'id') => async (req, res, next) => {
     try {
       if (!req.guardian) {
         return res.status(401).json({
@@ -259,7 +229,6 @@ const requireGuardianOwnership = (resourceTable, resourceIdParam = 'id') => {
         message: 'Authorization check failed',
       });
     }
-  };
 };
 
 module.exports = {

@@ -1,13 +1,6 @@
-/**
- * Centralized Error Handling Middleware
- * Provides consistent error responses across the application
- */
-
 const logger = require('../config/logger');
+const AUTH_ERROR_NAMES = new Set(['UnauthorizedError', 'JsonWebTokenError']);
 
-/**
- * Custom error classes for different error types
- */
 class AppError extends Error {
   constructor(message, statusCode, code) {
     super(message);
@@ -61,48 +54,32 @@ class DatabaseError extends AppError {
   }
 }
 
-/**
- * Error response formatter
- */
-const formatErrorResponse = (err, req, includeDetails = false) => {
+const fmtErrResp = (err, req, includeDetails = false) => {
   const response = {
     success: false,
     error: err.message || 'An unexpected error occurred',
     code: err.code || 'INTERNAL_ERROR',
   };
 
-  // Add validation details if available
-  if (err.details && Array.isArray(err.details)) {
-    response.details = err.details;
-  }
+  if (Array.isArray(err.details)) response.details = err.details;
+  if (req.requestId) response.requestId = req.requestId;
 
-  // Add request ID for tracking
-  if (req.requestId) {
-    response.requestId = req.requestId;
-  }
-
-  // Add stack trace and additional details in development
   if (includeDetails) {
     response.stack = err.stack;
-    if (err.errors) {
-      response.errors = err.errors;
-    }
+    if (err.errors) response.errors = err.errors;
   }
 
   return response;
 };
 
-/**
- * Main error handling middleware with proper severity levels
- * Distinguishes between operational errors (4xx) and programming errors (5xx)
- */
 const errorHandler = (err, req, res, next) => {
-  // Determine severity level based on error type
+  void next;
+
   const statusCode = err.statusCode || err.status || 500;
   const isOperational = err.isOperational || (statusCode >= 400 && statusCode < 500);
+  const isDev = process.env.NODE_ENV === 'development';
 
-  // Log with appropriate severity level
-  const logData = {
+  const ctx = {
     message: err.message,
     code: err.code || 'UNKNOWN_ERROR',
     statusCode,
@@ -115,95 +92,49 @@ const errorHandler = (err, req, res, next) => {
   };
 
   if (statusCode >= 500) {
-    // Programming errors - critical level
-    logger.error('CRITICAL: Server error occurred:', {
-      ...logData,
-      stack: err.stack,
-    });
+    logger.error('Server error:', { ...ctx, stack: err.stack });
   } else if (statusCode >= 400) {
-    // Operational errors - warning level
-    logger.warn('Operational error occurred:', logData);
-  } else {
-    // Other errors - info level
-    logger.info('Error occurred:', logData);
+    logger.warn('Client error:', ctx);
   }
 
-  // Determine if we should include detailed error info
-  const includeDetails = process.env.NODE_ENV === 'development';
-
-  // Handle specific error types
-  if (err.name === 'UnauthorizedError' || err.name === 'JsonWebTokenError') {
-    return res
-      .status(401)
-      .json(
-        formatErrorResponse(
-          new AuthenticationError('Invalid or expired token'),
-          req,
-          includeDetails,
-        ),
-      );
+  if (AUTH_ERROR_NAMES.has(err.name)) {
+    return res.status(401).json(
+      fmtErrResp(new AuthenticationError('Invalid or expired token'), req, isDev),
+    );
   }
 
   if (err.name === 'TokenExpiredError') {
-    return res
-      .status(401)
-      .json(formatErrorResponse(new AuthenticationError('Token has expired'), req, includeDetails));
+    return res.status(401).json(
+      fmtErrResp(new AuthenticationError('Token has expired'), req, isDev),
+    );
   }
 
   if (err.name === 'SyntaxError' && err.status === 400 && 'body' in err) {
-    return res
-      .status(400)
-      .json(
-        formatErrorResponse(
-          new ValidationError('Invalid JSON in request body'),
-          req,
-          includeDetails,
-        ),
-      );
+    return res.status(400).json(
+      fmtErrResp(new ValidationError('Invalid JSON in request body'), req, isDev),
+    );
   }
 
-  // Database errors
   if (err.code === '23505') {
-    // Unique constraint violation
-    return res
-      .status(409)
-      .json(
-        formatErrorResponse(
-          new ConflictError('A record with this information already exists'),
-          req,
-          includeDetails,
-        ),
-      );
+    return res.status(409).json(
+      fmtErrResp(new ConflictError('A record with this information already exists'), req, isDev),
+    );
   }
-
   if (err.code === '23503') {
-    // Foreign key constraint violation
-    return res
-      .status(400)
-      .json(
-        formatErrorResponse(
-          new ValidationError('Referenced record does not exist'),
-          req,
-          includeDetails,
-        ),
-      );
+    return res.status(400).json(
+      fmtErrResp(new ValidationError('Referenced record does not exist'), req, isDev),
+    );
   }
-
   if (err.code === '23502') {
-    // Not null constraint violation
-    return res
-      .status(400)
-      .json(
-        formatErrorResponse(new ValidationError('Required field is missing'), req, includeDetails),
-      );
+    return res.status(400).json(
+      fmtErrResp(new ValidationError('Required field is missing'), req, isDev),
+    );
   }
 
-  // Operational errors (expected errors)
   if (err.isOperational) {
-    return res.status(statusCode).json(formatErrorResponse(err, req, includeDetails));
+    return res.status(statusCode).json(fmtErrResp(err, req, isDev));
   }
 
-  // Programming or unknown errors - don't leak details in production
   if (process.env.NODE_ENV === 'production') {
     return res.status(500).json({
       success: false,
@@ -212,13 +143,9 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // Development: return full error details
-  return res.status(statusCode).json(formatErrorResponse(err, req, true));
+  return res.status(statusCode).json(fmtErrResp(err, req, true));
 };
 
-/**
- * 404 Not Found handler
- */
 const notFoundHandler = (req, res) => {
   res.status(404).json({
     success: false,
@@ -229,14 +156,8 @@ const notFoundHandler = (req, res) => {
   });
 };
 
-/**
- * Async handler wrapper to catch async errors
- */
-const asyncHandler = (fn) => {
-  return (req, res, next) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-};
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
 
 module.exports = {
   errorHandler,

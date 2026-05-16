@@ -20,7 +20,7 @@ const colors = {
   green: '\x1b[32m',
   yellow: '\x1b[33m',
   blue: '\x1b[34m',
-  cyan: '\x1b[36m'
+  cyan: '\x1b[36m',
 };
 
 function log(message, color = 'reset') {
@@ -35,13 +35,12 @@ function logSection(title) {
 
 // Test configuration
 const BASE_URL = 'http://localhost:5000';
-const API_BASE = `${BASE_URL}/api`;
 
 // Test results
 const results = {
   passed: 0,
   failed: 0,
-  tests: []
+  tests: [],
 };
 
 // Make HTTP request
@@ -55,8 +54,8 @@ function makeRequest(method, path, data = null, headers = {}) {
       method: method,
       headers: {
         'Content-Type': 'application/json',
-        ...headers
-      }
+        ...headers,
+      },
     };
 
     const req = http.request(options, (res) => {
@@ -68,13 +67,13 @@ function makeRequest(method, path, data = null, headers = {}) {
           resolve({
             status: res.statusCode,
             headers: res.headers,
-            body: json
+            body: json,
           });
         } catch (e) {
           resolve({
             status: res.statusCode,
             headers: res.headers,
-            body: body
+            body: body,
           });
         }
       });
@@ -115,7 +114,7 @@ async function runTest(name, method, path, data = null, headers = {}, expectedSt
       expectedStatus,
       actualStatus: response.status,
       passed,
-      response: response.body
+      response: response.body,
     });
 
     return passed;
@@ -129,7 +128,7 @@ async function runTest(name, method, path, data = null, headers = {}, expectedSt
       expectedStatus,
       actualStatus: 'ERROR',
       passed: false,
-      error: error.message
+      error: error.message,
     });
     return false;
   }
@@ -175,7 +174,7 @@ async function testAuth() {
     '/api/auth/login',
     {
       username: 'guardian_639182345678',
-      password: 'Guardian123!'
+      password: 'Guardian123!',
     },
     {},
     200
@@ -188,7 +187,7 @@ async function testAuth() {
     '/api/auth/login',
     {
       username: 'invalid',
-      password: 'invalid'
+      password: 'invalid',
     },
     {},
     401

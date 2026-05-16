@@ -1,7 +1,5 @@
 /**
- * Inventory Calculation Service
- * Single source of truth for all inventory calculations
- * Ensures consistency across all tabs and summary views
+ * Inventory calculation service. Keeps totals consistent across views.
  */
 
 const pool = require('../db');
@@ -620,9 +618,7 @@ class InventoryCalculationService {
   }
 
   /**
-   * Calculate comprehensive inventory totals for a facility
-   * @param {number} clinicId - Facility/clinic ID
-   * @returns {Object} Complete inventory summary
+   * Compute inventory totals for a facility.
    */
   async calculateInventoryTotals(clinicScope) {
     try {
@@ -667,9 +663,7 @@ class InventoryCalculationService {
   }
 
   /**
-   * Calculate stock movement statistics
-   * @param {number} clinicId - Facility/clinic ID
-   * @returns {Object} Stock movement summary
+   * Compute stock movement stats.
    */
   async calculateStockMovements(clinicScope) {
     try {
@@ -751,9 +745,9 @@ class InventoryCalculationService {
 
       const result = await pool.query(
         `
-        SELECT 
+        SELECT
           COUNT(*)::int as movement_records,
-          
+
           -- Stock In (additions)
           COALESCE(SUM(
             CASE
@@ -762,7 +756,7 @@ class InventoryCalculationService {
               ELSE 0
             END
           ), 0)::int as stock_in,
-          
+
           -- Stock Out (deductions)
           COALESCE(SUM(
             CASE
@@ -771,7 +765,7 @@ class InventoryCalculationService {
               ELSE 0
             END
           ), 0)::int as stock_out,
-          
+
           -- Wasted/Expired specifically
           COALESCE(SUM(
             CASE
@@ -780,17 +774,17 @@ class InventoryCalculationService {
               ELSE 0
             END
           ), 0)::int as wasted_expired,
-          
+
           -- Count of waste/expire transactions
           COUNT(*) FILTER (
             WHERE UPPER(COALESCE(vit.transaction_type::text, '')) IN ('WASTE', 'WASTAGE', 'EXPIRE')
           )::int as wasted_expired_count
-          
+
         FROM vaccine_inventory_transactions vit
         JOIN vaccines v ON v.id = vit.vaccine_id
         WHERE ${whereClauses.join(' AND ')}
         `,
-        params
+        params,
       );
 
       return result.rows[0] || this.getEmptyMovements();
@@ -801,9 +795,7 @@ class InventoryCalculationService {
   }
 
   /**
-   * Get unified inventory summary (combines totals + movements)
-   * @param {number} clinicId - Facility/clinic ID
-   * @returns {Object} Complete unified summary
+   * Unified summary (totals + movements).
    */
   async getUnifiedSummary(clinicId) {
     try {
@@ -813,11 +805,9 @@ class InventoryCalculationService {
       ]);
 
       return {
-        // Vaccine counts
         total_vaccines: totals.total_vaccines,
         total_inventory_records: totals.total_inventory_records,
 
-        // Stock components
         beginning_balance: totals.beginning_balance,
         received: totals.received,
         transferred_in: totals.transferred_in,
@@ -827,19 +817,16 @@ class InventoryCalculationService {
         stock_on_hand: totals.stock_on_hand,
         calculated_total_stock: totals.calculated_total_stock,
 
-        // Alert counts
         critical_count: totals.critical_count,
         low_stock_count: totals.low_stock_count,
         out_of_stock_count: totals.out_of_stock_count,
 
-        // Movement statistics
         movement_records: movements.movement_records,
         stock_in: movements.stock_in,
         stock_out: movements.stock_out,
         wasted_expired_transactions: movements.wasted_expired,
         wasted_expired_count: movements.wasted_expired_count,
 
-        // Metadata
         calculated_at: new Date().toISOString(),
         clinic_id: clinicId,
       };
@@ -850,10 +837,7 @@ class InventoryCalculationService {
   }
 
   /**
-   * Get available lots/batches for a vaccine
-   * @param {number} vaccineId - Vaccine ID
-   * @param {number} clinicId - Facility/clinic ID
-   * @returns {Array} Available lots with stock info
+   * Available lots/batches for a vaccine.
    */
   async getAvailableLots(vaccineId, clinicId) {
     try {
@@ -899,7 +883,7 @@ class InventoryCalculationService {
             AND (vb.expiry_date IS NULL OR vb.expiry_date >= ${CLINIC_TODAY_SQL})
           ORDER BY vb.expiry_date ASC NULLS LAST, vb.qty_current DESC, vb.id DESC
           `,
-          [vaccineId, clinicId]
+          [vaccineId, clinicId],
         );
 
         return batchResult.rows.map((row) => ({
@@ -926,7 +910,7 @@ class InventoryCalculationService {
 
       const result = await pool.query(
         `
-        SELECT 
+        SELECT
           vi.id as inventory_id,
           ${inventorySql.lotBatchNumberExpression} AS lot_batch_number,
           ${inventorySql.stockOnHandExpression}::int AS stock_on_hand,
@@ -943,7 +927,7 @@ class InventoryCalculationService {
           AND ${inventorySql.isActiveExpression} = true
         ORDER BY ${inventorySql.expiryDateExpression} ASC NULLS LAST, ${inventorySql.stockOnHandExpression}::int DESC
         `,
-        [vaccineId, clinicId]
+        [vaccineId, clinicId],
       );
 
       return result.rows.map(row => ({
@@ -967,9 +951,7 @@ class InventoryCalculationService {
   }
 
   /**
-   * Get stock alerts (critical, low, expiring)
-   * @param {number} clinicId - Facility/clinic ID
-   * @returns {Object} Categorized alerts
+   * Stock alerts (critical, low, expiring).
    */
   async getStockAlerts(clinicId) {
     try {
@@ -1025,7 +1007,7 @@ class InventoryCalculationService {
   }
 
   /**
-   * Get empty totals object
+   * Empty totals shape.
    */
   getEmptyTotals() {
     return {
@@ -1046,7 +1028,7 @@ class InventoryCalculationService {
   }
 
   /**
-   * Get empty movements object
+   * Empty movement shape.
    */
   getEmptyMovements() {
     return {

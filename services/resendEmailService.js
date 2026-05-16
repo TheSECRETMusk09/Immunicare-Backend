@@ -1,6 +1,5 @@
 /**
- * Resend Email Service
- * Handles sending transactional emails using Resend API
+ * Resend email helpers.
  */
 
 const loadBackendEnv = require('../config/loadEnv');

@@ -4,7 +4,13 @@
  */
 
 const axios = require('axios');
-const chalk = require('chalk') || { green: s => s, red: s => s, yellow: s => s, blue: s => s, cyan: s => s };
+require('chalk') || {
+  green: (s) => s,
+  red: (s) => s,
+  yellow: (s) => s,
+  blue: (s) => s,
+  cyan: (s) => s,
+};
 
 const API_BASE_URL = process.env.API_URL || 'http://localhost:5000/api';
 const ADMIN_CREDENTIALS = {
@@ -23,7 +29,7 @@ class AuthTester {
     this.tokens = {};
   }
 
-  log(message, type = 'info') {
+  log(message) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] ${message}`);
   }
@@ -43,7 +49,11 @@ class AuthTester {
         refreshToken: response.data.refreshToken,
       };
 
-      this.results.push({ test: 'Admin Login', status: 'PASSED', details: 'Admin login successful' });
+      this.results.push({
+        test: 'Admin Login',
+        status: 'PASSED',
+        details: 'Admin login successful',
+      });
       return true;
     } catch (error) {
       this.results.push({
@@ -84,7 +94,7 @@ class AuthTester {
 
     // Check for expected admin permissions
     const expectedAdminPermissions = ['dashboard:view', 'dashboard:analytics'];
-    const hasExpectedPermissions = expectedAdminPermissions.every(p => permissions.includes(p));
+    const hasExpectedPermissions = expectedAdminPermissions.every((p) => permissions.includes(p));
     if (!hasExpectedPermissions) {
       console.log('  ⚠ Warning: Some expected permissions may be missing');
     }
@@ -94,10 +104,14 @@ class AuthTester {
     this.log('\n=== Testing Guardian Login ===', 'header');
     try {
       // Test guardian login via dedicated endpoint
-      const response = await axios.post(`${API_BASE_URL}/auth/guardian/login`, GUARDIAN_CREDENTIALS, {
-        withCredentials: true,
-        timeout: 10000,
-      });
+      const response = await axios.post(
+        `${API_BASE_URL}/auth/guardian/login`,
+        GUARDIAN_CREDENTIALS,
+        {
+          withCredentials: true,
+          timeout: 10000,
+        }
+      );
 
       this.validateGuardianResponse(response);
       this.tokens.guardian = {
@@ -105,7 +119,11 @@ class AuthTester {
         refreshToken: response.data.refreshToken,
       };
 
-      this.results.push({ test: 'Guardian Login', status: 'PASSED', details: 'Guardian login successful' });
+      this.results.push({
+        test: 'Guardian Login',
+        status: 'PASSED',
+        details: 'Guardian login successful',
+      });
       return true;
     } catch (error) {
       this.results.push({
@@ -146,7 +164,9 @@ class AuthTester {
 
     // Check for expected guardian permissions
     const expectedGuardianPermissions = ['dashboard:view', 'patient:view:own'];
-    const hasExpectedPermissions = expectedGuardianPermissions.every(p => permissions.includes(p));
+    const hasExpectedPermissions = expectedGuardianPermissions.every((p) =>
+      permissions.includes(p)
+    );
     if (!hasExpectedPermissions) {
       console.log('  ⚠ Warning: Some expected permissions may be missing');
     }
@@ -170,10 +190,14 @@ class AuthTester {
       }
 
       // Test with guardian credentials via unified endpoint
-      const guardianResponse = await axios.post(`${API_BASE_URL}/auth/login`, GUARDIAN_CREDENTIALS, {
-        withCredentials: true,
-        timeout: 10000,
-      });
+      const guardianResponse = await axios.post(
+        `${API_BASE_URL}/auth/login`,
+        GUARDIAN_CREDENTIALS,
+        {
+          withCredentials: true,
+          timeout: 10000,
+        }
+      );
 
       console.log('Guardian via unified endpoint:');
       console.log('  Role:', guardianResponse.data.user?.role);
@@ -183,7 +207,11 @@ class AuthTester {
         throw new Error('Unified login should detect guardian role');
       }
 
-      this.results.push({ test: 'Unified Login', status: 'PASSED', details: 'Role detection working correctly' });
+      this.results.push({
+        test: 'Unified Login',
+        status: 'PASSED',
+        details: 'Role detection working correctly',
+      });
       return true;
     } catch (error) {
       this.results.push({
@@ -203,13 +231,17 @@ class AuthTester {
         return false;
       }
 
-      const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {}, {
-        headers: {
-          'Cookie': `refreshToken=${this.tokens.admin.refreshToken}`,
-        },
-        withCredentials: true,
-        timeout: 10000,
-      });
+      const response = await axios.post(
+        `${API_BASE_URL}/auth/refresh`,
+        {},
+        {
+          headers: {
+            Cookie: `refreshToken=${this.tokens.admin.refreshToken}`,
+          },
+          withCredentials: true,
+          timeout: 10000,
+        }
+      );
 
       console.log('✓ Token refresh successful');
       console.log('✓ New access token received:', !!response.data.accessToken);
@@ -219,7 +251,11 @@ class AuthTester {
         throw new Error('No new access token in refresh response');
       }
 
-      this.results.push({ test: 'Token Refresh', status: 'PASSED', details: 'Token rotation working' });
+      this.results.push({
+        test: 'Token Refresh',
+        status: 'PASSED',
+        details: 'Token rotation working',
+      });
       return true;
     } catch (error) {
       this.results.push({
@@ -241,7 +277,7 @@ class AuthTester {
 
       const response = await axios.get(`${API_BASE_URL}/auth/verify`, {
         headers: {
-          'Authorization': `Bearer ${this.tokens.admin.accessToken}`,
+          Authorization: `Bearer ${this.tokens.admin.accessToken}`,
         },
         withCredentials: true,
         timeout: 10000,
@@ -255,7 +291,11 @@ class AuthTester {
         throw new Error('Session should be authenticated');
       }
 
-      this.results.push({ test: 'Session Verification', status: 'PASSED', details: 'Session verification working' });
+      this.results.push({
+        test: 'Session Verification',
+        status: 'PASSED',
+        details: 'Session verification working',
+      });
       return true;
     } catch (error) {
       this.results.push({
@@ -270,14 +310,18 @@ class AuthTester {
   async testInvalidCredentials() {
     this.log('\n=== Testing Invalid Credentials ===', 'header');
     try {
-      const response = await axios.post(`${API_BASE_URL}/auth/login`, {
-        username: 'invalid_user',
-        password: 'wrong_password',
-      }, {
-        withCredentials: true,
-        timeout: 10000,
-        validateStatus: () => true, // Don't throw on error status
-      });
+      const response = await axios.post(
+        `${API_BASE_URL}/auth/login`,
+        {
+          username: 'invalid_user',
+          password: 'wrong_password',
+        },
+        {
+          withCredentials: true,
+          timeout: 10000,
+          validateStatus: () => true, // Don't throw on error status
+        }
+      );
 
       if (response.status !== 401) {
         throw new Error(`Expected 401 status, got ${response.status}`);
@@ -286,7 +330,11 @@ class AuthTester {
       console.log('✓ Invalid credentials rejected with 401');
       console.log('✓ Error code:', response.data?.code);
 
-      this.results.push({ test: 'Invalid Credentials', status: 'PASSED', details: 'Proper 401 error returned' });
+      this.results.push({
+        test: 'Invalid Credentials',
+        status: 'PASSED',
+        details: 'Proper 401 error returned',
+      });
       return true;
     } catch (error) {
       this.results.push({
@@ -319,10 +367,10 @@ class AuthTester {
     this.log('TEST SUMMARY');
     this.log('='.repeat(60));
 
-    const passed = this.results.filter(r => r.status === 'PASSED').length;
-    const failed = this.results.filter(r => r.status === 'FAILED').length;
+    const passed = this.results.filter((r) => r.status === 'PASSED').length;
+    const failed = this.results.filter((r) => r.status === 'FAILED').length;
 
-    this.results.forEach(result => {
+    this.results.forEach((result) => {
       const status = result.status === 'PASSED' ? '✓' : '✗';
       console.log(`${status} ${result.test}: ${result.status}`);
       if (result.status === 'FAILED') {
@@ -340,7 +388,7 @@ class AuthTester {
 
 // Run tests
 const tester = new AuthTester();
-tester.runAllTests().catch(err => {
+tester.runAllTests().catch((err) => {
   console.error('Test suite failed:', err);
   process.exit(1);
 });

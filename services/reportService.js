@@ -37,7 +37,7 @@ const FILE_EXTENSION_BY_FORMAT = Object.freeze({
   excel: 'xlsx',
 });
 
-const APPOINTMENT_STATUS_FILTER_VALUES = Object.freeze({
+const APPT_STATUS_VALUES = Object.freeze({
   pending: ['pending'],
   scheduled: ['scheduled', 'confirmed', 'rescheduled'],
   confirmed: ['confirmed'],
@@ -48,7 +48,7 @@ const APPOINTMENT_STATUS_FILTER_VALUES = Object.freeze({
   no_show: ['no_show', 'no-show'],
 });
 
-const normalizeAppointmentStatusFilterKey = (value) =>
+const normalizeApptStatusKey = (value) =>
   String(value || '').trim().toLowerCase().replace(/-/g, '_');
 
 const MIME_TYPE_BY_FORMAT = Object.freeze({
@@ -150,19 +150,6 @@ const TEMPLATE_DEFINITIONS = Object.freeze([
     ],
   },
   {
-    type: 'inventory',
-    name: 'Inventory Report',
-    description: 'Vaccine and supply inventory report',
-    availableFormats: ['pdf', 'excel', 'csv'],
-    filters: [
-      { name: 'startDate', type: 'date', required: false, label: 'Start Date' },
-      { name: 'endDate', type: 'date', required: false, label: 'End Date' },
-      { name: 'itemType', type: 'string', required: false, label: 'Item Type' },
-      { name: 'lowStockOnly', type: 'boolean', required: false, label: 'Low Stock Only' },
-      { name: 'category', type: 'string', required: false, label: 'Category' },
-    ],
-  },
-  {
     type: 'appointment',
     name: 'Appointment Report',
     description: 'Appointment scheduling and attendance analysis',
@@ -206,16 +193,6 @@ const TEMPLATE_DEFINITIONS = Object.freeze([
     ],
   },
   {
-    type: 'system',
-    name: 'System Report',
-    description: 'System usage and user export report',
-    availableFormats: ['pdf', 'excel', 'csv'],
-    filters: [
-      { name: 'startDate', type: 'date', required: false, label: 'Start Date' },
-      { name: 'endDate', type: 'date', required: false, label: 'End Date' },
-    ],
-  },
-  {
     type: 'barangay',
     name: 'Barangay Health Report',
     description: 'Comprehensive report for barangay health statistics',
@@ -226,76 +203,32 @@ const TEMPLATE_DEFINITIONS = Object.freeze([
       { name: 'barangay', type: 'string', required: false, label: 'Barangay' },
     ],
   },
-  {
-    type: 'compliance',
-    name: 'Compliance Report',
-    description: 'Vaccination compliance and coverage by target group',
-    availableFormats: ['pdf', 'excel', 'csv'],
-    filters: [
-      { name: 'startDate', type: 'date', required: false, label: 'Start Date' },
-      { name: 'endDate', type: 'date', required: false, label: 'End Date' },
-      { name: 'vaccineType', type: 'string', required: false, label: 'Vaccine Type' },
-      { name: 'targetGroup', type: 'string', required: false, label: 'Target Group' },
-    ],
-  },
-  {
-    type: 'healthcenter',
-    name: 'Health Center Report',
-    description: 'Health center user-level export report',
-    availableFormats: ['pdf', 'excel', 'csv'],
-    filters: [
-      { name: 'startDate', type: 'date', required: false, label: 'Start Date' },
-      { name: 'endDate', type: 'date', required: false, label: 'End Date' },
-      { name: 'healthCenter', type: 'string', required: false, label: 'Health Center' },
-    ],
-  },
-  {
-    type: 'consolidated',
-    name: 'Consolidated Report',
-    description: 'All-in-one comprehensive report with all data modules',
-    availableFormats: ['pdf', 'excel', 'csv'],
-    filters: [
-      { name: 'startDate', type: 'date', required: false, label: 'Start Date' },
-      { name: 'endDate', type: 'date', required: false, label: 'End Date' },
-      {
-        name: 'includeVaccination',
-        type: 'boolean',
-        required: false,
-        label: 'Include Vaccination Data',
-      },
-      {
-        name: 'includeInventory',
-        type: 'boolean',
-        required: false,
-        label: 'Include Inventory Data',
-      },
-      {
-        name: 'includeAppointments',
-        type: 'boolean',
-        required: false,
-        label: 'Include Appointments Data',
-      },
-      {
-        name: 'includeGuardians',
-        type: 'boolean',
-        required: false,
-        label: 'Include Guardians Data',
-      },
-      {
-        name: 'includeInfants',
-        type: 'boolean',
-        required: false,
-        label: 'Include Infants Data',
-      },
-    ],
-  },
 ]);
 
 class ReportService {
   constructor(options = {}) {
     this.pool = options.pool || pool;
+    // FIX: Generated report files (PDF/Excel/CSV) must live in a PERMANENT
+    // directory. The previous default pulled in resolveStorageRoot(), which on
+    // serverless/read-only runtimes returned os.tmpdir() and wiped files on
+    // every cold start — the root cause of the "Total Reports = 5 but folder
+    // empty" symptom. We now pin the storage to <backend>/uploads/reports by
+    // default, and let deployments override via the REPORTS_STORAGE_DIR env var
+    // (which should point at a persistent volume or bucket mount).
+    const envReportDir = process.env.REPORTS_STORAGE_DIR
+      ? String(process.env.REPORTS_STORAGE_DIR).trim()
+      : '';
     this.reportDir =
-        options.reportDir || resolveStorageRoot('uploads', 'reports');
+      options.reportDir
+      || (envReportDir ? path.resolve(envReportDir) : path.join(__dirname, '..', 'uploads', 'reports'));
+    // Best-effort synchronous create so that even the very first generate call
+    // on a fresh deploy has a directory to write into (ensureReportDirectory()
+    // below also guards async code paths).
+    try {
+      require('fs').mkdirSync(this.reportDir, { recursive: true });
+    } catch (_mkdirErr) {
+      // Non-fatal; async ensureReportDirectory() will retry when used.
+    }
     this.schemaCache = {
       columns: new Map(),
       tables: new Map(),
@@ -502,7 +435,6 @@ class ReportService {
     try {
       await fs.mkdir(this.reportDir, { recursive: true });
     } catch (_mkdirError) {
-      // Ignore directory bootstrap failures in read-only/serverless runtimes.
     }
   }
 
@@ -561,7 +493,6 @@ class ReportService {
           };
         }
       } catch {
-        // Try the next candidate path.
       }
     }
 
@@ -2779,7 +2710,15 @@ class ReportService {
       };
     }
 
-    return this.regenerateStoredReportFile(report);
+    // FIX: When the report file no longer exists on disk (e.g. it was stored
+    // in os.tmpdir() under a previous deploy and wiped on cold start), do NOT
+    // silently regenerate and do NOT return a broken link. Per spec, surface
+    // a clear 404 so the UI can prompt the user to regenerate the report.
+    throw this.createHttpError(
+      'Report file no longer available. Please regenerate.',
+      404,
+      'REPORT_FILE_NOT_AVAILABLE',
+    );
   }
 
   async getAllTimeTruthSummary({ coreSummary = {}, facilityId = null, scopeIds = [] } = {}) {
@@ -3055,8 +2994,6 @@ class ReportService {
       !transferHasUpdatedAt &&
       !transferHasCreatedAt
     ) {
-      // Some environments/tests can expose the table but not column metadata.
-      // Prefer canonical transfer timestamps to avoid generating NULL-date arithmetic.
       transferHasValidationStatus = true;
       transferHasValidatedAt = true;
       transferHasUpdatedAt = true;
@@ -3364,9 +3301,9 @@ class ReportService {
     }
 
     if (filters.status) {
-      const normalizedStatus = normalizeAppointmentStatusFilterKey(filters.status);
+      const normalizedStatus = normalizeApptStatusKey(filters.status);
       const statusFilterValues =
-        APPOINTMENT_STATUS_FILTER_VALUES[normalizedStatus] || [normalizedStatus];
+        APPT_STATUS_VALUES[normalizedStatus] || [normalizedStatus];
 
       query += ` AND LOWER(REPLACE(COALESCE(a.status::text, ''), '-', '_')) = ANY($${paramIndex}::text[])`;
       params.push(statusFilterValues);
@@ -3436,6 +3373,7 @@ class ReportService {
       this.getInventoryPeriodEndColumn(),
       this.resolveFirstExistingTable(['vaccine_batches'], null),
     ]);
+    const hasVaccineIsActive = await this.hasColumn('vaccines', 'is_active');
 
     const issuedExpression = issuedColumn ? `COALESCE(vi.${issuedColumn}, 0)` : '0';
     const wastedExpression = wastedColumn ? `COALESCE(vi.${wastedColumn}, 0)` : '0';
@@ -3477,6 +3415,7 @@ class ReportService {
       }
     }
 
+    // uses same data source as inventory sheet tab loader - keep in sync
     let query = `
         SELECT
           ROW_NUMBER() OVER (ORDER BY v.name, vi.${periodStartColumn} DESC) AS a,
@@ -3513,19 +3452,20 @@ class ReportService {
     : ''
 }
         WHERE 1=1
+          ${hasVaccineIsActive ? 'AND COALESCE(v.is_active, true) = true' : ''}
       `;
 
     const params = [];
     let paramIndex = 1;
 
     if (filters.startDate) {
-      query += ` AND vi.${periodStartColumn}::date >= $${paramIndex}`;
+      query += ` AND vi.${periodEndColumn}::date >= $${paramIndex}`;
       params.push(filters.startDate);
       paramIndex += 1;
     }
 
     if (filters.endDate) {
-      query += ` AND vi.${periodEndColumn}::date <= $${paramIndex}`;
+      query += ` AND vi.${periodStartColumn}::date <= $${paramIndex}`;
       params.push(filters.endDate);
       paramIndex += 1;
     }

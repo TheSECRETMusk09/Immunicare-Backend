@@ -3,13 +3,10 @@
  * Run with: node setup_sms_schema.js
  */
 
-const fs = require('fs');
-const path = require('path');
+require('fs');
+require('path');
 const requestedEnv =
-  process.env.IMMUNICARE_RUNTIME_ENV ||
-  process.argv[2] ||
-  process.env.NODE_ENV ||
-  'development';
+  process.env.IMMUNICARE_RUNTIME_ENV || process.argv[2] || process.env.NODE_ENV || 'development';
 
 process.env.NODE_ENV = requestedEnv;
 
@@ -36,8 +33,8 @@ async function setupSMSSchema() {
     password: process.env.DB_PASSWORD || '',
     ssl: parseBoolean(process.env.DB_SSL)
       ? {
-        rejectUnauthorized: parseBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED),
-      }
+          rejectUnauthorized: parseBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED),
+        }
       : false,
   });
 

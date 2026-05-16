@@ -1,7 +1,5 @@
 /**
- * Incoming SMS Handler Route
- * Handles incoming SMS responses (CONFIRM/CANCEL)
- * This endpoint is called by the SMS provider's webhook
+ * Incoming SMS webhook handler.
  */
 
 const express = require('express');
@@ -18,14 +16,14 @@ const pool = require('../db');
  */
 router.post('/sms', async (req, res) => {
   try {
-    const { from, message, timestamp } = req.body;
+    const { from, message } = req.body;
 
     console.log(`Received incoming SMS from ${from}: ${message}`);
 
     if (!from || !message) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required fields: from, message'
+        message: 'Missing required fields: from, message',
       });
     }
 
@@ -34,13 +32,13 @@ router.post('/sms', async (req, res) => {
 
     res.json({
       success: true,
-      result: result
+      result: result,
     });
   } catch (error) {
     console.error('Error processing incoming SMS:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to process SMS'
+      message: 'Failed to process SMS',
     });
   }
 });
@@ -55,7 +53,7 @@ router.get('/sms/logs', async (req, res) => {
     const offset = (page - 1) * limit;
 
     let query = `
-            SELECT 
+            SELECT
                 id,
                 phone_number,
                 message,
@@ -93,14 +91,14 @@ router.get('/sms/logs', async (req, res) => {
         page: parseInt(page),
         limit: parseInt(limit),
         total,
-        pages: Math.ceil(total / limit)
-      }
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error('Error fetching SMS logs:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch logs'
+      message: 'Failed to fetch logs',
     });
   }
 });
@@ -116,7 +114,7 @@ router.post('/sms/test', async (req, res) => {
     if (!phone_number || !message) {
       return res.status(400).json({
         success: false,
-        message: 'phone_number and message are required'
+        message: 'phone_number and message are required',
       });
     }
 
@@ -124,13 +122,13 @@ router.post('/sms/test', async (req, res) => {
 
     res.json({
       success: true,
-      result: result
+      result: result,
     });
   } catch (error) {
     console.error('Error testing incoming SMS:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to test SMS'
+      message: 'Failed to test SMS',
     });
   }
 });

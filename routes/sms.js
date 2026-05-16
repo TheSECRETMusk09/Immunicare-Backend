@@ -18,17 +18,13 @@
 
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
+require('jsonwebtoken');
 const pool = require('../db');
 const smsService = require('../services/smsService');
 const rateLimiter = require('../middleware/rateLimiter');
 const { authenticateToken } = require('../middleware/auth');
-const {
-  CANONICAL_ROLES,
-  getCanonicalRole,
-  requirePermission,
-} = require('../middleware/rbac');
-const { asyncHandler, ValidationError, NotFoundError } = require('../middleware/errorHandler');
+const { CANONICAL_ROLES, getCanonicalRole, requirePermission } = require('../middleware/rbac');
+const { asyncHandler } = require('../middleware/errorHandler');
 
 // Root route - return API info
 router.get('/', (req, res) => {
@@ -76,7 +72,9 @@ async function verifyGuardian(req, res, next) {
   // Guardians can only access their own data
   const requestedGuardianId = guardianId ? parseInt(guardianId, 10) : null;
   if (!userGuardianId || Number.isNaN(userGuardianId)) {
-    return res.status(403).json({ error: 'Guardian account mapping is missing', code: 'FORBIDDEN' });
+    return res
+      .status(403)
+      .json({ error: 'Guardian account mapping is missing', code: 'FORBIDDEN' });
   }
 
   if (requestedGuardianId && requestedGuardianId !== userGuardianId) {
@@ -121,7 +119,7 @@ router.post('/send-verification', smsVerificationRateLimiter, async (req, res) =
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (phone_number, purpose)
        DO UPDATE SET code = $2, expires_at = $4, attempts = 0, created_at = CURRENT_TIMESTAMP`,
-      [formattedPhone, code, purpose, expiresAt, req.ip, req.get('User-Agent')],
+      [formattedPhone, code, purpose, expiresAt, req.ip, req.get('User-Agent')]
     );
 
     // Send SMS
@@ -174,7 +172,7 @@ router.post('/verify-code', smsVerificationRateLimiter, async (req, res) => {
        WHERE phone_number = $1 AND purpose = $2
        AND expires_at > CURRENT_TIMESTAMP
        ORDER BY created_at DESC LIMIT 1`,
-      [formattedPhone, purpose],
+      [formattedPhone, purpose]
     );
 
     if (result.rows.length === 0) {
@@ -210,7 +208,7 @@ router.post('/verify-code', smsVerificationRateLimiter, async (req, res) => {
     // Mark as verified
     await pool.query(
       'UPDATE sms_verification_codes SET verified_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [verification.id],
+      [verification.id]
     );
 
     res.json({
@@ -251,7 +249,7 @@ router.post('/password-reset/request', smsRateLimiter, async (req, res) => {
 
       const phoneResult = await pool.query(
         'SELECT guardian_id FROM guardian_phone_numbers WHERE phone_number = $1 AND is_verified = true',
-        [targetPhone],
+        [targetPhone]
       );
 
       if (phoneResult.rows.length === 0) {
@@ -276,7 +274,7 @@ router.post('/password-reset/request', smsRateLimiter, async (req, res) => {
       // Find guardian by email
       const userResult = await pool.query(
         'SELECT id, guardian_id FROM users WHERE email = $1 AND is_active = true',
-        [email.toLowerCase()],
+        [email.toLowerCase()]
       );
 
       if (userResult.rows.length === 0) {
@@ -293,7 +291,7 @@ router.post('/password-reset/request', smsRateLimiter, async (req, res) => {
       // Get verified phone number
       const phoneResult = await pool.query(
         'SELECT phone_number FROM guardian_phone_numbers WHERE guardian_id = $1 AND is_verified = true AND is_primary = true',
-        [guardianId],
+        [guardianId]
       );
 
       if (phoneResult.rows.length === 0) {
@@ -333,7 +331,7 @@ router.post('/password-reset/request', smsRateLimiter, async (req, res) => {
          attempts = 0,
          created_at = CURRENT_TIMESTAMP,
          verified_at = NULL`,
-      [targetPhone, code, userId, guardianId, expiresAt, req.ip, req.get('User-Agent')],
+      [targetPhone, code, userId, guardianId, expiresAt, req.ip, req.get('User-Agent')]
     );
 
     // Send SMS
@@ -384,7 +382,7 @@ router.post('/password-reset/verify', smsVerificationRateLimiter, async (req, re
        WHERE phone_number = $1 AND purpose = 'password_reset'
        AND expires_at > CURRENT_TIMESTAMP
        ORDER BY created_at DESC LIMIT 1`,
-      [formattedPhone],
+      [formattedPhone]
     );
 
     if (result.rows.length === 0) {
@@ -433,7 +431,7 @@ router.post('/password-reset/verify', smsVerificationRateLimiter, async (req, re
         resetExpiresAt,
         req.ip,
         req.get('User-Agent'),
-      ],
+      ]
     );
 
     res.json({
@@ -472,7 +470,7 @@ router.post('/password-reset/reset', async (req, res) => {
        WHERE code = $1 AND purpose = 'password_reset_token'
        AND expires_at > CURRENT_TIMESTAMP
        ORDER BY created_at DESC LIMIT 1`,
-      [resetToken],
+      [resetToken]
     );
 
     if (result.rows.length === 0) {
@@ -506,14 +504,14 @@ router.post('/password-reset/reset', async (req, res) => {
     // Update password
     await pool.query(
       'UPDATE users SET password_hash = $1, force_password_change = false, password_changed_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [passwordHash, verification.user_id],
+      [passwordHash, verification.user_id]
     );
 
     // Update guardian password status if applicable
     if (verification.guardian_id) {
       await pool.query(
         'UPDATE guardians SET is_password_set = true, must_change_password = false WHERE id = $1',
-        [verification.guardian_id],
+        [verification.guardian_id]
       );
     }
 
@@ -544,7 +542,7 @@ router.get('/phone/:guardianId', authenticateToken, verifyGuardian, async (req, 
        FROM guardian_phone_numbers
        WHERE guardian_id = $1
        ORDER BY is_primary DESC, created_at DESC`,
-      [req.guardianId],
+      [req.guardianId]
     );
 
     // Mask phone numbers for response
@@ -587,7 +585,7 @@ router.put('/phone/:guardianId', authenticateToken, verifyGuardian, async (req, 
     const existingResult = await pool.query(
       `SELECT id, is_verified FROM guardian_phone_numbers
        WHERE guardian_id = $1 AND phone_number = $2`,
-      [req.guardianId, formattedPhone],
+      [req.guardianId, formattedPhone]
     );
 
     if (existingResult.rows.length > 0) {
@@ -600,7 +598,7 @@ router.put('/phone/:guardianId', authenticateToken, verifyGuardian, async (req, 
           isPrimary,
           smsPreferences ? JSON.stringify(smsPreferences) : null,
           existingResult.rows[0].id,
-        ],
+        ]
       );
 
       return res.json({
@@ -621,7 +619,7 @@ router.put('/phone/:guardianId', authenticateToken, verifyGuardian, async (req, 
         formattedPhone,
         isPrimary,
         smsPreferences ? JSON.stringify(smsPreferences) : null,
-      ],
+      ]
     );
 
     // Send verification code
@@ -634,7 +632,7 @@ router.put('/phone/:guardianId', authenticateToken, verifyGuardian, async (req, 
          VALUES ($1, $2, 'phone_update', $3, $4)
          ON CONFLICT (phone_number, purpose)
          DO UPDATE SET code = $2, expires_at = $4, attempts = 0`,
-        [formattedPhone, code, req.guardianId, expiresAt],
+        [formattedPhone, code, req.guardianId, expiresAt]
       );
 
       await smsService.sendVerificationSMS(formattedPhone, code);
@@ -682,7 +680,7 @@ router.post('/phone/:guardianId/verify', authenticateToken, verifyGuardian, asyn
        WHERE phone_number = $1 AND purpose = 'phone_update'
        AND expires_at > CURRENT_TIMESTAMP
        ORDER BY created_at DESC LIMIT 1`,
-      [formattedPhone],
+      [formattedPhone]
     );
 
     if (result.rows.length === 0) {
@@ -710,13 +708,13 @@ router.post('/phone/:guardianId/verify', authenticateToken, verifyGuardian, asyn
       `UPDATE guardian_phone_numbers
        SET is_verified = true, verified_at = CURRENT_TIMESTAMP, verification_code_id = $1
        WHERE guardian_id = $2 AND phone_number = $3`,
-      [verification.id, req.guardianId, formattedPhone],
+      [verification.id, req.guardianId, formattedPhone]
     );
 
     // Mark verification as used
     await pool.query(
       'UPDATE sms_verification_codes SET verified_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [verification.id],
+      [verification.id]
     );
 
     res.json({
@@ -736,55 +734,60 @@ router.post('/phone/:guardianId/verify', authenticateToken, verifyGuardian, asyn
  * DELETE /api/sms/phone/:guardianId/:phoneId
  * Delete a guardian phone number
  */
-router.delete('/phone/:guardianId/:phoneId', authenticateToken, verifyGuardian, async (req, res) => {
-  try {
-    const phoneId = Number.parseInt(req.params.phoneId, 10);
+router.delete(
+  '/phone/:guardianId/:phoneId',
+  authenticateToken,
+  verifyGuardian,
+  async (req, res) => {
+    try {
+      const phoneId = Number.parseInt(req.params.phoneId, 10);
 
-    if (!Number.isFinite(phoneId) || phoneId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid phone ID',
-        code: 'INVALID_PHONE_ID',
-      });
-    }
+      if (!Number.isFinite(phoneId) || phoneId <= 0) {
+        return res.status(400).json({
+          error: 'Invalid phone ID',
+          code: 'INVALID_PHONE_ID',
+        });
+      }
 
-    const existingResult = await pool.query(
-      `SELECT id, is_primary
+      const existingResult = await pool.query(
+        `SELECT id, is_primary
        FROM guardian_phone_numbers
        WHERE id = $1 AND guardian_id = $2`,
-      [phoneId, req.guardianId],
-    );
+        [phoneId, req.guardianId]
+      );
 
-    if (existingResult.rows.length === 0) {
-      return res.status(404).json({
-        error: 'Phone number not found',
-        code: 'PHONE_NOT_FOUND',
+      if (existingResult.rows.length === 0) {
+        return res.status(404).json({
+          error: 'Phone number not found',
+          code: 'PHONE_NOT_FOUND',
+        });
+      }
+
+      if (existingResult.rows[0].is_primary) {
+        return res.status(400).json({
+          error: 'Primary phone number cannot be deleted',
+          code: 'PRIMARY_PHONE_DELETE_FORBIDDEN',
+        });
+      }
+
+      await pool.query('DELETE FROM guardian_phone_numbers WHERE id = $1 AND guardian_id = $2', [
+        phoneId,
+        req.guardianId,
+      ]);
+
+      return res.json({
+        message: 'Phone number removed',
+        code: 'DELETED',
+      });
+    } catch (error) {
+      console.error('Delete phone error:', error);
+      return res.status(500).json({
+        error: 'Failed to delete phone number',
+        code: 'DELETE_ERROR',
       });
     }
-
-    if (existingResult.rows[0].is_primary) {
-      return res.status(400).json({
-        error: 'Primary phone number cannot be deleted',
-        code: 'PRIMARY_PHONE_DELETE_FORBIDDEN',
-      });
-    }
-
-    await pool.query('DELETE FROM guardian_phone_numbers WHERE id = $1 AND guardian_id = $2', [
-      phoneId,
-      req.guardianId,
-    ]);
-
-    return res.json({
-      message: 'Phone number removed',
-      code: 'DELETED',
-    });
-  } catch (error) {
-    console.error('Delete phone error:', error);
-    return res.status(500).json({
-      error: 'Failed to delete phone number',
-      code: 'DELETE_ERROR',
-    });
   }
-});
+);
 
 /**
  * GET /api/sms/logs
@@ -855,7 +858,7 @@ router.get(
       limit: parseInt(limit),
       offset: parseInt(offset),
     });
-  }),
+  })
 );
 
 /**
@@ -873,7 +876,6 @@ router.get(
       process.env.TWILIO_ACCOUNT_SID ||
       process.env.SEMAPHORE_API_KEY
     );
-
     res.json({
       provider,
       isConfigured: hasApiKey,
@@ -885,51 +887,56 @@ router.get(
       senderName:
         process.env.TEXTBEE_SENDER_NAME || process.env.SEMAPHORE_SENDER_NAME || 'IMMUNICARE',
     });
-  }),
+  })
 );
 
 /**
  * POST /api/sms/test
  * Test SMS endpoint
  */
-router.post('/test', authenticateToken, requirePermission('system:sms_config'), async (req, res) => {
-  try {
-    const { phoneNumber, message } = req.body;
+router.post(
+  '/test',
+  authenticateToken,
+  requirePermission('system:sms_config'),
+  async (req, res) => {
+    try {
+      const { phoneNumber, message } = req.body;
 
-    // Check if SMS provider is configured
-    const provider = process.env.SMS_PROVIDER || 'log';
+      // Check if SMS provider is configured
+      const provider = process.env.SMS_PROVIDER || 'log';
 
-    if (provider === 'log') {
-      // Log mode - just log and return success
-      console.log(`[SMS-TEST] Phone: ${phoneNumber}, Message: ${message}`);
+      if (provider === 'log') {
+        // Log mode - just log and return success
+        console.log(`[SMS-TEST] Phone: ${phoneNumber}, Message: ${message}`);
 
-      return res.json({
+        return res.json({
+          success: true,
+          provider: 'log',
+          message: 'SMS logged (development mode)',
+          testMode: true,
+        });
+      }
+
+      // Send actual SMS
+      const result = await smsService.sendSMS(
+        phoneNumber || process.env.TEST_PHONE_NUMBER,
+        message || 'This is a test message from Immunicare SMS Service'
+      );
+
+      res.json({
         success: true,
-        provider: 'log',
-        message: 'SMS logged (development mode)',
-        testMode: true,
+        provider,
+        messageId: result.messageId,
+        timestamp: result.timestamp,
+      });
+    } catch (error) {
+      console.error('SMS test error:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
       });
     }
-
-    // Send actual SMS
-    const result = await smsService.sendSMS(
-      phoneNumber || process.env.TEST_PHONE_NUMBER,
-      message || 'This is a test message from Immunicare SMS Service',
-    );
-
-    res.json({
-      success: true,
-      provider,
-      messageId: result.messageId,
-      timestamp: result.timestamp,
-    });
-  } catch (error) {
-    console.error('SMS test error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-});
+);
 
 module.exports = router;

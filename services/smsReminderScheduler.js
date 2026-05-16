@@ -46,7 +46,7 @@ async function resolveSchedulerColumnMappings() {
           AND table_name = 'appointments'
           AND column_name = ANY($1::text[])
       `,
-      [['patient_id', 'infant_id', 'clinic_id', 'facility_id']],
+      [['patient_id', 'infant_id', 'clinic_id', 'facility_id']]
     );
 
     const available = new Set((result.rows || []).map((row) => row.column_name));
@@ -141,7 +141,7 @@ async function getAppointmentsNeedingReminders(hoursBefore) {
        AND a.is_active = true
        AND p.is_active = true
        AND g.is_active = true`,
-    [windowStart.toISOString(), windowEnd.toISOString()],
+    [windowStart.toISOString(), windowEnd.toISOString()]
   );
 
   return result.rows;
@@ -156,7 +156,7 @@ async function getReminderSettings(guardianId, infantId) {
      WHERE guardian_id = $1 AND (infant_id = $2 OR infant_id IS NULL)
      ORDER BY infant_id DESC
      LIMIT 1`,
-    [guardianId, infantId],
+    [guardianId, infantId]
   );
 
   return (
@@ -180,7 +180,6 @@ async function sendAppointmentReminder(appointment) {
     infant_first_name,
     infant_last_name,
     clinic_name,
-    clinic_address: _clinic_address,
   } = appointment;
 
   if (!guardian_phone) {
@@ -198,7 +197,7 @@ async function sendAppointmentReminder(appointment) {
 
   const message = smsService.createAppointmentReminderMessage(
     appointment_type || 'scheduled vaccine',
-    scheduled_date,
+    scheduled_date
   );
 
   try {
@@ -270,12 +269,15 @@ async function processRemindersForHours(hoursBefore) {
           await pool.query(
             // Use a dynamic column name safely; hoursBefore is from a controlled array.
             `UPDATE appointments SET ${flagColumn} = TRUE WHERE id = $1`,
-            [appointment.appointment_id],
+            [appointment.appointment_id]
           );
         } catch (dbError) {
           // Gracefully handle if column doesn't exist (code 42703 for undefined column)
           if (dbError.code !== '42703') {
-            logger.warn(`Could not update reminder flag ${flagColumn} for appointment ${appointment.appointment_id}`, { error: dbError.message });
+            logger.warn(
+              `Could not update reminder flag ${flagColumn} for appointment ${appointment.appointment_id}`,
+              { error: dbError.message }
+            );
           }
         }
       } else {
@@ -323,10 +325,10 @@ function startReminderScheduler() {
   }
 
   logger.info(
-    `Starting SMS reminder scheduler (interval: ${SCHEDULER_CONFIG.checkInterval / 60000} minutes)`,
+    `Starting SMS reminder scheduler (interval: ${SCHEDULER_CONFIG.checkInterval / 60000} minutes)`
   );
   logger.info(
-    `Reminder times: ${SCHEDULER_CONFIG.reminderHoursBefore.join('h, ')}h before appointment`,
+    `Reminder times: ${SCHEDULER_CONFIG.reminderHoursBefore.join('h, ')}h before appointment`
   );
 
   // Initial run

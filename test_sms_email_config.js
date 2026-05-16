@@ -11,7 +11,7 @@ require('dotenv').config();
 const smsService = require('./services/smsService');
 const emailService = require('./services/emailService');
 const appointmentEmailService = require('./services/appointmentEmailService');
-const logger = require('./config/logger');
+require('./config/logger');
 
 /**
  * Test SMS Configuration
@@ -39,9 +39,11 @@ async function testSMSConfig() {
     ];
 
     console.log('\n📝 Phone Number Validation Test:');
-    testPhoneNumbers.forEach(phone => {
+    testPhoneNumbers.forEach((phone) => {
       const result = smsService.validateAndFormatPhoneNumber(phone);
-      console.log(`  ${phone.padEnd(16)} => ${result.valid ? '✅ ' + result.formattedNumber : '❌ ' + result.error}`);
+      console.log(
+        `  ${phone.padEnd(16)} => ${result.valid ? '✅ ' + result.formattedNumber : '❌ ' + result.error}`
+      );
     });
 
     // Test SMS sending if in development mode with test number
@@ -51,7 +53,7 @@ async function testSMSConfig() {
         const result = await smsService.sendSMS(
           process.env.TEST_PHONE_NUMBER,
           'This is a test message from Immunicare verification script.',
-          'custom',
+          'custom'
         );
 
         if (result.success) {
@@ -127,7 +129,7 @@ async function testEmailConfig() {
             const result = await emailService.sendPasswordResetEmail(
               smtpUser,
               'test-token-12345',
-              'TestUser',
+              'TestUser'
             );
 
             if (result.success) {
@@ -186,7 +188,8 @@ async function testAppointmentEmails() {
 
   // Test confirmation email
   console.log('\n📧 Testing Appointment Confirmation Email...');
-  const confirmationResult = await appointmentEmailService.sendAppointmentConfirmationEmail(testAppointment);
+  const confirmationResult =
+    await appointmentEmailService.sendAppointmentConfirmationEmail(testAppointment);
 
   if (confirmationResult.success) {
     console.log('✅ Confirmation email sent!');
@@ -198,7 +201,8 @@ async function testAppointmentEmails() {
 
   // Test reminder email
   console.log('\n📧 Testing Appointment Reminder Email...');
-  const reminderResult = await appointmentEmailService.sendAppointmentReminderEmail(testAppointment);
+  const reminderResult =
+    await appointmentEmailService.sendAppointmentReminderEmail(testAppointment);
 
   if (reminderResult.success) {
     console.log('✅ Reminder email sent!');
@@ -287,7 +291,6 @@ async function runTests() {
 
     // Generate Report
     generateReport(smsReady, true); // Email considered ready if SMTP configured
-
   } catch (error) {
     console.error('\n❌ Test failed with error:');
     console.error(error);

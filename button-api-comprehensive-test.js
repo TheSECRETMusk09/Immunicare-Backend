@@ -180,9 +180,6 @@ async function assert(condition, testName, details = {}) {
 /**
  * Wait helper for async operations
  */
-function wait(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 // ============================================
 // DATABASE CONNECTION TEST
@@ -193,11 +190,9 @@ async function testDatabaseConnection() {
 
   try {
     const result = await dbQuery('SELECT current_database() as db_name, current_user as user');
-    await assert(
-      result.rows[0].db_name === DB_CONFIG.database,
-      'Database connection established',
-      { actual: result.rows[0].db_name },
-    );
+    await assert(result.rows[0].db_name === DB_CONFIG.database, 'Database connection established', {
+      actual: result.rows[0].db_name,
+    });
   } catch (err) {
     await assert(false, 'Database connection', { actual: err.message });
     testResults.errors.push({ module: 'Database', error: err.message });
@@ -219,7 +214,7 @@ async function testAuthentication() {
     {
       expected: 'token present',
       actual: adminAuth ? 'token present' : 'no token',
-    },
+    }
   );
 
   const adminToken = adminAuth?.token;
@@ -232,27 +227,25 @@ async function testAuthentication() {
     {
       expected: 'token present',
       actual: guardianAuth ? 'token present' : 'no token',
-    },
+    }
   );
 
   const guardianToken = guardianAuth?.token;
 
   // Test Invalid Credentials
   const invalidAuth = await login({ username: 'invalid', password: 'wrong' }, 'admin');
-  await assert(
-    invalidAuth === null,
-    'Invalid credentials are rejected',
-    { expected: 'null token', actual: invalidAuth ? 'token returned' : 'correctly rejected' },
-  );
+  await assert(invalidAuth === null, 'Invalid credentials are rejected', {
+    expected: 'null token',
+    actual: invalidAuth ? 'token returned' : 'correctly rejected',
+  });
 
   // Test Empty Credentials
   try {
     const emptyAuth = await makeRequest('POST', '/api/auth/login', {});
-    await assert(
-      emptyAuth.status >= 400,
-      'Empty credentials are rejected',
-      { expected: '4xx status', actual: emptyAuth.status },
-    );
+    await assert(emptyAuth.status >= 400, 'Empty credentials are rejected', {
+      expected: '4xx status',
+      actual: emptyAuth.status,
+    });
   } catch (err) {
     await assert(false, 'Empty credentials handling', { actual: err.message });
   }
@@ -273,7 +266,7 @@ async function testAuthorization(adminToken, guardianToken) {
     await assert(
       noTokenResponse.status === 401 || noTokenResponse.status === 403,
       'Endpoints require authentication (no token)',
-      { expected: '401/403', actual: noTokenResponse.status },
+      { expected: '401/403', actual: noTokenResponse.status }
     );
   } catch (err) {
     await assert(false, 'No token access test', { actual: err.message });
@@ -281,11 +274,16 @@ async function testAuthorization(adminToken, guardianToken) {
 
   // Test 2: Invalid token access
   try {
-    const invalidTokenResponse = await makeRequest('GET', '/api/users', null, 'invalid-token-12345');
+    const invalidTokenResponse = await makeRequest(
+      'GET',
+      '/api/users',
+      null,
+      'invalid-token-12345'
+    );
     await assert(
       invalidTokenResponse.status === 401 || invalidTokenResponse.status === 403,
       'Endpoints reject invalid tokens',
-      { expected: '401/403', actual: invalidTokenResponse.status },
+      { expected: '401/403', actual: invalidTokenResponse.status }
     );
   } catch (err) {
     await assert(false, 'Invalid token test', { actual: err.message });
@@ -297,7 +295,7 @@ async function testAuthorization(adminToken, guardianToken) {
     await assert(
       guardianAccessingAdmin.status === 403,
       'Guardian cannot access admin-only endpoints',
-      { expected: '403', actual: guardianAccessingAdmin.status },
+      { expected: '403', actual: guardianAccessingAdmin.status }
     );
   } catch (err) {
     await assert(false, 'Guardian admin access test', { actual: err.message });
@@ -306,11 +304,10 @@ async function testAuthorization(adminToken, guardianToken) {
   // Test 4: Admin accessing own endpoints
   try {
     const adminAccessingOwn = await makeRequest('GET', '/api/dashboard/stats', null, adminToken);
-    await assert(
-      adminAccessingOwn.status === 200,
-      'Admin can access dashboard stats',
-      { expected: '200', actual: adminAccessingOwn.status },
-    );
+    await assert(adminAccessingOwn.status === 200, 'Admin can access dashboard stats', {
+      expected: '200',
+      actual: adminAccessingOwn.status,
+    });
   } catch (err) {
     await assert(false, 'Admin dashboard access test', { actual: err.message });
   }
@@ -346,7 +343,7 @@ async function testCreateOperations(adminToken) {
     await assert(
       response.status === 201 || response.status === 200,
       'Create Infant (POST /api/infants)',
-      { expected: '200/201', actual: response.status },
+      { expected: '200/201', actual: response.status }
     );
 
     if (response.status === 200 || response.status === 201) {
@@ -371,7 +368,7 @@ async function testCreateOperations(adminToken) {
     await assert(
       response.status === 201 || response.status === 200,
       'Create Appointment (POST /api/appointments)',
-      { expected: '200/201', actual: response.status },
+      { expected: '200/201', actual: response.status }
     );
 
     if (response.status === 200 || response.status === 201) {
@@ -395,7 +392,7 @@ async function testCreateOperations(adminToken) {
     await assert(
       response.status === 201 || response.status === 200,
       'Create Announcement (POST /api/announcements)',
-      { expected: '200/201', actual: response.status },
+      { expected: '200/201', actual: response.status }
     );
 
     if (response.status === 200 || response.status === 201) {
@@ -420,7 +417,7 @@ async function testCreateOperations(adminToken) {
     await assert(
       response.status === 201 || response.status === 200,
       'Create User (POST /api/users)',
-      { expected: '200/201', actual: response.status },
+      { expected: '200/201', actual: response.status }
     );
   } catch (err) {
     await assert(false, 'Create User', { actual: err.message });
@@ -437,11 +434,10 @@ async function testReadOperations(adminToken, guardianToken) {
   // Test Dashboard Stats
   try {
     const response = await makeRequest('GET', '/api/dashboard/stats', null, adminToken);
-    await assert(
-      response.status === 200,
-      'Get Dashboard Stats (GET /api/dashboard/stats)',
-      { expected: '200', actual: response.status },
-    );
+    await assert(response.status === 200, 'Get Dashboard Stats (GET /api/dashboard/stats)', {
+      expected: '200',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Dashboard Stats', { actual: err.message });
   }
@@ -449,11 +445,10 @@ async function testReadOperations(adminToken, guardianToken) {
   // Test Get Infants
   try {
     const response = await makeRequest('GET', '/api/infants', null, adminToken);
-    await assert(
-      response.status === 200,
-      'Get All Infants (GET /api/infants)',
-      { expected: '200', actual: response.status },
-    );
+    await assert(response.status === 200, 'Get All Infants (GET /api/infants)', {
+      expected: '200',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Get Infants', { actual: err.message });
   }
@@ -461,11 +456,10 @@ async function testReadOperations(adminToken, guardianToken) {
   // Test Get Appointments
   try {
     const response = await makeRequest('GET', '/api/appointments', null, adminToken);
-    await assert(
-      response.status === 200,
-      'Get All Appointments (GET /api/appointments)',
-      { expected: '200', actual: response.status },
-    );
+    await assert(response.status === 200, 'Get All Appointments (GET /api/appointments)', {
+      expected: '200',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Get Appointments', { actual: err.message });
   }
@@ -473,11 +467,10 @@ async function testReadOperations(adminToken, guardianToken) {
   // Test Get Announcements
   try {
     const response = await makeRequest('GET', '/api/announcements', null, adminToken);
-    await assert(
-      response.status === 200,
-      'Get All Announcements (GET /api/announcements)',
-      { expected: '200', actual: response.status },
-    );
+    await assert(response.status === 200, 'Get All Announcements (GET /api/announcements)', {
+      expected: '200',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Get Announcements', { actual: err.message });
   }
@@ -485,11 +478,10 @@ async function testReadOperations(adminToken, guardianToken) {
   // Test Get Vaccinations
   try {
     const response = await makeRequest('GET', '/api/vaccinations', null, adminToken);
-    await assert(
-      response.status === 200,
-      'Get All Vaccinations (GET /api/vaccinations)',
-      { expected: '200', actual: response.status },
-    );
+    await assert(response.status === 200, 'Get All Vaccinations (GET /api/vaccinations)', {
+      expected: '200',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Get Vaccinations', { actual: err.message });
   }
@@ -497,11 +489,16 @@ async function testReadOperations(adminToken, guardianToken) {
   // Test Guardian Dashboard Data
   if (guardianToken) {
     try {
-      const response = await makeRequest('GET', '/api/dashboard/guardian/1/stats', null, guardianToken);
+      const response = await makeRequest(
+        'GET',
+        '/api/dashboard/guardian/1/stats',
+        null,
+        guardianToken
+      );
       await assert(
         response.status === 200,
         'Get Guardian Dashboard Stats (GET /api/dashboard/guardian/:id/stats)',
-        { expected: '200', actual: response.status },
+        { expected: '200', actual: response.status }
       );
     } catch (err) {
       await assert(false, 'Guardian Dashboard Stats', { actual: err.message });
@@ -511,11 +508,10 @@ async function testReadOperations(adminToken, guardianToken) {
   // Test Get Users (Admin only)
   try {
     const response = await makeRequest('GET', '/api/users', null, adminToken);
-    await assert(
-      response.status === 200,
-      'Get All Users (GET /api/users)',
-      { expected: '200', actual: response.status },
-    );
+    await assert(response.status === 200, 'Get All Users (GET /api/users)', {
+      expected: '200',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Get Users', { actual: err.message });
   }
@@ -537,12 +533,16 @@ async function testUpdateOperations(adminToken) {
   if (CONFIG.testData.infant?.id) {
     try {
       const updateData = { first_name: 'UpdatedName' };
-      const response = await makeRequest('PUT', `/api/infants/${CONFIG.testData.infant.id}`, updateData, adminToken);
-      await assert(
-        response.status === 200,
-        'Update Infant (PUT /api/infants/:id)',
-        { expected: '200', actual: response.status },
+      const response = await makeRequest(
+        'PUT',
+        `/api/infants/${CONFIG.testData.infant.id}`,
+        updateData,
+        adminToken
       );
+      await assert(response.status === 200, 'Update Infant (PUT /api/infants/:id)', {
+        expected: '200',
+        actual: response.status,
+      });
     } catch (err) {
       await assert(false, 'Update Infant', { actual: err.message });
     }
@@ -552,12 +552,16 @@ async function testUpdateOperations(adminToken) {
   if (CONFIG.testData.appointment?.id) {
     try {
       const updateData = { status: 'attended', completion_notes: 'Test completed' };
-      const response = await makeRequest('PUT', `/api/appointments/${CONFIG.testData.appointment.id}`, updateData, adminToken);
-      await assert(
-        response.status === 200,
-        'Update Appointment (PUT /api/appointments/:id)',
-        { expected: '200', actual: response.status },
+      const response = await makeRequest(
+        'PUT',
+        `/api/appointments/${CONFIG.testData.appointment.id}`,
+        updateData,
+        adminToken
       );
+      await assert(response.status === 200, 'Update Appointment (PUT /api/appointments/:id)', {
+        expected: '200',
+        actual: response.status,
+      });
     } catch (err) {
       await assert(false, 'Update Appointment', { actual: err.message });
     }
@@ -567,12 +571,16 @@ async function testUpdateOperations(adminToken) {
   if (CONFIG.testData.announcement?.id) {
     try {
       const updateData = { title: 'Updated Title' };
-      const response = await makeRequest('PUT', `/api/announcements/${CONFIG.testData.announcement.id}`, updateData, adminToken);
-      await assert(
-        response.status === 200,
-        'Update Announcement (PUT /api/announcements/:id)',
-        { expected: '200', actual: response.status },
+      const response = await makeRequest(
+        'PUT',
+        `/api/announcements/${CONFIG.testData.announcement.id}`,
+        updateData,
+        adminToken
       );
+      await assert(response.status === 200, 'Update Announcement (PUT /api/announcements/:id)', {
+        expected: '200',
+        actual: response.status,
+      });
     } catch (err) {
       await assert(false, 'Update Announcement', { actual: err.message });
     }
@@ -582,11 +590,10 @@ async function testUpdateOperations(adminToken) {
   try {
     const updateData = { health_center_name: 'Updated Health Center' };
     const response = await makeRequest('PUT', '/api/settings', updateData, adminToken);
-    await assert(
-      response.status === 200,
-      'Update Settings (PUT /api/settings)',
-      { expected: '200', actual: response.status },
-    );
+    await assert(response.status === 200, 'Update Settings (PUT /api/settings)', {
+      expected: '200',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Update Settings', { actual: err.message });
   }
@@ -607,11 +614,16 @@ async function testDeleteOperations(adminToken) {
   // Test 1: Soft Delete - Deactivate Infant
   if (CONFIG.testData.infant?.id) {
     try {
-      const response = await makeRequest('DELETE', `/api/infants/${CONFIG.testData.infant.id}`, null, adminToken);
+      const response = await makeRequest(
+        'DELETE',
+        `/api/infants/${CONFIG.testData.infant.id}`,
+        null,
+        adminToken
+      );
       await assert(
         response.status === 200 || response.status === 204,
         'Delete Infant (DELETE /api/infants/:id)',
-        { expected: '200/204', actual: response.status },
+        { expected: '200/204', actual: response.status }
       );
     } catch (err) {
       await assert(false, 'Delete Infant', { actual: err.message });
@@ -621,12 +633,16 @@ async function testDeleteOperations(adminToken) {
   // Test 2: Cancel Appointment (instead of hard delete)
   if (CONFIG.testData.appointment?.id) {
     try {
-      const response = await makeRequest('PUT', `/api/appointments/${CONFIG.testData.appointment.id}`,
-        { status: 'cancelled', cancellation_reason: 'Test cancellation' }, adminToken);
+      const response = await makeRequest(
+        'PUT',
+        `/api/appointments/${CONFIG.testData.appointment.id}`,
+        { status: 'cancelled', cancellation_reason: 'Test cancellation' },
+        adminToken
+      );
       await assert(
         response.status === 200,
         'Cancel Appointment (PUT /api/appointments/:id with status=cancelled)',
-        { expected: '200', actual: response.status },
+        { expected: '200', actual: response.status }
       );
     } catch (err) {
       await assert(false, 'Cancel Appointment', { actual: err.message });
@@ -636,11 +652,16 @@ async function testDeleteOperations(adminToken) {
   // Test 3: Delete Announcement
   if (CONFIG.testData.announcement?.id) {
     try {
-      const response = await makeRequest('DELETE', `/api/announcements/${CONFIG.testData.announcement.id}`, null, adminToken);
+      const response = await makeRequest(
+        'DELETE',
+        `/api/announcements/${CONFIG.testData.announcement.id}`,
+        null,
+        adminToken
+      );
       await assert(
         response.status === 200 || response.status === 204,
         'Delete Announcement (DELETE /api/announcements/:id)',
-        { expected: '200/204', actual: response.status },
+        { expected: '200/204', actual: response.status }
       );
     } catch (err) {
       await assert(false, 'Delete Announcement', { actual: err.message });
@@ -663,60 +684,71 @@ async function testInputValidation(adminToken) {
   // Test 1: Empty fields validation
   try {
     const response = await makeRequest('POST', '/api/infants', {}, adminToken);
-    await assert(
-      response.status >= 400,
-      'Create infant with empty fields is rejected',
-      { expected: '4xx', actual: response.status },
-    );
+    await assert(response.status >= 400, 'Create infant with empty fields is rejected', {
+      expected: '4xx',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Empty fields validation', { actual: err.message });
   }
 
   // Test 2: Invalid data types
   try {
-    const response = await makeRequest('POST', '/api/infants', {
-      first_name: 123,  // Should be string
-      last_name: 'Test',
-      dob: 'invalid-date',
-      sex: 'invalid_sex',
-    }, adminToken);
-    await assert(
-      response.status >= 400,
-      'Create infant with invalid data types is rejected',
-      { expected: '4xx', actual: response.status },
+    const response = await makeRequest(
+      'POST',
+      '/api/infants',
+      {
+        first_name: 123, // Should be string
+        last_name: 'Test',
+        dob: 'invalid-date',
+        sex: 'invalid_sex',
+      },
+      adminToken
     );
+    await assert(response.status >= 400, 'Create infant with invalid data types is rejected', {
+      expected: '4xx',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Invalid data types validation', { actual: err.message });
   }
 
   // Test 3: SQL Injection prevention
   try {
-    const response = await makeRequest('POST', '/api/announcements', {
-      title: '\'; DROP TABLE announcements; --',
-      content: 'Test',
-    }, adminToken);
-    // Should either succeed (sanitized) or fail (rejected) but never actually execute SQL
-    await assert(
-      true,
-      'SQL injection attempt is handled',
-      { expected: 'safe handling', actual: response.status },
+    const response = await makeRequest(
+      'POST',
+      '/api/announcements',
+      {
+        title: "'; DROP TABLE announcements; --",
+        content: 'Test',
+      },
+      adminToken
     );
+    // Should either succeed (sanitized) or fail (rejected) but never actually execute SQL
+    await assert(true, 'SQL injection attempt is handled', {
+      expected: 'safe handling',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(true, 'SQL injection attempt handling', { actual: 'error caught' });
   }
 
   // Test 4: XSS prevention
   try {
-    const response = await makeRequest('POST', '/api/announcements', {
-      title: '<script>alert("xss")</script>',
-      content: 'Test content',
-    }, adminToken);
-    // Should handle XSS appropriately
-    await assert(
-      response.status >= 200 && response.status < 500,
-      'XSS attempt handling',
-      { expected: 'safe handling', actual: response.status },
+    const response = await makeRequest(
+      'POST',
+      '/api/announcements',
+      {
+        title: '<script>alert("xss")</script>',
+        content: 'Test content',
+      },
+      adminToken
     );
+    // Should handle XSS appropriately
+    await assert(response.status >= 200 && response.status < 500, 'XSS attempt handling', {
+      expected: 'safe handling',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'XSS prevention', { actual: err.message });
   }
@@ -724,14 +756,19 @@ async function testInputValidation(adminToken) {
   // Test 5: Very long input handling
   try {
     const longTitle = 'A'.repeat(10000);
-    const response = await makeRequest('POST', '/api/announcements', {
-      title: longTitle,
-      content: 'Test',
-    }, adminToken);
+    const response = await makeRequest(
+      'POST',
+      '/api/announcements',
+      {
+        title: longTitle,
+        content: 'Test',
+      },
+      adminToken
+    );
     await assert(
       response.status >= 400 || response.data.error,
       'Very long input is rejected or truncated',
-      { expected: 'error or accepted', actual: response.status },
+      { expected: 'error or accepted', actual: response.status }
     );
   } catch (err) {
     await assert(true, 'Long input handling', { actual: 'error caught' });
@@ -748,15 +785,19 @@ async function testPermissions(adminToken, guardianToken) {
   // Test 1: Guardian cannot create users
   if (guardianToken) {
     try {
-      const response = await makeRequest('POST', '/api/users', {
-        username: 'unauthorized',
-        password: 'test',
-      }, guardianToken);
-      await assert(
-        response.status === 403,
-        'Guardian cannot create users (403 Forbidden)',
-        { expected: '403', actual: response.status },
+      const response = await makeRequest(
+        'POST',
+        '/api/users',
+        {
+          username: 'unauthorized',
+          password: 'test',
+        },
+        guardianToken
       );
+      await assert(response.status === 403, 'Guardian cannot create users (403 Forbidden)', {
+        expected: '403',
+        actual: response.status,
+      });
     } catch (err) {
       await assert(false, 'Guardian create users permission', { actual: err.message });
     }
@@ -765,12 +806,16 @@ async function testPermissions(adminToken, guardianToken) {
   // Test 2: Guardian cannot delete infants
   if (guardianToken && CONFIG.testData.infant?.id) {
     try {
-      const response = await makeRequest('DELETE', `/api/infants/${CONFIG.testData.infant.id}`, null, guardianToken);
-      await assert(
-        response.status === 403,
-        'Guardian cannot delete infants (403 Forbidden)',
-        { expected: '403', actual: response.status },
+      const response = await makeRequest(
+        'DELETE',
+        `/api/infants/${CONFIG.testData.infant.id}`,
+        null,
+        guardianToken
       );
+      await assert(response.status === 403, 'Guardian cannot delete infants (403 Forbidden)', {
+        expected: '403',
+        actual: response.status,
+      });
     } catch (err) {
       await assert(false, 'Guardian delete infants permission', { actual: err.message });
     }
@@ -782,7 +827,7 @@ async function testPermissions(adminToken, guardianToken) {
     await assert(
       response.status >= 200 && response.status < 500,
       'Admin has access to admin stats',
-      { expected: '2xx/4xx', actual: response.status },
+      { expected: '2xx/4xx', actual: response.status }
     );
   } catch (err) {
     // May return 404, but that's okay - means authorization passed
@@ -805,15 +850,21 @@ async function testDatabaseState() {
       AND table_type = 'BASE TABLE'
     `);
 
-    const requiredTables = ['admin', 'guardians', 'patients', 'vaccines', 'appointments', 'immunization_records'];
-    const existingTables = tablesResult.rows.map(r => r.table_name);
+    const requiredTables = [
+      'admin',
+      'guardians',
+      'patients',
+      'vaccines',
+      'appointments',
+      'immunization_records',
+    ];
+    const existingTables = tablesResult.rows.map((r) => r.table_name);
 
     for (const table of requiredTables) {
-      await assert(
-        existingTables.includes(table),
-        `Table '${table}' exists`,
-        { expected: 'exists', actual: existingTables.includes(table) ? 'exists' : 'missing' },
-      );
+      await assert(existingTables.includes(table), `Table '${table}' exists`, {
+        expected: 'exists',
+        actual: existingTables.includes(table) ? 'exists' : 'missing',
+      });
     }
 
     // Test 2: Check foreign key relationships
@@ -832,11 +883,10 @@ async function testDatabaseState() {
       LIMIT 10
     `);
 
-    await assert(
-      fkResult.rows.length > 0,
-      'Foreign key relationships exist',
-      { expected: 'relationships', actual: `${fkResult.rows.length} FKs found` },
-    );
+    await assert(fkResult.rows.length > 0, 'Foreign key relationships exist', {
+      expected: 'relationships',
+      actual: `${fkResult.rows.length} FKs found`,
+    });
 
     // Test 3: Check NOT NULL constraints
     const notNullResult = await dbQuery(`
@@ -847,9 +897,8 @@ async function testDatabaseState() {
     await assert(
       parseInt(notNullResult.rows[0].count) > 0,
       'Admin table has NOT NULL constraints',
-      { expected: 'constraints', actual: notNullResult.rows[0].count },
+      { expected: 'constraints', actual: notNullResult.rows[0].count }
     );
-
   } catch (err) {
     await assert(false, 'Database state validation', { actual: err.message });
     testResults.errors.push({ module: 'Database State', error: err.message });
@@ -866,16 +915,15 @@ async function testEdgeCases(adminToken) {
   // Test 1: Concurrent requests
   if (adminToken) {
     try {
-      const requests = Array(5).fill(null).map(() =>
-        makeRequest('GET', '/api/dashboard/stats', null, adminToken),
-      );
+      const requests = Array(5)
+        .fill(null)
+        .map(() => makeRequest('GET', '/api/dashboard/stats', null, adminToken));
       const results = await Promise.all(requests);
-      const allSuccessful = results.every(r => r.status === 200);
-      await assert(
-        allSuccessful,
-        'Concurrent requests handled correctly',
-        { expected: 'all 200', actual: results.map(r => r.status).join(', ') },
-      );
+      const allSuccessful = results.every((r) => r.status === 200);
+      await assert(allSuccessful, 'Concurrent requests handled correctly', {
+        expected: 'all 200',
+        actual: results.map((r) => r.status).join(', '),
+      });
     } catch (err) {
       await assert(false, 'Concurrent requests', { actual: err.message });
     }
@@ -893,7 +941,7 @@ async function testEdgeCases(adminToken) {
     await assert(
       err.message.includes('timeout') || err.message.includes('abort'),
       'Request timeout is handled',
-      { expected: 'timeout error', actual: err.message },
+      { expected: 'timeout error', actual: err.message }
     );
   }
 
@@ -901,11 +949,10 @@ async function testEdgeCases(adminToken) {
   try {
     // Some endpoints might return non-JSON
     const response = await makeRequest('GET', '/api/health', null, adminToken);
-    await assert(
-      response.status >= 200,
-      'Health endpoint responds',
-      { expected: '2xx', actual: response.status },
-    );
+    await assert(response.status >= 200, 'Health endpoint responds', {
+      expected: '2xx',
+      actual: response.status,
+    });
   } catch (err) {
     await assert(false, 'Health endpoint', { actual: err.message });
   }
@@ -914,11 +961,10 @@ async function testEdgeCases(adminToken) {
   if (adminToken) {
     try {
       const response = await makeRequest('GET', '/api/infants/999999', null, adminToken);
-      await assert(
-        response.status === 404,
-        'Non-existent resource returns 404',
-        { expected: '404', actual: response.status },
-      );
+      await assert(response.status === 404, 'Non-existent resource returns 404', {
+        expected: '404',
+        actual: response.status,
+      });
     } catch (err) {
       await assert(false, 'Not found handling', { actual: err.message });
     }
@@ -930,7 +976,7 @@ async function testEdgeCases(adminToken) {
     await assert(
       response.status === 405 || response.status === 404,
       'DELETE on read-only endpoint is rejected',
-      { expected: '405/404', actual: response.status },
+      { expected: '405/404', actual: response.status }
     );
   } catch (err) {
     await assert(false, 'Method not allowed handling', { actual: err.message });
@@ -942,7 +988,8 @@ async function testEdgeCases(adminToken) {
 // ============================================
 
 function generateTestReport() {
-  const totalTests = testResults.passed.length + testResults.failed.length + testResults.skipped.length;
+  const totalTests =
+    testResults.passed.length + testResults.failed.length + testResults.skipped.length;
   const passRate = totalTests > 0 ? ((testResults.passed.length / totalTests) * 100).toFixed(2) : 0;
 
   let report = '# Comprehensive Backend API Test Report\n\n';
@@ -976,7 +1023,7 @@ function generateTestReport() {
   if (testResults.errors.length === 0) {
     report += 'No system errors.\n\n';
   } else {
-    testResults.errors.forEach(err => {
+    testResults.errors.forEach((err) => {
       report += `- **${err.module}:** ${err.error}\n`;
     });
     report += '\n';
@@ -1061,7 +1108,7 @@ async function runTests() {
 
   if (testResults.errors.length > 0) {
     console.log('\n--- System Errors ---');
-    testResults.errors.forEach(err => {
+    testResults.errors.forEach((err) => {
       console.log(`- ${err.module}: ${err.error}`);
     });
   }
@@ -1091,7 +1138,7 @@ async function runTests() {
 }
 
 // Run tests
-runTests().catch(err => {
+runTests().catch((err) => {
   console.error('Test runner error:', err);
   process.exit(1);
 });

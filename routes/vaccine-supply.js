@@ -24,9 +24,7 @@ router.get('/', (req, res) => {
   });
 });
 
-// ============================================================================
-// VACCINE REQUEST ENDPOINTS (Barangay → City)
-// ============================================================================
+// Vaccine request endpoints (barangay to city)
 
 // POST /api/vaccine-supply/requests
 // Submit new vaccine request (Barangay)
@@ -408,9 +406,7 @@ router.put('/requests/:id/review', auth, async (req, res) => {
   }
 });
 
-// ============================================================================
-// VACCINE ALLOCATION ENDPOINTS (City → Barangay)
-// ============================================================================
+// Vaccine allocation endpoints (city to barangay)
 
 // POST /api/vaccine-supply/allocations
 // Create new allocation (City only)

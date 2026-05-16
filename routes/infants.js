@@ -1,34 +1,24 @@
 const express = require('express');
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
-const {
-  CANONICAL_ROLES,
-  getCanonicalRole,
-  requirePermission,
-} = require('../middleware/rbac');
-const {
-  resolveOrCreateInfantPatient,
-  INFANT_CONTROL_NUMBER_PATTERN,
-} = require('../services/infantControlNumberService');
+const { CANONICAL_ROLES, getCanonicalRole, requirePermission } = require('../middleware/rbac');
+const { INFANT_CONTROL_NUMBER_PATTERN } = require('../services/infantControlNumberService');
 const patientService = require('../services/patientService');
 const {
   createGuardianChildRecord,
+  ensureBirthGrowthRecord,
 } = require('../services/guardianChildRegistrationService');
 const immunizationScheduleService = require('../services/immunizationScheduleService');
 const {
   isScopeRequestAllowed,
   parsePositiveInt,
   resolveEffectiveScope,
-  resolvePatientFacilityId,
 } = require('../services/entityScopeService');
 require('../services/infantRuntimeSchemaService');
 const socketService = require('../services/socketService');
 const adminNotificationService = require('../services/adminNotificationService');
-const { calculateAgeInMonths } = require('../utils/ageCalculation');
-const {
-  isValidPurok,
-  isValidStreetColorForPurok,
-} = require('../utils/purokOptions');
+require('../utils/ageCalculation');
+const { isValidPurok, isValidStreetColorForPurok } = require('../utils/purokOptions');
 const { resolvePatientColumn } = require('../utils/schemaHelpers');
 
 const router = express.Router();
@@ -37,12 +27,12 @@ router.use(authenticateToken);
 
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
-const guardianOwnsInfant = async (guardianId, infantId) => {
+const ownsInfant = async (guardianId, infantId) => {
   const patient = await patientService.getPatientById(infantId);
   return patient && patient.guardianId === guardianId;
 };
 
-const normalizeInfantValidationErrors = (errors = {}) => {
+const normalizeValErrors = (errors = {}) => {
   return Object.entries(errors).reduce((acc, [field, message]) => {
     if (typeof message === 'string' && message.trim()) {
       acc[field] = message;
@@ -55,8 +45,12 @@ const normalizeInfantValidationErrors = (errors = {}) => {
   }, {});
 };
 
-const respondInfantValidationError = (res, errors = {}, message = 'Please correct the highlighted child registration fields.') => {
-  const fields = normalizeInfantValidationErrors(errors);
+const respondValError = (
+  res,
+  errors = {},
+  message = 'Please correct the highlighted child registration fields.'
+) => {
+  const fields = normalizeValErrors(errors);
   return res.status(400).json({
     success: false,
     error: message,
@@ -73,9 +67,9 @@ const toNullableString = (value) => {
   return normalized.length > 0 ? normalized : null;
 };
 
-let importedVaccinationPredicatePromise = null;
+let importedVaccPredicatePromise = null;
 
-const mergePendingDoseCounts = (rows = [], scheduleSummaryMap = new Map()) =>
+const mergeDoseCounts = (rows = [], scheduleSummaryMap = new Map()) =>
   rows.map((row) => {
     const scheduleSummary = scheduleSummaryMap.get(Number.parseInt(row?.id, 10));
 
@@ -88,13 +82,7 @@ const mergePendingDoseCounts = (rows = [], scheduleSummaryMap = new Map()) =>
     };
   });
 
-const sumPendingDoseCounts = (scheduleSummaryMap = new Map()) =>
-  Array.from(scheduleSummaryMap.values()).reduce(
-    (total, summary) => total + Number(summary?.pendingCount || 0),
-    0,
-  );
-
-const requirePatientReadAccess = (req, res, next) => {
+const requireReadAccess = (req, res, next) => {
   const canonicalRole = getCanonicalRole(req);
   if (canonicalRole === CANONICAL_ROLES.GUARDIAN) {
     return next();
@@ -126,7 +114,7 @@ const sanitizePage = (value, fallback = 1) => {
   return parsed || fallback;
 };
 
-const resolveScopedFacilityContext = (req) => {
+const resolveFacilityScope = (req) => {
   const canonicalRole = getCanonicalRole(req);
   const scope = resolveEffectiveScope({
     query: req.query,
@@ -134,10 +122,7 @@ const resolveScopedFacilityContext = (req) => {
     canonicalRole,
   });
 
-  if (
-    canonicalRole !== CANONICAL_ROLES.GUARDIAN &&
-    !isScopeRequestAllowed(scope)
-  ) {
+  if (canonicalRole !== CANONICAL_ROLES.GUARDIAN && !isScopeRequestAllowed(scope)) {
     return {
       error: 'Cross-facility patient access is not allowed. Use your assigned facility scope.',
       status: 403,
@@ -147,9 +132,9 @@ const resolveScopedFacilityContext = (req) => {
   return scope;
 };
 
-const getImportedVaccinationPredicate = async () => {
-  if (!importedVaccinationPredicatePromise) {
-    importedVaccinationPredicatePromise = pool
+const getImportedVaccPredicate = async () => {
+  if (!importedVaccPredicatePromise) {
+    importedVaccPredicatePromise = pool
       .query(
         `
           SELECT 1
@@ -158,44 +143,24 @@ const getImportedVaccinationPredicate = async () => {
             AND table_name = 'immunization_records'
             AND column_name = 'is_imported'
           LIMIT 1
-        `,
+        `
       )
       .then((result) =>
-        result.rows.length > 0 ? 'COALESCE(ir.is_imported, false) = true' : 'false',
+        result.rows.length > 0 ? 'COALESCE(ir.is_imported, false) = true' : 'false'
       )
       .catch((error) => {
-        importedVaccinationPredicatePromise = null;
+        importedVaccPredicatePromise = null;
         throw error;
       });
   }
 
-  return importedVaccinationPredicatePromise;
+  return importedVaccPredicatePromise;
 };
 
-const buildBackfillAssignments = (columnValues = {}) => {
-  const updates = [];
-  const values = [];
-  let nextParamIndex = 1;
-
-  Object.entries(columnValues).forEach(([columnName, value]) => {
-    if (value !== null && value !== undefined && value !== '') {
-      updates.push(`${columnName} = COALESCE(${columnName}, $${nextParamIndex})`);
-      values.push(value);
-      nextParamIndex += 1;
-    }
-  });
-
-  return {
-    updates,
-    values,
-    nextParamIndex,
-  };
-};
-
-const validatePurokSelection = (
+const validatePurok = (
   { purok, street_color },
   errors,
-  { requireSelection = false } = {},
+  { requireSelection = false } = {}
 ) => {
   if (requireSelection && !purok) {
     errors.purok = 'Purok is required';
@@ -225,7 +190,9 @@ const validateInfantPayload = (payload = {}, options = {}) => {
   const firstName = String(payload.first_name || '').trim();
   const lastName = String(payload.last_name || '').trim();
   const dobRaw = payload.dob;
-  const sexRaw = String(payload.sex || '').trim().toUpperCase();
+  const sexRaw = String(payload.sex || '')
+    .trim()
+    .toUpperCase();
 
   if (!firstName) {
     errors.first_name = 'First name is required';
@@ -254,7 +221,7 @@ const validateInfantPayload = (payload = {}, options = {}) => {
       const dobMidnight = new Date(
         parsedDob.getFullYear(),
         parsedDob.getMonth(),
-        parsedDob.getDate(),
+        parsedDob.getDate()
       );
 
       if (dobMidnight > todayMidnight) {
@@ -324,8 +291,18 @@ const validateInfantPayload = (payload = {}, options = {}) => {
     photo_url: toNullableString(payload.photo_url),
     mother_name: toNullableString(payload.mother_name),
     father_name: toNullableString(payload.father_name),
-    birth_weight: normalizeNullableNumber(payload.birth_weight, 'birth_weight', { min: 0.3, max: 10 }),
-    birth_height: normalizeNullableNumber(payload.birth_height, 'birth_height', { min: 10, max: 100 }),
+    birth_weight: normalizeNullableNumber(payload.birth_weight, 'birth_weight', {
+      min: 0.3,
+      max: 10,
+    }),
+    birth_height: normalizeNullableNumber(payload.birth_height, 'birth_height', {
+      min: 10,
+      max: 100,
+    }),
+    birth_head_circumference: normalizeNullableNumber(
+      payload.birth_head_circumference,
+      'birth_head_circumference',
+    ),
     place_of_birth: toNullableString(payload.place_of_birth),
     barangay: toNullableString(payload.barangay),
     health_center: toNullableString(payload.health_center),
@@ -338,9 +315,12 @@ const validateInfantPayload = (payload = {}, options = {}) => {
     nbs_done: payload.nbs_done === undefined ? null : Boolean(payload.nbs_done),
     nbs_date: toNullableString(payload.nbs_date),
     cellphone_number: toNullableString(payload.cellphone_number),
-    facility_id: payload.facility_id === undefined || payload.facility_id === null || payload.facility_id === ''
-      ? null
-      : parseInt(payload.facility_id, 10),
+    facility_id:
+      payload.facility_id === undefined ||
+      payload.facility_id === null ||
+      payload.facility_id === ''
+        ? null
+        : parseInt(payload.facility_id, 10),
     allergy_information: toNullableString(payload.allergy_information),
     health_care_provider: toNullableString(payload.health_care_provider),
   };
@@ -354,7 +334,7 @@ const validateInfantPayload = (payload = {}, options = {}) => {
     errors.facility_id = 'facility_id must be a valid positive integer';
   }
 
-  validatePurokSelection(normalized, errors, {
+  validatePurok(normalized, errors, {
     requireSelection: requirePurokFields,
   });
 
@@ -365,8 +345,7 @@ const validateInfantPayload = (payload = {}, options = {}) => {
   };
 };
 
-// Extended validation with allergy_information and health_care_provider
-const validateInfantPayloadExtended = (payload = {}, options = {}) => {
+const validatePayloadExtended = (payload = {}, options = {}) => {
   const baseValidation = validateInfantPayload(payload, options);
   if (!baseValidation.isValid) {
     return baseValidation;
@@ -374,7 +353,6 @@ const validateInfantPayloadExtended = (payload = {}, options = {}) => {
 
   const normalized = { ...baseValidation.data };
 
-  // Add new fields
   normalized.allergy_information = toNullableString(payload.allergy_information);
   normalized.health_care_provider = toNullableString(payload.health_care_provider);
 
@@ -385,10 +363,9 @@ const validateInfantPayloadExtended = (payload = {}, options = {}) => {
   };
 };
 
-// Get infants by guardian
-router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) => {
+router.get('/guardian/:guardianId', requireReadAccess, async (req, res) => {
   try {
-    const importedVaccinationPredicate = await getImportedVaccinationPredicate();
+    const importedVaccinationPredicate = await getImportedVaccPredicate();
 
     const guardianId = parseInt(req.params.guardianId, 10);
     if (Number.isNaN(guardianId)) {
@@ -399,7 +376,7 @@ router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) =
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    const scopedFacilityContext = resolveFacilityScope(req);
     if (scopedFacilityContext.error) {
       return res.status(scopedFacilityContext.status).json({ error: scopedFacilityContext.error });
     }
@@ -468,6 +445,17 @@ router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) =
             LIMIT 1
           ) AS latest_transfer_case_updated_at,
           (
+            SELECT pg.head_circumference_cm
+            FROM patient_growth pg
+            WHERE pg.patient_id = p.id
+              AND COALESCE(pg.is_active, true) = true
+            ORDER BY
+              CASE WHEN pg.measurement_date = p.dob THEN 0 ELSE 1 END,
+              pg.measurement_date ASC,
+              pg.id ASC
+            LIMIT 1
+          ) AS birth_head_circumference,
+          (
             SELECT json_agg(
               json_build_object(
                 'id', ia.id,
@@ -487,16 +475,16 @@ router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) =
           ${facilityFilterClause}
         ORDER BY p.created_at DESC
       `,
-      params,
+      params
     );
 
     const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
-      result.rows || [],
+      result.rows || []
     );
 
     res.json({
       success: true,
-      data: mergePendingDoseCounts(result.rows || [], scheduleSummaryMap),
+      data: mergeDoseCounts(result.rows || [], scheduleSummaryMap),
     });
   } catch (error) {
     console.error('Error fetching infants by guardian:', error);
@@ -504,42 +492,43 @@ router.get('/guardian/:guardianId', requirePatientReadAccess, async (req, res) =
   }
 });
 
-// Get all infants (redirected to canonical patient service)
 router.get('/', requirePermission('patient:view'), async (req, res) => {
   try {
-    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    const scopedFacilityContext = resolveFacilityScope(req);
     if (scopedFacilityContext.error) {
-      return res.status(scopedFacilityContext.status).json({ success: false, error: scopedFacilityContext.error });
+      return res
+        .status(scopedFacilityContext.status)
+        .json({ success: false, error: scopedFacilityContext.error });
     }
 
-    // Performance: Cap limits to prevent large queries
     const limit = sanitizeLimit(req.query.limit, 25, 1000);
     const page = sanitizePage(req.query.page, 1);
     const offset = sanitizeOffset(req.query.offset, (page - 1) * limit);
-    
-    // Build filters for canonical patient service
+
     const filters = {
       search: req.query.search || req.query.query,
-      facilityId: scopedFacilityContext.useScope && scopedFacilityContext.scopeIds.length > 0 ? scopedFacilityContext.scopeIds[0] : undefined,
+      facilityId:
+        scopedFacilityContext.useScope && scopedFacilityContext.scopeIds.length > 0
+          ? scopedFacilityContext.scopeIds[0]
+          : undefined,
       dateFrom: req.query.start_date || req.query.dob_start || req.query.date_of_birth_start,
       dateTo: req.query.end_date || req.query.dob_end || req.query.date_of_birth_end,
       createdFrom: req.query.created_from || undefined,
       createdTo: req.query.created_to || undefined,
       orderBy: req.query.order_by || req.query.orderBy || 'created_at',
       orderDirection: req.query.order_direction || req.query.orderDirection || 'DESC',
-      excludeFutureDob:
-        ['true', '1', 'yes'].includes(
-          String(req.query.exclude_future_dob || req.query.excludeFutureDob || '')
-            .trim()
-            .toLowerCase(),
-        ),
+      excludeFutureDob: ['true', '1', 'yes'].includes(
+        String(req.query.exclude_future_dob || req.query.excludeFutureDob || '')
+          .trim()
+          .toLowerCase()
+      ),
+      workflowStatus: req.query.workflow_status ?? req.query.workflowStatus,
       isActive: true,
       page,
       limit,
       offset,
     };
 
-    // Guardian can only see their own patients
     if (isGuardian(req)) {
       filters.guardianId = req.user.id;
     }
@@ -557,21 +546,19 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
       },
       summary: result.summary || null,
     });
-
   } catch (error) {
     console.error('Error fetching infants:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch infants',
-      message: error.message
+      message: error.message,
     });
   }
 });
 
-// Get infant statistics (redirected to canonical patient service)
 router.get('/stats/overview', requirePermission('patient:view'), async (req, res) => {
   try {
-    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    const scopedFacilityContext = resolveFacilityScope(req);
     if (scopedFacilityContext.error) {
       return res.status(scopedFacilityContext.status).json({
         success: false,
@@ -579,19 +566,18 @@ router.get('/stats/overview', requirePermission('patient:view'), async (req, res
       });
     }
 
-    // Build filters for canonical patient service
     const filters = {
-      facilityId: scopedFacilityContext.useScope && scopedFacilityContext.scopeIds.length > 0 ? scopedFacilityContext.scopeIds[0] : undefined,
+      facilityId:
+        scopedFacilityContext.useScope && scopedFacilityContext.scopeIds.length > 0
+          ? scopedFacilityContext.scopeIds[0]
+          : undefined,
       isActive: true,
-      // No pagination needed for stats
     };
 
-    // Guardian can only see their own patients
     if (isGuardian(req)) {
       filters.guardianId = req.user.id;
     }
 
-    // Use canonical patient service for statistics
     const stats = await patientService.getPatientStatistics(filters);
 
     res.json({
@@ -604,12 +590,11 @@ router.get('/stats/overview', requirePermission('patient:view'), async (req, res
   }
 });
 
-// Get infants with upcoming vaccinations (redirected to canonical patient service)
 router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (req, res) => {
   try {
     const limit = sanitizeLimit(req.query.limit, 50, 200);
     const offset = sanitizeOffset(req.query.offset, 0);
-    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    const scopedFacilityContext = resolveFacilityScope(req);
     if (scopedFacilityContext.error) {
       return res.status(scopedFacilityContext.status).json({
         success: false,
@@ -617,7 +602,6 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (r
       });
     }
 
-    // Build filters for canonical patient service
     const filters = {
       facilityId: scopedFacilityContext.useScope ? scopedFacilityContext.scopeIds[0] : undefined,
       isActive: true,
@@ -625,20 +609,17 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (r
       offset,
       orderBy: 'next_due_date',
       orderDirection: 'ASC',
-      // Custom filter for upcoming vaccinations
       customWhere: [
         'vr.next_due_date IS NOT NULL',
-        'vr.next_due_date <= CURRENT_DATE + INTERVAL \'30 days\'',
-        'vr.is_active = true'
-      ]
+        "vr.next_due_date <= CURRENT_DATE + INTERVAL '30 days'",
+        'vr.is_active = true',
+      ],
     };
 
-    // Guardian can only see their own patients
     if (isGuardian(req)) {
       filters.guardianId = req.user.id;
     }
 
-    // Use canonical patient service with custom vaccination filter
     const result = await patientService.getPatientsWithVaccinationFilters(filters);
 
     res.json({ success: true, data: result.patients || [] });
@@ -648,24 +629,26 @@ router.get('/upcoming-vaccinations', requirePermission('patient:view'), async (r
   }
 });
 
-// Get infant by control number
-router.get('/control-number/:controlNumber', requirePatientReadAccess, async (req, res) => {
+router.get('/control-number/:controlNumber', requireReadAccess, async (req, res) => {
   try {
     const canonicalRole = getCanonicalRole(req);
     if (
       canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
-      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER &&
       canonicalRole !== CANONICAL_ROLES.GUARDIAN
     ) {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
-    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    const scopedFacilityContext = resolveFacilityScope(req);
     if (scopedFacilityContext.error) {
-      return res.status(scopedFacilityContext.status).json({ success: false, error: scopedFacilityContext.error });
+      return res
+        .status(scopedFacilityContext.status)
+        .json({ success: false, error: scopedFacilityContext.error });
     }
 
-    const rawControlNumber = String(req.params.controlNumber || '').trim().toUpperCase();
+    const rawControlNumber = String(req.params.controlNumber || '')
+      .trim()
+      .toUpperCase();
     if (!rawControlNumber) {
       return res.status(400).json({ success: false, error: 'Control number is required' });
     }
@@ -727,7 +710,7 @@ router.get('/control-number/:controlNumber', requirePatientReadAccess, async (re
           ${facilityFilterClause}
         LIMIT 1
       `,
-      params,
+      params
     );
 
     if (result.rows.length === 0) {
@@ -741,8 +724,7 @@ router.get('/control-number/:controlNumber', requirePatientReadAccess, async (re
   }
 });
 
-// Get infant by ID (redirected to canonical patient service)
-router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
+router.get('/:id(\\d+)', requireReadAccess, async (req, res) => {
   try {
     const infantId = parseInt(req.params.id, 10);
     if (Number.isNaN(infantId)) {
@@ -750,31 +732,27 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
     }
 
     const canonicalRole = getCanonicalRole(req);
-    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    const scopedFacilityContext = resolveFacilityScope(req);
     if (scopedFacilityContext.error) {
-      return res.status(scopedFacilityContext.status).json({ success: false, error: scopedFacilityContext.error });
+      return res
+        .status(scopedFacilityContext.status)
+        .json({ success: false, error: scopedFacilityContext.error });
     }
 
-    // Check ownership for guardians
     if (isGuardian(req)) {
-      const isOwner = await guardianOwnsInfant(parseInt(req.user.guardian_id, 10), infantId);
+      const isOwner = await ownsInfant(parseInt(req.user.guardian_id, 10), infantId);
       if (!isOwner) {
         return res.status(403).json({ success: false, error: 'Access denied' });
       }
-    } else if (
-      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
-      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER
-    ) {
+    } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
-    // Use canonical patient service
     const patient = await patientService.getPatientById(infantId);
     if (!patient) {
       return res.status(404).json({ success: false, error: 'Infant not found' });
     }
 
-    // Apply facility scope filtering for non-guardians
     if (!isGuardian(req) && scopedFacilityContext.useScope) {
       const patientFacilityId = Number.parseInt(patient.facilityId, 10);
       if (
@@ -782,13 +760,16 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
         patientFacilityId > 0 &&
         !scopedFacilityContext.scopeIds.includes(patientFacilityId)
       ) {
-        return res.status(403).json({ success: false, error: 'Access denied - facility scope mismatch' });
+        return res
+          .status(403)
+          .json({ success: false, error: 'Access denied - facility scope mismatch' });
       }
     }
 
-    // Get vaccination schedule summary for the patient
-    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients([patient]);
-    const patientWithSchedule = mergePendingDoseCounts([patient], scheduleSummaryMap)[0];
+    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients([
+      patient,
+    ]);
+    const patientWithSchedule = mergeDoseCounts([patient], scheduleSummaryMap)[0];
 
     res.json({
       success: true,
@@ -800,43 +781,13 @@ router.get('/:id(\\d+)', requirePatientReadAccess, async (req, res) => {
   }
 });
 
-// Create infant (SYSTEM_ADMIN) - redirected to canonical patient service
 router.post('/', requirePermission('patient:create'), async (req, res) => {
   try {
-    const {
-      first_name,
-      last_name,
-      middle_name,
-      dob,
-      sex,
-      national_id,
-      address,
-      contact,
-      guardian_id,
-      photo_url,
-      mother_name,
-      father_name,
-      birth_weight,
-      birth_height,
-      place_of_birth,
-      barangay,
-      health_center,
-      family_no,
-      time_of_delivery,
-      type_of_delivery,
-      doctor_midwife_nurse,
-      nbs_done,
-      nbs_date,
-      cellphone_number,
-      facility_id,
-      purok,
-      street_color,
-    } = req.body;
+    const { guardian_id } = req.body;
 
-    // Validate required fields
     const validationResult = validateInfantPayload(req.body, { requirePurokFields: false });
     if (!validationResult.isValid) {
-      return respondInfantValidationError(res, validationResult.errors);
+      return respondValError(res, validationResult.errors);
     }
 
     const patientData = {
@@ -846,9 +797,16 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
           ? parseInt(guardian_id, 10)
           : validationResult.data.guardian_id,
     };
-    
-    // Use canonical patient service to create patient
+
     const newPatient = await patientService.createPatient(patientData, req.user.id);
+
+    await ensureBirthGrowthRecord(pool, {
+      patientId: newPatient.id,
+      dob: newPatient.dob,
+      birthWeight: newPatient.birth_weight,
+      birthHeight: newPatient.birth_height,
+      birthHeadCircumference: patientData.birth_head_circumference,
+    });
 
     socketService.broadcast('infant_created', newPatient);
     res.status(201).json({
@@ -863,7 +821,6 @@ router.post('/', requirePermission('patient:create'), async (req, res) => {
   }
 });
 
-// Create infant (GUARDIAN own) - redirected to canonical patient service
 router.post('/guardian', requirePermission('patient:create:own'), async (req, res) => {
   try {
     if (!isGuardian(req)) {
@@ -896,10 +853,9 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
       });
     }
 
-    // Validate required fields
     const validationResult = validateInfantPayload(payload, { requirePurokFields: true });
     if (!validationResult.isValid) {
-      return respondInfantValidationError(res, validationResult.errors);
+      return respondValError(res, validationResult.errors);
     }
 
     const childResult = await createGuardianChildRecord({
@@ -925,7 +881,7 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
     });
   } catch (error) {
     if (error.code === 'VALIDATION_ERROR') {
-      return respondInfantValidationError(res, error.fields || {});
+      return respondValError(res, error.fields || {});
     }
 
     if (error.code === 'AMBIGUOUS_INFANT_MATCH') {
@@ -949,7 +905,6 @@ router.post('/guardian', requirePermission('patient:create:own'), async (req, re
   }
 });
 
-// Update infant (GUARDIAN own)
 router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async (req, res) => {
   try {
     if (!isGuardian(req)) {
@@ -972,7 +927,7 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
       return res.status(400).json({ success: false, error: 'Invalid child ID' });
     }
 
-    const isOwner = await guardianOwnsInfant(guardianId, infantId);
+    const isOwner = await ownsInfant(guardianId, infantId);
     if (!isOwner) {
       return res.status(403).json({
         success: false,
@@ -985,13 +940,14 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
       delete updatePayload.control_number;
     }
 
-    // Use extended validation with allergy_information and health_care_provider
-    const validationResult = validateInfantPayloadExtended(updatePayload, { requirePurokFields: false });
+    const validationResult = validatePayloadExtended(updatePayload, {
+      requirePurokFields: false,
+    });
     if (!validationResult.isValid) {
-      return respondInfantValidationError(
+      return respondValError(
         res,
         validationResult.errors,
-        'Please correct the highlighted child update fields.',
+        'Please correct the highlighted child update fields.'
       );
     }
 
@@ -1065,12 +1021,20 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
         infantData.street_color,
         infantId,
         guardianId,
-      ],
+      ]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Child not found' });
     }
+
+    await ensureBirthGrowthRecord(pool, {
+      patientId: result.rows[0].id,
+      dob: result.rows[0].dob,
+      birthWeight: result.rows[0].birth_weight,
+      birthHeight: result.rows[0].birth_height,
+      birthHeadCircumference: infantData.birth_head_circumference,
+    });
 
     socketService.broadcast('infant_updated', result.rows[0]);
     return res.json({ success: true, data: result.rows[0] });
@@ -1080,7 +1044,6 @@ router.put('/:id(\\d+)/guardian', requirePermission('patient:update:own'), async
   }
 });
 
-// Delete infant (GUARDIAN own soft delete with cascading deletion and admin notification)
 router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), async (req, res) => {
   const client = await pool.connect();
   try {
@@ -1104,13 +1067,11 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
       return res.status(400).json({ success: false, error: 'Invalid child ID' });
     }
 
-    // Start transaction for cascading deletion
     await client.query('BEGIN');
 
-    // Get infant details before deletion
     const infantResult = await client.query(
       'SELECT id, first_name, last_name, control_number, dob FROM patients WHERE id = $1 AND guardian_id = $2 AND is_active = true',
-      [infantId, guardianId],
+      [infantId, guardianId]
     );
 
     if (infantResult.rows.length === 0) {
@@ -1120,23 +1081,20 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
 
     const infant = infantResult.rows[0];
 
-    // Get guardian details for notification
     const guardianResult = await client.query(
       'SELECT id, name, email, phone FROM guardians WHERE id = $1',
-      [guardianId],
+      [guardianId]
     );
     const guardian = guardianResult.rows[0];
 
     const appointmentPatientColumn = await resolvePatientColumn();
 
-    // Get count of appointments to be deleted
     const appointmentCountResult = await client.query(
       `SELECT COUNT(*) as count FROM appointments WHERE ${appointmentPatientColumn} = $1 AND COALESCE(is_active, true) = true`,
-      [infantId],
+      [infantId]
     );
     const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
 
-    // Preserve appointment history by soft-deactivating linked appointments.
     await client.query(
       `
         UPDATE appointments
@@ -1145,13 +1103,12 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
         WHERE ${appointmentPatientColumn} = $1
           AND COALESCE(is_active, true) = true
       `,
-      [infantId],
+      [infantId]
     );
 
-    // Soft delete the infant (set is_active = false)
     const deleteResult = await client.query(
       'UPDATE patients SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND guardian_id = $2 AND is_active = true RETURNING id',
-      [infantId, guardianId],
+      [infantId, guardianId]
     );
 
     if (deleteResult.rows.length === 0) {
@@ -1161,12 +1118,10 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
 
     await client.query('COMMIT');
 
-    // Send admin notification about the deletion
     const deletionTimestamp = new Date().toISOString();
     const adminNotificationTitle = 'Child Profile Deleted by Guardian';
     const adminNotificationMessage = `Guardian "${guardian.name}" (ID: ${guardian.id}) has deleted a child profile. Child: ${infant.first_name} ${infant.last_name} (Control Number: ${infant.control_number || 'N/A'}). ${appointmentCount} associated appointment record(s) were archived. Deletion timestamp: ${deletionTimestamp}. Guardian contact: ${guardian.phone || 'N/A'}, ${guardian.email || 'N/A'}`;
 
-    // Send notification to admins
     try {
       await adminNotificationService.sendAdminNotification({
         title: adminNotificationTitle,
@@ -1180,7 +1135,6 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
       console.error('Failed to send admin notification for child deletion:', notificationError);
     }
 
-    // Also broadcast via socket for real-time admin updates
     socketService.broadcast('infant_deleted', {
       id: infantId,
       deletedBy: 'guardian',
@@ -1212,7 +1166,6 @@ router.delete('/:id(\\d+)/guardian', requirePermission('patient:delete:own'), as
   }
 });
 
-// Update infant (SYSTEM_ADMIN)
 router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) => {
   try {
     const infantId = parseInt(req.params.id, 10);
@@ -1259,19 +1212,19 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
     const normalizedPurok = toNullableString(purok);
     const normalizedStreetColor = toNullableString(street_color);
     const purokErrors = {};
-    validatePurokSelection(
+    validatePurok(
       {
         purok: normalizedPurok,
         street_color: normalizedStreetColor,
       },
-      purokErrors,
+      purokErrors
     );
 
     if (Object.keys(purokErrors).length > 0) {
-      return respondInfantValidationError(
+      return respondValError(
         res,
         purokErrors,
-        'Please correct the highlighted infant update fields.',
+        'Please correct the highlighted infant update fields.'
       );
     }
 
@@ -1349,12 +1302,20 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
         normalizedPurok,
         normalizedStreetColor,
         infantId,
-      ],
+      ]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Infant not found' });
     }
+
+    await ensureBirthGrowthRecord(pool, {
+      patientId: result.rows[0].id,
+      dob: result.rows[0].dob,
+      birthWeight: result.rows[0].birth_weight,
+      birthHeight: result.rows[0].birth_height,
+      birthHeadCircumference: infantData.birth_head_circumference,
+    });
 
     socketService.broadcast('infant_updated', result.rows[0]);
     res.json({ success: true, data: result.rows[0] });
@@ -1364,7 +1325,6 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
   }
 });
 
-// Delete infant (SYSTEM_ADMIN soft delete with cascading deletion and admin notification)
 router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res) => {
   const client = await pool.connect();
   try {
@@ -1373,13 +1333,11 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
       return res.status(400).json({ success: false, error: 'Invalid infant ID' });
     }
 
-    // Start transaction for cascading deletion
     await client.query('BEGIN');
 
-    // Get infant details before deletion
     const infantResult = await client.query(
       'SELECT id, first_name, last_name, control_number, dob, guardian_id FROM patients WHERE id = $1 AND is_active = true',
-      [infantId],
+      [infantId]
     );
 
     if (infantResult.rows.length === 0) {
@@ -1389,26 +1347,23 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
 
     const infant = infantResult.rows[0];
 
-    // Get guardian details for notification
     let guardian = null;
     if (infant.guardian_id) {
       const guardianResult = await client.query(
         'SELECT id, name, email, phone FROM guardians WHERE id = $1',
-        [infant.guardian_id],
+        [infant.guardian_id]
       );
       guardian = guardianResult.rows[0];
     }
 
     const appointmentPatientColumn = await resolvePatientColumn();
 
-    // Get count of appointments to be deleted
     const appointmentCountResult = await client.query(
       `SELECT COUNT(*) as count FROM appointments WHERE ${appointmentPatientColumn} = $1 AND COALESCE(is_active, true) = true`,
-      [infantId],
+      [infantId]
     );
     const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
 
-    // Preserve appointment history by soft-deactivating linked appointments.
     await client.query(
       `
         UPDATE appointments
@@ -1417,13 +1372,12 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
         WHERE ${appointmentPatientColumn} = $1
           AND COALESCE(is_active, true) = true
       `,
-      [infantId],
+      [infantId]
     );
 
-    // Soft delete the infant (set is_active = false)
     const deleteResult = await client.query(
       'UPDATE patients SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND is_active = true RETURNING id',
-      [infantId],
+      [infantId]
     );
 
     if (deleteResult.rows.length === 0) {
@@ -1433,12 +1387,10 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
 
     await client.query('COMMIT');
 
-    // Send admin notification about the deletion
     const deletionTimestamp = new Date().toISOString();
     const adminNotificationTitle = 'Child Profile Deleted by System Admin';
     const adminNotificationMessage = `System Admin has deleted a child profile. Child: ${infant.first_name} ${infant.last_name} (Control Number: ${infant.control_number || 'N/A'}). ${appointmentCount} associated appointment record(s) were archived. Deletion timestamp: ${deletionTimestamp}. ${guardian ? `Guardian: ${guardian.name} (ID: ${guardian.id}), Contact: ${guardian.phone || 'N/A'}, ${guardian.email || 'N/A'}` : 'No guardian information available'}`;
 
-    // Send notification to admins
     try {
       await adminNotificationService.sendAdminNotification({
         title: adminNotificationTitle,
@@ -1452,7 +1404,6 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
       console.error('Failed to send admin notification for child deletion:', notificationError);
     }
 
-    // Also broadcast via socket for real-time admin updates
     socketService.broadcast('infant_deleted', {
       id: infantId,
       deletedBy: 'system_admin',
@@ -1485,13 +1436,12 @@ router.delete('/:id(\\d+)', requirePermission('patient:delete'), async (req, res
   }
 });
 
-// Search infants (SYSTEM_ADMIN)
 router.get('/search/:query', requirePermission('patient:view'), async (req, res) => {
   try {
     const { query } = req.params;
     const limit = sanitizeLimit(req.query.limit, 50, 200);
     const offset = sanitizeOffset(req.query.offset, 0);
-    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    const scopedFacilityContext = resolveFacilityScope(req);
     if (scopedFacilityContext.error) {
       return res.status(scopedFacilityContext.status).json({
         success: false,
@@ -1499,13 +1449,15 @@ router.get('/search/:query', requirePermission('patient:view'), async (req, res)
       });
     }
 
+    // FIX: Infant search must filter by CHILD name only. Removed g.name so
+    // a surname matching the GUARDIAN's name no longer pulls every child of
+    // that guardian into the results.
     const searchCondition = patientService.buildTokenizedSearchCondition({
       searchValue: query,
       expressions: [
         ...patientService.buildPatientNameSearchExpressions('p'),
         'p.national_id',
         'p.control_number',
-        'g.name',
         `TO_CHAR(p.dob, 'YYYY-MM-DD')`,
         `TO_CHAR(p.dob, 'MM/DD/YYYY')`,
       ],
@@ -1549,7 +1501,7 @@ router.get('/search/:query', requirePermission('patient:view'), async (req, res)
         ORDER BY p.created_at DESC
         LIMIT $${params.length + 1}::bigint OFFSET $${params.length + 2}::bigint
       `,
-      [...params, limit, offset],
+      [...params, limit, offset]
     );
 
     res.json({ success: true, data: result.rows || [] });
@@ -1559,12 +1511,11 @@ router.get('/search/:query', requirePermission('patient:view'), async (req, res)
   }
 });
 
-// Get infants by age range (SYSTEM_ADMIN)
 router.get('/age-range/:minAge/:maxAge', requirePermission('patient:view'), async (req, res) => {
   try {
     const minAge = parseInt(req.params.minAge, 10);
     const maxAge = parseInt(req.params.maxAge, 10);
-    const scopedFacilityContext = resolveScopedFacilityContext(req);
+    const scopedFacilityContext = resolveFacilityScope(req);
     if (scopedFacilityContext.error) {
       return res.status(scopedFacilityContext.status).json({
         success: false,
@@ -1599,7 +1550,7 @@ router.get('/age-range/:minAge/:maxAge', requirePermission('patient:view'), asyn
         ${whereClause}
         ORDER BY p.dob DESC
       `,
-      params,
+      params
     );
 
     res.json({ success: true, data: result.rows || [] });

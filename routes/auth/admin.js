@@ -3,14 +3,14 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../../db');
 const refreshTokenService = require('../../services/refreshTokenService');
-const validation = require('../../utils/validation');
-const passwordHistoryService = require('../../services/passwordHistoryService');
-const passwordResetService = require('../../services/passwordResetService');
-const emailService = require('../../services/emailService');
+require('../../utils/validation');
+require('../../services/passwordHistoryService');
+require('../../services/passwordResetService');
+require('../../services/emailService');
 const securityEventService = require('../../services/securityEventService');
 const sessionService = require('../../services/sessionService');
 const adminActivityService = require('../../services/adminActivityService');
-const resendEmailService = require('../../services/resendEmailService');
+require('../../services/resendEmailService');
 const rateLimiter = require('../../middleware/rateLimiter');
 const { bruteForceProtection, checkBruteForce } = require('../../middleware/bruteForceProtection');
 const { normalizeRole, CANONICAL_ROLES, getRolePermissions } = require('../../middleware/rbac');
@@ -139,7 +139,7 @@ router.post(
         JOIN roles r ON u.role_id = r.id
         LEFT JOIN clinics c ON u.clinic_id = c.id
         WHERE (u.username = $1 OR u.email = $1)`,
-        [username || email],
+        [username || email]
       );
 
       if (result.rows.length === 0) {
@@ -148,7 +148,7 @@ router.post(
             username,
             req.ip,
             req.get('User-Agent'),
-            'USER_NOT_FOUND',
+            'USER_NOT_FOUND'
           );
           await checkBruteForce(req, false);
         } catch (logError) {
@@ -192,7 +192,7 @@ router.post(
             username,
             req.ip,
             req.get('User-Agent'),
-            'ACCOUNT_INACTIVE',
+            'ACCOUNT_INACTIVE'
           );
           await checkBruteForce(req, false);
         } catch (logError) {
@@ -213,7 +213,7 @@ router.post(
             username,
             req.ip,
             req.get('User-Agent'),
-            'INVALID_PASSWORD',
+            'INVALID_PASSWORD'
           );
           await checkBruteForce(req, false);
         } catch (logError) {
@@ -260,7 +260,7 @@ router.post(
         user.id,
         refreshToken,
         req.get('User-Agent')?.substring(0, 255) || 'Unknown',
-        req.ip?.substring(0, 255) || 'Unknown',
+        req.ip?.substring(0, 255) || 'Unknown'
       );
 
       await sessionService.createSession(user.id, accessToken, req.ip, req.get('User-Agent'), {
@@ -289,7 +289,7 @@ router.post(
             legacy_role: user.role_name,
           },
           req.ip,
-          req.get('User-Agent'),
+          req.get('User-Agent')
         );
       } catch (error) {
         console.warn('Could not log admin activity:', error.message);
@@ -335,7 +335,7 @@ router.post(
         code: 'LOGIN_ERROR',
       });
     }
-  },
+  }
 );
 
 module.exports = router;

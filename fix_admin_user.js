@@ -7,7 +7,7 @@ const pool = new Pool({
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'immunicare_dev',
   user: process.env.DB_USER || 'immunicare_dev',
-  password: process.env.DB_PASSWORD || ''
+  password: process.env.DB_PASSWORD || '',
 });
 
 async function fixAdminUser() {
@@ -25,7 +25,7 @@ async function fixAdminUser() {
     const password = 'Admin2024!';
     const passwordHash = await bcrypt.hash(password, 10);
 
-    console.log('Generated password hash for \'Admin2024!\':', passwordHash);
+    console.log("Generated password hash for 'Admin2024!':", passwordHash);
 
     // Check if admin user exists
     const existingUser = await pool.query(
@@ -45,10 +45,9 @@ async function fixAdminUser() {
 
       if (!isValid) {
         console.log('Updating admin user password...');
-        await pool.query(
-          'UPDATE users SET password_hash = $1 WHERE username = \'admin\'',
-          [passwordHash]
-        );
+        await pool.query("UPDATE users SET password_hash = $1 WHERE username = 'admin'", [
+          passwordHash,
+        ]);
         console.log('✅ Admin user password updated successfully!');
       } else {
         console.log('✅ Admin user password is already correct!');
@@ -57,7 +56,7 @@ async function fixAdminUser() {
       console.log('Creating new admin user...');
 
       // Create super admin user
-      const result = await pool.query(
+      await pool.query(
         `INSERT INTO users (username, password_hash, role_id, clinic_id, contact, last_login) 
          SELECT 
            'admin',

@@ -12,11 +12,7 @@ const {
 const securityEventService = require('../services/securityEventService');
 const passwordResetService = require('../services/passwordResetService');
 const socketService = require('../services/socketService');
-const { writeAuditLog } = require('../services/auditLogService');
-const {
-  encryptPasswordForVisibility,
-  decryptPasswordVisibilityPayload,
-} = require('../utils/passwordVisibilityCrypto');
+const { encryptPasswordForVisibility } = require('../utils/passwordVisibilityCrypto');
 const { resolvePrimaryUserScopeId } = require('../services/entityScopeService');
 const {
   buildGuardianEmail,
@@ -28,7 +24,6 @@ const {
 
 const router = express.Router();
 
-// Middleware to authenticate all user routes
 router.use(authenticateToken);
 
 const canAccessGuardianScope = (req, guardianId) => {
@@ -37,22 +32,17 @@ const canAccessGuardianScope = (req, guardianId) => {
     return true;
   }
 
-  // Guardians can access their own profile/scope
   if (role === CANONICAL_ROLES.GUARDIAN) {
     const requestedGuardianId = parseInt(guardianId, 10);
 
-    // Check guardian_id if available (preferred method)
     if (req.user.guardian_id) {
       return parseInt(req.user.guardian_id, 10) === requestedGuardianId;
     }
 
-    // Fallback: check if user.id matches the guardianId (legacy token support)
-    // This handles cases where guardian_id isn't in the JWT token
     if (req.user.id) {
       return parseInt(req.user.id, 10) === requestedGuardianId;
     }
 
-    // If neither guardian_id nor id matches, deny access
     return false;
   }
 
@@ -69,21 +59,25 @@ const canAccessUserScope = (req, userId) => {
 };
 
 const GUARDIAN_PHONE_REGEX = /^(\+63|0)\d{10}$/;
-const GUARDIAN_PORTAL_CLINIC_NAME = 'Guardian Portal';
-let ensureGuardianProfileColumnsPromise = null;
+const PORTAL_CLINIC_NAME = 'Guardian Portal';
+let guardianColsPromise = null;
 
-const ensureGuardianProfileColumnsExist = async () => {
-  if (!ensureGuardianProfileColumnsPromise) {
-    ensureGuardianProfileColumnsPromise = (async () => {
-      await pool.query('ALTER TABLE guardians ADD COLUMN IF NOT EXISTS emergency_contact VARCHAR(255)');
-      await pool.query('ALTER TABLE guardians ADD COLUMN IF NOT EXISTS emergency_phone VARCHAR(50)');
+const ensureGuardianCols = async () => {
+  if (!guardianColsPromise) {
+    guardianColsPromise = (async () => {
+      await pool.query(
+        'ALTER TABLE guardians ADD COLUMN IF NOT EXISTS emergency_contact VARCHAR(255)'
+      );
+      await pool.query(
+        'ALTER TABLE guardians ADD COLUMN IF NOT EXISTS emergency_phone VARCHAR(50)'
+      );
     })().catch((error) => {
-      ensureGuardianProfileColumnsPromise = null;
+      guardianColsPromise = null;
       throw error;
     });
   }
 
-  return ensureGuardianProfileColumnsPromise;
+  return guardianColsPromise;
 };
 
 const ensureGuardianRoleId = async (client) => {
@@ -92,7 +86,7 @@ const ensureGuardianRoleId = async (client) => {
      FROM roles
      WHERE lower(name) = 'guardian'
      ORDER BY id ASC
-     LIMIT 1`,
+     LIMIT 1`
   );
 
   if (roleResult.rows.length === 0) {
@@ -102,14 +96,14 @@ const ensureGuardianRoleId = async (client) => {
   return roleResult.rows[0].id;
 };
 
-const ensureGuardianPortalClinicId = async (client) => {
+const ensurePortalClinicId = async (client) => {
   const existingClinicResult = await client.query(
     `SELECT id
      FROM clinics
      WHERE lower(name) = lower($1)
      ORDER BY id ASC
      LIMIT 1`,
-    [GUARDIAN_PORTAL_CLINIC_NAME],
+    [PORTAL_CLINIC_NAME]
   );
 
   if (existingClinicResult.rows.length > 0) {
@@ -120,13 +114,13 @@ const ensureGuardianPortalClinicId = async (client) => {
     `INSERT INTO clinics (name, region, address, contact)
      VALUES ($1, 'Virtual', 'Online', 'N/A')
      RETURNING id`,
-    [GUARDIAN_PORTAL_CLINIC_NAME],
+    [PORTAL_CLINIC_NAME]
   );
 
   return createdClinicResult.rows[0].id;
 };
 
-const resolveGuardianUserEmail = async (client, email, { excludeUserId = null } = {}) => {
+const resolveGuardianEmail = async (client, email, { excludeUserId = null } = {}) => {
   const normalizedEmail = normalizeGuardianEmail(email);
   if (!normalizedEmail) {
     return null;
@@ -146,18 +140,14 @@ const resolveGuardianUserEmail = async (client, email, { excludeUserId = null } 
   return existingEmailResult.rows.length === 0 ? normalizedEmail : null;
 };
 
-const buildProvisionedGuardianPassword = () => {
+const buildGuardianPassword = () => {
   return `Guardian-${crypto.randomBytes(8).toString('hex')}`;
 };
 
-const ensureGuardianUserAccount = async (
+const ensureGuardianAccount = async (
   client,
   guardianRecord = {},
-  {
-    syncExplicitGuardianEmail = false,
-    throwOnEmailConflict = false,
-    initialPassword = null,
-  } = {},
+  { syncExplicitGuardianEmail = false, throwOnEmailConflict = false, initialPassword = null } = {}
 ) => {
   const guardianId = parseInt(guardianRecord.id, 10);
   if (!guardianId || guardianId <= 0) {
@@ -178,7 +168,7 @@ const ensureGuardianUserAccount = async (
      ORDER BY id DESC
      LIMIT 1
      FOR UPDATE`,
-    [guardianId],
+    [guardianId]
   );
 
   const existingUser = linkedUserResult.rows[0] || null;
@@ -222,7 +212,7 @@ const ensureGuardianUserAccount = async (
     }
 
     if (targetEmail && targetEmail !== existingUserEmail) {
-      const availableEmail = await resolveGuardianUserEmail(client, targetEmail, {
+      const availableEmail = await resolveGuardianEmail(client, targetEmail, {
         excludeUserId: existingUser.id,
       });
 
@@ -275,23 +265,19 @@ const ensureGuardianUserAccount = async (
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $${updateParams.length}
          RETURNING id, username, email`,
-        updateParams,
+        updateParams
       );
 
       userRecord = updatedUserResult.rows[0] || userRecord;
     }
 
-    if (
-      shouldBackfillGuardianEmail &&
-      targetEmail &&
-      normalizedGuardianEmail !== targetEmail
-    ) {
+    if (shouldBackfillGuardianEmail && targetEmail && normalizedGuardianEmail !== targetEmail) {
       await client.query(
         `UPDATE guardians
          SET email = $1,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $2`,
-        [targetEmail, guardianId],
+        [targetEmail, guardianId]
       );
     }
 
@@ -302,7 +288,7 @@ const ensureGuardianUserAccount = async (
              must_change_password = false,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $1`,
-        [guardianId],
+        [guardianId]
       );
     }
 
@@ -310,14 +296,14 @@ const ensureGuardianUserAccount = async (
   }
 
   const guardianRoleId = await ensureGuardianRoleId(client);
-  const guardianPortalClinicId = await ensureGuardianPortalClinicId(client);
+  const guardianPortalClinicId = await ensurePortalClinicId(client);
   const generatedPasswordHash = await bcrypt.hash(
-    hasInitialPassword ? normalizedInitialPassword : buildProvisionedGuardianPassword(),
-    10,
+    hasInitialPassword ? normalizedInitialPassword : buildGuardianPassword(),
+    10
   );
 
   if (targetEmail) {
-    const availableEmail = await resolveGuardianUserEmail(client, targetEmail);
+    const availableEmail = await resolveGuardianEmail(client, targetEmail);
     if (!availableEmail) {
       if (throwOnEmailConflict && guardianEmailIsCustom) {
         const error = new Error('Guardian email is already linked to another user account');
@@ -353,20 +339,16 @@ const ensureGuardianUserAccount = async (
       guardianId,
       guardianPortalClinicId,
       !hasInitialPassword,
-    ],
+    ]
   );
 
-  if (
-    shouldBackfillGuardianEmail &&
-    targetEmail &&
-    normalizedGuardianEmail !== targetEmail
-  ) {
+  if (shouldBackfillGuardianEmail && targetEmail && normalizedGuardianEmail !== targetEmail) {
     await client.query(
       `UPDATE guardians
        SET email = $1,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $2`,
-      [targetEmail, guardianId],
+      [targetEmail, guardianId]
     );
   }
 
@@ -376,25 +358,13 @@ const ensureGuardianUserAccount = async (
          must_change_password = $2,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = $3`,
-    [hasInitialPassword, !hasInitialPassword, guardianId],
+    [hasInitialPassword, !hasInitialPassword, guardianId]
   );
 
   return createdUserResult.rows[0];
 };
 
-const synchronizeGuardianUserAccounts = async (client) => {
-  const guardiansResult = await client.query(
-    `SELECT id, name, email
-     FROM guardians
-     ORDER BY id ASC`,
-  );
-
-  for (const guardian of guardiansResult.rows) {
-    await ensureGuardianUserAccount(client, guardian);
-  }
-};
-
-const normalizeGuardianProfileValidationErrors = (errors = {}) => {
+const normalizeProfileErrors = (errors = {}) => {
   return Object.entries(errors).reduce((acc, [field, message]) => {
     if (typeof message === 'string' && message.trim()) {
       acc[field] = message;
@@ -407,7 +377,7 @@ const normalizeGuardianProfileValidationErrors = (errors = {}) => {
   }, {});
 };
 
-const validateGuardianProfilePayload = (payload = {}) => {
+const validateGuardianProfile = (payload = {}) => {
   const errors = {};
 
   const sanitizeText = (value) => {
@@ -454,8 +424,7 @@ const validateGuardianProfilePayload = (payload = {}) => {
   if (normalized.emergency_phone) {
     const compactEmergencyPhone = normalized.emergency_phone.replace(/[\s\-()]/g, '');
     if (!GUARDIAN_PHONE_REGEX.test(compactEmergencyPhone)) {
-      errors.emergency_phone =
-        'Emergency phone must use 09XXXXXXXXX or +63XXXXXXXXXX format';
+      errors.emergency_phone = 'Emergency phone must use 09XXXXXXXXX or +63XXXXXXXXXX format';
     } else {
       normalized.emergency_phone = compactEmergencyPhone;
     }
@@ -476,12 +445,12 @@ const validateGuardianProfilePayload = (payload = {}) => {
   };
 };
 
-const respondGuardianProfileValidationError = (
+const respondProfileError = (
   res,
   errors = {},
-  message = 'Please correct the highlighted profile fields.',
+  message = 'Please correct the highlighted profile fields.'
 ) => {
-  const fields = normalizeGuardianProfileValidationErrors(errors);
+  const fields = normalizeProfileErrors(errors);
   return res.status(400).json({
     success: false,
     error: message,
@@ -490,17 +459,11 @@ const respondGuardianProfileValidationError = (
   });
 };
 
-const getRequestSourceContext = (req) => {
+const getReqSourceCtx = (req) => {
   const fromQuery = req.query?.source;
   const fromBody = req.body?.sourceContext;
   return fromBody || fromQuery || 'user-management/system-users';
 };
-
-const getActorAuditMeta = (req) => ({
-  actorUserId: req.user?.id || null,
-  actorUsername: req.user?.username || 'unknown',
-  actorRole: getCanonicalRole(req) || req.user?.role || null,
-});
 
 const toIntegerId = (value) => {
   const parsed = parseInt(value, 10);
@@ -541,7 +504,7 @@ const requireValidIdParam = (res, value, fieldName = 'id') => {
   return parsedId;
 };
 
-const buildSystemUserResponse = (row = {}) => ({
+const buildUserResponse = (row = {}) => ({
   id: row.id,
   username: row.username,
   contact: row.contact || null,
@@ -564,23 +527,19 @@ const buildSystemUserResponse = (row = {}) => ({
 });
 
 const getRoleNameById = async (roleId) => {
-  const result = await pool.query('SELECT lower(name) AS role_name FROM roles WHERE id = $1 LIMIT 1', [
-    roleId,
-  ]);
+  const result = await pool.query(
+    'SELECT lower(name) AS role_name FROM roles WHERE id = $1 LIMIT 1',
+    [roleId]
+  );
 
   return result.rows[0]?.role_name || null;
 };
 
-const isGuardianAccountRow = (row = {}) => {
+const isGuardianRow = (row = {}) => {
   return Boolean(row?.guardian_id) || String(row?.role_name || '').toLowerCase() === 'guardian';
 };
 
-const respondSystemUserSuccess = (res, {
-  statusCode = 200,
-  message,
-  user,
-  code,
-} = {}) => {
+const respondUserSuccess = (res, { statusCode = 200, message, user, code } = {}) => {
   return res.status(statusCode).json({
     success: true,
     message,
@@ -589,13 +548,7 @@ const respondSystemUserSuccess = (res, {
   });
 };
 
-const respondSystemUserError = (res, {
-  statusCode = 500,
-  error,
-  code,
-  field,
-  details,
-} = {}) => {
+const respondUserError = (res, { statusCode = 500, error, code, field, details } = {}) => {
   return res.status(statusCode).json({
     success: false,
     error,
@@ -605,7 +558,7 @@ const respondSystemUserError = (res, {
   });
 };
 
-const ensureSystemUserExists = async (userId) => {
+const fetchSystemUser = async (userId) => {
   const result = await pool.query(
     `SELECT
        u.id,
@@ -626,13 +579,13 @@ const ensureSystemUserExists = async (userId) => {
      JOIN roles r ON u.role_id = r.id
      LEFT JOIN clinics c ON u.clinic_id = c.id
      WHERE u.id = $1`,
-    [userId],
+    [userId]
   );
 
   return result.rows[0] || null;
 };
 
-const validateSystemUserPayload = ({
+const validateUserPayload = ({
   username,
   role_id,
   clinic_id,
@@ -704,13 +657,7 @@ const validateSystemUserPayload = ({
   };
 };
 
-const logSystemUserSecurityEvent = async ({
-  req,
-  eventType,
-  severity,
-  targetUserId,
-  details,
-}) => {
+const logUserSecEvent = async ({ req, eventType, severity, targetUserId, details }) => {
   await securityEventService.logEvent({
     userId: req.user?.id || null,
     eventType,
@@ -730,135 +677,7 @@ const logSystemUserSecurityEvent = async ({
   });
 };
 
-const recordUserAuditEvent = async ({
-  req,
-  eventType,
-  entityType,
-  entityId,
-  oldValues = null,
-  newValues = null,
-  metadata = null,
-  severity = 'INFO',
-}) => {
-  await writeAuditLog({
-    req,
-    eventType,
-    entityType,
-    entityId,
-    oldValues,
-    newValues,
-    metadata,
-    severity,
-  });
-};
-
-const canRevealGuardianPasswords = (req) => {
-  // Check canonical role (primary method)
-  const canonicalRole = getCanonicalRole(req);
-  if (canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN) {
-    return true;
-  }
-
-  // Check legacy role (fallback for older users)
-  const legacyRole = String(req.user?.legacy_role || '').toLowerCase();
-  if (legacyRole === 'admin' || legacyRole === 'super_admin') {
-    return true;
-  }
-
-  // Check role from JWT token
-  const tokenRole = String(req.user?.role || '').toLowerCase();
-  if (tokenRole === 'admin' || tokenRole === 'super_admin') {
-    return true;
-  }
-
-  return false;
-};
-
-const logGuardianPasswordVisibilityEvent = async ({
-  req,
-  guardianId,
-  action,
-  sourceContext,
-  success = true,
-  details = {},
-}) => {
-  const actor = getActorAuditMeta(req);
-  const actionName = String(action || 'access').toLowerCase();
-  const parsedGuardianId = parseInt(guardianId, 10);
-  const normalizedGuardianId = Number.isNaN(parsedGuardianId) ? null : parsedGuardianId;
-
-  await securityEventService.logEvent({
-    userId: actor.actorUserId,
-    eventType: securityEventService.EVENT_TYPES.SENSITIVE_DATA_ACCESSED,
-    severity: success ? securityEventService.SEVERITY.WARNING : securityEventService.SEVERITY.ERROR,
-    ipAddress: req.ip,
-    userAgent: req.get('User-Agent'),
-    resourceType: 'guardian_password_visibility',
-    resourceId: normalizedGuardianId,
-    details: {
-      action: actionName,
-      source_context: sourceContext,
-      actor_user_id: actor.actorUserId,
-      actor_username: actor.actorUsername,
-      actor_role: actor.actorRole,
-      target_guardian_id: normalizedGuardianId,
-      occurred_at: new Date().toISOString(),
-      success,
-      ...details,
-    },
-  });
-
-  await pool.query(
-    `INSERT INTO access_logs (user_id, action, resource_type, resource_id, ip_address, user_agent, status, details)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [
-      actor.actorUserId,
-      `guardian_password_${actionName}`,
-      'guardian_password_visibility',
-      normalizedGuardianId,
-      req.ip || null,
-      req.get('User-Agent') || null,
-      success ? 'success' : 'failed',
-      JSON.stringify({
-        source_context: sourceContext,
-        actor_username: actor.actorUsername,
-        actor_role: actor.actorRole,
-        target_guardian_id: normalizedGuardianId,
-        occurred_at: new Date().toISOString(),
-        ...details,
-      }),
-    ],
-  );
-};
-
-const requirePasswordVisibilityRole = async (req, res, next) => {
-  if (!canRevealGuardianPasswords(req)) {
-    try {
-      await logGuardianPasswordVisibilityEvent({
-        req,
-        guardianId: req.params?.id,
-        action: 'access',
-        sourceContext: getRequestSourceContext(req),
-        success: false,
-        details: {
-          reason: 'forbidden_role',
-          required_roles: ['admin', 'super_admin'],
-        },
-      });
-    } catch (auditError) {
-      console.error('Failed to log forbidden guardian password visibility access:', auditError);
-    }
-
-    return res.status(403).json({
-      success: false,
-      error: 'Guardian password visibility is restricted to admin and super_admin accounts',
-    });
-  }
-
-  return next();
-};
-
-const normalizeTimestampForCompare = (value) => {
+const normalizeTs = (value) => {
   if (!value) {
     return null;
   }
@@ -869,8 +688,8 @@ const normalizeTimestampForCompare = (value) => {
   return date.toISOString();
 };
 
-const buildStaleWriteConflict = ({ currentRow, expectedUpdatedAt }) => {
-  const actualUpdatedAt = normalizeTimestampForCompare(currentRow?.updated_at);
+const buildStaleConflict = ({ currentRow, expectedUpdatedAt }) => {
+  const actualUpdatedAt = normalizeTs(currentRow?.updated_at);
   return {
     success: false,
     code: 'CONFLICT_STALE_WRITE',
@@ -882,21 +701,19 @@ const buildStaleWriteConflict = ({ currentRow, expectedUpdatedAt }) => {
   };
 };
 
-const parseExpectedUpdatedAt = (input) => {
+const parseExpectedAt = (input) => {
   if (input === undefined || input === null || input === '') {
     return null;
   }
-  const normalized = normalizeTimestampForCompare(input);
+  const normalized = normalizeTs(input);
   return normalized;
 };
 
-// Get all users (including guardians) - unified view
 router.get('/all-users', requirePermission('user:view'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Get system users
     const systemUsersResult = await client.query(`
       SELECT
         u.id,
@@ -915,7 +732,6 @@ router.get('/all-users', requirePermission('user:view'), async (req, res) => {
       LEFT JOIN clinics c ON u.clinic_id = c.id
     `);
 
-    // Get guardians
     const guardiansResult = await client.query(`
       SELECT
         g.id,
@@ -942,9 +758,8 @@ router.get('/all-users', requirePermission('user:view'), async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Combine and return both
     const allUsers = [...systemUsersResult.rows, ...guardiansResult.rows].sort(
-      (a, b) => new Date(b.created_at) - new Date(a.created_at),
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
     );
 
     res.json({ data: allUsers });
@@ -961,11 +776,10 @@ router.get('/all-users', requirePermission('user:view'), async (req, res) => {
   }
 });
 
-// Get all users (basic list)
 router.get('/', requireSystemAdmin, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, username, contact, created_at FROM users ORDER BY created_at DESC LIMIT 100',
+      'SELECT id, username, contact, created_at FROM users ORDER BY created_at DESC LIMIT 100'
     );
     res.json({ data: result.rows });
   } catch (error) {
@@ -974,18 +788,15 @@ router.get('/', requireSystemAdmin, async (req, res) => {
   }
 });
 
-// Get all guardians (including infant count)
-// NOTE: Removed synchronizeGuardianUserAccounts() call as it was causing timeouts
-// The synchronization should be done asynchronously via background job, not on every request
 router.get('/guardians', requirePermission('user:view'), async (req, res) => {
   const client = await pool.connect();
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const requestedLimit = Math.max(1, parseInt(req.query.limit, 10) || 50);
-    const view = String(req.query.view || '').trim().toLowerCase();
-    const limit = view === 'lookup'
-      ? Math.min(20, requestedLimit)
-      : Math.min(100, requestedLimit);
+    const view = String(req.query.view || '')
+      .trim()
+      .toLowerCase();
+    const limit = view === 'lookup' ? Math.min(20, requestedLimit) : Math.min(100, requestedLimit);
     const offset = (page - 1) * limit;
     const search = String(req.query.search || '').trim();
     const createdFrom = parseDateBoundary(req.query.created_from, 'start');
@@ -1030,15 +841,16 @@ router.get('/guardians', requirePermission('user:view'), async (req, res) => {
     const whereClause = filterClauses.length > 0 ? `WHERE ${filterClauses.join(' AND ')}` : '';
     queryParams.push(limit, offset);
 
-    const selectColumns = view === 'lookup'
-      ? `
+    const selectColumns =
+      view === 'lookup'
+        ? `
           bg.id,
           bg.username,
           bg.name,
           bg.phone,
           COUNT(*) OVER()::int AS filtered_total
         `
-      : `
+        : `
           bg.id,
           bg.username,
           bg.name,
@@ -1056,9 +868,8 @@ router.get('/guardians', requirePermission('user:view'), async (req, res) => {
           COUNT(*) OVER()::int AS filtered_total
         `;
 
-    const joinClause = view === 'lookup'
-      ? ''
-      : 'LEFT JOIN guardian_infant_counts gic ON gic.guardian_id = bg.id';
+    const joinClause =
+      view === 'lookup' ? '' : 'LEFT JOIN guardian_infant_counts gic ON gic.guardian_id = bg.id';
 
     const result = await client.query(
       `
@@ -1105,7 +916,7 @@ router.get('/guardians', requirePermission('user:view'), async (req, res) => {
         ORDER BY bg.created_at DESC
         LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
       `,
-      queryParams,
+      queryParams
     );
 
     const total = result.rows[0]?.filtered_total || 0;
@@ -1113,7 +924,11 @@ router.get('/guardians', requirePermission('user:view'), async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows.map(({ filtered_total, ...row }) => row),
+      data: result.rows.map((row) => {
+        const userRow = { ...row };
+        delete userRow.filtered_total;
+        return userRow;
+      }),
       meta: {
         pagination: {
           page,
@@ -1133,7 +948,6 @@ router.get('/guardians', requirePermission('user:view'), async (req, res) => {
   }
 });
 
-// Create new guardian
 router.post('/guardians', requirePermission('user:create'), async (req, res) => {
   const client = await pool.connect();
   try {
@@ -1149,8 +963,9 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
     } = req.body;
     const clinicId = resolvePrimaryUserScopeId(req.user);
     const requestedInitialPassword =
-      [password, initial_password, initialPassword]
-        .find((value) => typeof value === 'string' && value.trim()) || null;
+      [password, initial_password, initialPassword].find(
+        (value) => typeof value === 'string' && value.trim()
+      ) || null;
 
     if (!name || !phone) {
       return res.status(400).json({
@@ -1182,11 +997,11 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
        )
        VALUES ($1, $2, $3, $4, $5, $6, true, false, true)
        RETURNING *`,
-      [name, phone, email, address, relationship, clinicId],
+      [name, phone, email, address, relationship, clinicId]
     );
 
     const guardian = result.rows[0];
-    const guardianUser = await ensureGuardianUserAccount(client, guardian, {
+    const guardianUser = await ensureGuardianAccount(client, guardian, {
       syncExplicitGuardianEmail: true,
       throwOnEmailConflict: true,
       initialPassword: requestedInitialPassword,
@@ -1209,10 +1024,13 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
           guardianUser.id,
           resetEmail,
           req.ip,
-          req.get('User-Agent'),
+          req.get('User-Agent')
         );
-        const frontendUrl = (process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:3000')
-          .replace(/\/$/, '');
+        const frontendUrl = (
+          process.env.FRONTEND_URL ||
+          process.env.CLIENT_URL ||
+          'http://localhost:3000'
+        ).replace(/\/$/, '');
         resetLink = `${frontendUrl}/reset-password?token=${encodeURIComponent(resetToken)}&email=${encodeURIComponent(resetEmail)}`;
       } catch (resetError) {
         resetTokenError = 'Password reset token could not be generated';
@@ -1249,7 +1067,6 @@ router.post('/guardians', requirePermission('user:create'), async (req, res) => 
   }
 });
 
-// Update guardian
 router.put('/guardians/:id', requirePermission('user:update'), async (req, res) => {
   const client = await pool.connect();
   try {
@@ -1272,7 +1089,7 @@ router.put('/guardians/:id', requirePermission('user:update'), async (req, res) 
 
     await client.query('BEGIN');
 
-    const expectedUpdatedAt = parseExpectedUpdatedAt(expectedUpdatedAtRaw);
+    const expectedUpdatedAt = parseExpectedAt(expectedUpdatedAtRaw);
     if (expectedUpdatedAtRaw !== undefined && expectedUpdatedAt === null) {
       await client.query('ROLLBACK');
       return res.status(400).json({
@@ -1281,10 +1098,9 @@ router.put('/guardians/:id', requirePermission('user:update'), async (req, res) 
       });
     }
 
-    const existingResult = await client.query(
-      'SELECT * FROM guardians WHERE id = $1 FOR UPDATE',
-      [id],
-    );
+    const existingResult = await client.query('SELECT * FROM guardians WHERE id = $1 FOR UPDATE', [
+      id,
+    ]);
 
     if (existingResult.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -1292,21 +1108,21 @@ router.put('/guardians/:id', requirePermission('user:update'), async (req, res) 
     }
 
     const existingGuardian = existingResult.rows[0];
-    const existingUpdatedAt = normalizeTimestampForCompare(existingGuardian.updated_at);
+    const existingUpdatedAt = normalizeTs(existingGuardian.updated_at);
 
     if (expectedUpdatedAt && existingUpdatedAt && expectedUpdatedAt !== existingUpdatedAt) {
       await client.query('ROLLBACK');
       return res.status(409).json(
-        buildStaleWriteConflict({
+        buildStaleConflict({
           currentRow: existingGuardian,
           expectedUpdatedAt,
-        }),
+        })
       );
     }
 
     const result = await client.query(
       'UPDATE guardians SET name = $1, phone = $2, email = $3, address = $4, relationship = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6 RETURNING *',
-      [name, phone, email, address, relationship, id],
+      [name, phone, email, address, relationship, id]
     );
 
     if (result.rows.length === 0) {
@@ -1314,7 +1130,7 @@ router.put('/guardians/:id', requirePermission('user:update'), async (req, res) 
       return res.status(404).json({ success: false, error: 'Guardian not found' });
     }
 
-    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0], {
+    const ensuredGuardianUser = await ensureGuardianAccount(client, result.rows[0], {
       syncExplicitGuardianEmail: true,
       throwOnEmailConflict: true,
     });
@@ -1345,17 +1161,17 @@ router.put('/guardians/:id', requirePermission('user:update'), async (req, res) 
   }
 });
 
-// Delete guardian
 router.delete('/guardians/:id', requirePermission('user:delete'), async (req, res) => {
   try {
     const { id } = req.params;
 
-    const expectedUpdatedAt = parseExpectedUpdatedAt(
-      req.query?.expected_updated_at || req.body?.expected_updated_at,
+    const expectedUpdatedAt = parseExpectedAt(
+      req.query?.expected_updated_at || req.body?.expected_updated_at
     );
 
     if (
-      (req.query?.expected_updated_at !== undefined || req.body?.expected_updated_at !== undefined) &&
+      (req.query?.expected_updated_at !== undefined ||
+        req.body?.expected_updated_at !== undefined) &&
       expectedUpdatedAt === null
     ) {
       return res.status(400).json({
@@ -1371,14 +1187,14 @@ router.delete('/guardians/:id', requirePermission('user:delete'), async (req, re
     }
 
     const existingGuardian = existingResult.rows[0];
-    const existingUpdatedAt = normalizeTimestampForCompare(existingGuardian.updated_at);
+    const existingUpdatedAt = normalizeTs(existingGuardian.updated_at);
 
     if (expectedUpdatedAt && existingUpdatedAt && expectedUpdatedAt !== existingUpdatedAt) {
       return res.status(409).json(
-        buildStaleWriteConflict({
+        buildStaleConflict({
           currentRow: existingGuardian,
           expectedUpdatedAt,
-        }),
+        })
       );
     }
 
@@ -1395,15 +1211,13 @@ router.delete('/guardians/:id', requirePermission('user:delete'), async (req, re
   }
 });
 
-// Get guardian password status (Admin only)
 router.get('/guardians/:id/password', requirePermission('admin:override'), async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Get guardian from database
     const result = await pool.query(
       'SELECT id, name, email, is_password_set, must_change_password FROM guardians WHERE id = $1',
-      [id],
+      [id]
     );
 
     if (result.rows.length === 0) {
@@ -1419,7 +1233,6 @@ router.get('/guardians/:id/password', requirePermission('admin:override'), async
   }
 });
 
-// Reset guardian password (Admin only)
 router.put('/guardians/:id/password', requirePermission('admin:override'), async (req, res) => {
   const client = await pool.connect();
   let transactionCompleted = false;
@@ -1448,7 +1261,7 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
        FROM guardians
        WHERE id = $1
        FOR UPDATE`,
-      [guardianId],
+      [guardianId]
     );
 
     if (existingGuardianResult.rows.length === 0) {
@@ -1462,7 +1275,7 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
     }
 
     const existingGuardian = existingGuardianResult.rows[0];
-    const linkedGuardianUser = await ensureGuardianUserAccount(client, existingGuardian);
+    const linkedGuardianUser = await ensureGuardianAccount(client, existingGuardian);
     const linkedUserId = parseInt(linkedGuardianUser?.id, 10);
 
     if (!linkedUserId || linkedUserId <= 0) {
@@ -1470,7 +1283,8 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
       transactionCompleted = true;
       return res.status(500).json({
         success: false,
-        error: 'Guardian password reset failed because no linked guardian account could be resolved',
+        error:
+          'Guardian password reset failed because no linked guardian account could be resolved',
         code: 'GUARDIAN_LINKED_USER_NOT_FOUND',
       });
     }
@@ -1499,7 +1313,7 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
         passwordVisibilityPayload,
         req.user?.id || null,
         guardianId,
-      ],
+      ]
     );
 
     await client.query(
@@ -1509,16 +1323,16 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
            password_changed_at = CURRENT_TIMESTAMP,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $3`,
-      [hashedPassword, normalizedMustChangePassword, linkedUserId],
+      [hashedPassword, normalizedMustChangePassword, linkedUserId]
     );
 
     await client.query('COMMIT');
     transactionCompleted = true;
 
-    const updatedUser = await ensureSystemUserExists(linkedUserId);
-    const normalizedUser = updatedUser ? buildSystemUserResponse(updatedUser) : null;
+    const updatedUser = await fetchSystemUser(linkedUserId);
+    const normalizedUser = updatedUser ? buildUserResponse(updatedUser) : null;
 
-    await logSystemUserSecurityEvent({
+    await logUserSecEvent({
       req,
       eventType: securityEventService.EVENT_TYPES.PASSWORD_CHANGED,
       severity: securityEventService.SEVERITY.CRITICAL,
@@ -1527,7 +1341,7 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
         action: 'guardian_password_reset',
         guardian_id: guardianId,
         target_username: linkedGuardianUser?.username || updatedUser?.username || null,
-        source_context: getRequestSourceContext(req),
+        source_context: getReqSourceCtx(req),
       },
     });
 
@@ -1565,10 +1379,6 @@ router.put('/guardians/:id/password', requirePermission('admin:override'), async
   }
 });
 
-
-
-// Get all system users (admin, doctor, nurse, staff)
-// NOTE: Removed synchronizeGuardianUserAccounts() call as it was causing timeouts
 router.get('/system-users', requirePermission('user:view'), async (req, res) => {
   const client = await pool.connect();
   try {
@@ -1579,7 +1389,10 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
       .split(',')
       .map((role) => role.trim().toLowerCase())
       .filter(Boolean);
-    const includeGuardians = String(req.query.include_guardians || '').trim().toLowerCase() === 'true';
+    const includeGuardians =
+      String(req.query.include_guardians || '')
+        .trim()
+        .toLowerCase() === 'true';
     const search = String(req.query.search || '').trim();
     const clinicId = req.query.clinic_id || req.query.facility_id;
     const isActive = req.query.is_active;
@@ -1587,7 +1400,7 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
     const createdTo = parseDateBoundary(req.query.created_to, 'end');
 
     if (createdFrom === undefined || createdTo === undefined) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 400,
         error: 'created_from and created_to must be valid dates',
         code: 'SYSTEM_USERS_INVALID_DATE_FILTER',
@@ -1602,11 +1415,16 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
       contact: 'u.contact',
       is_active: 'u.is_active',
     };
-    const requestedSortField = String(req.query.sort_field || 'created_at').trim().toLowerCase();
+    const requestedSortField = String(req.query.sort_field || 'created_at')
+      .trim()
+      .toLowerCase();
     const sortColumn = sortableColumns[requestedSortField] || sortableColumns.created_at;
-    const sortDirection = String(req.query.sort_direction || 'desc').trim().toLowerCase() === 'asc'
-      ? 'ASC'
-      : 'DESC';
+    const sortDirection =
+      String(req.query.sort_direction || 'desc')
+        .trim()
+        .toLowerCase() === 'asc'
+        ? 'ASC'
+        : 'DESC';
 
     const queryParams = [];
     let paramIndex = 1;
@@ -1676,7 +1494,7 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
         ORDER BY ${sortColumn} ${sortDirection}, u.created_at DESC, u.id DESC
         LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
       `,
-      queryParams,
+      queryParams
     );
 
     const total = parseInt(result.rows[0]?.filtered_total || 0, 10);
@@ -1684,7 +1502,11 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
 
     return res.json({
       success: true,
-      data: result.rows.map(({ filtered_total, ...row }) => buildSystemUserResponse(row)),
+      data: result.rows.map((row) => {
+        const userRow = { ...row };
+        delete userRow.filtered_total;
+        return buildUserResponse(userRow);
+      }),
       meta: {
         count: result.rows.length,
         pagination: {
@@ -1699,7 +1521,7 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
     });
   } catch (error) {
     console.error('Error fetching system users:', error);
-    return respondSystemUserError(res, {
+    return respondUserError(res, {
       statusCode: 500,
       error: 'Failed to fetch system users',
       code: 'SYSTEM_USERS_FETCH_FAILED',
@@ -1710,11 +1532,10 @@ router.get('/system-users', requirePermission('user:view'), async (req, res) => 
   }
 });
 
-// Create system user
 router.post('/system-users', requirePermission('user:create'), async (req, res) => {
   try {
     const { username, password, role_id, clinic_id, contact } = req.body;
-    const validation = validateSystemUserPayload({
+    const validation = validateUserPayload({
       username,
       role_id,
       clinic_id,
@@ -1723,7 +1544,7 @@ router.post('/system-users', requirePermission('user:create'), async (req, res) 
     });
 
     if (!validation.valid) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: validation.statusCode,
         error: validation.error,
         code: validation.code,
@@ -1733,7 +1554,7 @@ router.post('/system-users', requirePermission('user:create'), async (req, res) 
 
     const targetRoleName = await getRoleNameById(validation.data.role_id);
     if (!targetRoleName) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 400,
         error: 'role_id does not map to an existing role',
         code: 'INVALID_ROLE_ID',
@@ -1742,7 +1563,7 @@ router.post('/system-users', requirePermission('user:create'), async (req, res) 
     }
 
     if (targetRoleName === 'guardian') {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 400,
         error:
           'Guardian accounts must be created from the Guardians tab to preserve firstname.lastname username rules.',
@@ -1763,21 +1584,21 @@ router.post('/system-users', requirePermission('user:create'), async (req, res) 
         validation.data.role_id,
         validation.data.clinic_id,
         contact || null,
-      ],
+      ]
     );
 
     const createdId = result.rows[0]?.id;
-    const createdUser = await ensureSystemUserExists(createdId);
+    const createdUser = await fetchSystemUser(createdId);
 
     if (!createdUser) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 500,
         error: 'System user created but failed to load normalized user response',
         code: 'SYSTEM_USER_CREATE_FETCH_FAILED',
       });
     }
 
-    await logSystemUserSecurityEvent({
+    await logUserSecEvent({
       req,
       eventType: securityEventService.EVENT_TYPES.SYSTEM_CONFIG_CHANGED,
       severity: securityEventService.SEVERITY.INFO,
@@ -1789,10 +1610,10 @@ router.post('/system-users', requirePermission('user:create'), async (req, res) 
       },
     });
 
-    const normalizedUser = buildSystemUserResponse(createdUser);
+    const normalizedUser = buildUserResponse(createdUser);
     socketService.broadcast('system_user_created', normalizedUser);
 
-    return respondSystemUserSuccess(res, {
+    return respondUserSuccess(res, {
       statusCode: 201,
       message: 'System user created successfully',
       code: 'SYSTEM_USER_CREATED',
@@ -1800,7 +1621,7 @@ router.post('/system-users', requirePermission('user:create'), async (req, res) 
     });
   } catch (error) {
     if (error?.code === '23505') {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 409,
         error: 'Username already exists',
         code: 'USERNAME_ALREADY_EXISTS',
@@ -1808,7 +1629,7 @@ router.post('/system-users', requirePermission('user:create'), async (req, res) 
       });
     }
 
-    return respondSystemUserError(res, {
+    return respondUserError(res, {
       statusCode: 500,
       error: 'Failed to create system user',
       code: 'SYSTEM_USER_CREATE_FAILED',
@@ -1817,7 +1638,6 @@ router.post('/system-users', requirePermission('user:create'), async (req, res) 
   }
 });
 
-// Update system user
 router.put('/system-users/:id', requirePermission('user:update'), async (req, res) => {
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
@@ -1827,7 +1647,7 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
 
     const { username, role_id, clinic_id, contact, password } = req.body;
 
-    const validation = validateSystemUserPayload({
+    const validation = validateUserPayload({
       username,
       role_id,
       clinic_id,
@@ -1836,7 +1656,7 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
     });
 
     if (!validation.valid) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: validation.statusCode,
         error: validation.error,
         code: validation.code,
@@ -1844,17 +1664,17 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
       });
     }
 
-    const existingUser = await ensureSystemUserExists(userId);
+    const existingUser = await fetchSystemUser(userId);
     if (!existingUser) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
       });
     }
 
-    if (isGuardianAccountRow(existingUser)) {
-      return respondSystemUserError(res, {
+    if (isGuardianRow(existingUser)) {
+      return respondUserError(res, {
         statusCode: 400,
         error:
           'Guardian accounts are managed from the Guardians tab. Username format is enforced automatically as firstname.lastname.',
@@ -1864,7 +1684,7 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
 
     const targetRoleName = await getRoleNameById(validation.data.role_id);
     if (!targetRoleName) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 400,
         error: 'role_id does not map to an existing role',
         code: 'INVALID_ROLE_ID',
@@ -1873,7 +1693,7 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
     }
 
     if (targetRoleName === 'guardian') {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 400,
         error:
           'Guardian accounts must be managed from the Guardians tab to preserve firstname.lastname username rules.',
@@ -1883,14 +1703,13 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
     }
 
     if (userId === req.user.id && !existingUser.is_active) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 400,
         error: 'Cannot modify your own inactive account',
         code: 'SELF_MODIFY_INACTIVE_ACCOUNT_FORBIDDEN',
       });
     }
 
-    // Build update query safely
     const setParts = ['username = $1', 'role_id = $2', 'clinic_id = $3', 'contact = $4'];
     const values = [
       validation.data.username,
@@ -1921,23 +1740,23 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
     const result = await pool.query(query, values);
 
     if (result.rows.length === 0) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
       });
     }
 
-    const updatedUser = await ensureSystemUserExists(userId);
+    const updatedUser = await fetchSystemUser(userId);
     if (!updatedUser) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 500,
         error: 'User updated but failed to load normalized response',
         code: 'SYSTEM_USER_UPDATE_FETCH_FAILED',
       });
     }
 
-    await logSystemUserSecurityEvent({
+    await logUserSecEvent({
       req,
       eventType: securityEventService.EVENT_TYPES.SYSTEM_CONFIG_CHANGED,
       severity: securityEventService.SEVERITY.WARNING,
@@ -1950,17 +1769,17 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
       },
     });
 
-    const normalizedUser = buildSystemUserResponse(updatedUser);
+    const normalizedUser = buildUserResponse(updatedUser);
     socketService.broadcast('system_user_updated', normalizedUser);
 
-    return respondSystemUserSuccess(res, {
+    return respondUserSuccess(res, {
       message: 'System user updated successfully',
       code: 'SYSTEM_USER_UPDATED',
       user: normalizedUser,
     });
   } catch (error) {
     if (error?.code === '23505') {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 409,
         error: 'Username already exists',
         code: 'USERNAME_ALREADY_EXISTS',
@@ -1968,7 +1787,7 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
       });
     }
 
-    return respondSystemUserError(res, {
+    return respondUserError(res, {
       statusCode: 500,
       error: 'Failed to update system user',
       code: 'SYSTEM_USER_UPDATE_FAILED',
@@ -1977,50 +1796,206 @@ router.put('/system-users/:id', requirePermission('user:update'), async (req, re
   }
 });
 
-// Delete system user
+// Tables/columns that represent REAL business activity by a system user.
+// Only references in this list block hard deletion with a 409.
+// Everything else (security_events, audit logs, sessions, settings, notifications,
+// password reset tokens, admin_activity_log, etc.) is treated as auto/stub data
+// and is cleaned up automatically before the DELETE.
+const MEANINGFUL_USER_REFERENCES = [
+  { table: 'appointments', columns: ['user_id', 'created_by', 'updated_by', 'scheduled_by', 'cancelled_by', 'completed_by'] },
+  { table: 'immunization_records', columns: ['vaccinator_id', 'administered_by', 'recorded_by', 'created_by', 'updated_by'] },
+  { table: 'vaccine_transactions', columns: ['created_by', 'performed_by', 'user_id'] },
+  { table: 'vaccine_inventory_movements', columns: ['created_by', 'performed_by', 'user_id'] },
+  { table: 'vaccine_inventory_transactions', columns: ['created_by', 'performed_by', 'user_id'] },
+  { table: 'patient_growth', columns: ['created_by', 'recorded_by', 'measured_by', 'updated_by'] },
+  { table: 'generated_reports', columns: ['generated_by', 'created_by'] },
+  { table: 'reports', columns: ['generated_by', 'created_by'] },
+  { table: 'paper_documents', columns: ['generated_by', 'completed_by', 'verified_by'] },
+  { table: 'transfer_requests', columns: ['requested_by', 'approved_by', 'reviewed_by'] },
+  { table: 'vaccine_supply_requests', columns: ['requested_by', 'reviewed_by'] },
+];
+
+// Resolve which (table, column) pairs from MEANINGFUL_USER_REFERENCES actually
+// exist in the live schema. Avoids "relation does not exist" errors across deployments.
+const resolveExistingMeaningfulColumns = async (client) => {
+  const tables = MEANINGFUL_USER_REFERENCES.map((entry) => entry.table);
+  const { rows } = await client.query(
+    `SELECT table_name, column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = ANY($1::text[])`,
+    [tables],
+  );
+  const presentByTable = new Map();
+  rows.forEach((r) => {
+    if (!presentByTable.has(r.table_name)) presentByTable.set(r.table_name, new Set());
+    presentByTable.get(r.table_name).add(r.column_name);
+  });
+  const resolved = [];
+  MEANINGFUL_USER_REFERENCES.forEach((entry) => {
+    const presentCols = presentByTable.get(entry.table);
+    if (!presentCols) return;
+    const cols = entry.columns.filter((c) => presentCols.has(c));
+    if (cols.length) resolved.push({ table: entry.table, columns: cols });
+  });
+  return resolved;
+};
+
+// Count rows that represent meaningful activity by this user. Rows authored
+// AT or AFTER user creation by the user themselves about themselves (auto-stubs)
+// are filtered out by requiring the row's own id NOT to equal the user being
+// deleted (this naturally excludes self-stub rows on, e.g., the users table).
+const countMeaningfulActivity = async (client, userId) => {
+  const meaningful = await resolveExistingMeaningfulColumns(client);
+  let total = 0;
+  const breakdown = {};
+  for (const { table, columns } of meaningful) {
+    const orClauses = columns.map((c) => `"${c}" = $1`).join(' OR ');
+    const sql = `SELECT COUNT(*)::int AS n FROM "${table}" WHERE ${orClauses}`;
+    try {
+      const { rows } = await client.query(sql, [userId]);
+      const n = rows[0]?.n || 0;
+      if (n > 0) {
+        breakdown[table] = n;
+        total += n;
+      }
+    } catch (err) {
+      // Table missing despite metadata, or transient permission error - skip safely.
+      if (err?.code !== '42P01' && err?.code !== '42703') throw err;
+    }
+  }
+  return { total, breakdown };
+};
+
+// Discover every FK that references users(id) and either NULL the column or
+// DELETE the referencing row, depending on its NOT NULL/cascade rule. Skips
+// any table listed in the meaningful set (those should already be empty if we
+// got here, except in a forceDelete bypass).
+const cleanupStubReferences = async (client, userId, { skipMeaningful = true } = {}) => {
+  const meaningfulTables = new Set(MEANINGFUL_USER_REFERENCES.map((e) => e.table));
+  const { rows: fks } = await client.query(`
+    SELECT
+      tc.table_name        AS referencing_table,
+      kcu.column_name      AS referencing_column,
+      col.is_nullable      AS is_nullable,
+      rc.delete_rule       AS delete_rule
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+     AND tc.table_schema    = kcu.table_schema
+    JOIN information_schema.referential_constraints rc
+      ON tc.constraint_name = rc.constraint_name
+     AND tc.table_schema    = rc.constraint_schema
+    JOIN information_schema.constraint_column_usage ccu
+      ON rc.unique_constraint_name = ccu.constraint_name
+     AND rc.unique_constraint_schema = ccu.constraint_schema
+    JOIN information_schema.columns col
+      ON col.table_schema = tc.table_schema
+     AND col.table_name   = tc.table_name
+     AND col.column_name  = kcu.column_name
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+      AND tc.table_schema    = 'public'
+      AND ccu.table_name     = 'users'
+      AND ccu.column_name    = 'id'
+  `);
+
+  for (const fk of fks) {
+    if (fk.referencing_table === 'users') continue; // self-reference handled by DELETE itself
+    if (skipMeaningful && meaningfulTables.has(fk.referencing_table)) continue;
+
+    // Postgres will handle CASCADE / SET NULL / SET DEFAULT automatically on DELETE FROM users.
+    if (fk.delete_rule && fk.delete_rule !== 'NO ACTION' && fk.delete_rule !== 'RESTRICT') continue;
+
+    const tbl = fk.referencing_table;
+    const col = fk.referencing_column;
+    if (fk.is_nullable === 'YES') {
+      await client.query(`UPDATE "${tbl}" SET "${col}" = NULL WHERE "${col}" = $1`, [userId]);
+    } else {
+      await client.query(`DELETE FROM "${tbl}" WHERE "${col}" = $1`, [userId]);
+    }
+  }
+};
+
 router.delete('/system-users/:id', requirePermission('user:delete'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
     if (!userId) {
+      client.release();
       return;
     }
 
     if (userId === req.user.id) {
-      return respondSystemUserError(res, {
+      client.release();
+      return respondUserError(res, {
         statusCode: 400,
         error: 'Cannot delete your own account',
         code: 'SELF_DELETE_FORBIDDEN',
       });
     }
 
-    const existingUser = await ensureSystemUserExists(userId);
+    const existingUser = await fetchSystemUser(userId);
     if (!existingUser) {
-      return respondSystemUserError(res, {
+      client.release();
+      return respondUserError(res, {
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
       });
     }
 
-    if (isGuardianAccountRow(existingUser)) {
-      return respondSystemUserError(res, {
+    if (isGuardianRow(existingUser)) {
+      client.release();
+      return respondUserError(res, {
         statusCode: 400,
         error: 'Guardian account lifecycle is managed from the Guardians module',
         code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
       });
     }
 
-    const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id, username', [userId]);
+    const forceDelete = Boolean(req.body?.forceDelete);
+    const isSystemAdmin = getCanonicalRole(req) === CANONICAL_ROLES.SYSTEM_ADMIN;
+
+    // Meaningful-activity check: only block when REAL business activity exists.
+    // Auto/stub references (security_events, sessions, settings, notifications, etc.)
+    // are not counted here and are cleaned up below.
+    if (!(forceDelete && isSystemAdmin)) {
+      const { total, breakdown } = await countMeaningfulActivity(client, userId);
+      if (total > 0) {
+        client.release();
+        return respondUserError(res, {
+          statusCode: 409,
+          error:
+            'This user has existing records (appointments, vaccinations, transactions, etc.) and cannot be permanently deleted. Deactivate the account instead.',
+          code: 'SYSTEM_USER_HAS_DEPENDENT_RECORDS',
+          details: { activity: breakdown },
+        });
+      }
+    }
+
+    await client.query('BEGIN');
+    // Force-delete by an admin: clean meaningful tables too (nullable cols → NULL,
+    // non-nullable → DELETE). Otherwise only stub/non-meaningful tables are touched.
+    await cleanupStubReferences(client, userId, { skipMeaningful: !(forceDelete && isSystemAdmin) });
+
+    const result = await client.query(
+      'DELETE FROM users WHERE id = $1 RETURNING id, username',
+      [userId],
+    );
 
     if (result.rows.length === 0) {
-      return respondSystemUserError(res, {
+      await client.query('ROLLBACK');
+      client.release();
+      return respondUserError(res, {
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
       });
     }
 
-    await logSystemUserSecurityEvent({
+    await client.query('COMMIT');
+
+    await logUserSecEvent({
       req,
       eventType: securityEventService.EVENT_TYPES.SYSTEM_CONFIG_CHANGED,
       severity: securityEventService.SEVERITY.WARNING,
@@ -2028,6 +2003,7 @@ router.delete('/system-users/:id', requirePermission('user:delete'), async (req,
       details: {
         action: 'system_user_deleted',
         username: existingUser.username,
+        forced: Boolean(forceDelete && isSystemAdmin),
       },
     });
 
@@ -2042,115 +2018,134 @@ router.delete('/system-users/:id', requirePermission('user:delete'), async (req,
       },
     });
   } catch (error) {
-    return respondSystemUserError(res, {
+    try { await client.query('ROLLBACK'); } catch (_) { /* no-op */ }
+
+    if (error?.code === '23503') {
+      // Defensive fallback: meaningful pre-check missed a real activity FK.
+      return respondUserError(res, {
+        statusCode: 409,
+        error:
+          'This user has existing records (appointments, vaccinations, transactions, etc.) and cannot be permanently deleted. Deactivate the account instead.',
+        code: 'SYSTEM_USER_HAS_DEPENDENT_RECORDS',
+        details:
+          process.env.NODE_ENV === 'development'
+            ? { constraint: error.constraint, detail: error.detail }
+            : undefined,
+      });
+    }
+
+    return respondUserError(res, {
       statusCode: 500,
       error: 'Failed to delete system user',
       code: 'SYSTEM_USER_DELETE_FAILED',
       details: process.env.NODE_ENV === 'development' ? { message: error.message } : undefined,
     });
+  } finally {
+    try { client.release(); } catch (_) { /* already released */ }
   }
 });
 
-// Toggle system user active status (enable/disable)
-router.put('/system-users/:id/toggle-active', requirePermission('admin:override'), async (req, res) => {
-  try {
-    const userId = requireValidIdParam(res, req.params?.id, 'id');
-    if (!userId) {
-      return;
-    }
+router.put(
+  '/system-users/:id/toggle-active',
+  requirePermission('admin:override'),
+  async (req, res) => {
+    try {
+      const userId = requireValidIdParam(res, req.params?.id, 'id');
+      if (!userId) {
+        return;
+      }
 
-    const { is_active } = req.body;
-    const normalizedIsActive = typeof is_active === 'boolean' ? is_active : null;
+      const { is_active } = req.body;
+      const normalizedIsActive = typeof is_active === 'boolean' ? is_active : null;
 
-    if (normalizedIsActive === null) {
-      return respondSystemUserError(res, {
-        statusCode: 400,
-        error: 'is_active must be a boolean',
-        code: 'INVALID_IS_ACTIVE',
-        field: 'is_active',
+      if (normalizedIsActive === null) {
+        return respondUserError(res, {
+          statusCode: 400,
+          error: 'is_active must be a boolean',
+          code: 'INVALID_IS_ACTIVE',
+          field: 'is_active',
+        });
+      }
+
+      if (userId === req.user.id && normalizedIsActive === false) {
+        return respondUserError(res, {
+          statusCode: 400,
+          error: 'Cannot disable your own account',
+          code: 'SELF_DISABLE_FORBIDDEN',
+        });
+      }
+
+      const existingUser = await fetchSystemUser(userId);
+      if (!existingUser) {
+        return respondUserError(res, {
+          statusCode: 404,
+          error: 'User not found',
+          code: 'SYSTEM_USER_NOT_FOUND',
+        });
+      }
+
+      if (isGuardianRow(existingUser)) {
+        return respondUserError(res, {
+          statusCode: 400,
+          error: 'Guardian account activation state is managed from the Guardians module',
+          code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
+        });
+      }
+
+      const result = await pool.query(
+        'UPDATE users SET is_active = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id',
+        [normalizedIsActive, userId]
+      );
+
+      if (result.rows.length === 0) {
+        return respondUserError(res, {
+          statusCode: 404,
+          error: 'User not found',
+          code: 'SYSTEM_USER_NOT_FOUND',
+        });
+      }
+
+      const updatedUser = await fetchSystemUser(userId);
+      if (!updatedUser) {
+        return respondUserError(res, {
+          statusCode: 500,
+          error: 'User status updated but failed to load normalized response',
+          code: 'SYSTEM_USER_TOGGLE_FETCH_FAILED',
+        });
+      }
+
+      await logUserSecEvent({
+        req,
+        eventType: securityEventService.EVENT_TYPES.SYSTEM_CONFIG_CHANGED,
+        severity: securityEventService.SEVERITY.WARNING,
+        targetUserId: userId,
+        details: {
+          action: normalizedIsActive ? 'system_user_enabled' : 'system_user_disabled',
+          username: updatedUser.username,
+          previous_is_active: existingUser.is_active,
+          is_active: updatedUser.is_active,
+        },
       });
-    }
 
-    // Prevent self-deactivation
-    if (userId === req.user.id && normalizedIsActive === false) {
-      return respondSystemUserError(res, {
-        statusCode: 400,
-        error: 'Cannot disable your own account',
-        code: 'SELF_DISABLE_FORBIDDEN',
+      const normalizedUser = buildUserResponse(updatedUser);
+      socketService.broadcast('system_user_updated', normalizedUser);
+
+      return respondUserSuccess(res, {
+        message: normalizedIsActive ? 'User enabled successfully' : 'User disabled successfully',
+        code: normalizedIsActive ? 'SYSTEM_USER_ENABLED' : 'SYSTEM_USER_DISABLED',
+        user: normalizedUser,
       });
-    }
-
-    const existingUser = await ensureSystemUserExists(userId);
-    if (!existingUser) {
-      return respondSystemUserError(res, {
-        statusCode: 404,
-        error: 'User not found',
-        code: 'SYSTEM_USER_NOT_FOUND',
-      });
-    }
-
-    if (isGuardianAccountRow(existingUser)) {
-      return respondSystemUserError(res, {
-        statusCode: 400,
-        error: 'Guardian account activation state is managed from the Guardians module',
-        code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
-      });
-    }
-
-    const result = await pool.query(
-      'UPDATE users SET is_active = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id',
-      [normalizedIsActive, userId],
-    );
-
-    if (result.rows.length === 0) {
-      return respondSystemUserError(res, {
-        statusCode: 404,
-        error: 'User not found',
-        code: 'SYSTEM_USER_NOT_FOUND',
-      });
-    }
-
-    const updatedUser = await ensureSystemUserExists(userId);
-    if (!updatedUser) {
-      return respondSystemUserError(res, {
+    } catch (error) {
+      return respondUserError(res, {
         statusCode: 500,
-        error: 'User status updated but failed to load normalized response',
-        code: 'SYSTEM_USER_TOGGLE_FETCH_FAILED',
+        error: 'Failed to update user active status',
+        code: 'SYSTEM_USER_TOGGLE_FAILED',
+        details: process.env.NODE_ENV === 'development' ? { message: error.message } : undefined,
       });
     }
-
-    await logSystemUserSecurityEvent({
-      req,
-      eventType: securityEventService.EVENT_TYPES.SYSTEM_CONFIG_CHANGED,
-      severity: securityEventService.SEVERITY.WARNING,
-      targetUserId: userId,
-      details: {
-        action: normalizedIsActive ? 'system_user_enabled' : 'system_user_disabled',
-        username: updatedUser.username,
-        previous_is_active: existingUser.is_active,
-        is_active: updatedUser.is_active,
-      },
-    });
-
-    const normalizedUser = buildSystemUserResponse(updatedUser);
-    socketService.broadcast('system_user_updated', normalizedUser);
-
-    return respondSystemUserSuccess(res, {
-      message: normalizedIsActive ? 'User enabled successfully' : 'User disabled successfully',
-      code: normalizedIsActive ? 'SYSTEM_USER_ENABLED' : 'SYSTEM_USER_DISABLED',
-      user: normalizedUser,
-    });
-  } catch (error) {
-    return respondSystemUserError(res, {
-      statusCode: 500,
-      error: 'Failed to update user active status',
-      code: 'SYSTEM_USER_TOGGLE_FAILED',
-      details: process.env.NODE_ENV === 'development' ? { message: error.message } : undefined,
-    });
   }
-});
+);
 
-// Get all clinics
 router.get('/clinics', requirePermission('system:settings'), async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM clinics ORDER BY name');
@@ -2160,14 +2155,13 @@ router.get('/clinics', requirePermission('system:settings'), async (req, res) =>
   }
 });
 
-// Create clinic
 router.post('/clinics', requirePermission('system:settings'), async (req, res) => {
   try {
     const { name, region, address, contact } = req.body;
 
     const result = await pool.query(
       'INSERT INTO clinics (name, region, address, contact) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, region, address, contact],
+      [name, region, address, contact]
     );
 
     res.status(201).json(result.rows[0]);
@@ -2176,7 +2170,6 @@ router.post('/clinics', requirePermission('system:settings'), async (req, res) =
   }
 });
 
-// Update clinic
 router.put('/clinics/:id', requirePermission('system:settings'), async (req, res) => {
   try {
     const { id } = req.params;
@@ -2184,7 +2177,7 @@ router.put('/clinics/:id', requirePermission('system:settings'), async (req, res
 
     const result = await pool.query(
       'UPDATE clinics SET name = $1, region = $2, address = $3, contact = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5 RETURNING *',
-      [name, region, address, contact, id],
+      [name, region, address, contact, id]
     );
 
     if (result.rows.length === 0) {
@@ -2197,35 +2190,29 @@ router.put('/clinics/:id', requirePermission('system:settings'), async (req, res
   }
 });
 
-// Get all roles
 router.get('/roles', requirePermission('user:manage_roles'), async (req, res) => {
   try {
     const { exclude } = req.query;
-    let query = 'SELECT * FROM roles';
-    const params = [];
-
-    if (exclude) {
-      const excludeRoles = exclude.split(',').map(r => r.trim().toLowerCase());
-      query += ' WHERE LOWER(name) != ALL($1::text[])';
-      params.push(excludeRoles);
-    }
-
-    query += ' ORDER BY hierarchy_level DESC';
-    const result = await pool.query(query, params);
+    const baseExclude = ['health_worker', 'inventory_manager', 'clinic_manager', 'dentist', 'nutritionist'];
+    const dynamicExclude = exclude ? exclude.split(',').map((r) => r.trim().toLowerCase()) : [];
+    const excludeRoles = [...new Set([...baseExclude, ...dynamicExclude])];
+    const result = await pool.query(
+      'SELECT * FROM roles WHERE LOWER(name) != ALL($1::text[]) ORDER BY hierarchy_level DESC',
+      [excludeRoles],
+    );
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Create role
 router.post('/roles', requirePermission('user:manage_roles'), async (req, res) => {
   try {
     const { name, permissions, display_name, hierarchy_level } = req.body;
 
     const result = await pool.query(
       'INSERT INTO roles (name, permissions, display_name, hierarchy_level) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, permissions, display_name, hierarchy_level],
+      [name, permissions, display_name, hierarchy_level]
     );
 
     res.status(201).json(result.rows[0]);
@@ -2234,7 +2221,6 @@ router.post('/roles', requirePermission('user:manage_roles'), async (req, res) =
   }
 });
 
-// Update role
 router.put('/roles/:id', requirePermission('user:manage_roles'), async (req, res) => {
   try {
     const { id } = req.params;
@@ -2242,7 +2228,7 @@ router.put('/roles/:id', requirePermission('user:manage_roles'), async (req, res
 
     const result = await pool.query(
       'UPDATE roles SET name = $1, permissions = $2, display_name = $3, hierarchy_level = $4, is_active = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6 RETURNING *',
-      [name, permissions, display_name, hierarchy_level, is_active, id],
+      [name, permissions, display_name, hierarchy_level, is_active, id]
     );
 
     if (result.rows.length === 0) {
@@ -2255,7 +2241,6 @@ router.put('/roles/:id', requirePermission('user:manage_roles'), async (req, res
   }
 });
 
-// Get system user password (Admin only)
 router.get('/system-users/:id/password', requirePermission('admin:override'), async (req, res) => {
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
@@ -2263,35 +2248,32 @@ router.get('/system-users/:id/password', requirePermission('admin:override'), as
       return;
     }
 
-    const existingUser = await ensureSystemUserExists(userId);
+    const existingUser = await fetchSystemUser(userId);
     if (!existingUser) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
       });
     }
 
-    if (isGuardianAccountRow(existingUser)) {
-      return respondSystemUserError(res, {
+    if (isGuardianRow(existingUser)) {
+      return respondUserError(res, {
         statusCode: 400,
         error: 'Guardian account password lifecycle is managed from the Guardians module',
         code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
       });
     }
 
-    // Get user from database (without password hash)
-    const userResult = await pool.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
+    await pool.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
 
-    // For security reasons, we won't return the actual password
-    // Instead, we'll return a message indicating the user exists and can be reset
     res.json({
       message: 'Password reset available for this user',
       user_id: userId,
       can_reset: true,
     });
   } catch (error) {
-    return respondSystemUserError(res, {
+    return respondUserError(res, {
       statusCode: 500,
       error: 'Failed to fetch system user password status',
       code: 'SYSTEM_USER_PASSWORD_STATUS_FAILED',
@@ -2300,7 +2282,6 @@ router.get('/system-users/:id/password', requirePermission('admin:override'), as
   }
 });
 
-// Reset system user password (Admin only)
 router.put('/system-users/:id/password', requirePermission('admin:override'), async (req, res) => {
   try {
     const userId = requireValidIdParam(res, req.params?.id, 'id');
@@ -2311,7 +2292,7 @@ router.put('/system-users/:id/password', requirePermission('admin:override'), as
     const { password } = req.body;
 
     if (!password || password.length < 6) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 400,
         error: 'Password must be at least 6 characters long',
         code: 'INVALID_PASSWORD',
@@ -2319,17 +2300,17 @@ router.put('/system-users/:id/password', requirePermission('admin:override'), as
       });
     }
 
-    const existingUser = await ensureSystemUserExists(userId);
+    const existingUser = await fetchSystemUser(userId);
     if (!existingUser) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
       });
     }
 
-    if (isGuardianAccountRow(existingUser)) {
-      return respondSystemUserError(res, {
+    if (isGuardianRow(existingUser)) {
+      return respondUserError(res, {
         statusCode: 400,
         error: 'Guardian account password lifecycle is managed from the Guardians module',
         code: 'GUARDIAN_ACCOUNT_MANAGED_BY_GUARDIANS_MODULE',
@@ -2340,27 +2321,27 @@ router.put('/system-users/:id/password', requirePermission('admin:override'), as
 
     const result = await pool.query(
       'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id',
-      [hashedPassword, userId],
+      [hashedPassword, userId]
     );
 
     if (result.rows.length === 0) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 404,
         error: 'User not found',
         code: 'SYSTEM_USER_NOT_FOUND',
       });
     }
 
-    const updatedUser = await ensureSystemUserExists(userId);
+    const updatedUser = await fetchSystemUser(userId);
     if (!updatedUser) {
-      return respondSystemUserError(res, {
+      return respondUserError(res, {
         statusCode: 500,
         error: 'Password reset completed but failed to load normalized response',
         code: 'SYSTEM_USER_PASSWORD_RESET_FETCH_FAILED',
       });
     }
 
-    await logSystemUserSecurityEvent({
+    await logUserSecEvent({
       req,
       eventType: securityEventService.EVENT_TYPES.PASSWORD_CHANGED,
       severity: securityEventService.SEVERITY.CRITICAL,
@@ -2368,20 +2349,20 @@ router.put('/system-users/:id/password', requirePermission('admin:override'), as
       details: {
         action: 'system_user_password_reset',
         target_username: existingUser.username,
-        source_context: getRequestSourceContext(req),
+        source_context: getReqSourceCtx(req),
       },
     });
 
-    const normalizedUser = buildSystemUserResponse(updatedUser);
+    const normalizedUser = buildUserResponse(updatedUser);
     socketService.broadcast('system_user_updated', normalizedUser);
 
-    return respondSystemUserSuccess(res, {
+    return respondUserSuccess(res, {
       message: 'Password reset successfully',
       code: 'SYSTEM_USER_PASSWORD_RESET',
       user: normalizedUser,
     });
   } catch (error) {
-    return respondSystemUserError(res, {
+    return respondUserError(res, {
       statusCode: 500,
       error: 'Failed to reset password',
       code: 'SYSTEM_USER_PASSWORD_RESET_FAILED',
@@ -2390,7 +2371,6 @@ router.put('/system-users/:id/password', requirePermission('admin:override'), as
   }
 });
 
-// Get user statistics
 router.get('/stats', requireSystemAdmin, async (req, res) => {
   try {
     const [totalUsers, totalGuardians, totalClinics, totalRoles] = await Promise.all([
@@ -2411,17 +2391,15 @@ router.get('/stats', requireSystemAdmin, async (req, res) => {
   }
 });
 
-// Get guardian profile
 router.get('/guardian/profile/:guardianId', async (req, res) => {
   try {
-    await ensureGuardianProfileColumnsExist();
+    await ensureGuardianCols();
     const { guardianId } = req.params;
 
     if (!canAccessGuardianScope(req, guardianId)) {
       return res.status(403).json({ error: 'Access denied to guardian profile' });
     }
 
-    // Get guardian from database
     const result = await pool.query(
       `SELECT id, name, phone, email, address, relationship,
               emergency_contact, emergency_phone,
@@ -2429,7 +2407,7 @@ router.get('/guardian/profile/:guardianId', async (req, res) => {
               last_login, is_active, created_at, updated_at
        FROM guardians
        WHERE id = $1`,
-      [guardianId],
+      [guardianId]
     );
 
     if (result.rows.length === 0) {
@@ -2445,15 +2423,13 @@ router.get('/guardian/profile/:guardianId', async (req, res) => {
   }
 });
 
-// Update guardian profile
 router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
-    await ensureGuardianProfileColumnsExist();
+    await ensureGuardianCols();
     const { guardianId } = req.params;
     const { name, phone, email, address, emergency_contact, emergency_phone } = req.body;
 
-    // Validate input
     if (!name || name.trim().length < 2) {
       return res.status(400).json({
         error: 'Name must be at least 2 characters long',
@@ -2464,7 +2440,7 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
 
     const existingGuardianResult = await client.query(
       'SELECT id FROM guardians WHERE id = $1 FOR UPDATE',
-      [guardianId],
+      [guardianId]
     );
 
     if (existingGuardianResult.rows.length === 0) {
@@ -2479,7 +2455,7 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $7
        RETURNING id, name, phone, email, address, emergency_contact, emergency_phone`,
-      [name, phone, email, address, emergency_contact, emergency_phone, guardianId],
+      [name, phone, email, address, emergency_contact, emergency_phone, guardianId]
     );
 
     if (result.rows.length === 0) {
@@ -2487,7 +2463,7 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
       return res.status(404).json({ error: 'Guardian not found' });
     }
 
-    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0], {
+    const ensuredGuardianUser = await ensureGuardianAccount(client, result.rows[0], {
       syncExplicitGuardianEmail: true,
       throwOnEmailConflict: true,
     });
@@ -2524,11 +2500,10 @@ router.put('/guardian/profile/:guardianId', requireSystemAdmin, async (req, res)
   }
 });
 
-// Update guardian self profile (GUARDIAN own)
 router.put('/guardian/self/profile/:guardianId', async (req, res) => {
   const client = await pool.connect();
   try {
-    await ensureGuardianProfileColumnsExist();
+    await ensureGuardianCols();
     const { guardianId } = req.params;
     const requestedGuardianId = parseInt(guardianId, 10);
 
@@ -2556,9 +2531,9 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
       });
     }
 
-    const validationResult = validateGuardianProfilePayload(req.body || {});
+    const validationResult = validateGuardianProfile(req.body || {});
     if (!validationResult.isValid) {
-      return respondGuardianProfileValidationError(res, validationResult.errors);
+      return respondProfileError(res, validationResult.errors);
     }
 
     const profile = validationResult.data;
@@ -2567,21 +2542,21 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
 
     const duplicateEmailResult = profile.email
       ? await client.query(
-        'SELECT id FROM guardians WHERE lower(email) = lower($1) AND id <> $2 LIMIT 1',
-        [profile.email, requestedGuardianId],
-      )
+          'SELECT id FROM guardians WHERE lower(email) = lower($1) AND id <> $2 LIMIT 1',
+          [profile.email, requestedGuardianId]
+        )
       : { rows: [] };
 
     if (duplicateEmailResult.rows.length > 0) {
       await client.query('ROLLBACK');
-      return respondGuardianProfileValidationError(res, {
+      return respondProfileError(res, {
         email: 'This email is already in use by another guardian account',
       });
     }
 
     const existingGuardianResult = await client.query(
       'SELECT id FROM guardians WHERE id = $1 FOR UPDATE',
-      [requestedGuardianId],
+      [requestedGuardianId]
     );
 
     if (existingGuardianResult.rows.length === 0) {
@@ -2611,7 +2586,7 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
         profile.emergency_contact,
         profile.emergency_phone,
         requestedGuardianId,
-      ],
+      ]
     );
 
     if (result.rows.length === 0) {
@@ -2622,7 +2597,7 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
       });
     }
 
-    const ensuredGuardianUser = await ensureGuardianUserAccount(client, result.rows[0], {
+    const ensuredGuardianUser = await ensureGuardianAccount(client, result.rows[0], {
       syncExplicitGuardianEmail: true,
       throwOnEmailConflict: true,
     });
@@ -2665,7 +2640,6 @@ router.put('/guardian/self/profile/:guardianId', async (req, res) => {
   }
 });
 
-// Get user profile
 router.get('/profile/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -2674,14 +2648,13 @@ router.get('/profile/:userId', async (req, res) => {
       return res.status(403).json({ error: 'Access denied to user profile' });
     }
 
-    // Get user from database
     const result = await pool.query(
       `SELECT u.*, r.name as role_name, r.display_name, c.name as clinic_name
        FROM users u
        JOIN roles r ON u.role_id = r.id
        LEFT JOIN clinics c ON u.clinic_id = c.id
        WHERE u.id = $1`,
-      [userId],
+      [userId]
     );
 
     if (result.rows.length === 0) {
@@ -2690,17 +2663,14 @@ router.get('/profile/:userId', async (req, res) => {
 
     const user = result.rows[0];
 
-    // Remove password hash from response for security
-
-    const { password_hash: _password_hash, ...userWithoutPassword } = user;
-
+    const userWithoutPassword = { ...user };
+    delete userWithoutPassword.password_hash;
     res.json(userWithoutPassword);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Update user profile
 router.put('/profile/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -2717,7 +2687,7 @@ router.put('/profile/:userId', async (req, res) => {
        FROM users u
        JOIN roles r ON u.role_id = r.id
        WHERE u.id = $1`,
-      [userId],
+      [userId]
     );
 
     if (userAccountResult.rows.length === 0) {
@@ -2733,7 +2703,10 @@ router.put('/profile/:userId', async (req, res) => {
       isGuardianManagedUsername &&
       typeof requestedUsername === 'string' &&
       requestedUsername.trim() &&
-      requestedUsername.trim().toLowerCase() !== String(existingAccount.username || '').trim().toLowerCase()
+      requestedUsername.trim().toLowerCase() !==
+        String(existingAccount.username || '')
+          .trim()
+          .toLowerCase()
     ) {
       return res.status(400).json({
         error: 'Guardian usernames are system-managed and follow firstname.lastname format',
@@ -2745,14 +2718,12 @@ router.put('/profile/:userId', async (req, res) => {
       ? String(existingAccount.username || '').trim()
       : String(requestedUsername || '').trim();
 
-    // Validate input
     if (!resolvedUsername || resolvedUsername.length < 3) {
       return res.status(400).json({
         error: 'Username must be at least 3 characters long',
       });
     }
 
-    // Build update query
     const setParts = ['username = $1', 'updated_at = CURRENT_TIMESTAMP'];
     const values = [resolvedUsername];
     let paramIndex = 1;
@@ -2793,9 +2764,6 @@ router.put('/profile/:userId', async (req, res) => {
   }
 });
 
-// ==================== NOTIFICATION SETTINGS ====================
-
-// Get notification settings for current user
 router.get('/me/notification-settings', async (req, res) => {
   try {
     const result = await pool.query('SELECT notification_settings FROM users WHERE id = $1', [
@@ -2821,12 +2789,10 @@ router.get('/me/notification-settings', async (req, res) => {
   }
 });
 
-// Save notification settings for current user
 router.put('/me/notification-settings', async (req, res) => {
   try {
     const { notification_settings } = req.body;
 
-    // Validate that notification_settings is an object
     if (notification_settings && typeof notification_settings !== 'object') {
       return res.status(400).json({
         success: false,
@@ -2839,7 +2805,7 @@ router.put('/me/notification-settings', async (req, res) => {
        SET notification_settings = $1, updated_at = CURRENT_TIMESTAMP
        WHERE id = $2
        RETURNING notification_settings`,
-      [JSON.stringify(notification_settings || {}), req.user.id],
+      [JSON.stringify(notification_settings || {}), req.user.id]
     );
 
     if (result.rows.length === 0) {
@@ -2860,12 +2826,9 @@ router.put('/me/notification-settings', async (req, res) => {
   }
 });
 
-// ==================== GUARDIAN DATA EXPORT ====================
-
-// Export guardian data (profile, children, appointments, vaccinations)
 router.get('/guardian/export/:guardianId', async (req, res) => {
   try {
-    await ensureGuardianProfileColumnsExist();
+    await ensureGuardianCols();
     const { guardianId } = req.params;
 
     if (!canAccessGuardianScope(req, guardianId)) {
@@ -2875,12 +2838,11 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
       });
     }
 
-    // Get guardian profile
     const guardianResult = await pool.query(
       `SELECT id, name, phone, email, address, relationship,
               emergency_contact, emergency_phone, created_at
        FROM guardians WHERE id = $1`,
-      [guardianId],
+      [guardianId]
     );
 
     if (guardianResult.rows.length === 0) {
@@ -2890,17 +2852,15 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
       });
     }
 
-    // Get children/infants
     const infantsResult = await pool.query(
       `SELECT id, first_name, last_name, dob, sex, birth_weight, birth_height,
               place_of_birth as birth_place, mother_name, father_name, created_at, control_number
        FROM patients
        WHERE guardian_id = $1
          AND is_active = true`,
-      [guardianId],
+      [guardianId]
     );
 
-    // Get appointments for guardian's children
     const infantsIds = infantsResult.rows.map((i) => i.id);
     let appointmentsResult = { rows: [] };
 
@@ -2915,11 +2875,10 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
          WHERE a.infant_id = ANY($1)
            AND a.is_active = true
          ORDER BY a.scheduled_date DESC`,
-        [infantsIds],
+        [infantsIds]
       );
     }
 
-    // Get vaccination records for guardian's children
     let vaccinationsResult = { rows: [] };
 
     if (infantsIds.length > 0) {
@@ -2940,11 +2899,10 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
          WHERE ir.patient_id = ANY($1)
            AND ir.is_active = true
          ORDER BY ir.admin_date DESC NULLS LAST, ir.created_at DESC`,
-        [infantsIds],
+        [infantsIds]
       );
     }
 
-    // Compile export data
     const exportData = {
       exportedAt: new Date().toISOString(),
       guardian: guardianResult.rows[0],
@@ -2958,11 +2916,10 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
       },
     };
 
-    // Set headers for file download
     res.setHeader('Content-Type', 'application/json');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename=immunicare_data_${guardianId}_${Date.now()}.json`,
+      `attachment; filename=immunicare_data_${guardianId}_${Date.now()}.json`
     );
 
     res.json({
@@ -2978,7 +2935,6 @@ router.get('/guardian/export/:guardianId', async (req, res) => {
   }
 });
 
-// Change current user's password
 router.put('/me/password', async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -2997,7 +2953,6 @@ router.put('/me/password', async (req, res) => {
       });
     }
 
-    // Get current user from database
     const userResult = await pool.query('SELECT password_hash FROM users WHERE id = $1', [
       req.user.id,
     ]);
@@ -3008,7 +2963,6 @@ router.put('/me/password', async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // Verify current password
     const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
 
     if (!isValidPassword) {
@@ -3018,10 +2972,8 @@ router.put('/me/password', async (req, res) => {
       });
     }
 
-    // Hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    // Update password and reset force_password_change flag
     await pool.query(
       `UPDATE users
        SET password_hash = $1,
@@ -3029,7 +2981,7 @@ router.put('/me/password', async (req, res) => {
            force_password_change = false,
            password_changed_at = CURRENT_TIMESTAMP
        WHERE id = $2`,
-      [hashedPassword, req.user.id],
+      [hashedPassword, req.user.id]
     );
 
     res.json({

@@ -1,15 +1,9 @@
 /**
- * Immunization Schedule Service
- *
- * Provides dynamic immunization schedule calculations based on infant's date of birth.
- * Supports due date calculation, status tracking, overdue detection, and catch-up scheduling.
+ * Immunization schedule calculations and status helpers.
  */
 
 const pool = require('../db');
-const {
-  getClinicTodayDateKey,
-  toClinicDateKey,
-} = require('../utils/clinicCalendar');
+const { getClinicTodayDateKey, toClinicDateKey } = require('../utils/clinicCalendar');
 
 const ACTIONABLE_DUE_WINDOW_DAYS = 7;
 
@@ -38,7 +32,7 @@ const resolveScheduleSchema = async () => {
             AND table_name = 'vaccination_schedules'
             AND column_name = ANY($1::text[])
         `,
-        [SCHEDULE_SCHEMA_COLUMNS],
+        [SCHEDULE_SCHEMA_COLUMNS]
       )
       .then((result) => {
         const columns = new Set((result.rows || []).map((row) => row.column_name));
@@ -70,7 +64,7 @@ const buildOptionalScheduleColumn = (
   availableColumns,
   columnName,
   fallbackSql,
-  alias = columnName,
+  alias = columnName
 ) => {
   if (availableColumns.has(columnName)) {
     return `vs.${columnName} AS ${alias}`;
@@ -127,10 +121,7 @@ class ImmunizationScheduleService {
     }
 
     const clinicToday = this.getClinicTodayDate();
-    return Math.max(
-      0,
-      Math.floor((clinicToday.getTime() - dob.getTime()) / (1000 * 60 * 60 * 24)),
-    );
+    return Math.max(0, Math.floor((clinicToday.getTime() - dob.getTime()) / (1000 * 60 * 60 * 24)));
   }
 
   calculateClinicAgeInMonths(dob) {
@@ -152,10 +143,7 @@ class ImmunizationScheduleService {
    */
   async getInfantDOB(infantId) {
     try {
-      const result = await pool.query(
-        'SELECT dob FROM patients WHERE id = $1 LIMIT 1',
-        [infantId],
-      );
+      const result = await pool.query('SELECT dob FROM patients WHERE id = $1 LIMIT 1', [infantId]);
 
       if (result.rows.length === 0 || !result.rows[0].dob) {
         return null;
@@ -187,7 +175,7 @@ class ImmunizationScheduleService {
           WHERE p.id = $1 AND COALESCE(p.is_active, true) = true
           LIMIT 1
         `,
-        [infantId],
+        [infantId]
       );
 
       return result.rows.length > 0 ? result.rows[0] : null;
@@ -197,7 +185,7 @@ class ImmunizationScheduleService {
       try {
         const fallbackResult = await pool.query(
           'SELECT id, control_number, first_name, last_name, dob FROM patients WHERE id = $1 LIMIT 1',
-          [infantId],
+          [infantId]
         );
         return fallbackResult.rows.length > 0 ? fallbackResult.rows[0] : null;
       } catch (innerErr) {
@@ -243,7 +231,7 @@ class ImmunizationScheduleService {
             vs.${ageColumn} ASC,
             COALESCE(NULLIF(TRIM(vs.vaccine_name), ''), v.name) ASC,
             vs.dose_number ASC
-        `,
+        `
       );
       schedulesCache = result.rows;
       schedulesCacheExpiry = Date.now() + SCHEDULES_CACHE_TTL_MS;
@@ -255,11 +243,13 @@ class ImmunizationScheduleService {
   }
 
   async getReadinessLookupsForPatients(patientIds = []) {
-    const normalizedPatientIds = [...new Set(
-      patientIds
-        .map((patientId) => Number.parseInt(patientId, 10))
-        .filter((patientId) => Number.isFinite(patientId) && patientId > 0),
-    )];
+    const normalizedPatientIds = [
+      ...new Set(
+        patientIds
+          .map((patientId) => Number.parseInt(patientId, 10))
+          .filter((patientId) => Number.isFinite(patientId) && patientId > 0)
+      ),
+    ];
 
     if (normalizedPatientIds.length === 0) {
       return new Map();
@@ -280,7 +270,7 @@ class ImmunizationScheduleService {
           WHERE infant_id = ANY($1::int[])
             AND COALESCE(is_active, true) = true
         `,
-        [normalizedPatientIds],
+        [normalizedPatientIds]
       );
       rows = result.rows || [];
     } catch (error) {
@@ -315,6 +305,7 @@ class ImmunizationScheduleService {
   buildVaccinationLookupFromRows(rows = []) {
     const administered = {};
     const recordsByVaccine = {};
+    const completedDoseNumbersByVaccine = {};
 
     rows.forEach((record) => {
       const vaccineId = Number(record.vaccine_id);
@@ -322,7 +313,9 @@ class ImmunizationScheduleService {
         return;
       }
 
-      const normalizedStatus = String(record.status || '').trim().toLowerCase();
+      const normalizedStatus = String(record.status || '')
+        .trim()
+        .toLowerCase();
       const isCompleted = Boolean(record.admin_date) || normalizedStatus === 'completed';
       const doseNumber = Number.parseInt(record.dose_no, 10);
 
@@ -337,13 +330,26 @@ class ImmunizationScheduleService {
         is_completed: isCompleted,
       });
 
-      const currentMax = administered[vaccineId] || 0;
-      if (isCompleted && Number.isFinite(doseNumber) && doseNumber > currentMax) {
-        administered[vaccineId] = doseNumber;
+      if (isCompleted && Number.isFinite(doseNumber) && doseNumber > 0) {
+        if (!completedDoseNumbersByVaccine[vaccineId]) {
+          completedDoseNumbersByVaccine[vaccineId] = new Set();
+        }
+
+        completedDoseNumbersByVaccine[vaccineId].add(doseNumber);
       }
     });
 
-    return { administered, recordsByVaccine };
+    Object.entries(completedDoseNumbersByVaccine).forEach(([vaccineId, doseNumbers]) => {
+      let consecutiveDoseCount = 0;
+
+      while (doseNumbers.has(consecutiveDoseCount + 1)) {
+        consecutiveDoseCount += 1;
+      }
+
+      administered[vaccineId] = consecutiveDoseCount;
+    });
+
+    return { administered, recordsByVaccine, completedDoseNumbersByVaccine };
   }
 
   /**
@@ -361,7 +367,7 @@ class ImmunizationScheduleService {
           WHERE patient_id = $1 AND COALESCE(is_active, true) = true
           ORDER BY admin_date ASC
         `,
-        [infantId],
+        [infantId]
       );
       rows = result.rows;
     } catch (err) {
@@ -374,9 +380,9 @@ class ImmunizationScheduleService {
             WHERE patient_id = $1
             ORDER BY admin_date ASC
           `,
-          [infantId],
+          [infantId]
         );
-        rows = result.rows.map(r => ({ ...r, status: r.admin_date ? 'completed' : 'pending' }));
+        rows = result.rows.map((r) => ({ ...r, status: r.admin_date ? 'completed' : 'pending' }));
       } catch (innerErr) {
         console.error('Error fetching administered vaccines:', innerErr);
         rows = [];
@@ -387,11 +393,13 @@ class ImmunizationScheduleService {
   }
 
   async getAdministeredVaccinesForPatients(patientIds = []) {
-    const normalizedPatientIds = [...new Set(
-      patientIds
-        .map((patientId) => Number.parseInt(patientId, 10))
-        .filter((patientId) => Number.isFinite(patientId) && patientId > 0),
-    )];
+    const normalizedPatientIds = [
+      ...new Set(
+        patientIds
+          .map((patientId) => Number.parseInt(patientId, 10))
+          .filter((patientId) => Number.isFinite(patientId) && patientId > 0)
+      ),
+    ];
 
     if (normalizedPatientIds.length === 0) {
       return new Map();
@@ -407,7 +415,7 @@ class ImmunizationScheduleService {
             AND COALESCE(is_active, true) = true
           ORDER BY patient_id ASC, admin_date ASC NULLS LAST, dose_no ASC
         `,
-        [normalizedPatientIds],
+        [normalizedPatientIds]
       );
       rows = result.rows;
     } catch (error) {
@@ -419,7 +427,7 @@ class ImmunizationScheduleService {
             WHERE patient_id = ANY($1::int[])
             ORDER BY patient_id ASC, admin_date ASC NULLS LAST, dose_no ASC
           `,
-          [normalizedPatientIds],
+          [normalizedPatientIds]
         );
         rows = result.rows.map((record) => ({
           ...record,
@@ -448,7 +456,7 @@ class ImmunizationScheduleService {
     return normalizedPatientIds.reduce((lookup, patientId) => {
       lookup.set(
         patientId,
-        this.buildVaccinationLookupFromRows(rowsByPatientId.get(patientId) || []),
+        this.buildVaccinationLookupFromRows(rowsByPatientId.get(patientId) || [])
       );
       return lookup;
     }, new Map());
@@ -494,7 +502,7 @@ class ImmunizationScheduleService {
    * @param {string|null} facilityContext - Facility ID for facility-aware adjustments
    * @returns {Object} - Status object with status, adminDate, daysOverdue, etc.
    */
-  determineDoseStatus(dueDate, scheduleDoseNumber, completedDoseCount, records = [], facilityContext = null) {
+  determineDoseStatus(dueDate, scheduleDoseNumber, completedDoseCount, records = []) {
     if (!(dueDate instanceof Date) || isNaN(dueDate.getTime())) {
       return {
         status: 'future',
@@ -510,8 +518,8 @@ class ImmunizationScheduleService {
     const today = this.getClinicTodayDate();
     const due = this.getClinicDate(dueDate) || dueDate;
 
-    const doseRecord = records.find((record) =>
-      Number(record.dose_no) === Number(scheduleDoseNumber) && record.is_completed,
+    const doseRecord = records.find(
+      (record) => Number(record.dose_no) === Number(scheduleDoseNumber) && record.is_completed
     );
 
     if (doseRecord) {
@@ -591,10 +599,6 @@ class ImmunizationScheduleService {
       return [];
     }
 
-    if (this.isFutureClinicDate(dob)) {
-      return [];
-    }
-
     const scheduleItems = schedules.map((schedule) => {
       const completedDoseCount = administered[schedule.vaccine_id] || 0;
       const dueDate = schedule.minimum_age_days
@@ -606,7 +610,7 @@ class ImmunizationScheduleService {
         schedule.dose_number,
         completedDoseCount,
         records,
-        facilityContext,
+        facilityContext
       );
 
       return {
@@ -675,7 +679,8 @@ class ImmunizationScheduleService {
       overdueCount,
       upcomingCount,
       futureCount,
-      pendingCount: overdueCount + upcomingCount,
+      pendingUpcomingCount: upcomingCount + futureCount,
+      pendingCount: overdueCount + upcomingCount + futureCount,
       overallStatus,
     };
   }
@@ -697,11 +702,7 @@ class ImmunizationScheduleService {
     };
   }
 
-  buildGuardianScheduleProjection(
-    scheduleItems = [],
-    readinessLookup = new Map(),
-    options = {},
-  ) {
+  buildGuardianScheduleProjection(scheduleItems = [], readinessLookup = new Map(), options = {}) {
     const referenceDateKey = this.resolveProjectionReferenceDateKey(options.referenceDate);
 
     const projectedSchedules = scheduleItems.map((scheduleItem) => {
@@ -717,16 +718,20 @@ class ImmunizationScheduleService {
       };
       const isPastDue = Boolean(dueDateKey && referenceDateKey && dueDateKey < referenceDateKey);
       const isDueOnReferenceDate = Boolean(
-        dueDateKey && referenceDateKey && dueDateKey === referenceDateKey,
+        dueDateKey && referenceDateKey && dueDateKey === referenceDateKey
       );
       const isEligibleByReferenceDate = Boolean(
-        dueDateKey && referenceDateKey && dueDateKey <= referenceDateKey,
+        dueDateKey && referenceDateKey && dueDateKey <= referenceDateKey
       );
 
       let status = 'upcoming';
       if (scheduleItem.isCompleted) {
         status = 'completed';
-      } else if (!isNextDueDose || !dueDateKey || (referenceDateKey && dueDateKey > referenceDateKey)) {
+      } else if (
+        !isNextDueDose ||
+        !dueDateKey ||
+        (referenceDateKey && dueDateKey > referenceDateKey)
+      ) {
         status = 'upcoming';
       } else if (isPastDue) {
         status = 'overdue';
@@ -762,64 +767,42 @@ class ImmunizationScheduleService {
       totalVaccines: projectedSchedules.length,
       completed: projectedSchedules.filter((item) => item.isCompleted).length,
       ready: projectedSchedules.filter(
-        (item) =>
-          !item.isCompleted &&
-          item.isNextDueDose &&
-          item.isDueToday &&
-          item.isReady,
+        (item) => !item.isCompleted && item.isNextDueDose && item.isDueToday && item.isReady
       ).length,
       pendingConfirmation: projectedSchedules.filter(
-        (item) => item.status === 'pending_confirmation',
+        (item) => item.status === 'pending_confirmation'
       ).length,
       upcoming: projectedSchedules.filter(
         (item) =>
           !item.isCompleted &&
           (!item.isNextDueDose ||
-            Boolean(item.dueDateKey && referenceDateKey && item.dueDateKey > referenceDateKey)),
+            Boolean(item.dueDateKey && referenceDateKey && item.dueDateKey > referenceDateKey))
       ).length,
       overdue: projectedSchedules.filter(
-        (item) =>
-          !item.isCompleted &&
-          item.isNextDueDose &&
-          item.isPastDue,
+        (item) => !item.isCompleted && item.isNextDueDose && item.isPastDue
       ).length,
     };
 
     const dueVaccines = projectedSchedules
-      .filter(
-        (item) =>
-          !item.isCompleted &&
-          item.isNextDueDose &&
-          item.isDueToday &&
-          item.isReady,
-      )
+      .filter((item) => !item.isCompleted && item.isNextDueDose && item.isDueToday && item.isReady)
       .map((item) => this.buildReadinessEntry(item))
       .filter(Boolean);
 
     const overdueVaccines = projectedSchedules
-      .filter(
-        (item) =>
-          !item.isCompleted &&
-          item.isNextDueDose &&
-          item.isPastDue,
-      )
+      .filter((item) => !item.isCompleted && item.isNextDueDose && item.isPastDue)
       .map((item) => this.buildReadinessEntry(item))
       .filter(Boolean);
 
     const blockedVaccines = projectedSchedules
-      .filter(
-        (item) =>
-          item.status === 'pending_confirmation',
-      )
+      .filter((item) => item.status === 'pending_confirmation')
       .map((item) =>
         this.buildReadinessEntry(item, {
           reason: 'Pending admin confirmation',
-        }),
+        })
       )
       .filter(Boolean);
 
-    const prioritizedVaccine =
-      overdueVaccines[0] || dueVaccines[0] || blockedVaccines[0] || null;
+    const prioritizedVaccine = overdueVaccines[0] || dueVaccines[0] || blockedVaccines[0] || null;
 
     let readinessStatus = 'UPCOMING';
     if (overdueVaccines.length > 0) {
@@ -842,9 +825,7 @@ class ImmunizationScheduleService {
         nextAppointmentPrediction: prioritizedVaccine
           ? {
               date: prioritizedVaccine.recommendedDate,
-              reason:
-                prioritizedVaccine.reason ||
-                'Earliest safe date for next eligible dose',
+              reason: prioritizedVaccine.reason || 'Earliest safe date for next eligible dose',
             }
           : null,
       },
@@ -874,13 +855,14 @@ class ImmunizationScheduleService {
 
     const schedules = await this.getAllSchedules();
     const vaccinationLookupByPatient = await this.getAdministeredVaccinesForPatients(
-      uniquePatients.map((patient) => patient.id),
+      uniquePatients.map((patient) => patient.id)
     );
 
     return uniquePatients.reduce((summaryMap, patient) => {
-      const facilityContext = typeof options.getFacilityContext === 'function'
-        ? options.getFacilityContext(patient)
-        : options.facilityContext || null;
+      const facilityContext =
+        typeof options.getFacilityContext === 'function'
+          ? options.getFacilityContext(patient)
+          : options.facilityContext || null;
       const dob = patient?.dob ? new Date(patient.dob) : null;
       const vaccinationLookup = vaccinationLookupByPatient.get(patient.id) || {
         administered: {},
@@ -946,7 +928,7 @@ class ImmunizationScheduleService {
       });
       const guardianProjection = this.buildGuardianScheduleProjection(
         scheduleItems,
-        readinessLookupByPatient.get(patient.id) || new Map(),
+        readinessLookupByPatient.get(patient.id) || new Map()
       );
       const scheduleSummary = this.summarizeScheduleItems(scheduleItems);
 
@@ -1073,7 +1055,7 @@ class ImmunizationScheduleService {
     const guardianProjection = this.buildGuardianScheduleProjection(
       schedule.schedules || [],
       readinessLookupByPatient.get(infantId) || new Map(),
-      options,
+      options
     );
 
     return {
@@ -1117,7 +1099,7 @@ class ImmunizationScheduleService {
             ${activeFilter}
           LIMIT 1
         `,
-        [vaccineId, doseNumber],
+        [vaccineId, doseNumber]
       );
 
       if (result.rows.length === 0) {
@@ -1169,9 +1151,10 @@ class ImmunizationScheduleService {
       completedCount: summary.completedCount,
       overdueCount: summary.overdueCount,
       upcomingCount: summary.upcomingCount,
-      completionPercentage: summary.totalScheduled > 0
-        ? Math.round((summary.completedCount / summary.totalScheduled) * 100)
-        : 0,
+      completionPercentage:
+        summary.totalScheduled > 0
+          ? Math.round((summary.completedCount / summary.totalScheduled) * 100)
+          : 0,
     };
   }
 
@@ -1187,7 +1170,7 @@ class ImmunizationScheduleService {
       return [];
     }
 
-    return schedule.schedules.filter(s => s.isOverdue);
+    return schedule.schedules.filter((s) => s.isOverdue);
   }
 
   /**
@@ -1207,7 +1190,7 @@ class ImmunizationScheduleService {
     const futureDate = new Date(now);
     futureDate.setDate(futureDate.getDate() + days);
 
-    return schedule.schedules.filter(s => {
+    return schedule.schedules.filter((s) => {
       if (s.isComplete || !s.dueDate || !s.isUpcoming) {
         return false;
       }
@@ -1228,8 +1211,8 @@ class ImmunizationScheduleService {
       return { error: schedule.error, items: [] };
     }
 
-    const overdueItems = schedule.schedules.filter(s => s.isOverdue);
-    const upcomingItems = schedule.schedules.filter(s => s.isUpcoming);
+    const overdueItems = schedule.schedules.filter((s) => s.isOverdue);
+    const upcomingItems = schedule.schedules.filter((s) => s.isUpcoming);
 
     if (overdueItems.length === 0) {
       return {
@@ -1245,15 +1228,16 @@ class ImmunizationScheduleService {
     const catchUpItems = overdueItems.map((item, index) => {
       // Calculate recommended catch-up date (immediate for overdue, max 2 weeks for upcoming)
       const recommendedDate = new Date();
-      recommendedDate.setDate(recommendedDate.getDate() + (index * 7)); // One per week
+      recommendedDate.setDate(recommendedDate.getDate() + index * 7); // One per week
 
       return {
         ...item,
         priority: index + 1,
         recommendedDate,
-        catchUpReason: item.daysOverdue > 30
-          ? `Overdue by ${item.daysOverdue} days`
-          : `Overdue by ${item.daysOverdue} days - prioritize`,
+        catchUpReason:
+          item.daysOverdue > 30
+            ? `Overdue by ${item.daysOverdue} days`
+            : `Overdue by ${item.daysOverdue} days - prioritize`,
       };
     });
 
@@ -1292,8 +1276,8 @@ class ImmunizationScheduleService {
       return [];
     }
 
-    return schedule.schedules.filter(s =>
-      s.ageMonths >= minAgeMonths && s.ageMonths <= maxAgeMonths,
+    return schedule.schedules.filter(
+      (s) => s.ageMonths >= minAgeMonths && s.ageMonths <= maxAgeMonths
     );
   }
 

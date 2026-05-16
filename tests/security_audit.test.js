@@ -1,7 +1,7 @@
 const request = require('supertest');
 const express = require('express');
 const bodyParser = require('body-parser');
-const jwt = require('jsonwebtoken');
+require('jsonwebtoken');
 const pool = require('../db');
 const authRouter = require('../routes/auth');
 
@@ -43,7 +43,9 @@ describe('Security Audit Tests', () => {
         .send({ email: 'nonexistent@example.com' });
 
       expect(response.status).toBe(200);
-      expect(response.body.message).toBe('If that email address is in our database, we will send you an email to reset your password.');
+      expect(response.body.message).toBe(
+        'If that email address is in our database, we will send you an email to reset your password.'
+      );
     });
 
     it('should use a short-lived, single-use token for password reset', async () => {
@@ -52,9 +54,7 @@ describe('Security Audit Tests', () => {
       pool.query.mockResolvedValueOnce({ rows: [{ id: userId, email }] }); // find user
       pool.query.mockResolvedValueOnce({ rows: [] }); // insert token
 
-      const response = await request(app)
-        .post('/auth/forgot-password')
-        .send({ email });
+      const response = await request(app).post('/auth/forgot-password').send({ email });
 
       expect(response.status).toBe(200);
 
@@ -64,7 +64,7 @@ describe('Security Audit Tests', () => {
       pool.query.mockResolvedValueOnce({ rows: [{ id: userId }] }); // update password
       pool.query.mockResolvedValueOnce({ rows: [] }); // mark token as used
 
-      const resetResponse = await request(app)
+      await request(app)
         .post('/auth/reset-password')
         .send({ token: resetToken, newPassword: 'newpassword123' });
 

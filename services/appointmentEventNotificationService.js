@@ -1,5 +1,6 @@
 const pool = require('../db');
 const socketService = require('./socketService');
+const { formatClinicDateTime } = require('../utils/appointmentDateTime');
 
 let cachedNotificationColumns = null;
 let cachedAt = 0;
@@ -53,6 +54,8 @@ const buildInsertPayload = ({
   message,
   appointmentId,
   guardianId,
+  actionUrl,
+  metadata,
 }) => {
   const payload = {
     user_id: adminId,
@@ -70,10 +73,11 @@ const buildInsertPayload = ({
     related_entity_type: 'appointment',
     related_entity_id: appointmentId,
     action_required: true,
-    action_url: '/appointments',
+    action_url: actionUrl || '/appointments',
     guardian_id: guardianId || null,
     target_role: 'admin',
     created_by: actorUserId || null,
+    metadata: metadata || null,
   };
 
   return payload;
@@ -124,13 +128,12 @@ const formatGuardianAppointmentEvent = ({
   const title = `Guardian ${readableEvent} appointment`;
   const guardianLabel = guardianName || `Guardian #${appointment.owner_guardian_id || 'N/A'}`;
   const infantLabel = infantName || `${appointment.first_name || ''} ${appointment.last_name || ''}`.trim() || 'Unknown infant';
+  const formattedSchedule = formatClinicDateTime(appointment.scheduled_date) || 'Unknown schedule';
 
-  let message = `${guardianLabel} ${readableEvent} an appointment for ${infantLabel} on ${new Date(appointment.scheduled_date).toLocaleString()}.`;
+  let message = `${guardianLabel} ${readableEvent} an appointment for ${infantLabel} on ${formattedSchedule}.`;
 
   if (event === 'updated' && previousAppointment?.scheduled_date) {
-    message = `${guardianLabel} updated appointment #${appointment.id} for ${infantLabel}. New schedule: ${new Date(
-      appointment.scheduled_date,
-    ).toLocaleString()}.`;
+    message = `${guardianLabel} updated appointment #${appointment.id} for ${infantLabel}. New schedule: ${formattedSchedule}.`;
   }
 
   if (event === 'cancelled') {
@@ -161,6 +164,15 @@ const notifyAdminsOfGuardianAppointmentEvent = async ({
     infantName,
     previousAppointment,
   });
+  const metadata = {
+    appointment_id: appointment.id || null,
+    infant_id: appointment.infant_id || appointment.patient_id || null,
+    infant_name:
+      infantName || `${appointment.first_name || ''} ${appointment.last_name || ''}`.trim() || null,
+    guardian_name: guardianName || appointment.guardian_name || null,
+    scheduled_date: appointment.scheduled_date || null,
+    previous_scheduled_date: previousAppointment?.scheduled_date || null,
+  };
 
   let delivered = 0;
   let stored = 0;
@@ -174,6 +186,7 @@ const notifyAdminsOfGuardianAppointmentEvent = async ({
       message,
       appointmentId: appointment.id,
       guardianId: appointment.owner_guardian_id || null,
+      metadata,
     });
 
     const storedNotification = await insertNotificationRow(payload);
@@ -227,4 +240,3 @@ const notifyAdminsOfGuardianAppointmentEvent = async ({
 module.exports = {
   notifyAdminsOfGuardianAppointmentEvent,
 };
-

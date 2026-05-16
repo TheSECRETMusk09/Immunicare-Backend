@@ -1,6 +1,6 @@
 const puppeteer = require('puppeteer');
-const path = require('path');
-const fs = require('fs').promises;
+require('path');
+require('fs').promises;
 const {
   getPaperTemplateTypeDisplayName,
   getPaperTemplateTypeSlug,
@@ -23,22 +23,15 @@ const formatDateValue = (value, fallback = '-') => {
   }
 
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime())
-    ? fallback
-    : parsed.toLocaleDateString();
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed.toLocaleDateString();
 };
 
 const resolveInfantName = (infant = {}) =>
-  [
-    infant?.first_name,
-    infant?.middle_name,
-    infant?.last_name,
-  ]
+  [infant?.first_name, infant?.middle_name, infant?.last_name]
     .map((part) => String(part || '').trim())
     .filter(Boolean)
     .join(' ')
-    .trim() ||
-  String(infant?.full_name || infant?.name || infant?.display_name || 'N/A').trim();
+    .trim() || String(infant?.full_name || infant?.name || infant?.display_name || 'N/A').trim();
 
 const sanitizeFilenamePart = (value) =>
   String(value ?? '')
@@ -54,7 +47,7 @@ class PDFGenerator {
       VACCINE_SCHEDULE: this.generateVaccineSchedule,
       IMMUNIZATION_RECORD: this.generateImmunizationRecord,
       INVENTORY_LOGBOOK: this.generateInventoryLogbook,
-      GROWTH_CHART: this.generateGrowthChart
+      GROWTH_CHART: this.generateGrowthChart,
     };
   }
 
@@ -69,13 +62,13 @@ class PDFGenerator {
       return {
         success: true,
         buffer: pdfBuffer,
-        filename: this.generateFilename(normalizedTemplateType, data)
+        filename: this.generateFilename(normalizedTemplateType, data),
       };
     } catch (error) {
       console.error('PDF generation error:', error);
       return {
         success: false,
-        error: error.message
+        error: error.message,
       };
     }
   }
@@ -83,29 +76,34 @@ class PDFGenerator {
   async generateGenericDocument(data = {}, templateType = '') {
     const safeData = data && typeof data === 'object' ? data : {};
     const infant = safeData.infant && typeof safeData.infant === 'object' ? safeData.infant : {};
-    const guardian = safeData.guardian && typeof safeData.guardian === 'object' ? safeData.guardian : {};
-    const template = safeData.template && typeof safeData.template === 'object' ? safeData.template : {};
+    const guardian =
+      safeData.guardian && typeof safeData.guardian === 'object' ? safeData.guardian : {};
+    const template =
+      safeData.template && typeof safeData.template === 'object' ? safeData.template : {};
 
     const title = template.name || getPaperTemplateTypeDisplayName(templateType);
     const subtitle =
-      template.description || `Generated ${getPaperTemplateTypeDisplayName(templateType).toLowerCase()} document`;
+      template.description ||
+      `Generated ${getPaperTemplateTypeDisplayName(templateType).toLowerCase()} document`;
     const infantName = resolveInfantName(infant);
     const guardianName = String(
       guardian.name ||
-      guardian.full_name ||
-      [
-        guardian.first_name,
-        guardian.middle_name,
-        guardian.last_name,
-      ]
-        .map((part) => String(part || '').trim())
-        .filter(Boolean)
-        .join(' ') ||
-      'N/A',
+        guardian.full_name ||
+        [guardian.first_name, guardian.middle_name, guardian.last_name]
+          .map((part) => String(part || '').trim())
+          .filter(Boolean)
+          .join(' ') ||
+        'N/A'
     ).trim();
 
     const additionalRows = Object.entries(safeData)
-      .filter(([key, value]) => !['infant', 'guardian', 'template', 'user'].includes(key) && value !== undefined && value !== null && value !== '')
+      .filter(
+        ([key, value]) =>
+          !['infant', 'guardian', 'template', 'user'].includes(key) &&
+          value !== undefined &&
+          value !== null &&
+          value !== ''
+      )
       .map(
         ([key, value]) => `
           <tr>
@@ -113,14 +111,18 @@ class PDFGenerator {
             <td>${escapeHtml(
               Array.isArray(value)
                 ? value.length > 0
-                  ? value.map((entry) => (typeof entry === 'object' ? JSON.stringify(entry) : String(entry))).join(', ')
+                  ? value
+                      .map((entry) =>
+                        typeof entry === 'object' ? JSON.stringify(entry) : String(entry)
+                      )
+                      .join(', ')
                   : '-'
                 : typeof value === 'object'
                   ? JSON.stringify(value)
-                  : String(value),
+                  : String(value)
             )}</td>
           </tr>
-        `,
+        `
       )
       .join('');
 
@@ -159,7 +161,7 @@ class PDFGenerator {
         <div class="info-card">
             <div class="info-label">Date of Birth:</div>
             <div class="info-value">${escapeHtml(
-              formatDateValue(infant.dob || infant.date_of_birth || infant.birth_date),
+              formatDateValue(infant.dob || infant.date_of_birth || infant.birth_date)
             )}</div>
         </div>
         <div class="info-card">
@@ -198,7 +200,7 @@ class PDFGenerator {
   async htmlToPDF(html, options = {}) {
     const browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
 
     try {
@@ -216,8 +218,8 @@ class PDFGenerator {
           top: '20px',
           bottom: '20px',
           left: '20px',
-          right: '20px'
-        }
+          right: '20px',
+        },
       });
 
       return pdfBuffer;
@@ -273,8 +275,8 @@ class PDFGenerator {
         <div class="info-card">
             <div class="info-label">Age:</div>
             <div class="info-value">${this.calculateAge(
-    infant.dob || infant.date_of_birth || infant.birth_date,
-  )} months</div>
+              infant.dob || infant.date_of_birth || infant.birth_date
+            )} months</div>
         </div>
         <div class="info-card">
             <div class="info-label">Generated:</div>
@@ -311,21 +313,18 @@ class PDFGenerator {
     const safeData = data && typeof data === 'object' ? data : {};
     const infant = safeData.infant && typeof safeData.infant === 'object' ? safeData.infant : {};
     const vaccinations = safeArray(safeData.vaccinations);
-    const guardian = safeData.guardian && typeof safeData.guardian === 'object' ? safeData.guardian : {};
+    const guardian =
+      safeData.guardian && typeof safeData.guardian === 'object' ? safeData.guardian : {};
     const infantName = resolveInfantName(infant);
     const dobDisplay = formatDateValue(infant.dob || infant.date_of_birth || infant.birth_date);
     const guardianName = String(
       guardian.name ||
-      guardian.full_name ||
-      [
-        guardian.first_name,
-        guardian.middle_name,
-        guardian.last_name,
-      ]
-        .map((part) => String(part || '').trim())
-        .filter(Boolean)
-        .join(' ') ||
-      'N/A',
+        guardian.full_name ||
+        [guardian.first_name, guardian.middle_name, guardian.last_name]
+          .map((part) => String(part || '').trim())
+          .filter(Boolean)
+          .join(' ') ||
+        'N/A'
     ).trim();
 
     return `
@@ -369,8 +368,8 @@ class PDFGenerator {
         <div class="info-card">
             <div class="info-label">Sex:</div>
             <div class="info-value">${
-  String(infant.sex || '').toUpperCase() === 'M' ? 'Male' : 'Female'
-}</div>
+              String(infant.sex || '').toUpperCase() === 'M' ? 'Male' : 'Female'
+            }</div>
         </div>
         <div class="info-card">
             <div class="info-label">Guardian:</div>
@@ -445,8 +444,8 @@ class PDFGenerator {
     <div class="header">
         <div class="title">VACCINE INVENTORY LOGBOOK</div>
         <div class="subtitle">${
-  clinic ? clinic.name : 'Health Center'
-} - ${new Date().toLocaleDateString()}</div>
+          clinic ? clinic.name : 'Health Center'
+        } - ${new Date().toLocaleDateString()}</div>
     </div>
 
     <div class="info-grid">
@@ -549,8 +548,8 @@ class PDFGenerator {
         <div class="info-card">
             <div class="info-label">Sex:</div>
             <div class="info-value">${
-  String(infant.sex || '').toUpperCase() === 'M' ? 'Male' : 'Female'
-}</div>
+              String(infant.sex || '').toUpperCase() === 'M' ? 'Male' : 'Female'
+            }</div>
         </div>
         <div class="info-card">
             <div class="info-label">Generated:</div>
@@ -609,9 +608,7 @@ class PDFGenerator {
     return scheduleItems
       .map((item) => {
         const administered = vaccinationItems.find(
-          (v) =>
-            v.vaccine_name === item.vaccine_name &&
-            v.dose_no === item.dose_number
+          (v) => v.vaccine_name === item.vaccine_name && v.dose_no === item.dose_number
         );
 
         return `
@@ -620,11 +617,7 @@ class PDFGenerator {
           <td>${item.vaccine_name}</td>
           <td>${item.dose_number}</td>
           <td>${administered ? '✓ Administered' : '○ Pending'}</td>
-          <td>${
-  administered
-    ? new Date(administered.admin_date).toLocaleDateString()
-    : '-'
-}</td>
+          <td>${administered ? new Date(administered.admin_date).toLocaleDateString() : '-'}</td>
           <td>${item.next_due_date || '-'}</td>
         </tr>
       `;
@@ -672,12 +665,8 @@ class PDFGenerator {
         <td>${item.issued}</td>
         <td>${item.stock_on_hand}</td>
         <td>${
-  item.is_low_stock
-    ? '⚠ Low Stock'
-    : item.is_critical_stock
-      ? '🚨 Critical'
-      : '✓ OK'
-}</td>
+          item.is_low_stock ? '⚠ Low Stock' : item.is_critical_stock ? '🚨 Critical' : '✓ OK'
+        }</td>
       </tr>
     `
       )
@@ -743,10 +732,13 @@ class PDFGenerator {
       VACCINE_SCHEDULE: `vaccine_schedule_${infantName}_${timestamp}.pdf`,
       IMMUNIZATION_RECORD: `immunization_record_${infantName}_${timestamp}.pdf`,
       INVENTORY_LOGBOOK: `inventory_logbook_${timestamp}.pdf`,
-      GROWTH_CHART: `growth_chart_${infantName}_${timestamp}.pdf`
+      GROWTH_CHART: `growth_chart_${infantName}_${timestamp}.pdf`,
     };
 
-    return filenameMap[normalizedTemplateType] || `${getPaperTemplateTypeSlug(normalizedTemplateType) || 'document'}_${infantName}_${timestamp}.pdf`;
+    return (
+      filenameMap[normalizedTemplateType] ||
+      `${getPaperTemplateTypeSlug(normalizedTemplateType) || 'document'}_${infantName}_${timestamp}.pdf`
+    );
   }
 }
 

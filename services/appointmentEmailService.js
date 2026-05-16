@@ -1,10 +1,5 @@
 /**
- * Appointment Email Service
- * Handles email notifications for appointments and vaccinations
- *
- * @module services/appointmentEmailService
- * @version 2.0
- * @since 2026-03-01
+ * Appointment email helpers.
  */
 
 const nodemailer = require('nodemailer');
@@ -294,16 +289,8 @@ View your appointments: ${FRONTEND_URL}/guardian/appointments
  */
 const sendAppointmentReminderEmail = async (appointment) => {
   try {
-    const {
-      email,
-      guardianName,
-      childName,
-      controlNumber,
-      vaccineName,
-      scheduledDate,
-      location,
-      reference: _reference,
-    } = appointment;
+    const { email, guardianName, childName, controlNumber, vaccineName, scheduledDate, location } =
+      appointment;
 
     const formattedDate = new Date(scheduledDate).toLocaleDateString('en-US', {
       weekday: 'long',
@@ -442,15 +429,8 @@ View appointment details: ${FRONTEND_URL}/guardian/appointments
  */
 const sendVaccinationDueEmail = async (data) => {
   try {
-    const {
-      email,
-      guardianName,
-      childName,
-      controlNumber,
-      vaccineName,
-      dueDate,
-      doseNumber,
-    } = data;
+    const { email, guardianName, childName, controlNumber, vaccineName, dueDate, doseNumber } =
+      data;
 
     const formattedDueDate = new Date(dueDate).toLocaleDateString('en-US', {
       weekday: 'long',

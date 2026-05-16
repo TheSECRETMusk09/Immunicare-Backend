@@ -10,7 +10,7 @@ console.log('NODE_ENV:', process.env.NODE_ENV);
 
 try {
   console.log('\nAttempting to load server.js...');
-  const server = require('./server');
+  require('./server');
   console.log('Server module loaded successfully');
 } catch (error) {
   console.error('Error loading server:', error.message);

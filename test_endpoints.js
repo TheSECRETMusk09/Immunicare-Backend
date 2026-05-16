@@ -7,12 +7,12 @@ const TIMEOUT = 30000; // 30 second timeout
 // Test credentials
 const ADMIN_CREDENTIALS = JSON.stringify({
   username: 'admin',
-  password: 'Admin2024!'
+  password: 'Admin2024!',
 });
 
-const GUARDIAN_CREDENTIALS = JSON.stringify({
+JSON.stringify({
   username: 'maria.santos@email.com',
-  password: 'guardian123'
+  password: 'guardian123',
 });
 
 function makeRequest(method, path, body = null, token = null, extraHeaders = {}) {
@@ -25,28 +25,28 @@ function makeRequest(method, path, body = null, token = null, extraHeaders = {})
       method: method,
       headers: {
         'Content-Type': 'application/json',
-        ...(token && { 'Authorization': `Bearer ${token}` }),
-        ...extraHeaders
-      }
+        ...(token && { Authorization: `Bearer ${token}` }),
+        ...extraHeaders,
+      },
     };
 
     const req = http.request(options, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
         try {
           resolve({
             status: res.statusCode,
             headers: res.headers,
             body: data ? JSON.parse(data) : null,
-            raw: data
+            raw: data,
           });
         } catch (e) {
           resolve({
             status: res.statusCode,
             headers: res.headers,
             body: null,
-            raw: data
+            raw: data,
           });
         }
       });
@@ -134,22 +134,40 @@ async function runTests() {
 
   // Test all the failing endpoints
   results.push(await testEndpoint('Users/Guardians', 'GET', '/api/users/guardians', adminToken));
-  results.push(await testEndpoint('Users/System Users', 'GET', '/api/users/system-users', adminToken));
+  results.push(
+    await testEndpoint('Users/System Users', 'GET', '/api/users/system-users', adminToken)
+  );
   results.push(await testEndpoint('Users/Roles', 'GET', '/api/users/roles', adminToken));
   results.push(await testEndpoint('Users/Clinics', 'GET', '/api/users/clinics', adminToken));
-  results.push(await testEndpoint('Dashboard/Appointments', 'GET', '/api/dashboard/appointments', adminToken));
-  results.push(await testEndpoint('Inventory/Vaccine Inventory', 'GET', '/api/inventory/vaccine-inventory', adminToken));
-  results.push(await testEndpoint('Dashboard/Admin/Vaccination Monitoring', 'GET', '/api/dashboard/admin/vaccination-monitoring', adminToken));
+  results.push(
+    await testEndpoint('Dashboard/Appointments', 'GET', '/api/dashboard/appointments', adminToken)
+  );
+  results.push(
+    await testEndpoint(
+      'Inventory/Vaccine Inventory',
+      'GET',
+      '/api/inventory/vaccine-inventory',
+      adminToken
+    )
+  );
+  results.push(
+    await testEndpoint(
+      'Dashboard/Admin/Vaccination Monitoring',
+      'GET',
+      '/api/dashboard/admin/vaccination-monitoring',
+      adminToken
+    )
+  );
 
   // Summary
   console.log('\n========================================');
   console.log('TEST SUMMARY');
   console.log('========================================');
 
-  const successCount = results.filter(r => r.success).length;
-  const failCount = results.filter(r => !r.success).length;
-  const timeoutCount = results.filter(r => r.status === 408).length;
-  const serverErrorCount = results.filter(r => r.status === 500).length;
+  const successCount = results.filter((r) => r.success).length;
+  const failCount = results.filter((r) => !r.success).length;
+  const timeoutCount = results.filter((r) => r.status === 408).length;
+  const serverErrorCount = results.filter((r) => r.status === 500).length;
 
   console.log(`Total: ${results.length}`);
   console.log(`✅ Success: ${successCount}`);
@@ -159,11 +177,12 @@ async function runTests() {
 
   if (failCount > 0) {
     console.log('\nFailed endpoints:');
-    results.filter(r => !r.success).forEach(r => {
-      console.log(`  - ${r.error || r.status}`);
-    });
+    results
+      .filter((r) => !r.success)
+      .forEach((r) => {
+        console.log(`  - ${r.error || r.status}`);
+      });
   }
 }
 
 runTests().catch(console.error);
-

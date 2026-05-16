@@ -37,7 +37,7 @@ async function activateGuardianUser() {
       console.log('ℹ️  User is already active');
     } else {
       // Activate the user
-      const activateResult = await client.query(
+      await client.query(
         `UPDATE users 
          SET is_active = true, updated_at = NOW()
          WHERE id = $1`,

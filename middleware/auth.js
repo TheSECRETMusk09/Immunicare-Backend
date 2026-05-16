@@ -15,51 +15,34 @@ const {
 } = require('../utils/authCookies');
 
 const getCanonicalUser = (user) => {
-  const runtimeRole = normalizeRole(user?.runtime_role || user?.role_type || user?.role);
-
-  if (!runtimeRole) {
-    return null;
-  }
+  const normalizedRole = normalizeRole(user?.runtime_role || user?.role_type || user?.role);
+  if (!normalizedRole) return null;
 
   return {
     ...user,
-    role: runtimeRole,
-    role_type: runtimeRole,
-    runtime_role: runtimeRole,
+    role: normalizedRole,
+    role_type: normalizedRole,
+    runtime_role: normalizedRole,
     legacy_role: user?.legacy_role || user?.role || null,
   };
 };
 
-const resolveJwtSecret = () => {
-  return process.env.JWT_SECRET || null;
-};
+const resolveJwtSecret = () => process.env.JWT_SECRET || null;
 
 const getBearerTokenFromHeader = (authorizationHeader) => {
-  if (!authorizationHeader || typeof authorizationHeader !== 'string') {
-    return null;
-  }
-
-  return authorizationHeader.startsWith('Bearer ')
-    ? authorizationHeader.slice(7).trim() || null
-    : null;
+  if (!authorizationHeader || typeof authorizationHeader !== 'string') return null;
+  if (!authorizationHeader.startsWith('Bearer ')) return null;
+  return authorizationHeader.slice(7).trim() || null;
 };
 
-const getAccessTokenFromRequest = (req) => {
-  return (
-    getBearerTokenFromHeader(req.headers?.authorization) ||
-    req.cookies?.token ||
-    null
-  );
-};
+const getAccessTokenFromRequest = (req) =>
+  getBearerTokenFromHeader(req.headers?.authorization) || req.cookies?.token || null;
 
-const getRefreshTokenFromRequest = (req) => {
-  return (
-    req.cookies?.refreshToken ||
-    req.body?.refreshToken ||
-    getBearerTokenFromHeader(req.headers?.authorization) ||
-    null
-  );
-};
+const getRefreshTokenFromRequest = (req) =>
+  req.cookies?.refreshToken ||
+  req.body?.refreshToken ||
+  getBearerTokenFromHeader(req.headers?.authorization) ||
+  null;
 
 const authenticateToken = (req, res, next) => {
   try {
@@ -72,22 +55,14 @@ const authenticateToken = (req, res, next) => {
       });
     }
 
-    // Check for token in cookies first, then fallback to Authorization header
-    const token = getAccessTokenFromRequest(req);
-
-    if (!token) {
-      return res.status(401).json({
-        error: 'Access token required',
-        code: 'MISSING_TOKEN',
-      });
+    const accessToken = getAccessTokenFromRequest(req);
+    if (!accessToken) {
+      return res.status(401).json({ error: 'Access token required', code: 'MISSING_TOKEN' });
     }
 
-    // Verify token with proper error handling
-    jwt.verify(token, jwtSecret, (err, user) => {
+    jwt.verify(accessToken, jwtSecret, (err, user) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
-          // Return specific error code for token expiration
-          // Frontend can use this to trigger token refresh
           return res.status(401).json({
             error: 'Token expired',
             code: 'TOKEN_EXPIRED',
@@ -95,52 +70,41 @@ const authenticateToken = (req, res, next) => {
           });
         }
         if (err.name === 'JsonWebTokenError') {
-          return res.status(401).json({
-            error: 'Invalid token format',
-            code: 'INVALID_TOKEN',
-          });
+          return res.status(401).json({ error: 'Invalid token format', code: 'INVALID_TOKEN' });
         }
-        return res.status(401).json({
-          error: 'Token verification failed',
-          code: 'TOKEN_ERROR',
-        });
+        return res.status(401).json({ error: 'Token verification failed', code: 'TOKEN_ERROR' });
       }
 
-      // Validate user payload
       if (!user || !user.id || !user.role) {
-        return res.status(401).json({
-          error: 'Invalid token payload',
-          code: 'INVALID_PAYLOAD',
-        });
+        return res.status(401).json({ error: 'Invalid token payload', code: 'INVALID_PAYLOAD' });
       }
 
       const canonicalUser = getCanonicalUser(user);
       if (!canonicalUser) {
-        return res.status(401).json({
-          error: 'Unsupported role in token payload',
-          code: 'UNSUPPORTED_ROLE',
-        });
+        return res.status(401).json({ error: 'Unsupported role in token payload', code: 'UNSUPPORTED_ROLE' });
       }
 
-      // Add security headers
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('X-Frame-Options', 'DENY');
       res.setHeader('X-XSS-Protection', '1; mode=block');
       res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
       res.setHeader(
         'Content-Security-Policy',
-        'default-src \'self\'; script-src \'self\' \'unsafe-inline\' \'unsafe-eval\'; style-src \'self\' \'unsafe-inline\'; img-src \'self\' data:; font-src \'self\'; connect-src \'self\'; frame-src \'none\'; object-src \'none\'; base-uri \'self\'; form-action \'self\'',
+        "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
       );
       res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
       res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=()');
 
       req.user = canonicalUser;
-      sessionService.updateSessionActivity(token).catch((sessionError) => {
-        logger.warn('Session activity update failed during authenticateToken', {
+
+      // fire-and-forget - don't block the request for session bookkeeping
+      sessionService.updateSessionActivity(accessToken).catch((sessionError) => {
+        logger.warn('Session activity update failed', {
           message: sessionError?.message || sessionError,
           userId: canonicalUser.id,
         });
       });
+
       next();
     });
   } catch (error) {
@@ -153,120 +117,70 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
-/**
- * Optional authentication middleware
- * Attaches user to request if token is valid, but doesn't require it
- */
+// Attach user if token is present and valid; otherwise continue unauthenticated
 const optionalAuth = (req, res, next) => {
   try {
     const jwtSecret = resolveJwtSecret();
-    if (!jwtSecret) {
-      return next();
-    }
+    if (!jwtSecret) return next();
 
-    const token = getAccessTokenFromRequest(req);
+    const accessToken = getAccessTokenFromRequest(req);
+    if (!accessToken) return next();
 
-    if (!token) {
-      // No token provided, continue without user
-      return next();
-    }
-
-    jwt.verify(token, jwtSecret, (err, user) => {
-      if (err) {
-        // Token invalid, continue without user
-        return next();
-      }
+    jwt.verify(accessToken, jwtSecret, (err, user) => {
+      if (err) return next();
 
       const canonicalUser = getCanonicalUser(user);
-      if (canonicalUser && canonicalUser.id) {
-        req.user = canonicalUser;
-      }
+      if (canonicalUser && canonicalUser.id) req.user = canonicalUser;
       next();
     });
-  } catch (_error) {
-    // Error occurred, continue without user
+  } catch {
     next();
   }
 };
 
-const requireRole = (roles) => {
-  return requireCanonicalRole(roles);
-};
+const requireRole = (roles) => requireCanonicalRole(roles);
 
-const requireAdmin = (req, res, next) => {
-  return requireRole([CANONICAL_ROLES.SYSTEM_ADMIN])(req, res, next);
-};
+const requireAdmin = (req, res, next) =>
+  requireRole([CANONICAL_ROLES.SYSTEM_ADMIN])(req, res, next);
 
-const requireSuperAdmin = (req, res, next) => {
-  return requireRole([CANONICAL_ROLES.SYSTEM_ADMIN])(req, res, next);
-};
+const requireSuperAdmin = (req, res, next) =>
+  requireRole([CANONICAL_ROLES.SYSTEM_ADMIN])(req, res, next);
 
 const requireClinicAccess = (req, res, next) => {
   try {
     if (!req.user || !req.user.clinic_id) {
-      return res.status(403).json({
-        error: 'Clinic access required',
-        code: 'NO_CLINIC_ACCESS',
-      });
+      return res.status(403).json({ error: 'Clinic access required', code: 'NO_CLINIC_ACCESS' });
     }
-
     req.user.clinic_id = parseInt(req.user.clinic_id);
     next();
   } catch (error) {
     console.error('Clinic access check error:', error);
-    res.status(500).json({
-      error: 'Clinic access check failed',
-      code: 'CLINIC_ACCESS_ERROR',
-    });
+    res.status(500).json({ error: 'Clinic access check failed', code: 'CLINIC_ACCESS_ERROR' });
   }
 };
 
-/**
- * Middleware to handle JWT refresh token rotation
- * Verifies refresh token from HTTP-only cookies and issues new access token
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
- */
+// Rotates the refresh token and issues a new access token
 const handleTokenRefresh = async (req, res, next) => {
   try {
     const refreshToken = getRefreshTokenFromRequest(req);
-
     if (!refreshToken) {
-      return res.status(401).json({
-        error: 'Refresh token required',
-        code: 'MISSING_REFRESH_TOKEN',
-      });
+      return res.status(401).json({ error: 'Refresh token required', code: 'MISSING_REFRESH_TOKEN' });
     }
 
     const userAgent = req.headers['user-agent'] || 'unknown';
     const ipAddress = req.ip || req.connection.remoteAddress || 'unknown';
 
-    // Refresh access token using refresh token service
-    const tokenData = await refreshTokenService.refreshAccessToken(
-      refreshToken,
-      userAgent,
-      ipAddress,
-    );
+    const tokenData = await refreshTokenService.refreshAccessToken(refreshToken, userAgent, ipAddress);
 
-    // Set new refresh token in HTTP-only cookie
     res.cookie('refreshToken', tokenData.refreshToken, getRefreshTokenCookieOptions());
-
-    // Return new access token in Authorization header
     res.setHeader('Authorization', `Bearer ${tokenData.accessToken}`);
-
-    // Attach user to request
     req.user = getCanonicalUser(tokenData.user);
 
     logger.info('Token refreshed successfully', { userId: tokenData.user.id });
-
     next();
   } catch (error) {
     logger.error('Token refresh failed:', error.message);
-
-    // Clear invalid refresh token cookie
     res.clearCookie('refreshToken', getBaseAuthCookieOptions());
-
     return res.status(401).json({
       error: 'Invalid or expired refresh token',
       code: 'REFRESH_TOKEN_INVALID',
@@ -274,10 +188,6 @@ const handleTokenRefresh = async (req, res, next) => {
   }
 };
 
-/**
- * Middleware to prevent guardian users from accessing admin routes
- * Returns 403 Forbidden with descriptive error message
- */
 const preventGuardianAccess = (req, res, next) => {
   const canonicalRole = req.user?.role || req.user?.role_type;
 
@@ -295,16 +205,13 @@ const preventGuardianAccess = (req, res, next) => {
   next();
 };
 
-/**
- * Request ID tracking middleware for distributed tracing
- */
 const requestIdMiddleware = (req, res, next) => {
-  const requestId = req.headers['x-request-id'] ||
+  const requestId =
+    req.headers['x-request-id'] ||
     `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
   req.requestId = requestId;
   res.setHeader('X-Request-Id', requestId);
-
   next();
 };
 

@@ -45,6 +45,7 @@ const {
   getClinicBlockedDateKeys,
   getClinicTodayDateKey,
   toClinicDateSql,
+  MAX_VACCINATION_APPOINTMENTS_PER_DAY,
 } = require('../utils/clinicCalendar');
 const {
   isAllowedAppointmentTimeSlot,
@@ -865,7 +866,6 @@ const fetchAppointmentById = async (id) => {
   return normalizeAppointmentRecord(result.rows[0] || null);
 };
 
-// Get all appointments
 router.get('/', requireAppointmentReadAccess, async (req, res) => {
   try {
     const {
@@ -914,7 +914,6 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       return res.status(scopeContext.status).json({ error: scopeContext.error });
     }
 
-    // Validate pagination
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.max(1, Math.min(200, parseInt(limit)));
     const offset = (pageNum - 1) * limitNum;
@@ -1025,17 +1024,18 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
     }
 
     if (normalizedSearch) {
+      // FIX: Appointment search must filter by CHILD name only. Previously this
+      // also matched guardian name/phone, appointment type, and status, so a
+      // surname like 'samorin' on a guardian (or the literal status text)
+      // surfaced every child of that guardian regardless of the child's own
+      // last name.
       const searchCondition = patientService.buildTokenizedSearchCondition({
         searchValue: normalizedSearch,
         expressions: [
           ...patientService.buildPatientNameSearchExpressions('p'),
-          'g.name',
           'p.control_number',
-          'g.phone',
           `TO_CHAR(p.dob, 'YYYY-MM-DD')`,
           `TO_CHAR(p.dob, 'MM/DD/YYYY')`,
-          'a.type',
-          `a.status::text`,
         ],
         startingParamIndex: params.length + 1,
       });
@@ -1048,13 +1048,10 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
       params.push(...searchCondition.params);
     }
 
-    // Get total count for pagination metadata
     const countQuery = `SELECT COUNT(*) as count FROM (${query}) AS subquery`;
     const countResult = await pool.query(countQuery, params);
     const total = parseInt(countResult.rows[0].count);
 
-    // Add a stable secondary sort to prevent duplicate rows across pages when
-    // many appointments share the same primary sort value.
     const primarySortColumn = APPOINTMENT_LIST_SORT_COLUMNS[normalizedSortField];
     const secondarySortClause = primarySortColumn === 'a.id'
       ? ''
@@ -1084,7 +1081,6 @@ router.get('/', requireAppointmentReadAccess, async (req, res) => {
   }
 });
 
-// Create appointment (SYSTEM_ADMIN full, GUARDIAN own request)
 router.post('/', requireAppointmentCreateAccess, async (req, res) => {
   try {
     console.log('[DEBUG] Create appointment request:', JSON.stringify(req.body, null, 2));
@@ -1094,13 +1090,10 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       allowStatus: true,
     });
 
-    // Handle infant identification or creation
     let infantId = payload.infant_id;
 
-    // If no ID but details provided (auto-create flow)
     if (!infantId && payload.infant_details && isGuardian(req)) {
       try {
-        // Use canonical patient service to create/validate infant
         const infantRecord = await appointmentSchedulingService.ensureInfantRecord(
           payload.infant_details,
           req.user.guardian_id,
@@ -1232,7 +1225,6 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       }
     }
 
-    // Auto-approve all valid appointments passing availability checks
     const finalStatus = normalized.status || 'scheduled';
     const finalClinicId = sanitizeNullableInt(
       clinicIdCheck.value ||
@@ -1379,13 +1371,11 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
       });
     }
 
-    // Generate appointment control number
     let appointmentControlNumber = null;
     try {
       appointmentControlNumber = await appointmentControlNumberService.generateControlNumber();
     } catch (cnError) {
       console.error('Failed to generate control number:', cnError.message);
-      // Continue without control number - non-critical
     }
 
     const appointmentGuardianId = sanitizeNullableInt(infant.guardian_id || req.user.guardian_id);
@@ -1516,7 +1506,6 @@ router.post('/', requireAppointmentCreateAccess, async (req, res) => {
   }
 });
 
-// Check booking availability (GUARDIAN and SYSTEM_ADMIN)
 router.get('/availability/check', requireAppointmentReadAccess, async (req, res) => {
   try {
     const { scheduled_date, vaccine_id, clinic_id, type } = req.query;
@@ -1541,7 +1530,6 @@ router.get('/availability/check', requireAppointmentReadAccess, async (req, res)
   }
 });
 
-// Check vaccine stock for specific date/time (for appointment suggestions)
 router.post('/check-stock', requireAppointmentReadAccess, async (req, res) => {
   try {
     const { date, time, vaccine_id, clinic_id } = req.body;
@@ -1567,7 +1555,6 @@ router.post('/check-stock', requireAppointmentReadAccess, async (req, res) => {
   }
 });
 
-// Reschedule an appointment (SYSTEM_ADMIN)
 router.put('/:id(\\d+)/reschedule', async (req, res) => {
   try {
     const appointmentId = parseInt(req.params.id, 10);
@@ -1580,7 +1567,6 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       return res.status(404).json({ error: 'Appointment not found' });
     }
 
-    // Use infantId for validation: verify infant still exists and is active using canonical service
     const infant = await patientService.getPatientById(appointment.infant_id);
     if (!infant || !infant.isActive) {
       return res.status(400).json({ error: 'Invalid infant record for this appointment' });
@@ -1594,16 +1580,12 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       if (!guardianId || guardianId !== parseInt(appointment.owner_guardian_id, 10)) {
         return res.status(403).json({ error: 'You can only reschedule your own appointment requests' });
       }
-    } else if (
-      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
-      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER
-    ) {
+    } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
     const { scheduled_date, vaccine_id, clinic_id, notes } = req.body;
 
-    // Validate required fields
     if (!scheduled_date) {
       return res.status(400).json({ error: 'scheduled_date is required' });
     }
@@ -1623,8 +1605,7 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
 
     const normalizedScheduledDate = parsedScheduledDate.normalizedIsoString;
 
-    // Validate vaccine_id if provided
-    let finalVaccineId = appointment.vaccine_id; // Keep existing vaccine by default
+    let finalVaccineId = appointment.vaccine_id;
     if (vaccine_id !== undefined && vaccine_id !== null && vaccine_id !== '') {
       const vaccineIdCheck = validateNumberRange(vaccine_id, {
         label: 'vaccine_id',
@@ -1638,7 +1619,6 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       finalVaccineId = parseInt(vaccine_id, 10);
     }
 
-    // Validate clinic_id if provided
     let finalClinicId = sanitizeNullableInt(
       appointment.resolved_clinic_id ||
         infant.clinicId ||
@@ -1646,7 +1626,7 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
         req.user.clinic_id ||
         req.user.facility_id ||
         null,
-    ); // Keep existing clinic by default
+    );
     if (clinic_id !== undefined && clinic_id !== null && clinic_id !== '') {
       const clinicIdCheck = validateNumberRange(clinic_id, {
         label: 'clinic_id',
@@ -1667,7 +1647,6 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       });
     }
 
-    // Check booking availability for the new date
     const availability = await appointmentSchedulingService.checkBookingAvailability({
       scheduledDate: normalizedScheduledDate,
       vaccineId: finalVaccineId,
@@ -1712,7 +1691,6 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       });
     }
 
-    // Update the appointment using schema-aware column names
     const { appointmentsScope } = await appointmentSchedulingService.getSchemaColumnMappings();
 
     const result = await pool.query(
@@ -1757,7 +1735,6 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
       severity: 'WARNING',
     });
 
-    // Send rescheduling notification
     if (updatedAppointment.guardian_phone) {
       try {
         await sendAppointmentRescheduledNotification({
@@ -1771,7 +1748,6 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
         });
       } catch (notificationError) {
         console.error('Failed to send rescheduling notification:', notificationError.message);
-        // Don't fail the rescheduling if notification fails
       }
     }
 
@@ -1811,7 +1787,31 @@ router.put('/:id(\\d+)/reschedule', async (req, res) => {
   }
 });
 
-// Available time slots for a selected date
+router.get('/availability/daily-capacity', requireAppointmentReadAccess, async (req, res) => {
+  try {
+    const { date, clinic_id } = req.query;
+    const effectiveDate = date || getClinicTodayDateKey();
+    const clinicId = sanitizeNullableInt(clinic_id);
+
+    const current = await appointmentSchedulingService.getDailyVaccinationAppointmentCount({
+      scheduledDate: effectiveDate,
+      clinicId,
+    });
+
+    const remaining = Math.max(0, MAX_VACCINATION_APPOINTMENTS_PER_DAY - current);
+
+    res.json({
+      date: effectiveDate,
+      current,
+      maximum: MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+      remaining,
+    });
+  } catch (error) {
+    console.error('Daily capacity check error:', error);
+    res.status(500).json({ error: 'Failed to fetch daily capacity' });
+  }
+});
+
 router.get('/availability/slots', requireAppointmentReadAccess, async (req, res) => {
   try {
     const { scheduled_date, vaccine_id, clinic_id, exclude_appointment_id } = req.query;
@@ -1840,14 +1840,12 @@ router.get('/availability/slots', requireAppointmentReadAccess, async (req, res)
   }
 });
 
-// Calendar availability with per-date counts and block markers
 router.get('/availability/calendar', requireAppointmentReadAccess, async (req, res) => {
   try {
     const canonicalRole = getCanonicalRole(req);
     const guardianId =
       canonicalRole === CANONICAL_ROLES.GUARDIAN ? sanitizeNullableInt(req.user.guardian_id || req.user.id) : null;
 
-    // Validate month parameter format (YYYY-MM)
     const { month } = req.query;
     if (month && !/^\d{4}-\d{2}$/.test(month)) {
       return res.status(400).json({
@@ -1856,7 +1854,6 @@ router.get('/availability/calendar', requireAppointmentReadAccess, async (req, r
       });
     }
 
-    // Validate start_date and end_date if provided
     const { start_date: startDate, end_date: endDate } = req.query;
     if (startDate && Number.isNaN(Date.parse(startDate))) {
       return res.status(400).json({
@@ -1881,7 +1878,6 @@ router.get('/availability/calendar', requireAppointmentReadAccess, async (req, r
       clinicId,
     });
 
-    // Combine blocked dates into the same payload to avoid duplicate network requests
     const blockedDates = await blockedDatesService.getBlockedDatesForCalendar({ month, clinicId });
 
     res.json({
@@ -1890,7 +1886,6 @@ router.get('/availability/calendar', requireAppointmentReadAccess, async (req, r
     });
   } catch (error) {
     console.error('Calendar availability error:', error);
-    // Return detailed error in development
     const errorResponse = {
       error: 'Failed to fetch calendar availability',
       code: 'CALENDAR_AVAILABILITY_ERROR',
@@ -1903,14 +1898,12 @@ router.get('/availability/calendar', requireAppointmentReadAccess, async (req, r
   }
 });
 
-// Date drill-down details for calendar click panel/modal
 router.get('/availability/date/:date', requireAppointmentReadAccess, async (req, res) => {
   try {
     const canonicalRole = getCanonicalRole(req);
     const guardianId =
       canonicalRole === CANONICAL_ROLES.GUARDIAN ? sanitizeNullableInt(req.user.guardian_id || req.user.id) : null;
 
-    // Validate date parameter
     const { date } = req.params;
     if (!date || Number.isNaN(Date.parse(date))) {
       return res.status(400).json({
@@ -2315,10 +2308,7 @@ router.put('/:id(\\d+)', async (req, res) => {
       if (APPOINTMENT_EDIT_LOCKED_STATUSES.includes(normalizeAppointmentStatus(appointment.status))) {
         return res.status(400).json({ error: 'This appointment can no longer be edited' });
       }
-    } else if (
-      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
-      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER
-    ) {
+    } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -2578,10 +2568,7 @@ router.put('/:id(\\d+)/cancel', async (req, res) => {
       if (!guardianId || guardianId !== parseInt(appointment.owner_guardian_id, 10)) {
         return res.status(403).json({ error: 'You can only cancel your own appointment requests' });
       }
-    } else if (
-      canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN &&
-      canonicalRole !== CANONICAL_ROLES.CLINIC_MANAGER
-    ) {
+    } else if (canonicalRole !== CANONICAL_ROLES.SYSTEM_ADMIN) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -2877,7 +2864,7 @@ router.delete('/:id(\\d+)', requirePermission('appointment:delete'), async (req,
   }
 });
 
-// ============ BLOCKED DATES MANAGEMENT ============
+// Blocked dates management
 
 // Get all blocked dates for a month. Read-only and available to authenticated
 // guardians so booking can validate unavailable dates without admin permissions.

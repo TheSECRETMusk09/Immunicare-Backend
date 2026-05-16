@@ -70,7 +70,7 @@ const shouldSendAlert = (dedupKey) => {
 
   // Check if we've sent this alert recently
   const lastSent = alertDeduplication.get(dedupKey);
-  if (lastSent && (now - lastSent) < DEDUP_CACHE_TTL_MS) {
+  if (lastSent && now - lastSent < DEDUP_CACHE_TTL_MS) {
     return false;
   }
 
@@ -119,7 +119,7 @@ const getAdminRecipients = async (role = 'system_admin') => {
        JOIN roles r ON u.role_id = r.id
        LEFT JOIN guardians g ON u.guardian_id = g.id
        WHERE LOWER(r.name) = $1 AND u.is_active = true`,
-      [role.toLowerCase()],
+      [role.toLowerCase()]
     );
     return result.rows;
   } catch (error) {
@@ -215,7 +215,7 @@ const sendAdminNotification = async ({
 
     // 1. Persist notifications to database (one per admin)
     try {
-      const notificationPromises = admins.map(admin =>
+      const notificationPromises = admins.map((admin) =>
         notificationService.sendNotification({
           notification_type: category,
           event_type: category,
@@ -234,11 +234,11 @@ const sendAdminNotification = async ({
             adminId: admin.id,
           },
           skipImmediateProcessing: false,
-        }),
+        })
       );
 
       const notificationResults = await Promise.all(notificationPromises);
-      results.persisted = notificationResults.some(result => result.success);
+      results.persisted = notificationResults.some((result) => result.success);
     } catch (persistError) {
       console.error('[AdminNotification] Failed to persist notifications:', persistError.message);
       overallSuccess = false;
@@ -287,19 +287,20 @@ const sendAdminNotification = async ({
       const smsPromises = smsRecipients.map(async (recipient) => {
         try {
           // Truncate message for SMS if too long
-          const smsMessage = message.length > 160
-            ? message.substring(0, 157) + '...'
-            : message;
+          const smsMessage = message.length > 160 ? message.substring(0, 157) + '...' : message;
 
           await smsService.sendSMS(
             recipient.phone,
             `[Immunicare] ${title}: ${smsMessage}`,
-            'admin_alert',
+            'admin_alert'
           );
           console.log(`[AdminNotification] SMS sent to ${recipient.phone}`);
           return { success: true, phone: recipient.phone };
         } catch (smsError) {
-          console.error(`[AdminNotification] SMS send failed to ${recipient.phone}:`, smsError.message);
+          console.error(
+            `[AdminNotification] SMS send failed to ${recipient.phone}:`,
+            smsError.message
+          );
 
           // Fallback: log to sms_logs if available
           try {
@@ -313,8 +314,8 @@ const sendAdminNotification = async ({
       });
 
       const smsResults = await Promise.all(smsPromises);
-      results.smsSent = smsResults.some(result => result.success);
-      results.smsLogged = smsResults.some(result => result.logged);
+      results.smsSent = smsResults.some((result) => result.success);
+      results.smsLogged = smsResults.some((result) => result.logged);
 
       if (!results.smsSent && !results.smsLogged) {
         overallSuccess = false;
@@ -344,14 +345,14 @@ const sendAdminNotification = async ({
 /**
  * Log SMS to fallback table if SMS fails
  */
-const logSmsFallback = async (phone, title, message, category) => {
+const logSmsFallback = async (phone, title, message) => {
   try {
     // Try to insert into sms_logs if table exists
     await pool.query(
       `INSERT INTO sms_logs (phone_number, message, status, created_at)
        VALUES ($1, $2, $3, NOW())
        ON CONFLICT DO NOTHING`,
-      [phone, `[FALLBACK] ${title}: ${message}`, 'failed'],
+      [phone, `[FALLBACK] ${title}: ${message}`, 'failed']
     );
     return true;
   } catch (error) {
@@ -370,9 +371,7 @@ const sendExpiryAlert = async (vaccineName, vaccineId, expiryDate, daysUntilExpi
     ? NOTIFICATION_CATEGORIES.EXPIRY_CRITICAL
     : NOTIFICATION_CATEGORIES.EXPIRY_WARNING;
 
-  const title = isCritical
-    ? 'CRITICAL: Vaccine Expiring Soon'
-    : 'Warning: Vaccine Expiring';
+  const title = isCritical ? 'CRITICAL: Vaccine Expiring Soon' : 'Warning: Vaccine Expiring';
   const expiryDateKey = toClinicDateKey(expiryDate) || 'unknown date';
 
   const message = `${vaccineName} (Lot: ${lotNumber}) will expire on ${expiryDateKey} (${daysUntilExpiry} days remaining)`;
@@ -420,7 +419,13 @@ const sendOutOfStockAlert = async (vaccineName, vaccineId, lotNumber) => {
 /**
  * Send low stock warning
  */
-const sendLowStockAlert = async (vaccineName, vaccineId, currentStock, lotNumber, threshold = 10) => {
+const sendLowStockAlert = async (
+  vaccineName,
+  vaccineId,
+  currentStock,
+  lotNumber,
+  threshold = 10
+) => {
   const title = 'Warning: Low Stock Level';
   const message = `${vaccineName} (Lot: ${lotNumber}) stock is low: ${currentStock} units (threshold: ${threshold})`;
 
@@ -457,7 +462,7 @@ const getDedupStatus = () => {
   let validCount = 0;
   let expiredCount = 0;
 
-  for (const [key, timestamp] of alertDeduplication) {
+  for (const [, timestamp] of alertDeduplication) {
     if (now - timestamp < DEDUP_CACHE_TTL_MS) {
       validCount++;
     } else {

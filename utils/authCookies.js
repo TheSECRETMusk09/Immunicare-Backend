@@ -18,8 +18,6 @@ const getConfiguredSameSite = () => {
     return explicit;
   }
 
-  // Production deployments often use a separate frontend origin and backend API origin.
-  // "none" keeps auth cookies available for those cross-site refresh/logout flows.
   return isProductionLikeEnv ? 'none' : 'lax';
 };
 

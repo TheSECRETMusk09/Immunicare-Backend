@@ -12,7 +12,7 @@ const pool = new Pool({
   port: parseInt(process.env.DB_PORT) || 5432,
   database: process.env.DB_NAME || 'immunicare_dev',
   user: process.env.DB_USER || 'immunicare_dev',
-  password: String(process.env.DB_PASSWORD) || ''
+  password: String(process.env.DB_PASSWORD) || '',
 });
 
 async function getEnumTypes() {
@@ -134,7 +134,7 @@ async function getIndexes(tableName) {
     indexes[row.index_name] = {
       columns: columns,
       is_unique: isUnique,
-      is_primary: false
+      is_primary: false,
     };
   });
   return indexes;
@@ -215,12 +215,12 @@ async function dumpSchema() {
       const columns = await getColumns(tableName);
       const pk = await getPrimaryKey(tableName);
       const fks = await getForeignKeys(tableName);
-      const indexes = await getIndexes(tableName);
+      await getIndexes(tableName);
       const comment = await getTableComment(tableName);
 
       sql += `-- Table: ${tableName}\n`;
       if (comment) {
-        sql += `COMMENT ON TABLE ${tableName} IS '${comment.replace(/'/g, '\'\'')}';\n`;
+        sql += `COMMENT ON TABLE ${tableName} IS '${comment.replace(/'/g, "''")}';\n`;
       }
 
       sql += `CREATE TABLE IF NOT EXISTS ${tableName} (\n`;
@@ -275,7 +275,7 @@ async function dumpSchema() {
         );
 
         if (colComment.rows[0]?.comment) {
-          sql += `COMMENT ON COLUMN ${tableName}.${col.column_name} IS '${colComment.rows[0].comment.replace(/'/g, '\'\'')}';\n`;
+          sql += `COMMENT ON COLUMN ${tableName}.${col.column_name} IS '${colComment.rows[0].comment.replace(/'/g, "''")}';\n`;
         }
       }
       sql += '\n';

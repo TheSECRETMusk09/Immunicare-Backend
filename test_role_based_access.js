@@ -12,7 +12,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const testResults = {
   passed: 0,
   failed: 0,
-  tests: []
+  tests: [],
 };
 
 /**
@@ -36,7 +36,7 @@ async function runTest(name, testFn) {
  */
 async function testValidToken() {
   const token = jwt.sign({ id: 1, username: 'test', role: 'admin' }, JWT_SECRET, {
-    expiresIn: '15m'
+    expiresIn: '15m',
   });
 
   // Verify token manually (simulating middleware)
@@ -59,7 +59,7 @@ async function testValidToken() {
 async function testMissingToken() {
   const req = {
     cookies: {},
-    headers: {}
+    headers: {},
   };
 
   if (!req.cookies?.token && !req.headers['authorization']) {
@@ -95,7 +95,6 @@ async function testExpiredToken() {
  */
 async function testAdminAccess() {
   const adminRole = 'admin';
-  const adminPermissions = ['read:dashboard', 'manage:users', 'manage:system_settings'];
 
   // Admin should have all permissions (in real system)
   // Here we verify admin role is properly defined
@@ -200,7 +199,7 @@ async function testLoginSuccess() {
     username: 'admin',
     role_name: 'admin',
     is_active: true,
-    password_hash: await bcrypt.hash('admin123', 10)
+    password_hash: await bcrypt.hash('admin123', 10),
   };
 
   // Verify password
@@ -236,7 +235,7 @@ async function testLoginInvalidCredentials() {
   const mockUser = {
     id: 1,
     username: 'admin',
-    password_hash: await bcrypt.hash('admin123', 10)
+    password_hash: await bcrypt.hash('admin123', 10),
   };
 
   const isValid = await bcrypt.compare(credentials.password, mockUser.password_hash);
@@ -255,7 +254,7 @@ async function testTokenPayload() {
     username: 'testuser',
     role: 'admin',
     clinic_id: 1,
-    permissions: []
+    permissions: [],
   };
 
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '15m' });
@@ -297,12 +296,12 @@ async function testDashboardProtection() {
  * Test 12: Refresh Token Flow
  */
 async function testRefreshToken() {
-  const accessToken = jwt.sign({ id: 1, username: 'test', role: 'admin' }, JWT_SECRET, {
-    expiresIn: '15m'
+  jwt.sign({ id: 1, username: 'test', role: 'admin' }, JWT_SECRET, {
+    expiresIn: '15m',
   });
 
   const refreshToken = jwt.sign({ id: 1, username: 'test', type: 'refresh' }, JWT_SECRET, {
-    expiresIn: '7d'
+    expiresIn: '7d',
   });
 
   // Verify refresh token is valid
@@ -337,7 +336,7 @@ async function testLogout() {
  */
 async function testSessionVerification() {
   const token = jwt.sign({ id: 1, username: 'test', role: 'admin' }, JWT_SECRET, {
-    expiresIn: '15m'
+    expiresIn: '15m',
   });
 
   // Verify session
@@ -359,7 +358,7 @@ async function testDashboardRedirection() {
     admin: '/admin/dashboard',
     healthcare_worker: '/dashboard',
     nurse: '/dashboard',
-    guardian: '/guardian/dashboard'
+    guardian: '/guardian/dashboard',
   };
 
   // Test admin redirect
@@ -381,23 +380,23 @@ async function testAPIEndpointProtection() {
     {
       path: '/api/users',
       methods: ['POST', 'PUT', 'DELETE'],
-      allowedRoles: ['admin', 'super_admin']
+      allowedRoles: ['admin', 'super_admin'],
     },
     {
       path: '/api/patients',
       methods: ['POST', 'PUT', 'DELETE'],
-      allowedRoles: ['admin', 'health_worker']
+      allowedRoles: ['admin', 'health_worker'],
     },
     {
       path: '/api/appointments',
       methods: ['POST', 'PUT', 'DELETE'],
-      allowedRoles: ['admin', 'health_worker', 'nurse']
+      allowedRoles: ['admin', 'health_worker', 'nurse'],
     },
     {
       path: '/api/vaccinations',
       methods: ['POST', 'PUT'],
-      allowedRoles: ['admin', 'health_worker', 'nurse']
-    }
+      allowedRoles: ['admin', 'health_worker', 'nurse'],
+    },
   ];
 
   // Test guardian trying to access protected endpoint
@@ -419,7 +418,7 @@ async function testLoginInputValidation() {
     { input: { username: '', password: 'password123' }, valid: false, reason: 'Empty username' },
     { input: { username: 'user', password: '' }, valid: false, reason: 'Empty password' },
     { input: { username: 'user', password: '123' }, valid: false, reason: 'Password too short' },
-    { input: { username: 'user', password: 'password123' }, valid: true, reason: 'Valid input' }
+    { input: { username: 'user', password: 'password123' }, valid: true, reason: 'Valid input' },
   ];
 
   for (const testCase of testCases) {
@@ -450,7 +449,7 @@ async function testSecurityHeaders() {
     'X-XSS-Protection',
     'Strict-Transport-Security',
     'Content-Security-Policy',
-    'Referrer-Policy'
+    'Referrer-Policy',
   ];
 
   // Verify all security headers are defined

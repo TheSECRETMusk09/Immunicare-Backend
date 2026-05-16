@@ -221,6 +221,10 @@ const validateInfantPayload = (payload = {}, options = {}) => {
     father_name: toNullableString(payload.father_name),
     birth_weight: normalizeNullableNumber(payload.birth_weight, 'birth_weight', { min: 0.3, max: 10 }),
     birth_height: normalizeNullableNumber(payload.birth_height, 'birth_height', { min: 10, max: 100 }),
+    birth_head_circumference: normalizeNullableNumber(
+      payload.birth_head_circumference,
+      'birth_head_circumference',
+    ),
     place_of_birth: toNullableString(payload.place_of_birth),
     barangay: toNullableString(payload.barangay),
     health_center: toNullableString(payload.health_center),
@@ -426,6 +430,14 @@ const createGuardianChildRecord = async ({
     client,
   });
 
+  await ensureBirthGrowthRecord(client, {
+    patientId: resolved.id,
+    dob: result.rows[0].dob,
+    birthWeight: result.rows[0].birth_weight,
+    birthHeight: result.rows[0].birth_height,
+    birthHeadCircumference: infantData.birth_head_circumference,
+  });
+
   return {
     patient: result.rows[0],
     controlNumber: resolved.control_number,
@@ -433,7 +445,63 @@ const createGuardianChildRecord = async ({
   };
 };
 
+const ensureBirthGrowthRecord = async (
+  client,
+  { patientId, dob, birthWeight, birthHeight, birthHeadCircumference },
+) => {
+  if (!patientId || !dob) return;
+  if (birthWeight == null && birthHeight == null && birthHeadCircumference == null) return;
+
+  try {
+    const existing = await client.query(
+      `SELECT id FROM patient_growth
+         WHERE patient_id = $1
+           AND measurement_date = $2
+           AND COALESCE(is_active, true) = true
+         LIMIT 1`,
+      [patientId, dob],
+    );
+
+    if (existing.rows.length > 0) {
+      await client.query(
+        `UPDATE patient_growth
+         SET weight_kg = COALESCE($3, weight_kg),
+             length_cm = COALESCE($4, length_cm),
+             head_circumference_cm = COALESCE($5, head_circumference_cm)
+         WHERE patient_id = $1
+           AND measurement_date = $2
+           AND COALESCE(is_active, true) = true`,
+        [
+          patientId,
+          dob,
+          birthWeight ?? null,
+          birthHeight ?? null,
+          birthHeadCircumference ?? null,
+        ],
+      );
+      return;
+    }
+
+    await client.query(
+      `INSERT INTO patient_growth (
+         patient_id, measurement_date, age_in_days, weight_kg, length_cm,
+         head_circumference_cm, measurement_location, notes, is_active
+       ) VALUES ($1, $2, 0, $3, $4, $5, 'At birth', 'Recorded at registration', true)`,
+      [
+        patientId,
+        dob,
+        birthWeight ?? null,
+        birthHeight ?? null,
+        birthHeadCircumference ?? null,
+      ],
+    );
+  } catch (error) {
+    console.error('[ensureBirthGrowthRecord] Failed to seed birth growth record:', error.message);
+  }
+};
+
 module.exports = {
   createGuardianChildRecord,
   ensurePatientLocationColumnsExist,
+  ensureBirthGrowthRecord,
 };

@@ -61,7 +61,6 @@ const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 const canAccessGuardian = (req, guardianId) => {
   if (isGuardian(req)) {
-    // Use unified guardian scope resolver with fallback support
     const resolvedGuardianId = resolveGuardianId(req.user);
     return resolvedGuardianId === parseInt(guardianId, 10);
   }
@@ -436,7 +435,6 @@ const collectGuardianDueVaccines = async (
   };
 };
 
-// Health check endpoint (public)
 router.get('/health', async (_req, res) => {
   try {
     await db.query('SELECT 1 as status');
@@ -456,7 +454,6 @@ router.get('/health', async (_req, res) => {
   }
 });
 
-// Dashboard overview stats (SYSTEM_ADMIN)
 router.get('/stats', authenticateToken, requirePermission('dashboard:analytics'), async (req, res, next) => {
   try {
     noCache(res);
@@ -487,7 +484,6 @@ router.get('/stats', authenticateToken, requirePermission('dashboard:analytics')
   }
 });
 
-// Dashboard appointments (SYSTEM_ADMIN)
 router.get('/appointments', authenticateToken, requirePermission('appointment:view'), async (req, res, next) => {
   try {
     noCache(res);
@@ -551,7 +547,6 @@ router.get('/appointments', authenticateToken, requirePermission('appointment:vi
   }
 });
 
-// Guardian dashboard stats
 router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -637,7 +632,6 @@ router.get('/guardian/:guardianId/stats', authenticateToken, async (req, res, ne
   }
 });
 
-// Guardian dashboard overview
 router.get('/guardian/:guardianId/overview', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -791,7 +785,6 @@ router.get('/guardian/:guardianId/overview', authenticateToken, async (req, res,
   }
 });
 
-// Guardian appointments
 router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -877,7 +870,6 @@ router.get('/guardian/:guardianId/appointments', authenticateToken, async (req, 
   }
 });
 
-// Guardian children
 router.get('/guardian/:guardianId/children', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -926,7 +918,6 @@ router.get('/guardian/:guardianId/children', authenticateToken, async (req, res,
   }
 });
 
-// Guardian vaccinations
 router.get('/guardian/:guardianId/vaccinations', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -972,7 +963,6 @@ router.get('/guardian/:guardianId/vaccinations', authenticateToken, async (req, 
   }
 });
 
-// Guardian health charts
 router.get('/guardian/:guardianId/health-charts', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -1060,7 +1050,6 @@ router.get('/guardian/:guardianId/health-charts', authenticateToken, async (req,
   }
 });
 
-// Guardian notifications
 router.get('/guardian/:guardianId/notifications', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -1087,10 +1076,7 @@ router.get('/guardian/:guardianId/notifications', authenticateToken, async (req,
       [guardianId, limit],
     );
 
-    // If no notifications found with guardian_id, return empty array
-    // Note: guardians table doesn't have user_id column, so we skip that lookup
     if (result.rows.length === 0) {
-      // Return empty result - no fallback to user_id since column doesn't exist
       return res.json({ data: [] });
     }
 
@@ -1101,12 +1087,9 @@ router.get('/guardian/:guardianId/notifications', authenticateToken, async (req,
   }
 });
 
-// Dashboard guardians (SYSTEM_ADMIN)
 router.get('/guardians', authenticateToken, requirePermission('user:view'), async (req, res, next) => {
   try {
-    // Apply facility scoping to prevent data leakage
     const scopeIds = resolveUserScopeIds(req.user);
-    
     const canonicalRole = getCanonicalRole(req);
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
     const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
@@ -1130,12 +1113,9 @@ router.get('/guardians', authenticateToken, requirePermission('user:view'), asyn
   }
 });
 
-// Dashboard infants (SYSTEM_ADMIN)
 router.get('/infants', authenticateToken, requirePermission('patient:view'), async (req, res, next) => {
   try {
-    // Apply facility scoping to prevent data leakage
     const scopeIds = resolveUserScopeIds(req.user);
-    
     const canonicalRole = getCanonicalRole(req);
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
     const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
@@ -1219,12 +1199,14 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
     }
 
     if (searchTerm) {
+      // FIX: Dashboard infant search must filter by CHILD name only. Removed
+      // g.name so a guardian surname (e.g. 'samorin') no longer pulls every
+      // child of that guardian regardless of the child's own last name.
       const searchCondition = patientService.buildTokenizedSearchCondition({
         searchValue: searchTerm,
         expressions: [
           ...patientService.buildPatientNameSearchExpressions('i'),
           `i.${controlNumberColumn}`,
-          ...(includeGuardianJoin ? ['g.name'] : []),
           `TO_CHAR(i.dob, 'YYYY-MM-DD')`,
           `TO_CHAR(i.dob, 'MM/DD/YYYY')`,
         ],
@@ -1302,15 +1284,11 @@ router.get('/infants', authenticateToken, requirePermission('patient:view'), asy
   }
 });
 
-// Dashboard activity (SYSTEM_ADMIN)
 router.get('/activity', authenticateToken, requirePermission('dashboard:analytics'), async (req, res, next) => {
   try {
     const days = sanitizeLimit(req.query.days, 7, 90);
     const activity = [];
-    
-    // Apply facility scoping to prevent data leakage
     const scopeIds = resolveUserScopeIds(req.user);
-    
     const canonicalRole = getCanonicalRole(req);
     const requestedScope = String(req.query.scope || '').trim().toLowerCase();
     const allowSystemScope = canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN && requestedScope === 'system';
@@ -1390,7 +1368,6 @@ router.get('/activity', authenticateToken, requirePermission('dashboard:analytic
   }
 });
 
-// Admin monitoring: full infant vaccination history + next-dose/upcoming appointments
 router.get('/admin/vaccination-monitoring', authenticateToken, requirePermission('dashboard:analytics'), async (req, res, next) => {
   try {
     noCache(res);
@@ -1459,7 +1436,6 @@ router.get('/admin/vaccination-monitoring', authenticateToken, requirePermission
   }
 });
 
-// Guardian vaccination records by infant
 router.get('/guardian/:guardianId/vaccinations/:infantId', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);
@@ -1517,7 +1493,6 @@ router.get('/guardian/:guardianId/vaccinations/:infantId', authenticateToken, as
   }
 });
 
-// Guardian growth records by infant
 router.get('/guardian/:guardianId/growth/:infantId', authenticateToken, async (req, res, next) => {
   try {
     const guardianId = parseInt(req.params.guardianId, 10);

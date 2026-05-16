@@ -1,19 +1,17 @@
 /**
- * Admin Management API Routes
- * Handles admin user data retrieval and management
+ * Admin management routes.
  */
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const pool = require('../db');
-const { authenticateToken, requireSuperAdmin } = require('../middleware/auth');
+const { authenticateToken } = require('../middleware/auth');
 const {
-  requireAdmin,
   requirePermission,
   requireSuperAdmin: requireSuperAdminRBAC,
 } = require('../middleware/rbac');
 const { asyncHandler, NotFoundError, ValidationError } = require('../middleware/errorHandler');
-const { validationSchemas, commonValidations } = require('../middleware/validation');
+require('../middleware/validation');
 
 const router = express.Router();
 
@@ -47,7 +45,7 @@ router.get(
       data: result.rows,
       total: result.rows.length,
     });
-  }),
+  })
 );
 
 // Get admin user by ID
@@ -76,7 +74,7 @@ router.get(
     LEFT JOIN clinics c ON u.clinic_id = c.id
     WHERE u.id = $1
   `,
-      [id],
+      [id]
     );
 
     if (result.rows.length === 0) {
@@ -87,7 +85,7 @@ router.get(
       success: true,
       data: result.rows[0],
     });
-  }),
+  })
 );
 
 // Update admin user
@@ -120,7 +118,7 @@ router.put(
     WHERE id = $4
     RETURNING id, username, email, contact, is_active;
   `,
-      [email, contact, is_active, id],
+      [email, contact, is_active, id]
     );
 
     if (result.rows.length === 0) {
@@ -132,7 +130,7 @@ router.put(
       message: 'Admin user updated successfully',
       data: result.rows[0],
     });
-  }),
+  })
 );
 
 // Reset admin password (super_admin only)
@@ -162,7 +160,7 @@ router.put(
     WHERE id = $2
     RETURNING id, username, email;
   `,
-      [passwordHash, id],
+      [passwordHash, id]
     );
 
     if (result.rows.length === 0) {
@@ -178,7 +176,7 @@ router.put(
         email: result.rows[0].email,
       },
     });
-  }),
+  })
 );
 
 // Get current admin profile
@@ -203,7 +201,7 @@ router.get(
     LEFT JOIN clinics c ON u.clinic_id = c.id
     WHERE u.id = $1
   `,
-      [req.user.id],
+      [req.user.id]
     );
 
     if (result.rows.length === 0) {
@@ -214,7 +212,7 @@ router.get(
       success: true,
       data: result.rows[0],
     });
-  }),
+  })
 );
 
 // Update current admin profile
@@ -234,7 +232,7 @@ router.put(
     WHERE id = $3
     RETURNING id, username, email, contact, role_id;
   `,
-      [email, contact, req.user.id],
+      [email, contact, req.user.id]
     );
 
     if (result.rows.length === 0) {
@@ -246,7 +244,7 @@ router.put(
       message: 'Profile updated successfully',
       data: result.rows[0],
     });
-  }),
+  })
 );
 
 // Get admin statistics
@@ -288,7 +286,7 @@ router.get(
         byRole: byRole.rows,
       },
     });
-  }),
+  })
 );
 
 module.exports = router;

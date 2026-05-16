@@ -1,6 +1,5 @@
 /**
- * Infant Allergies API Routes
- * Handles CRUD operations for infant allergy records
+ * Infant allergy routes.
  */
 
 const express = require('express');

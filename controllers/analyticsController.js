@@ -125,7 +125,9 @@ const filters = async (_req, res) => {
 
 const exportAnalytics = async (req, res) => {
   try {
-    const requestedType = String(req.query.type || '').trim().toLowerCase();
+    const requestedType = String(req.query.type || '')
+      .trim()
+      .toLowerCase();
     const mappedType = ANALYTICS_EXPORT_TYPE_MAP[requestedType];
 
     if (!mappedType) {
@@ -136,7 +138,9 @@ const exportAnalytics = async (req, res) => {
       });
     }
 
-    const requestedFormat = String(req.query.format || 'csv').trim().toLowerCase();
+    const requestedFormat = String(req.query.format || 'csv')
+      .trim()
+      .toLowerCase();
     const normalizedFormat = requestedFormat === 'xlsx' ? 'excel' : requestedFormat;
 
     if (!['csv', 'pdf', 'excel'].includes(normalizedFormat)) {
@@ -148,11 +152,13 @@ const exportAnalytics = async (req, res) => {
     }
 
     const { type, format, ...rawFilters } = req.query || {};
+    void type;
+    void format;
     const generatedReport = await reportService.generateReport(
       mappedType,
       rawFilters,
       normalizedFormat,
-      req.user?.id || null,
+      req.user?.id || null
     );
     const downloadResult = await reportService.downloadReport(generatedReport.id);
 

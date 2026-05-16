@@ -9,9 +9,8 @@ async function quickSetup() {
     // Create admin roles
     await pool.query(`
       INSERT INTO roles (name, display_name, is_system_role, hierarchy_level) VALUES
-      ('super_admin', 'Super Administrator', true, 100),
-      ('admin', 'Administrator', true, 80),
-      ('clinic_manager', 'Clinic Manager', false, 60)
+      ('system_admin', 'System Administrator', true, 100),
+      ('admin', 'Administrator', true, 100)
       ON CONFLICT (name) DO NOTHING;
     `);
 

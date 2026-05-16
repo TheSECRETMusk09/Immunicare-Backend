@@ -23,7 +23,7 @@ const colors = {
   yellow: '\x1b[33m',
   blue: '\x1b[34m',
   magenta: '\x1b[35m',
-  cyan: '\x1b[36m'
+  cyan: '\x1b[36m',
 };
 
 function log(message, color = 'reset') {
@@ -63,7 +63,7 @@ async function testDatabaseConnection() {
     port: parseInt(env.DB_PORT) || 5432,
     database: env.DB_NAME || 'immunicare_dev',
     user: env.DB_USER || 'immunicare_dev',
-    password: env.DB_PASSWORD || ''
+    password: env.DB_PASSWORD || '',
   });
 
   try {
@@ -84,7 +84,7 @@ async function testDatabaseConnection() {
       'immunization_records',
       'appointments',
       'vaccines',
-      'notifications'
+      'notifications',
     ];
 
     log('\nChecking critical tables...', 'cyan');
@@ -152,9 +152,9 @@ function fixInfantsRouting() {
   let content = fs.readFileSync(infantsPath, 'utf8');
 
   // Check if the route order is already correct
-  const guardianRouteIndex = content.indexOf('router.get(\'/guardian/:guardianId\'');
-  const searchRouteIndex = content.indexOf('router.get(\'/search/:query\'');
-  const ageRangeRouteIndex = content.indexOf('router.get(\'/age-range/:minAge/:maxAge\'');
+  const guardianRouteIndex = content.indexOf("router.get('/guardian/:guardianId'");
+  const searchRouteIndex = content.indexOf("router.get('/search/:query'");
+  const ageRangeRouteIndex = content.indexOf("router.get('/age-range/:minAge/:maxAge'");
 
   if (guardianRouteIndex === -1) {
     log('✗ Guardian route not found in infants.js', 'red');
@@ -341,13 +341,13 @@ async function createTestGuardian() {
     port: parseInt(env.DB_PORT) || 5432,
     database: env.DB_NAME || 'immunicare_dev',
     user: env.DB_USER || 'immunicare_dev',
-    password: env.DB_PASSWORD || ''
+    password: env.DB_PASSWORD || '',
   });
 
   try {
     // Check if test guardian already exists
     const existingUser = await pool.query(
-      'SELECT id FROM users WHERE username = \'testguardian\' OR email = \'testguardian@immunicare.com\''
+      "SELECT id FROM users WHERE username = 'testguardian' OR email = 'testguardian@immunicare.com'"
     );
 
     if (existingUser.rows.length > 0) {
@@ -357,7 +357,7 @@ async function createTestGuardian() {
     }
 
     // Get guardian role
-    const roleResult = await pool.query('SELECT id FROM roles WHERE name = \'guardian\' LIMIT 1');
+    const roleResult = await pool.query("SELECT id FROM roles WHERE name = 'guardian' LIMIT 1");
 
     if (roleResult.rows.length === 0) {
       log('✗ Guardian role not found', 'red');
@@ -369,7 +369,7 @@ async function createTestGuardian() {
 
     // Get or create Guardian Portal clinic
     let clinicResult = await pool.query(
-      'SELECT id FROM clinics WHERE name = \'Guardian Portal\' LIMIT 1'
+      "SELECT id FROM clinics WHERE name = 'Guardian Portal' LIMIT 1"
     );
 
     let clinicId;
@@ -399,7 +399,7 @@ async function createTestGuardian() {
     const bcrypt = require('bcryptjs');
     const passwordHash = await bcrypt.hash('Guardian123!', 10);
 
-    const userResult = await pool.query(
+    await pool.query(
       `INSERT INTO users (username, password_hash, role_id, clinic_id, email, contact, guardian_id, is_active, force_password_change)
        VALUES ('testguardian', $1, $2, $3, 'testguardian@immunicare.com', '+1234567890', $4, true, false)
        RETURNING id, username, email`,
@@ -413,7 +413,7 @@ async function createTestGuardian() {
     log('  Role: guardian', 'cyan');
 
     // Create a test infant
-    const infantResult = await pool.query(
+    await pool.query(
       `INSERT INTO patients (first_name, last_name, dob, sex, guardian_id, clinic_id)
        VALUES ('Test', 'Baby', '2024-01-01', 'M', $1, $2)
        RETURNING id`,
@@ -442,7 +442,7 @@ function generateReport(results) {
     apiClient: results.apiClient,
     guardianLayout: results.guardianLayout,
     appRouting: results.appRouting,
-    testGuardian: results.testGuardian
+    testGuardian: results.testGuardian,
   };
 
   // Print summary
@@ -534,7 +534,7 @@ async function main() {
     apiClient: false,
     guardianLayout: false,
     appRouting: false,
-    testGuardian: false
+    testGuardian: false,
   };
 
   // Test database connection

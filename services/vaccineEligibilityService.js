@@ -488,17 +488,29 @@ const getEligibleVaccines = async (infantId) => {
 
   // Group records by vaccine to get max dose for each
   const completedDosesByVaccine = {};
+  const completedDoseNumbersByVaccine = {};
   records.forEach(record => {
     if (!isCompletedVaccinationRecord(record)) {
       return;
     }
 
+    const vaccineId = Number.parseInt(record.vaccine_id, 10);
+    const doseNumber = Number.parseInt(record.dose_no, 10);
+
+    if (Number.isFinite(vaccineId) && vaccineId > 0 && Number.isFinite(doseNumber) && doseNumber > 0) {
+      if (!completedDoseNumbersByVaccine[vaccineId]) {
+        completedDoseNumbersByVaccine[vaccineId] = new Set();
+      }
+
+      completedDoseNumbersByVaccine[vaccineId].add(doseNumber);
+    }
+
     if (
-      !completedDosesByVaccine[record.vaccine_id] ||
-      record.dose_no > completedDosesByVaccine[record.vaccine_id].doseNo
+      !completedDosesByVaccine[vaccineId] ||
+      doseNumber > completedDosesByVaccine[vaccineId].doseNo
     ) {
-      completedDosesByVaccine[record.vaccine_id] = {
-        doseNo: parseInt(record.dose_no, 10),
+      completedDosesByVaccine[vaccineId] = {
+        doseNo: doseNumber,
         adminDate: record.admin_date,
         vaccineName: record.vaccine_name,
       };
@@ -524,8 +536,12 @@ const getEligibleVaccines = async (infantId) => {
   for (const vaccineId of Object.keys(schedulesByVaccine)) {
     const vaccineSchedules = schedulesByVaccine[vaccineId];
     const completedDose = completedDosesByVaccine[vaccineId];
-    const completedCount = completedDose ? completedDose.doseNo : 0;
+    const completedDoseNumbers = completedDoseNumbersByVaccine[vaccineId] || new Set();
+    const completedCount = completedDoseNumbers.size;
     const totalDoses = Math.max(...vaccineSchedules.map(s => s.total_doses || s.dose_number));
+    const nextSchedule = [...vaccineSchedules]
+      .sort((left, right) => Number(left.dose_number || 0) - Number(right.dose_number || 0))
+      .find((schedule) => !completedDoseNumbers.has(Number(schedule.dose_number || 0)));
 
     // Check if vaccine is fully completed
     if (completedCount >= totalDoses) {
@@ -542,15 +558,11 @@ const getEligibleVaccines = async (infantId) => {
       continue;
     }
 
-    // Get next dose number
-    const nextDoseNumber = completedCount + 1;
-
-    // Get the next schedule for this dose
-    const nextSchedule = vaccineSchedules.find(s => s.dose_number === nextDoseNumber);
-
     if (!nextSchedule) {
       continue;
     }
+
+    const nextDoseNumber = Number(nextSchedule.dose_number || completedCount + 1) || completedCount + 1;
 
     // Check age eligibility
     const minAgeDays = resolveMinimumAgeDays(nextSchedule);

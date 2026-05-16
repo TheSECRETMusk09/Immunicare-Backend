@@ -1,6 +1,5 @@
 /**
- * Cleanup Service
- * Handles cleanup of old notifications and other maintenance tasks
+ * Cleanup tasks for old records.
  */
 
 const pool = require('../db');

@@ -28,7 +28,7 @@ const createTestUser = async (role = 'admin') => {
     hashedPassword,
     role,
     1,
-    `test_${Date.now()}@example.com`
+    `test_${Date.now()}@example.com`,
   ]);
 
   return result.rows[0];
@@ -40,7 +40,7 @@ const generateAuthToken = (user) => {
       id: user.id,
       username: user.username,
       role: user.role,
-      health_center_id: user.health_center_id
+      health_center_id: user.health_center_id,
     },
     process.env.JWT_SECRET,
     { expiresIn: '1h' }
@@ -69,7 +69,7 @@ const createTestPatient = async (healthCenterId = 1) => {
     'No medical history',
     'No allergies',
     true,
-    healthCenterId
+    healthCenterId,
   ]);
 
   return result.rows[0];
@@ -97,7 +97,7 @@ const createTestVaccination = async (patientId, healthCenterId = 1) => {
     'None',
     'completed',
     'Test vaccination',
-    healthCenterId
+    healthCenterId,
   ]);
 
   return result.rows[0];
@@ -107,7 +107,7 @@ const createTestVaccination = async (patientId, healthCenterId = 1) => {
 describe('Vaccination Management API', () => {
   let adminUser, healthWorkerUser, nurseUser, guardianUser;
   let adminToken, healthWorkerToken, nurseToken, guardianToken;
-  let testPatient, testVaccination;
+  let testPatient;
 
   beforeAll(async () => {
     // Create test users
@@ -124,23 +124,18 @@ describe('Vaccination Management API', () => {
 
     // Create test data
     testPatient = await createTestPatient(adminUser.health_center_id);
-    testVaccination = await createTestVaccination(
-      testPatient.id,
-      adminUser.health_center_id
-    );
+    testVaccination = await createTestVaccination(testPatient.id, adminUser.health_center_id);
   });
 
   afterAll(async () => {
     // Clean up test data
-    await db.query('DELETE FROM vaccinations WHERE patient_id = $1', [
-      testPatient.id
-    ]);
+    await db.query('DELETE FROM vaccinations WHERE patient_id = $1', [testPatient.id]);
     await db.query('DELETE FROM patients WHERE id = $1', [testPatient.id]);
     await db.query('DELETE FROM users WHERE id IN ($1, $2, $3, $4)', [
       adminUser.id,
       healthWorkerUser.id,
       nurseUser.id,
-      guardianUser.id
+      guardianUser.id,
     ]);
   });
 
@@ -168,9 +163,7 @@ describe('Vaccination Management API', () => {
     });
 
     test('GET /dashboard - should return 401 for unauthenticated request', async () => {
-      await request(app)
-        .get('/api/vaccination-management/dashboard')
-        .expect(401);
+      await request(app).get('/api/vaccination-management/dashboard').expect(401);
     });
   });
 
@@ -217,7 +210,7 @@ describe('Vaccination Management API', () => {
         contactNumber: '09876543210',
         medicalHistory: 'Test history',
         allergies: 'Test allergies',
-        guardianConsent: true
+        guardianConsent: true,
       };
 
       const response = await request(app)
@@ -231,15 +224,13 @@ describe('Vaccination Management API', () => {
       expect(response.body.patient.name).toBe(newPatientData.name);
 
       // Clean up
-      await db.query('DELETE FROM patients WHERE id = $1', [
-        response.body.patient.id
-      ]);
+      await db.query('DELETE FROM patients WHERE id = $1', [response.body.patient.id]);
     });
 
     test('PUT /patients/:id - should update patient for admin', async () => {
       const updateData = {
         name: 'Updated Test Patient',
-        contactNumber: '09111111111'
+        contactNumber: '09111111111',
       };
 
       const response = await request(app)
@@ -250,16 +241,12 @@ describe('Vaccination Management API', () => {
 
       expect(response.body).toHaveProperty('success', true);
       expect(response.body.patient.name).toBe(updateData.name);
-      expect(response.body.patient.contact_number).toBe(
-        updateData.contactNumber
-      );
+      expect(response.body.patient.contact_number).toBe(updateData.contactNumber);
     });
 
     test('DELETE /patients/:id - should delete patient for admin', async () => {
       // Create a new patient to delete
-      const patientToDelete = await createTestPatient(
-        adminUser.health_center_id
-      );
+      const patientToDelete = await createTestPatient(adminUser.health_center_id);
 
       const response = await request(app)
         .delete(`/api/vaccination-management/patients/${patientToDelete.id}`)
@@ -285,9 +272,7 @@ describe('Vaccination Management API', () => {
 
     test('GET /vaccinations - should filter by patient ID', async () => {
       const response = await request(app)
-        .get(
-          `/api/vaccination-management/vaccinations?patientId=${testPatient.id}`
-        )
+        .get(`/api/vaccination-management/vaccinations?patientId=${testPatient.id}`)
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(200);
 
@@ -308,7 +293,7 @@ describe('Vaccination Management API', () => {
         site: 'Right thigh',
         sideEffects: 'None',
         status: 'completed',
-        notes: 'Test hepatitis vaccination'
+        notes: 'Test hepatitis vaccination',
       };
 
       const response = await request(app)
@@ -319,14 +304,10 @@ describe('Vaccination Management API', () => {
 
       expect(response.body).toHaveProperty('success', true);
       expect(response.body).toHaveProperty('vaccination');
-      expect(response.body.vaccination.vaccine).toBe(
-        newVaccinationData.vaccine
-      );
+      expect(response.body.vaccination.vaccine).toBe(newVaccinationData.vaccine);
 
       // Clean up
-      await db.query('DELETE FROM vaccinations WHERE id = $1', [
-        response.body.vaccination.id
-      ]);
+      await db.query('DELETE FROM vaccinations WHERE id = $1', [response.body.vaccination.id]);
     });
   });
 
@@ -352,7 +333,7 @@ describe('Vaccination Management API', () => {
         costPerUnit: 100.0,
         storageLocation: 'Test Location',
         temperature: '2-8°C',
-        manufacturer: 'Test Manufacturer'
+        manufacturer: 'Test Manufacturer',
       };
 
       const response = await request(app)
@@ -366,9 +347,7 @@ describe('Vaccination Management API', () => {
       expect(response.body.item.vaccine_name).toBe(newStockData.vaccineName);
 
       // Clean up
-      await db.query('DELETE FROM inventory WHERE id = $1', [
-        response.body.item.id
-      ]);
+      await db.query('DELETE FROM inventory WHERE id = $1', [response.body.item.id]);
     });
   });
 
@@ -393,7 +372,7 @@ describe('Vaccination Management API', () => {
         location: 'Room 1',
         status: 'scheduled',
         notes: 'Test appointment',
-        nurseId: nurseUser.id
+        nurseId: nurseUser.id,
       };
 
       const response = await request(app)
@@ -404,14 +383,10 @@ describe('Vaccination Management API', () => {
 
       expect(response.body).toHaveProperty('success', true);
       expect(response.body).toHaveProperty('appointment');
-      expect(response.body.appointment.vaccine).toBe(
-        newAppointmentData.vaccine
-      );
+      expect(response.body.appointment.vaccine).toBe(newAppointmentData.vaccine);
 
       // Clean up
-      await db.query('DELETE FROM appointments WHERE id = $1', [
-        response.body.appointment.id
-      ]);
+      await db.query('DELETE FROM appointments WHERE id = $1', [response.body.appointment.id]);
     });
   });
 
@@ -445,9 +420,7 @@ describe('Vaccination Management API', () => {
     });
 
     test('Unauthorized access should be denied', async () => {
-      await request(app)
-        .get('/api/vaccination-management/patients')
-        .expect(401);
+      await request(app).get('/api/vaccination-management/patients').expect(401);
     });
   });
 
@@ -456,7 +429,7 @@ describe('Vaccination Management API', () => {
       const invalidPatientData = {
         name: '', // Empty name
         dateOfBirth: 'invalid-date',
-        sex: 'invalid-sex'
+        sex: 'invalid-sex',
       };
 
       const response = await request(app)
@@ -472,7 +445,7 @@ describe('Vaccination Management API', () => {
       const invalidVaccinationData = {
         patientId: 99999, // Non-existent patient
         vaccine: '',
-        dose: ''
+        dose: '',
       };
 
       const response = await request(app)
@@ -535,5 +508,5 @@ module.exports = {
   createTestUser,
   generateAuthToken,
   createTestPatient,
-  createTestVaccination
+  createTestVaccination,
 };

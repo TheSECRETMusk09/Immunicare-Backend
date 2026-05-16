@@ -14,7 +14,7 @@
  * Testing: Jest-style async testing
  */
 
-const { Pool, Client } = require('pg');
+const { Pool } = require('pg');
 
 const DB_CONFIG = {
   host: process.env.DB_HOST || 'localhost',
@@ -75,14 +75,6 @@ async function assert(condition, testName, details = {}) {
   return condition;
 }
 
-async function cleanupTestData(tableName, columnName = 'id') {
-  try {
-    await query(`DELETE FROM ${tableName} WHERE ${columnName} LIKE $1`, [`${TEST_PREFIX}%`]);
-  } catch (err) {
-    // Ignore cleanup errors
-  }
-}
-
 // ============================================
 // SCHEMA INTEGRITY TESTS
 // ============================================
@@ -92,9 +84,16 @@ async function testSchemaIntegrity() {
 
   // Test 1: Check all required tables exist
   const requiredTables = [
-    'admin', 'guardians', 'patients', 'vaccines',
-    'vaccine_batches', 'immunization_records', 'appointments',
-    'notifications', 'announcements', 'audit_logs',
+    'admin',
+    'guardians',
+    'patients',
+    'vaccines',
+    'vaccine_batches',
+    'immunization_records',
+    'appointments',
+    'notifications',
+    'announcements',
+    'audit_logs',
   ];
 
   try {
@@ -105,14 +104,13 @@ async function testSchemaIntegrity() {
       AND table_type = 'BASE TABLE'
     `);
 
-    const existingTables = result.rows.map(r => r.table_name);
+    const existingTables = result.rows.map((r) => r.table_name);
 
     for (const table of requiredTables) {
-      await assert(
-        existingTables.includes(table),
-        `Table '${table}' exists`,
-        { expected: 'exists', actual: existingTables.includes(table) ? 'exists' : 'missing' },
-      );
+      await assert(existingTables.includes(table), `Table '${table}' exists`, {
+        expected: 'exists',
+        actual: existingTables.includes(table) ? 'exists' : 'missing',
+      });
     }
   } catch (err) {
     await assert(false, 'Table existence check', { actual: err.message });
@@ -133,11 +131,10 @@ async function testSchemaIntegrity() {
       LIMIT 20
     `);
 
-    await assert(
-      result.rows.length > 0,
-      'NOT NULL constraints exist',
-      { expected: 'constraints found', actual: `${result.rows.length} constraints` },
-    );
+    await assert(result.rows.length > 0, 'NOT NULL constraints exist', {
+      expected: 'constraints found',
+      actual: `${result.rows.length} constraints`,
+    });
   } catch (err) {
     await assert(false, 'NOT NULL constraints check', { actual: err.message });
   }
@@ -151,11 +148,10 @@ async function testSchemaIntegrity() {
       AND table_schema = 'public'
     `);
 
-    await assert(
-      result.rows.length > 0,
-      'UNIQUE constraints exist',
-      { expected: 'constraints found', actual: `${result.rows.length} constraints` },
-    );
+    await assert(result.rows.length > 0, 'UNIQUE constraints exist', {
+      expected: 'constraints found',
+      actual: `${result.rows.length} constraints`,
+    });
   } catch (err) {
     await assert(false, 'UNIQUE constraints check', { actual: err.message });
   }
@@ -176,11 +172,10 @@ async function testSchemaIntegrity() {
       AND tc.table_schema = 'public'
     `);
 
-    await assert(
-      result.rows.length > 0,
-      'FOREIGN KEY relationships exist',
-      { expected: 'FKs found', actual: `${result.rows.length} FKs` },
-    );
+    await assert(result.rows.length > 0, 'FOREIGN KEY relationships exist', {
+      expected: 'FKs found',
+      actual: `${result.rows.length} FKs`,
+    });
   } catch (err) {
     await assert(false, 'FOREIGN KEY check', { actual: err.message });
   }
@@ -194,11 +189,10 @@ async function testSchemaIntegrity() {
       AND table_schema = 'public'
     `);
 
-    await assert(
-      result.rows.length > 0,
-      'CHECK constraints exist',
-      { expected: 'constraints found', actual: `${result.rows.length} constraints` },
-    );
+    await assert(result.rows.length > 0, 'CHECK constraints exist', {
+      expected: 'constraints found',
+      actual: `${result.rows.length} constraints`,
+    });
   } catch (err) {
     await assert(false, 'CHECK constraints check', { actual: err.message });
   }
@@ -215,19 +209,26 @@ async function testAdminCrud() {
 
   // CREATE
   try {
-    const result = await query(`
+    const result = await query(
+      `
       INSERT INTO admin (username, password_hash, role, facility_id, email, is_active)
       VALUES ($1, $2, $3, 1, $4, true)
       RETURNING id
-    `, [`${TEST_PREFIX}admin_${Date.now()}`, 'hashed_password', 'admin', `${TEST_PREFIX}admin@test.com`]);
+    `,
+      [
+        `${TEST_PREFIX}admin_${Date.now()}`,
+        'hashed_password',
+        'admin',
+        `${TEST_PREFIX}admin@test.com`,
+      ]
+    );
 
     testAdminId = result.rows[0].id;
 
-    await assert(
-      testAdminId > 0,
-      'CREATE: Admin record created successfully',
-      { expected: 'valid ID', actual: testAdminId },
-    );
+    await assert(testAdminId > 0, 'CREATE: Admin record created successfully', {
+      expected: 'valid ID',
+      actual: testAdminId,
+    });
   } catch (err) {
     await assert(false, 'CREATE: Admin record', { actual: err.message });
   }
@@ -237,18 +238,16 @@ async function testAdminCrud() {
     try {
       const result = await query('SELECT * FROM admin WHERE id = $1', [testAdminId]);
 
-      await assert(
-        result.rows.length === 1,
-        'READ: Admin record retrieved',
-        { expected: '1 row', actual: `${result.rows.length} rows` },
-      );
+      await assert(result.rows.length === 1, 'READ: Admin record retrieved', {
+        expected: '1 row',
+        actual: `${result.rows.length} rows`,
+      });
 
       if (result.rows.length > 0) {
-        await assert(
-          result.rows[0].role === 'admin',
-          'READ: Admin role is correct',
-          { expected: 'admin', actual: result.rows[0].role },
-        );
+        await assert(result.rows[0].role === 'admin', 'READ: Admin role is correct', {
+          expected: 'admin',
+          actual: result.rows[0].role,
+        });
       }
     } catch (err) {
       await assert(false, 'READ: Admin record', { actual: err.message });
@@ -262,11 +261,10 @@ async function testAdminCrud() {
 
       const result = await query('SELECT role FROM admin WHERE id = $1', [testAdminId]);
 
-      await assert(
-        result.rows[0].role === 'nurse',
-        'UPDATE: Admin role updated',
-        { expected: 'nurse', actual: result.rows[0].role },
-      );
+      await assert(result.rows[0].role === 'nurse', 'UPDATE: Admin role updated', {
+        expected: 'nurse',
+        actual: result.rows[0].role,
+      });
     } catch (err) {
       await assert(false, 'UPDATE: Admin record', { actual: err.message });
     }
@@ -279,11 +277,10 @@ async function testAdminCrud() {
 
       const result = await query('SELECT is_active FROM admin WHERE id = $1', [testAdminId]);
 
-      await assert(
-        result.rows[0].is_active === false,
-        'DELETE: Admin deactivated (soft delete)',
-        { expected: 'false', actual: result.rows[0].is_active },
-      );
+      await assert(result.rows[0].is_active === false, 'DELETE: Admin deactivated (soft delete)', {
+        expected: 'false',
+        actual: result.rows[0].is_active,
+      });
     } catch (err) {
       await assert(false, 'DELETE: Admin record', { actual: err.message });
     }
@@ -310,19 +307,21 @@ async function testGuardiansCrud() {
 
   // CREATE
   try {
-    const result = await query(`
+    const result = await query(
+      `
       INSERT INTO guardians (name, phone, email, is_active)
       VALUES ($1, $2, $3, true)
       RETURNING id
-    `, [`${TEST_PREFIX}Guardian`, '09123456789', `${TEST_PREFIX}guardian@test.com`]);
+    `,
+      [`${TEST_PREFIX}Guardian`, '09123456789', `${TEST_PREFIX}guardian@test.com`]
+    );
 
     testGuardianId = result.rows[0].id;
 
-    await assert(
-      testGuardianId > 0,
-      'CREATE: Guardian record created',
-      { expected: 'valid ID', actual: testGuardianId },
-    );
+    await assert(testGuardianId > 0, 'CREATE: Guardian record created', {
+      expected: 'valid ID',
+      actual: testGuardianId,
+    });
   } catch (err) {
     await assert(false, 'CREATE: Guardian record', { actual: err.message });
   }
@@ -332,11 +331,10 @@ async function testGuardiansCrud() {
     try {
       const result = await query('SELECT * FROM guardians WHERE id = $1', [testGuardianId]);
 
-      await assert(
-        result.rows.length === 1,
-        'READ: Guardian record retrieved',
-        { expected: '1 row', actual: `${result.rows.length} rows` },
-      );
+      await assert(result.rows.length === 1, 'READ: Guardian record retrieved', {
+        expected: '1 row',
+        actual: `${result.rows.length} rows`,
+      });
     } catch (err) {
       await assert(false, 'READ: Guardian record', { actual: err.message });
     }
@@ -349,11 +347,10 @@ async function testGuardiansCrud() {
 
       const result = await query('SELECT phone FROM guardians WHERE id = $1', [testGuardianId]);
 
-      await assert(
-        result.rows[0].phone === '09999999999',
-        'UPDATE: Guardian phone updated',
-        { expected: '09999999999', actual: result.rows[0].phone },
-      );
+      await assert(result.rows[0].phone === '09999999999', 'UPDATE: Guardian phone updated', {
+        expected: '09999999999',
+        actual: result.rows[0].phone,
+      });
     } catch (err) {
       await assert(false, 'UPDATE: Guardian record', { actual: err.message });
     }
@@ -366,11 +363,10 @@ async function testGuardiansCrud() {
 
       const result = await query('SELECT * FROM guardians WHERE id = $1', [testGuardianId]);
 
-      await assert(
-        result.rows.length === 0,
-        'DELETE: Guardian record deleted',
-        { expected: '0 rows', actual: `${result.rows.length} rows` },
-      );
+      await assert(result.rows.length === 0, 'DELETE: Guardian record deleted', {
+        expected: '0 rows',
+        actual: `${result.rows.length} rows`,
+      });
     } catch (err) {
       await assert(false, 'DELETE: Guardian record', { actual: err.message });
     }
@@ -389,11 +385,14 @@ async function testPatientsCrud() {
 
   // Setup: Create guardian first
   try {
-    const result = await query(`
+    const result = await query(
+      `
       INSERT INTO guardians (name, phone, email)
       VALUES ($1, $2, $3)
       RETURNING id
-   `, [`${TEST_PREFIX}Guardian`, '09123456789', `${TEST_PREFIX}guardian@test.com`]);
+   `,
+      [`${TEST_PREFIX}Guardian`, '09123456789', `${TEST_PREFIX}guardian@test.com`]
+    );
     testGuardianId = result.rows[0].id;
   } catch (err) {
     console.log('  ⚠ Could not create test guardian');
@@ -402,19 +401,21 @@ async function testPatientsCrud() {
   // CREATE
   if (testGuardianId) {
     try {
-      const result = await query(`
+      const result = await query(
+        `
         INSERT INTO patients (first_name, last_name, dob, sex, guardian_id, facility_id)
         VALUES ($1, $2, $3, 'male', $4, 1)
         RETURNING id
-      `, [`${TEST_PREFIX}John`, `${TEST_PREFIX}Doe`, '2023-01-15', testGuardianId]);
+      `,
+        [`${TEST_PREFIX}John`, `${TEST_PREFIX}Doe`, '2023-01-15', testGuardianId]
+      );
 
       testPatientId = result.rows[0].id;
 
-      await assert(
-        testPatientId > 0,
-        'CREATE: Patient record created',
-        { expected: 'valid ID', actual: testPatientId },
-      );
+      await assert(testPatientId > 0, 'CREATE: Patient record created', {
+        expected: 'valid ID',
+        actual: testPatientId,
+      });
     } catch (err) {
       await assert(false, 'CREATE: Patient record', { actual: err.message });
     }
@@ -425,17 +426,16 @@ async function testPatientsCrud() {
     try {
       const result = await query('SELECT * FROM patients WHERE id = $1', [testPatientId]);
 
-      await assert(
-        result.rows.length === 1,
-        'READ: Patient record retrieved',
-        { expected: '1 row', actual: `${result.rows.length} rows` },
-      );
+      await assert(result.rows.length === 1, 'READ: Patient record retrieved', {
+        expected: '1 row',
+        actual: `${result.rows.length} rows`,
+      });
 
       if (result.rows.length > 0) {
         await assert(
           result.rows[0].first_name.startsWith(TEST_PREFIX),
           'READ: Patient first name is correct',
-          { expected: 'starts with ' + TEST_PREFIX, actual: result.rows[0].first_name },
+          { expected: 'starts with ' + TEST_PREFIX, actual: result.rows[0].first_name }
         );
       }
     } catch (err) {
@@ -446,14 +446,17 @@ async function testPatientsCrud() {
   // UPDATE
   if (testPatientId) {
     try {
-      await query('UPDATE patients SET first_name = $1 WHERE id = $2', [`${TEST_PREFIX}Jane`, testPatientId]);
+      await query('UPDATE patients SET first_name = $1 WHERE id = $2', [
+        `${TEST_PREFIX}Jane`,
+        testPatientId,
+      ]);
 
       const result = await query('SELECT first_name FROM patients WHERE id = $1', [testPatientId]);
 
       await assert(
         result.rows[0].first_name === `${TEST_PREFIX}Jane`,
         'UPDATE: Patient name updated',
-        { expected: `${TEST_PREFIX}Jane`, actual: result.rows[0].first_name },
+        { expected: `${TEST_PREFIX}Jane`, actual: result.rows[0].first_name }
       );
     } catch (err) {
       await assert(false, 'UPDATE: Patient record', { actual: err.message });
@@ -467,11 +470,10 @@ async function testPatientsCrud() {
 
       const result = await query('SELECT * FROM patients WHERE id = $1', [testPatientId]);
 
-      await assert(
-        result.rows.length === 0,
-        'DELETE: Patient record deleted',
-        { expected: '0 rows', actual: `${result.rows.length} rows` },
-      );
+      await assert(result.rows.length === 0, 'DELETE: Patient record deleted', {
+        expected: '0 rows',
+        actual: `${result.rows.length} rows`,
+      });
     } catch (err) {
       await assert(false, 'DELETE: Patient record', { actual: err.message });
     }
@@ -501,25 +503,34 @@ async function testAppointmentsCrud() {
 
   // Setup: Create necessary records
   try {
-    const guardianResult = await query(`
+    const guardianResult = await query(
+      `
       INSERT INTO guardians (name, phone, email)
       VALUES ($1, $2, $3)
       RETURNING id
-    `, [`${TEST_PREFIX}Guardian`, '09123456789', `${TEST_PREFIX}guardian@test.com`]);
+    `,
+      [`${TEST_PREFIX}Guardian`, '09123456789', `${TEST_PREFIX}guardian@test.com`]
+    );
     testGuardianId = guardianResult.rows[0].id;
 
-    const patientResult = await query(`
+    const patientResult = await query(
+      `
       INSERT INTO patients (first_name, last_name, dob, sex, guardian_id, facility_id)
       VALUES ($1, $2, $3, 'male', $4, 1)
       RETURNING id
-    `, [`${TEST_PREFIX}John`, `${TEST_PREFIX}Doe`, '2023-01-15', testGuardianId]);
+    `,
+      [`${TEST_PREFIX}John`, `${TEST_PREFIX}Doe`, '2023-01-15', testGuardianId]
+    );
     testPatientId = patientResult.rows[0].id;
 
-    const adminResult = await query(`
+    const adminResult = await query(
+      `
       INSERT INTO admin (username, password_hash, role, facility_id, email)
       VALUES ($1, $2, 'admin', 1, $3)
       RETURNING id
-    `, [`${TEST_PREFIX}admin_${Date.now()}`, 'hash', `${TEST_PREFIX}admin@test.com`]);
+    `,
+      [`${TEST_PREFIX}admin_${Date.now()}`, 'hash', `${TEST_PREFIX}admin@test.com`]
+    );
     testAdminId = adminResult.rows[0].id;
   } catch (err) {
     console.log('  ⚠ Could not create test setup records');
@@ -528,19 +539,21 @@ async function testAppointmentsCrud() {
   // CREATE
   if (testPatientId && testAdminId) {
     try {
-      const result = await query(`
+      const result = await query(
+        `
         INSERT INTO appointments (patient_id, scheduled_date, type, status, created_by, facility_id)
         VALUES ($1, $2, $3, 'scheduled', $4, 1)
         RETURNING id
-      `, [testPatientId, '2024-12-01 10:00:00', 'Vaccination', testAdminId]);
+      `,
+        [testPatientId, '2024-12-01 10:00:00', 'Vaccination', testAdminId]
+      );
 
       testAppointmentId = result.rows[0].id;
 
-      await assert(
-        testAppointmentId > 0,
-        'CREATE: Appointment record created',
-        { expected: 'valid ID', actual: testAppointmentId },
-      );
+      await assert(testAppointmentId > 0, 'CREATE: Appointment record created', {
+        expected: 'valid ID',
+        actual: testAppointmentId,
+      });
     } catch (err) {
       await assert(false, 'CREATE: Appointment record', { actual: err.message });
     }
@@ -551,11 +564,10 @@ async function testAppointmentsCrud() {
     try {
       const result = await query('SELECT * FROM appointments WHERE id = $1', [testAppointmentId]);
 
-      await assert(
-        result.rows.length === 1,
-        'READ: Appointment record retrieved',
-        { expected: '1 row', actual: `${result.rows.length} rows` },
-      );
+      await assert(result.rows.length === 1, 'READ: Appointment record retrieved', {
+        expected: '1 row',
+        actual: `${result.rows.length} rows`,
+      });
     } catch (err) {
       await assert(false, 'READ: Appointment record', { actual: err.message });
     }
@@ -564,15 +576,19 @@ async function testAppointmentsCrud() {
   // UPDATE status
   if (testAppointmentId) {
     try {
-      await query('UPDATE appointments SET status = $1 WHERE id = $2', ['attended', testAppointmentId]);
+      await query('UPDATE appointments SET status = $1 WHERE id = $2', [
+        'attended',
+        testAppointmentId,
+      ]);
 
-      const result = await query('SELECT status FROM appointments WHERE id = $1', [testAppointmentId]);
+      const result = await query('SELECT status FROM appointments WHERE id = $1', [
+        testAppointmentId,
+      ]);
 
-      await assert(
-        result.rows[0].status === 'attended',
-        'UPDATE: Appointment status updated',
-        { expected: 'attended', actual: result.rows[0].status },
-      );
+      await assert(result.rows[0].status === 'attended', 'UPDATE: Appointment status updated', {
+        expected: 'attended',
+        actual: result.rows[0].status,
+      });
     } catch (err) {
       await assert(false, 'UPDATE: Appointment status', { actual: err.message });
     }
@@ -585,11 +601,10 @@ async function testAppointmentsCrud() {
 
       const result = await query('SELECT * FROM appointments WHERE id = $1', [testAppointmentId]);
 
-      await assert(
-        result.rows.length === 0,
-        'DELETE: Appointment record deleted',
-        { expected: '0 rows', actual: `${result.rows.length} rows` },
-      );
+      await assert(result.rows.length === 0, 'DELETE: Appointment record deleted', {
+        expected: '0 rows',
+        actual: `${result.rows.length} rows`,
+      });
     } catch (err) {
       await assert(false, 'DELETE: Appointment record', { actual: err.message });
     }
@@ -620,22 +635,23 @@ async function testForeignKeyConstraints() {
 
   // Test 1: Patient without valid guardian should fail
   try {
-    await query(`
+    await query(
+      `
       INSERT INTO patients (first_name, last_name, dob, sex, guardian_id)
       VALUES ($1, $2, $3, 'male', 999999)
-    `, [`${TEST_PREFIX}Orphan`, `${TEST_PREFIX}Child`, '2023-01-15']);
+    `,
+      [`${TEST_PREFIX}Orphan`, `${TEST_PREFIX}Child`, '2023-01-15']
+    );
 
-    await assert(
-      false,
-      'FK Constraint: Patient with invalid guardian rejected',
-      { expected: 'rejected', actual: 'inserted (warning!)' },
-    );
+    await assert(false, 'FK Constraint: Patient with invalid guardian rejected', {
+      expected: 'rejected',
+      actual: 'inserted (warning!)',
+    });
   } catch (err) {
-    await assert(
-      true,
-      'FK Constraint: Patient with invalid guardian rejected',
-      { expected: 'error', actual: err.message.substring(0, 50) },
-    );
+    await assert(true, 'FK Constraint: Patient with invalid guardian rejected', {
+      expected: 'error',
+      actual: err.message.substring(0, 50),
+    });
   }
 
   // Test 2: Appointment without valid patient should fail
@@ -643,23 +659,24 @@ async function testForeignKeyConstraints() {
     // First get a valid admin
     const adminResult = await query('SELECT id FROM admin LIMIT 1');
     if (adminResult.rows.length > 0) {
-      await query(`
+      await query(
+        `
         INSERT INTO appointments (patient_id, scheduled_date, type, created_by)
         VALUES (999999, $1, 'Vaccination', $2)
-      `, ['2024-12-01 10:00:00', adminResult.rows[0].id]);
-
-      await assert(
-        false,
-        'FK Constraint: Appointment with invalid patient rejected',
-        { expected: 'rejected', actual: 'inserted (warning!)' },
+      `,
+        ['2024-12-01 10:00:00', adminResult.rows[0].id]
       );
+
+      await assert(false, 'FK Constraint: Appointment with invalid patient rejected', {
+        expected: 'rejected',
+        actual: 'inserted (warning!)',
+      });
     }
   } catch (err) {
-    await assert(
-      true,
-      'FK Constraint: Appointment with invalid patient rejected',
-      { expected: 'error', actual: err.message.substring(0, 50) },
-    );
+    await assert(true, 'FK Constraint: Appointment with invalid patient rejected', {
+      expected: 'error',
+      actual: err.message.substring(0, 50),
+    });
   }
 }
 
@@ -672,82 +689,91 @@ async function testDataValidation() {
 
   // Test 1: Invalid date format
   try {
-    const guardianResult = await query(`
+    const guardianResult = await query(
+      `
       INSERT INTO guardians (name, phone, email)
       VALUES ($1, $2, $3)
       RETURNING id
-    `, [`${TEST_PREFIX}Guardian`, '09123456789', `${TEST_PREFIX}guardian@test.com`]);
+    `,
+      [`${TEST_PREFIX}Guardian`, '09123456789', `${TEST_PREFIX}guardian@test.com`]
+    );
     const guardianId = guardianResult.rows[0].id;
 
-    await query(`
+    await query(
+      `
       INSERT INTO patients (first_name, last_name, dob, sex, guardian_id)
       VALUES ($1, $2, $3, 'male', $4)
-    `, [`${TEST_PREFIX}Baby`, `${TEST_PREFIX}Smith`, 'invalid-date', guardianId]);
-
-    await assert(
-      false,
-      'Data Validation: Invalid date format rejected',
-      { expected: 'rejected', actual: 'inserted' },
+    `,
+      [`${TEST_PREFIX}Baby`, `${TEST_PREFIX}Smith`, 'invalid-date', guardianId]
     );
+
+    await assert(false, 'Data Validation: Invalid date format rejected', {
+      expected: 'rejected',
+      actual: 'inserted',
+    });
 
     // Cleanup
     await query('DELETE FROM guardians WHERE id = $1', [guardianId]);
   } catch (err) {
-    await assert(
-      true,
-      'Data Validation: Invalid date format rejected',
-      { expected: 'error', actual: 'correctly rejected' },
-    );
+    await assert(true, 'Data Validation: Invalid date format rejected', {
+      expected: 'error',
+      actual: 'correctly rejected',
+    });
   }
 
   // Test 2: Required field validation
   try {
-    await query(`
+    await query(
+      `
       INSERT INTO guardians (name, phone)
       VALUES ($1, $2)
-    `, [`${TEST_PREFIX}Incomplete`]); // Missing email
+    `,
+      [`${TEST_PREFIX}Incomplete`]
+    ); // Missing email
 
-    await assert(
-      false,
-      'Data Validation: Missing required fields rejected',
-      { expected: 'rejected', actual: 'inserted' },
-    );
+    await assert(false, 'Data Validation: Missing required fields rejected', {
+      expected: 'rejected',
+      actual: 'inserted',
+    });
   } catch (err) {
-    await assert(
-      true,
-      'Data Validation: Missing required fields rejected',
-      { expected: 'error', actual: 'correctly rejected' },
-    );
+    await assert(true, 'Data Validation: Missing required fields rejected', {
+      expected: 'error',
+      actual: 'correctly rejected',
+    });
   }
 
   // Test 3: Enum validation
   try {
-    const guardianResult = await query(`
+    const guardianResult = await query(
+      `
       INSERT INTO guardians (name, phone, email)
       VALUES ($1, $2, $3)
       RETURNING id
-    `, [`${TEST_PREFIX}Guardian2`, '09123456780', `${TEST_PREFIX}guardian2@test.com`]);
+    `,
+      [`${TEST_PREFIX}Guardian2`, '09123456780', `${TEST_PREFIX}guardian2@test.com`]
+    );
     const guardianId = guardianResult.rows[0].id;
 
-    await query(`
+    await query(
+      `
       INSERT INTO patients (first_name, last_name, dob, sex, guardian_id)
       VALUES ($1, $2, $3, 'invalid_sex', $4)
-    `, [`${TEST_PREFIX}Baby`, `${TEST_PREFIX}Doe`, '2023-01-15', guardianId]);
-
-    await assert(
-      false,
-      'Data Validation: Invalid enum value rejected',
-      { expected: 'rejected', actual: 'inserted' },
+    `,
+      [`${TEST_PREFIX}Baby`, `${TEST_PREFIX}Doe`, '2023-01-15', guardianId]
     );
+
+    await assert(false, 'Data Validation: Invalid enum value rejected', {
+      expected: 'rejected',
+      actual: 'inserted',
+    });
 
     // Cleanup
     await query('DELETE FROM guardians WHERE id = $1', [guardianId]);
   } catch (err) {
-    await assert(
-      true,
-      'Data Validation: Invalid enum value rejected',
-      { expected: 'error', actual: 'correctly rejected' },
-    );
+    await assert(true, 'Data Validation: Invalid enum value rejected', {
+      expected: 'error',
+      actual: 'correctly rejected',
+    });
   }
 }
 
@@ -764,26 +790,34 @@ async function testTransactions() {
   try {
     await client.query('BEGIN');
 
-    const guardianResult = await client.query(`
+    const guardianResult = await client.query(
+      `
       INSERT INTO guardians (name, phone, email)
       VALUES ($1, $2, $3)
       RETURNING id
-    `, [`${TEST_PREFIX}TxGuardian`, '09123456789', `${TEST_PREFIX}tx@test.com`]);
+    `,
+      [`${TEST_PREFIX}TxGuardian`, '09123456789', `${TEST_PREFIX}tx@test.com`]
+    );
 
-    const patientResult = await client.query(`
+    await client.query(
+      `
       INSERT INTO patients (first_name, last_name, dob, sex, guardian_id)
       VALUES ($1, $2, $3, 'male', $4)
-    `, [`${TEST_PREFIX}TxBaby`, `${TEST_PREFIX}Doe`, '2023-01-15', guardianResult.rows[0].id]);
+    `,
+      [`${TEST_PREFIX}TxBaby`, `${TEST_PREFIX}Doe`, '2023-01-15', guardianResult.rows[0].id]
+    );
 
     await client.query('COMMIT');
 
     // Verify both were inserted
-    const patientCheck = await query('SELECT * FROM patients WHERE first_name = $1', [`${TEST_PREFIX}TxBaby`]);
+    const patientCheck = await query('SELECT * FROM patients WHERE first_name = $1', [
+      `${TEST_PREFIX}TxBaby`,
+    ]);
 
     await assert(
       patientCheck.rows.length === 1,
       'Transaction: Successful commit inserts all records',
-      { expected: '1 patient', actual: `${patientCheck.rows.length} patients` },
+      { expected: '1 patient', actual: `${patientCheck.rows.length} patients` }
     );
 
     // Cleanup
@@ -800,17 +834,23 @@ async function testTransactions() {
   try {
     await client.query('BEGIN');
 
-    const guardianResult = await client.query(`
+    const guardianResult = await client.query(
+      `
       INSERT INTO guardians (name, phone, email)
       VALUES ($1, $2, $3)
       RETURNING id
-    `, [`${TEST_PREFIX}RollbackG`, '09123456789', `${TEST_PREFIX}rb@test.com`]);
+    `,
+      [`${TEST_PREFIX}RollbackG`, '09123456789', `${TEST_PREFIX}rb@test.com`]
+    );
 
     // Try to insert invalid patient
-    await client.query(`
+    await client.query(
+      `
       INSERT INTO patients (first_name, last_name, dob, sex, guardian_id)
       VALUES ($1, $2, $3, 'invalid_sex', $4)
-    `, [`${TEST_PREFIX}RollbackP`, `${TEST_PREFIX}Doe`, '2023-01-15', guardianResult.rows[0].id]);
+    `,
+      [`${TEST_PREFIX}RollbackP`, `${TEST_PREFIX}Doe`, '2023-01-15', guardianResult.rows[0].id]
+    );
 
     await client.query('COMMIT');
   } catch (err) {
@@ -818,13 +858,14 @@ async function testTransactions() {
       await client.query('ROLLBACK');
 
       // Verify guardian was not inserted (or was rolled back)
-      const guardianCheck = await query('SELECT * FROM guardians WHERE name = $1', [`${TEST_PREFIX}RollbackG`]);
+      const guardianCheck = await query('SELECT * FROM guardians WHERE name = $1', [
+        `${TEST_PREFIX}RollbackG`,
+      ]);
 
-      await assert(
-        true,
-        'Transaction: Rollback on error works',
-        { expected: 'no records', actual: `${guardianCheck.rows.length} records` },
-      );
+      await assert(true, 'Transaction: Rollback on error works', {
+        expected: 'no records',
+        actual: `${guardianCheck.rows.length} records`,
+      });
     } catch (rbErr) {
       await assert(false, 'Transaction: Rollback', { actual: rbErr.message });
     }
@@ -843,50 +884,52 @@ async function testEdgeCases() {
   // Test 1: Very long string handling
   try {
     const longName = 'A'.repeat(500);
-    const result = await query(`
+    const result = await query(
+      `
       INSERT INTO guardians (name, phone, email)
       VALUES ($1, $2, $3)
       RETURNING id
-    `, [longName, '09123456789', `${TEST_PREFIX}long@test.com`]);
-
-    await assert(
-      result.rows.length > 0,
-      'Edge Case: Very long string handled',
-      { expected: 'inserted', actual: 'success' },
+    `,
+      [longName, '09123456789', `${TEST_PREFIX}long@test.com`]
     );
+
+    await assert(result.rows.length > 0, 'Edge Case: Very long string handled', {
+      expected: 'inserted',
+      actual: 'success',
+    });
 
     // Cleanup
     await query('DELETE FROM guardians WHERE id = $1', [result.rows[0].id]);
   } catch (err) {
-    await assert(
-      true,
-      'Edge Case: Very long string rejected or truncated',
-      { expected: 'handled', actual: 'correctly handled' },
-    );
+    await assert(true, 'Edge Case: Very long string rejected or truncated', {
+      expected: 'handled',
+      actual: 'correctly handled',
+    });
   }
 
   // Test 2: Special characters in data
   try {
-    const specialName = 'O\'Brien';
-    const result = await query(`
+    const specialName = "O'Brien";
+    const result = await query(
+      `
       INSERT INTO guardians (name, phone, email)
       VALUES ($1, $2, $3)
       RETURNING id
-    `, [specialName, '09123456789', `${TEST_PREFIX}special@test.com`]);
-
-    await assert(
-      result.rows.length > 0,
-      'Edge Case: Special characters handled',
-      { expected: 'inserted', actual: 'success' },
+    `,
+      [specialName, '09123456789', `${TEST_PREFIX}special@test.com`]
     );
+
+    await assert(result.rows.length > 0, 'Edge Case: Special characters handled', {
+      expected: 'inserted',
+      actual: 'success',
+    });
 
     // Verify
     const check = await query('SELECT name FROM guardians WHERE id = $1', [result.rows[0].id]);
-    await assert(
-      check.rows[0].name === specialName,
-      'Edge Case: Special characters preserved',
-      { expected: specialName, actual: check.rows[0].name },
-    );
+    await assert(check.rows[0].name === specialName, 'Edge Case: Special characters preserved', {
+      expected: specialName,
+      actual: check.rows[0].name,
+    });
 
     // Cleanup
     await query('DELETE FROM guardians WHERE id = $1', [result.rows[0].id]);
@@ -896,17 +939,19 @@ async function testEdgeCases() {
 
   // Test 3: NULL handling
   try {
-    const result = await query(`
+    const result = await query(
+      `
       INSERT INTO guardians (name, phone, email, address)
       VALUES ($1, $2, $3, NULL)
       RETURNING id
-    `, [`${TEST_PREFIX}NullTest`, '09123456789', `${TEST_PREFIX}null@test.com`]);
-
-    await assert(
-      result.rows.length > 0,
-      'Edge Case: NULL values handled',
-      { expected: 'inserted', actual: 'success' },
+    `,
+      [`${TEST_PREFIX}NullTest`, '09123456789', `${TEST_PREFIX}null@test.com`]
     );
+
+    await assert(result.rows.length > 0, 'Edge Case: NULL values handled', {
+      expected: 'inserted',
+      actual: 'success',
+    });
 
     // Cleanup
     await query('DELETE FROM guardians WHERE id = $1', [result.rows[0].id]);
@@ -981,7 +1026,9 @@ async function runTests() {
     console.log('\nPlease ensure:');
     console.log('  1. PostgreSQL is running');
     console.log('  2. Database credentials are correct');
-    console.log('  3. Environment variables are set (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)');
+    console.log(
+      '  3. Environment variables are set (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)'
+    );
     process.exit(1);
   }
 
@@ -1044,7 +1091,7 @@ async function runTests() {
   process.exit(testResults.failed.length > 0 ? 1 : 0);
 }
 
-runTests().catch(err => {
+runTests().catch((err) => {
   console.error('Test runner error:', err);
   process.exit(1);
 });

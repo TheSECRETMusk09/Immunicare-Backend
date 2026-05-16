@@ -147,7 +147,7 @@ class NotificationPreferencesService {
     try {
       const result = await pool.query(
         'SELECT preferences FROM user_notification_preferences WHERE user_id = $1',
-        [userId],
+        [userId]
       );
 
       if (result.rows.length === 0) {
@@ -176,7 +176,10 @@ class NotificationPreferencesService {
   async updateUserPreferences(userId, preferences) {
     const ready = await this.ensurePreferencesReady();
     if (!ready) {
-      const mergedPrefs = this.mergePreferences(NotificationPreferencesService.DEFAULT_PREFERENCES, preferences || {});
+      const mergedPrefs = this.mergePreferences(
+        NotificationPreferencesService.DEFAULT_PREFERENCES,
+        preferences || {}
+      );
       return mergedPrefs;
     }
 
@@ -192,7 +195,7 @@ class NotificationPreferencesService {
            preferences = EXCLUDED.preferences,
            updated_at = CURRENT_TIMESTAMP
          RETURNING *`,
-        [userId, JSON.stringify(mergedPrefs)],
+        [userId, JSON.stringify(mergedPrefs)]
       );
 
       logger.info(`Updated preferences for user ${userId}`);
@@ -203,7 +206,10 @@ class NotificationPreferencesService {
           code: error.code,
           message: error.message,
         });
-        return this.mergePreferences(NotificationPreferencesService.DEFAULT_PREFERENCES, preferences || {});
+        return this.mergePreferences(
+          NotificationPreferencesService.DEFAULT_PREFERENCES,
+          preferences || {}
+        );
       }
 
       logger.error('Error updating user preferences:', error);
@@ -258,8 +264,8 @@ class NotificationPreferencesService {
 
       // Filter by enabled channels
       const enabledChannels = Object.entries(prefs.channels)
-        .filter(([_, enabled]) => enabled)
-        .map(([channel, _]) => channel);
+        .filter(([, enabled]) => enabled)
+        .map(([channel]) => channel);
 
       const finalChannels = [...allowedChannels].filter((c) => enabledChannels.includes(c));
 
@@ -289,7 +295,7 @@ class NotificationPreferencesService {
       const result = await pool.query(
         `SELECT COUNT(*) as count FROM notifications
          WHERE user_id = $1 AND created_at >= $2`,
-        [userId, dateFilter],
+        [userId, dateFilter]
       );
 
       return parseInt(result.rows[0].count);
@@ -371,7 +377,7 @@ class NotificationPreferencesService {
             SUM(CASE WHEN priority < 2 THEN 1 ELSE 0 END) as normal
           FROM notifications
           WHERE user_id = $1`,
-          [userId],
+          [userId]
         ),
       ]);
 
@@ -538,14 +544,14 @@ class NotificationPreferencesService {
   getDateFilter(timeRange) {
     const now = new Date();
     switch (timeRange) {
-    case '1hour':
-      return new Date(now.getTime() - 60 * 60 * 1000);
-    case '1day':
-      return new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    case '1week':
-      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    default:
-      return new Date(now.getTime() - 60 * 60 * 1000);
+      case '1hour':
+        return new Date(now.getTime() - 60 * 60 * 1000);
+      case '1day':
+        return new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      case '1week':
+        return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      default:
+        return new Date(now.getTime() - 60 * 60 * 1000);
     }
   }
 
@@ -556,7 +562,16 @@ class NotificationPreferencesService {
     }
 
     const isTransientConnectionError = (code) =>
-      ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', '08006', '08003', '57P01', '57P02', '57P03'].includes(code);
+      [
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        '08006',
+        '08003',
+        '57P01',
+        '57P02',
+        '57P03',
+      ].includes(code);
 
     const maxRetries = 2;
 
@@ -574,7 +589,7 @@ class NotificationPreferencesService {
 
         // Create index
         await pool.query(
-          'CREATE INDEX IF NOT EXISTS idx_user_notification_preferences_user_id ON user_notification_preferences(user_id)',
+          'CREATE INDEX IF NOT EXISTS idx_user_notification_preferences_user_id ON user_notification_preferences(user_id)'
         );
 
         this.preferencesTableReady = true;
@@ -593,13 +608,16 @@ class NotificationPreferencesService {
         const canRetry = isTransientConnectionError(error?.code) && attempt < maxRetries;
         if (canRetry) {
           const delay = 500 * Math.pow(2, attempt);
-          logger.warn('Transient DB error while initializing notification preferences table, retrying', {
-            attempt: attempt + 1,
-            maxAttempts: maxRetries + 1,
-            delay,
-            code: error.code,
-            message: error.message,
-          });
+          logger.warn(
+            'Transient DB error while initializing notification preferences table, retrying',
+            {
+              attempt: attempt + 1,
+              maxAttempts: maxRetries + 1,
+              delay,
+              code: error.code,
+              message: error.message,
+            }
+          );
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }

@@ -8,7 +8,12 @@
  */
 
 const db = require('./db');
-const { sendExpiryAlert, sendOutOfStockAlert, sendAdminNotification, NOTIFICATION_CATEGORIES, clearDedupCache } = require('./services/adminNotificationService');
+const {
+  sendExpiryAlert,
+  sendAdminNotification,
+  NOTIFICATION_CATEGORIES,
+  clearDedupCache,
+} = require('./services/adminNotificationService');
 
 const ADMIN_SMS_RECIPIENT = '09936997484';
 const DEFAULT_CLINIC_ID = 1; // San Nicolas Health Center
@@ -20,7 +25,7 @@ async function seedNearExpiryVaccines() {
   try {
     // First, let's get active vaccines
     const vaccinesResult = await db.query(
-      'SELECT id, name, code FROM vaccines WHERE is_active = true ORDER BY name LIMIT 10',
+      'SELECT id, name, code FROM vaccines WHERE is_active = true ORDER BY name LIMIT 10'
     );
 
     if (vaccinesResult.rows.length === 0) {
@@ -39,13 +44,13 @@ async function seedNearExpiryVaccines() {
       for (const v of sampleVaccines) {
         await db.query(
           'INSERT INTO vaccines (name, code, is_active) VALUES ($1, $2, true) ON CONFLICT (code) DO NOTHING',
-          [v.name, v.code],
+          [v.name, v.code]
         );
       }
 
       // Refresh the list
       const refreshed = await db.query(
-        'SELECT id, name, code FROM vaccines WHERE is_active = true ORDER BY name LIMIT 10',
+        'SELECT id, name, code FROM vaccines WHERE is_active = true ORDER BY name LIMIT 10'
       );
       vaccinesResult.rows = refreshed.rows;
     }
@@ -54,8 +59,8 @@ async function seedNearExpiryVaccines() {
 
     // Create expiry dates: 3 days, 7 days, and 14 days from now
     const expiryDates = [
-      new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),  // 3 days
-      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),  // 7 days
+      new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days
+      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
       new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // 14 days
     ];
 
@@ -87,31 +92,33 @@ async function seedNearExpiryVaccines() {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
          RETURNING id`,
         [
-          vaccine.id,                    // vaccine_id
-          DEFAULT_CLINIC_ID,             // clinic_id
-          100,                           // beginning_balance
-          50,                            // received_during_period
-          0,                             // transferred_in
-          0,                             // transferred_out
-          0,                             // expired_wasted
-          0,                             // issuance
-          10,                            // low_stock_threshold
-          5,                             // critical_stock_threshold
-          false,                         // is_low_stock
-          false,                         // is_critical_stock
-          lotNumber,                     // lot_batch_number
-          50,                            // stock_on_hand
-          expiryDate,                    // expiry_date
-          periodStart,                   // period_start
-          periodEnd,                     // period_end
-          DEFAULT_USER_ID,               // created_by
-          DEFAULT_USER_ID,               // updated_by
-          true,                           // is_active
-        ],
+          vaccine.id, // vaccine_id
+          DEFAULT_CLINIC_ID, // clinic_id
+          100, // beginning_balance
+          50, // received_during_period
+          0, // transferred_in
+          0, // transferred_out
+          0, // expired_wasted
+          0, // issuance
+          10, // low_stock_threshold
+          5, // critical_stock_threshold
+          false, // is_low_stock
+          false, // is_critical_stock
+          lotNumber, // lot_batch_number
+          50, // stock_on_hand
+          expiryDate, // expiry_date
+          periodStart, // period_start
+          periodEnd, // period_end
+          DEFAULT_USER_ID, // created_by
+          DEFAULT_USER_ID, // updated_by
+          true, // is_active
+        ]
       );
 
       console.log(`Created inventory: ${vaccine.name} [${vaccine.code}]`);
-      console.log(`  Lot: ${lotNumber}, Stock: 50, Expires: ${expiryDate.toISOString().split('T')[0]} (${daysUntilExpiry} days)`);
+      console.log(
+        `  Lot: ${lotNumber}, Stock: 50, Expires: ${expiryDate.toISOString().split('T')[0]} (${daysUntilExpiry} days)`
+      );
 
       createdRecords.push({
         vaccineId: vaccine.id,
@@ -139,7 +146,7 @@ async function seedNearExpiryVaccines() {
         record.vaccineId,
         record.expiryDate,
         record.daysUntilExpiry,
-        record.lotNumber,
+        record.lotNumber
       );
 
       console.log('  Notification result:', notifResult);
@@ -169,9 +176,10 @@ async function seedNearExpiryVaccines() {
     // Summary
     console.log('\n--- Summary ---');
     for (const record of createdRecords) {
-      console.log(`- ${record.vaccineName} [${record.vaccineCode}]: ${record.daysUntilExpiry} days until expiry (Lot: ${record.lotNumber})`);
+      console.log(
+        `- ${record.vaccineName} [${record.vaccineCode}]: ${record.daysUntilExpiry} days until expiry (Lot: ${record.lotNumber})`
+      );
     }
-
   } catch (error) {
     console.error('Error seeding near-expiry vaccines:', error);
   }

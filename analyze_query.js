@@ -1,5 +1,5 @@
 const pool = require('./db');
-const { getAdminInfantVaccinationMonitoring } = require('./services/adminVaccinationMonitoringService');
+require('./services/adminVaccinationMonitoringService');
 
 const analyzeQuery = async () => {
   try {
@@ -121,8 +121,10 @@ const analyzeQuery = async () => {
         base.first_name ASC
       LIMIT 100
     `);
-    console.log(result.rows.map(row => row['QUERY PLAN']).join(`
-`));
+    console.log(
+      result.rows.map((row) => row['QUERY PLAN']).join(`
+`)
+    );
   } catch (err) {
     console.error(err);
   } finally {

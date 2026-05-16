@@ -14,8 +14,8 @@
  */
 
 const pool = require('./db');
-const fs = require('fs');
-const path = require('path');
+require('fs');
+require('path');
 const { isDateAvailableForBooking } = require('./config/holidays');
 
 // Configuration
@@ -27,7 +27,7 @@ const CONFIG = {
   years: parseInt(process.argv.find((arg) => arg.startsWith('--years='))?.split('=')[1]) || 5,
   batchSize:
     parseInt(process.argv.find((arg) => arg.startsWith('--batch='))?.split('=')[1]) || 1000,
-  skipMaster: process.argv.includes('--skip-master')
+  skipMaster: process.argv.includes('--skip-master'),
 };
 
 console.log('========================================');
@@ -41,10 +41,7 @@ const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + mi
 const randomDate = (start, end) =>
   new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime()));
 const randomElement = (arr) => arr[Math.floor(Math.random() * arr.length)];
-const randomElements = (arr, count) => {
-  const shuffled = [...arr].sort(() => 0.5 - Math.random());
-  return shuffled.slice(0, count);
-};
+
 const shiftToBookableDate = (value, direction = 1, maxSteps = 366) => {
   const cursor = new Date(value);
   cursor.setHours(12, 0, 0, 0);
@@ -93,7 +90,7 @@ const firstNames = [
   'Sebastian',
   'Emilia',
   'Pablo',
-  'Lucia'
+  'Lucia',
 ];
 
 const lastNames = [
@@ -126,7 +123,7 @@ const lastNames = [
   'Vargas',
   'Romero',
   'Herrera',
-  'Medina'
+  'Medina',
 ];
 
 const barangays = [
@@ -149,16 +146,15 @@ const barangays = [
   'Santo Niño',
   'Holy Trinity',
   'Goodwill',
-  'Peace'
+  'Peace',
 ];
 
-const vaccineTypes = ['BCG', 'HEP-B', 'PENTA', 'OPV', 'PCV', 'MR', 'MMR', 'IPV', 'ROTA', 'HPV'];
 const appointmentTypes = [
   'Vaccination',
   'Check-up',
   'Follow-up',
   'Growth Monitoring',
-  'Consultation'
+  'Consultation',
 ];
 
 async function generateMasterData() {
@@ -179,7 +175,7 @@ async function generateMasterData() {
       name: `Health Center ${i}`,
       region: `Region ${randomInt(1, 17)}`,
       address: `${randomElement(barangays)}, City/Municipality ${i}`,
-      contact: `+63${randomInt(9000000000, 9999999999)}`
+      contact: `+63${randomInt(9000000000, 9999999999)}`,
     });
   }
 
@@ -205,7 +201,7 @@ async function generateMasterData() {
 
   // Generate healthcare workers
   console.log('Creating healthcare workers...');
-  const workers = [];
+
   const roles = await pool.query('SELECT id, name FROM roles WHERE is_system_role = true');
   const clinicsResult = await pool.query('SELECT id FROM clinics');
   const clinicIds = clinicsResult.rows.map((r) => r.id);
@@ -214,8 +210,8 @@ async function generateMasterData() {
   for (let i = 0; i < 500; i++) {
     const role = randomElement(roleIds);
     const clinicId = randomElement(clinicIds);
-    const firstName = randomElement(firstNames);
-    const lastName = randomElement(lastNames);
+    randomElement(firstNames);
+    randomElement(lastNames);
 
     await pool.query(
       `
@@ -228,7 +224,7 @@ async function generateMasterData() {
         '$2b$10$placeholder',
         role.id,
         clinicId,
-        `+63${randomInt(9000000000, 9999999999)}`
+        `+63${randomInt(9000000000, 9999999999)}`,
       ]
     );
   }
@@ -246,7 +242,7 @@ async function generateMasterData() {
     { code: 'MMR', name: 'Measles, Mumps, Rubella', doses: 2 },
     { code: 'IPV', name: 'Inactivated Polio Vaccine', doses: 1 },
     { code: 'ROTA', name: 'Rotavirus Vaccine', doses: 2 },
-    { code: 'VIT-A', name: 'Vitamin A Supplement', doses: 1 }
+    { code: 'VIT-A', name: 'Vitamin A Supplement', doses: 1 },
   ];
 
   for (const vaccine of vaccineData) {
@@ -277,7 +273,7 @@ async function generateMasterData() {
         `supplier${i}@email.com`,
         `+63${randomInt(9000000000, 9999999999)}`,
         randomElement(barangays),
-        'Metro Manila'
+        'Metro Manila',
       ]
     );
   }
@@ -324,14 +320,14 @@ async function generateInfantsAndGuardians() {
         health_center: `Health Center ${clinicId}`,
         place_of_birth: randomElement(['Hospital', 'Clinic', 'Home']),
         type_of_delivery: randomElement(['NSD', 'CS']),
-        clinic_id: clinicId
+        clinic_id: clinicId,
       },
       guardian: {
         name: `${guardianFirstName} ${guardianLastName}`,
         phone: `+63${randomInt(9000000000, 9999999999)}`,
         address: `${randomInt(1, 999)} ${randomElement(['St.', 'Ave.', 'Blvd.', 'Lane'])}, ${barangay}`,
-        relationship: randomElement(['Mother', 'Father', 'Grandmother', 'Grandfather'])
-      }
+        relationship: randomElement(['Mother', 'Father', 'Grandmother', 'Grandfather']),
+      },
     });
 
     if (batch.length >= batchSize || i === CONFIG.infants - 1) {
@@ -349,7 +345,7 @@ async function generateInfantsAndGuardians() {
               item.guardian.name,
               item.guardian.phone,
               item.guardian.address,
-              item.guardian.relationship
+              item.guardian.relationship,
             ]
           );
 
@@ -373,7 +369,7 @@ async function generateInfantsAndGuardians() {
               item.infant.health_center,
               item.infant.place_of_birth,
               item.infant.type_of_delivery,
-              item.infant.clinic_id
+              item.infant.clinic_id,
             ]
           );
 
@@ -412,7 +408,7 @@ async function generateVaccinationRecords() {
   const clinicIds = clinicsResult.rows.map((r) => r.id);
 
   let totalRecords = 0;
-  const batchSize = CONFIG.batchSize;
+  CONFIG.batchSize;
 
   // Generate vaccination records for each infant
   for (const infant of infants) {
@@ -466,7 +462,7 @@ async function generateVaccinationRecords() {
             randomInt(1, vaccine.doses_required),
             adminDate,
             userId,
-            'Routine vaccination'
+            'Routine vaccination',
           ]
         );
 
@@ -533,7 +529,7 @@ async function generateAppointments() {
             status,
             userId,
             clinicId,
-            `Health Center ${clinicId}`
+            `Health Center ${clinicId}`,
           ]
         );
 
@@ -597,7 +593,7 @@ async function generateGrowthRecords() {
             randomInt(30, 120) / 10, // Weight in kg
             randomInt(450, 950) / 10, // Length in cm
             randomInt(320, 500) / 10, // Head circumference in cm
-            userId
+            userId,
           ]
         );
 
@@ -639,7 +635,7 @@ async function generateInventoryTransactions() {
     const vaccineId = randomElement(vaccineIds);
     const userId = randomElement(userIds);
     const clinicId = randomElement(clinicIds);
-    const supplierId = randomElement(supplierIds);
+    randomElement(supplierIds);
 
     const transactionTypes = ['RECEIVE', 'ISSUE', 'WASTAGE', 'ADJUST'];
     const txnType = randomElement(transactionTypes);
@@ -661,7 +657,7 @@ async function generateInventoryTransactions() {
           new Date(Date.now() + randomInt(30, 365) * 24 * 60 * 60 * 1000),
           qty,
           qty,
-          clinicId
+          clinicId,
         ]
       );
 
@@ -705,7 +701,7 @@ async function generateNotifications() {
     'appointment_reminder',
     'vaccination_reminder',
     'general_alert',
-    'system_announcement'
+    'system_announcement',
   ];
   const statuses = ['sent', 'delivered', 'pending', 'failed'];
 
@@ -740,7 +736,7 @@ async function generateNotifications() {
           randomElement(statuses),
           'Test notification message',
           userId,
-          createdAt
+          createdAt,
         ]
       );
 
@@ -774,7 +770,7 @@ async function generateAllergies() {
     'Dust',
     'Pollen',
     'Shellfish',
-    'Soy'
+    'Soy',
   ];
   const severities = ['mild', 'moderate', 'severe'];
 
@@ -800,7 +796,7 @@ async function generateAllergies() {
             randomElement(allergyTypes),
             randomElement(allergens),
             randomElement(severities),
-            'Recorded reaction'
+            'Recorded reaction',
           ]
         );
 
@@ -843,7 +839,7 @@ async function generateAuditLogs() {
           randomElement(eventTypes),
           randomElement(['infant', 'vaccination', 'appointment', 'user']),
           randomInt(1, 10000),
-          timestamp
+          timestamp,
         ]
       );
 
@@ -909,7 +905,7 @@ async function main() {
       pool.query('SELECT COUNT(*) as count FROM inventory_transactions'),
       pool.query('SELECT COUNT(*) as count FROM notifications'),
       pool.query('SELECT COUNT(*) as count FROM infant_allergies'),
-      pool.query('SELECT COUNT(*) as count FROM audit_logs')
+      pool.query('SELECT COUNT(*) as count FROM audit_logs'),
     ]);
 
     console.log('Database Counts:');

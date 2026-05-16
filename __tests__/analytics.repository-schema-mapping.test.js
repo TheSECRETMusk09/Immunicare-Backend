@@ -21,6 +21,7 @@ describe('analytics repository schema column mapping', () => {
         { table_name: 'guardians', column_name: 'facility_id' },
         { table_name: 'guardians', column_name: 'clinic_id' },
         { table_name: 'immunization_records', column_name: 'status' },
+        { table_name: 'immunization_records', column_name: 'vaccination_status' },
         { table_name: 'patients', column_name: 'facility_id' },
         { table_name: 'patients', column_name: 'clinic_id' },
         { table_name: 'vaccine_inventory', column_name: 'facility_id' },
@@ -66,6 +67,7 @@ describe('analytics repository schema column mapping', () => {
     expect(mappings.patientsScope).toBe('facility_id');
     expect(mappings.patientsScopeFallback).toBe('clinic_id');
     expect(mappings.immunizationStatus).toBe('status');
+    expect(mappings.immunizationStatusFallback).toBe('vaccination_status');
     expect(mappings.inventoryStockOnHand).toBe('stock_on_hand');
     expect(mappings.inventoryLowStockThreshold).toBe('low_stock_threshold');
     expect(mappings.inventoryCriticalStockThreshold).toBe('critical_stock_threshold');
@@ -89,6 +91,23 @@ describe('analytics repository schema column mapping', () => {
     expect(mappings.notificationsMessage).toBe('message');
     expect(mappings.notificationsType).toBe('notification_type');
     expect(mappings.notificationsPriority).toBe('priority');
+  });
+
+  test('falls back to vaccination_status when legacy status is unavailable', async () => {
+    db.query.mockResolvedValueOnce({
+      rows: [
+        { table_name: 'appointments', column_name: 'patient_id' },
+        { table_name: 'appointments', column_name: 'facility_id' },
+        { table_name: 'guardians', column_name: 'clinic_id' },
+        { table_name: 'immunization_records', column_name: 'vaccination_status' },
+        { table_name: 'patients', column_name: 'facility_id' },
+      ],
+    });
+
+    const mappings = await analyticsRepository.getSchemaColumnMappings();
+
+    expect(mappings.immunizationStatus).toBe('vaccination_status');
+    expect(mappings.immunizationStatusFallback).toBeNull();
   });
 
   test('reuses cached mapping lookup between calls until reset', async () => {

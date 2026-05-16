@@ -520,7 +520,7 @@ async function runTests() {
           endpoint.method,
           endpoint.path,
           endpoint.data || null,
-          headers,
+          headers
         );
 
         // Auto-retry likely protected endpoints with admin token to reduce false negatives
@@ -539,7 +539,7 @@ async function runTests() {
             endpoint.method,
             endpoint.path,
             endpoint.data || null,
-            retryHeaders,
+            retryHeaders
           );
         }
 
@@ -553,7 +553,7 @@ async function runTests() {
           passed,
           details,
           response.status,
-          response.duration,
+          response.duration
         );
 
         // Track performance
@@ -597,14 +597,14 @@ async function runTests() {
         'Token Verification',
         verifyResponse.status === 200,
         'Token valid',
-        verifyResponse.status,
+        verifyResponse.status
       );
     } else {
       logTest(
         'Admin Login',
         false,
         loginResponse.body?.error || 'Login failed',
-        loginResponse.status,
+        loginResponse.status
       );
     }
   } catch (err) {
@@ -626,14 +626,14 @@ async function runTests() {
         true,
         'Token received',
         guardianLoginResponse.status,
-        guardianLoginResponse.duration,
+        guardianLoginResponse.duration
       );
     } else {
       logTest(
         'Guardian Login',
         false,
         guardianLoginResponse.body?.error || 'Login failed',
-        guardianLoginResponse.status,
+        guardianLoginResponse.status
       );
     }
   } catch (err) {
@@ -675,7 +675,7 @@ async function runTests() {
           passed,
           response.body?.error || 'OK',
           response.status,
-          response.duration,
+          response.duration
         );
 
         if (response.status === 403) {
@@ -698,7 +698,10 @@ async function runTests() {
 
       for (const endpoint of suite.endpoints) {
         try {
-          const resolvedPath = endpoint.path.replace('/guardian/123/', `/guardian/${resolvedGuardianId}/`);
+          const resolvedPath = endpoint.path.replace(
+            '/guardian/123/',
+            `/guardian/${resolvedGuardianId}/`
+          );
 
           const response = await makeRequest(endpoint.method, resolvedPath, null, {
             Authorization: `Bearer ${guardianToken}`,
@@ -710,7 +713,7 @@ async function runTests() {
             passed,
             response.body?.error || 'OK',
             response.status,
-            response.duration,
+            response.duration
           );
         } catch (err) {
           logTest(`${suite.name}: ${endpoint.name}`, false, err.message);
@@ -755,7 +758,7 @@ async function runTests() {
           `Get Infant by ID (${infantId})`,
           infantResponse.status === 200,
           'OK',
-          infantResponse.status,
+          infantResponse.status
         );
       }
     } catch (err) {
@@ -796,7 +799,7 @@ async function runTests() {
   console.log('\n--- Performance Summary ---\n');
 
   const slowEndpoints = Object.entries(results.performance)
-    .filter(([_, data]) => data.duration > 1000)
+    .filter(([, data]) => data.duration > 1000)
     .sort((a, b) => b[1].duration - a[1].duration);
 
   if (slowEndpoints.length > 0) {

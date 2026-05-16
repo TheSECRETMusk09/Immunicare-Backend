@@ -60,10 +60,6 @@ function warn(testName, details = '') {
   recommendations.push({ test: testName, recommendation: details });
 }
 
-function info(message) {
-  console.log(`  ℹ️  ${message}`);
-}
-
 /**
  * Test Categories
  */
@@ -78,7 +74,7 @@ const tests = {
       'frontend/src/css/guardian-mobile-enhancements.css',
     ];
 
-    cssFiles.forEach(file => {
+    cssFiles.forEach((file) => {
       const exists = fs.existsSync(path.join(__dirname, '..', file));
       if (exists) {
         const stats = fs.statSync(path.join(__dirname, '..', file));
@@ -138,7 +134,11 @@ const tests = {
     console.log('\n👆 Touch Target Tests (WCAG 2.5.5)');
     console.log('─'.repeat(60));
 
-    const fixesCssPath = path.join(__dirname, '..', 'frontend/src/css/guardian-mobile-enhancements.css');
+    const fixesCssPath = path.join(
+      __dirname,
+      '..',
+      'frontend/src/css/guardian-mobile-enhancements.css'
+    );
     const content = fs.readFileSync(fixesCssPath, 'utf8');
 
     // Test for button touch targets
@@ -175,7 +175,7 @@ const tests = {
       { path: 'frontend/src/pages/GuardianDashboard.jsx', name: 'GuardianDashboard' },
     ];
 
-    components.forEach(comp => {
+    components.forEach((comp) => {
       const fullPath = path.join(__dirname, '..', comp.path);
       if (fs.existsSync(fullPath)) {
         pass(`${comp.name} component exists`);
@@ -210,7 +210,11 @@ const tests = {
     }
 
     // Test for keyboard navigation support
-    if (content.includes('onKeyDown') || content.includes('onKeyUp') || content.includes('keyboard')) {
+    if (
+      content.includes('onKeyDown') ||
+      content.includes('onKeyUp') ||
+      content.includes('keyboard')
+    ) {
       pass('Keyboard navigation support');
     } else {
       warn('Keyboard navigation', 'Consider adding keyboard event handlers');
@@ -317,7 +321,7 @@ const tests = {
 function runTests() {
   try {
     // Run all test categories
-    Object.values(tests).forEach(test => test());
+    Object.values(tests).forEach((test) => test());
 
     // Print Summary
     console.log('\n' + '═'.repeat(60));
@@ -384,7 +388,6 @@ function runTests() {
     console.log('═'.repeat(60) + '\n');
 
     return TEST_RESULTS.failed === 0;
-
   } catch (error) {
     console.error('\n❌ Test execution failed:', error.message);
     console.error(error.stack);

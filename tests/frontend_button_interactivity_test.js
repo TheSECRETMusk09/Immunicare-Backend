@@ -23,7 +23,7 @@ const testResults = {
   passed: 0,
   failed: 0,
   skipped: 0,
-  modules: {}
+  modules: {},
 };
 
 // Helper function to log test results
@@ -68,7 +68,7 @@ function findButtons(content) {
     /<button[^>]*onClick=\{([^}]+)\}[^>]*>/g,
     /<Button[^>]*onClick=\{([^}]+)\}[^>]*>/g,
     /onClick=\{[^}]*handle[A-Z][a-zA-Z]*[^}]*\}/g,
-    /onClick=\{[^}]*on[A-Z][a-zA-Z]*[^}]*\}/g
+    /onClick=\{[^}]*on[A-Z][a-zA-Z]*[^}]*\}/g,
   ];
 
   const buttons = [];
@@ -87,7 +87,7 @@ function findEventHandlers(content) {
   const patterns = [
     /const\s+(handle[A-Z][a-zA-Z]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?:=>|\{)/g,
     /function\s+(handle[A-Z][a-zA-Z]*)\s*\(/g,
-    /const\s+(on[A-Z][a-zA-Z]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?:=>|\{)/g
+    /const\s+(on[A-Z][a-zA-Z]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?:=>|\{)/g,
   ];
 
   const handlers = [];
@@ -107,7 +107,7 @@ function findApiCalls(content) {
     /apiClient\.([a-zA-Z]+)\(([^)]*)\)/g,
     /api\.([a-zA-Z]+)\(([^)]*)\)/g,
     /fetch\(['"]([^'"]+)['"]/g,
-    /axios\.[a-zA-Z]+\(['"]([^'"]+)['"]/g
+    /axios\.[a-zA-Z]+\(['"]([^'"]+)['"]/g,
   ];
 
   const calls = [];
@@ -119,26 +119,6 @@ function findApiCalls(content) {
   });
 
   return [...new Set(calls)];
-}
-
-function findNavigationCalls(content) {
-  // Find navigation calls
-  const patterns = [
-    /navigate\(['"]([^'"]+)['"]/g,
-    /history\.push\(['"]([^'"]+)['"]/g,
-    /<Link[^>]*to=['"]([^'"]+)['"]/g,
-    /<Navigate[^>]*to=['"]([^'"]+)['"]/g
-  ];
-
-  const navigations = [];
-  patterns.forEach((pattern) => {
-    let match;
-    while ((match = pattern.exec(content)) !== null) {
-      navigations.push(match[1]);
-    }
-  });
-
-  return [...new Set(navigations)];
 }
 
 // ==================== MODULE TESTS ====================

@@ -17,18 +17,17 @@ const testGuardian = {
   phone: '+639123456789',
   relationship: 'guardian',
   infantName: 'Test Baby',
-  infantDob: '2024-01-15'
+  infantDob: '2024-01-15',
 };
 
 const testAdmin = {
   username: 'admin',
-  password: 'Admin2024!'
+  password: 'Admin2024!',
 };
 
 let accessToken = '';
 let refreshToken = '';
 let createdUserId = null;
-const passwordResetToken = '';
 
 // Helper function to make HTTP requests
 function makeRequest(method, path, data = null, headers = {}) {
@@ -41,8 +40,8 @@ function makeRequest(method, path, data = null, headers = {}) {
       method,
       headers: {
         'Content-Type': 'application/json',
-        ...headers
-      }
+        ...headers,
+      },
     };
 
     const req = http.request(options, (res) => {
@@ -91,7 +90,7 @@ async function runTests() {
   try {
     const response = await makeRequest('POST', `${API_BASE}/auth/register/guardian`, {
       ...testGuardian,
-      confirmPassword: testGuardian.password
+      confirmPassword: testGuardian.password,
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -112,7 +111,7 @@ async function runTests() {
   try {
     const response = await makeRequest('POST', `${API_BASE}/auth/register/guardian`, {
       ...testGuardian,
-      confirmPassword: testGuardian.password
+      confirmPassword: testGuardian.password,
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -136,7 +135,7 @@ async function runTests() {
       firstName: 'Test',
       lastName: 'User',
       phone: '+639123456789',
-      relationship: 'guardian'
+      relationship: 'guardian',
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -155,7 +154,7 @@ async function runTests() {
   try {
     const response = await makeRequest('POST', `${API_BASE}/auth/login`, {
       username: 'nonexistent_user',
-      password: 'wrongpassword'
+      password: 'wrongpassword',
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -174,7 +173,7 @@ async function runTests() {
   try {
     const response = await makeRequest('POST', `${API_BASE}/auth/login`, {
       username: testAdmin.username,
-      password: testAdmin.password
+      password: testAdmin.password,
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -197,7 +196,7 @@ async function runTests() {
   console.log('-'.repeat(40));
   try {
     const response = await makeRequest('GET', `${API_BASE}/auth/verify`, null, {
-      Authorization: `Bearer ${accessToken}`
+      Authorization: `Bearer ${accessToken}`,
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -215,7 +214,7 @@ async function runTests() {
   console.log('-'.repeat(40));
   try {
     const response = await makeRequest('POST', `${API_BASE}/auth/forgot-password`, {
-      email: testGuardian.email
+      email: testGuardian.email,
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -233,7 +232,7 @@ async function runTests() {
   console.log('-'.repeat(40));
   try {
     const response = await makeRequest('GET', `${API_BASE}/auth/sessions`, null, {
-      Authorization: `Bearer ${accessToken}`
+      Authorization: `Bearer ${accessToken}`,
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -252,7 +251,7 @@ async function runTests() {
   if (refreshToken) {
     try {
       const response = await makeRequest('POST', `${API_BASE}/auth/refresh`, null, {
-        Cookie: `refreshToken=${refreshToken}`
+        Cookie: `refreshToken=${refreshToken}`,
       });
       console.log(`Status: ${response.status}`);
       console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -275,7 +274,7 @@ async function runTests() {
   console.log('-'.repeat(40));
   try {
     const response = await makeRequest('GET', `${API_BASE}/auth/verify`, null, {
-      Authorization: 'Bearer invalid_token_here'
+      Authorization: 'Bearer invalid_token_here',
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -293,7 +292,7 @@ async function runTests() {
   console.log('-'.repeat(40));
   try {
     const response = await makeRequest('POST', `${API_BASE}/auth/logout`, null, {
-      Authorization: `Bearer ${accessToken}`
+      Authorization: `Bearer ${accessToken}`,
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -311,8 +310,8 @@ async function runTests() {
   console.log('-'.repeat(40));
   try {
     const response = await makeRequest('POST', `${API_BASE}/auth/login`, {
-      username: 'admin\' OR \'1\'=\'1',
-      password: 'anything'
+      username: "admin' OR '1'='1",
+      password: 'anything',
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);
@@ -331,7 +330,7 @@ async function runTests() {
   try {
     const response = await makeRequest('POST', `${API_BASE}/auth/login`, {
       username: '<script>alert("xss")</script>',
-      password: 'password'
+      password: 'password',
     });
     console.log(`Status: ${response.status}`);
     console.log(`Response: ${JSON.stringify(response.data)}`);

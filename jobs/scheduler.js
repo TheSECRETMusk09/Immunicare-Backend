@@ -7,13 +7,7 @@ const logger = require('../config/logger');
 const pool = require('../db');
 const appointmentSchedulingService = require('../services/appointmentSchedulingService');
 
-const FATAL_DB_CONFIG_ERROR_CODES = new Set([
-  '28P01',
-  '28000',
-  '3D000',
-  '3F000',
-  '42501',
-]);
+const FATAL_DB_CONFIG_ERROR_CODES = new Set(['28P01', '28000', '3D000', '3F000', '42501']);
 
 const isFatalDbConfigError = (code) => FATAL_DB_CONFIG_ERROR_CODES.has(code);
 const isScramPasswordTypeError = (error) => {
@@ -21,12 +15,13 @@ const isScramPasswordTypeError = (error) => {
   return message.includes('sasl') && message.includes('client password must be a string');
 };
 
-const isAuthOrConfigDbError = (error) => isFatalDbConfigError(error?.code) || isScramPasswordTypeError(error);
+const isAuthOrConfigDbError = (error) =>
+  isFatalDbConfigError(error?.code) || isScramPasswordTypeError(error);
 
 // Job intervals (in milliseconds)
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
-const MISSED_APPOINTMENT_CHECK_INTERVAL = 2 * 60 * 60 * 1000; // 2 hours - check for missed appointments
+// 2 hours - check for missed appointments
 
 let jobs = [];
 let isInitialized = false;
@@ -58,7 +53,7 @@ async function checkTableExists(tableName) {
         WHERE table_schema = 'public'
         AND table_name = $1
       )`,
-      [tableName],
+      [tableName]
     );
     const exists = result.rows[0].exists;
     tableExistsCache.set(tableName, { exists, timestamp: Date.now() });
@@ -67,10 +62,13 @@ async function checkTableExists(tableName) {
     if (isAuthOrConfigDbError(error)) {
       if (!dbUnavailableForScheduler) {
         dbUnavailableForScheduler = true;
-        logger.error('Scheduler detected DB authentication/configuration failure. Disabling scheduled DB cleanup tasks for this process.', {
-          code: error.code || 'DB_AUTH_CONFIG',
-          message: error.message,
-        });
+        logger.error(
+          'Scheduler detected DB authentication/configuration failure. Disabling scheduled DB cleanup tasks for this process.',
+          {
+            code: error.code || 'DB_AUTH_CONFIG',
+            message: error.message,
+          }
+        );
       }
       return false;
     }
@@ -90,7 +88,9 @@ async function checkTableExists(tableName) {
 async function cleanupExpiredSessions() {
   const exists = await checkTableExists('user_sessions');
   if (!exists) {
-    logger.debug('Skipping session cleanup because \'user_sessions\' table does not exist or DB is unavailable.');
+    logger.debug(
+      "Skipping session cleanup because 'user_sessions' table does not exist or DB is unavailable."
+    );
     return;
   }
 
@@ -101,18 +101,20 @@ async function cleanupExpiredSessions() {
         SELECT FROM information_schema.columns
         WHERE table_name = 'user_sessions'
         AND column_name = 'expires_at'
-      )`,
+      )`
     );
 
     if (!columnCheck.rows[0].exists) {
-      logger.warn('Column \'expires_at\' does not exist in \'user_sessions\' table, skipping session cleanup. Run migrations to add it.');
+      logger.warn(
+        "Column 'expires_at' does not exist in 'user_sessions' table, skipping session cleanup. Run migrations to add it."
+      );
       return;
     }
 
     const result = await pool.query(
       `DELETE FROM user_sessions
        WHERE expires_at < NOW()
-       RETURNING id`,
+       RETURNING id`
     );
     if (result.rowCount > 0) {
       logger.info(`Cleaned up ${result.rowCount} expired sessions`);
@@ -131,7 +133,9 @@ async function cleanupExpiredSessions() {
 async function cleanupOldNotifications() {
   const exists = await checkTableExists('notification_logs');
   if (!exists) {
-    logger.debug('Skipping notification cleanup because \'notification_logs\' table does not exist or DB is unavailable.');
+    logger.debug(
+      "Skipping notification cleanup because 'notification_logs' table does not exist or DB is unavailable."
+    );
     return;
   }
 
@@ -140,7 +144,7 @@ async function cleanupOldNotifications() {
     const result = await pool.query(
       `DELETE FROM notification_logs
        WHERE created_at < NOW() - INTERVAL '90 days'
-       RETURNING id`,
+       RETURNING id`
     );
     if (result.rowCount > 0) {
       logger.info(`Cleaned up ${result.rowCount} old notification logs`);
@@ -159,7 +163,9 @@ async function cleanupOldNotifications() {
 async function cleanupExpiredTokens() {
   const exists = await checkTableExists('password_reset_otps');
   if (!exists) {
-    logger.debug('Skipping token cleanup because \'password_reset_otps\' table does not exist or DB is unavailable.');
+    logger.debug(
+      "Skipping token cleanup because 'password_reset_otps' table does not exist or DB is unavailable."
+    );
     return;
   }
 
@@ -167,7 +173,7 @@ async function cleanupExpiredTokens() {
     const result = await pool.query(
       `DELETE FROM password_reset_otps
        WHERE expires_at < NOW()
-       RETURNING id`,
+       RETURNING id`
     );
     if (result.rowCount > 0) {
       logger.info(`Cleaned up ${result.rowCount} expired password reset tokens`);
@@ -205,7 +211,9 @@ async function processMissedAppointmentsJob() {
   try {
     const result = await appointmentSchedulingService.processMissedAppointments();
     if (result && result.processed !== undefined) {
-      logger.info(`Missed appointments processed: ${result.processed}, sent: ${result.sent}, failed: ${result.failed}`);
+      logger.info(
+        `Missed appointments processed: ${result.processed}, sent: ${result.sent}, failed: ${result.failed}`
+      );
     }
   } catch (error) {
     logger.error('Error processing missed appointments:', error.message);

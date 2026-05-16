@@ -1,16 +1,11 @@
 /**
- * Age Calculation Utility for Infant Records
- *
- * This utility provides functions to calculate and manage infant age
- * in months based on their date of birth.
+ * Infant age calculations and helpers.
  */
 
 const pool = require('../db');
 
 /**
- * Calculate age in months from date of birth
- * @param {Date|string} dob - Date of birth
- * @returns {number} Age in completed months
+ * Calculate age in completed months from a DOB.
  */
 function calculateAgeInMonths(dob) {
   const birthDate = new Date(dob);
@@ -24,19 +19,15 @@ function calculateAgeInMonths(dob) {
   months -= birthDate.getMonth();
   months += today.getMonth();
 
-  // If the day of the month hasn't occurred yet, subtract one month
   if (today.getDate() < birthDate.getDate()) {
     months--;
   }
 
-  // Return 0 for future dates or negative values
   return months < 0 ? 0 : months;
 }
 
 /**
- * Calculate age in a human-readable format
- * @param {Date|string} dob - Date of birth
- * @returns {object} Age breakdown with years, months, and days
+ * Calculate age with years/months/days breakdown.
  */
 function calculateAge(dob) {
   const birthDate = new Date(dob);
@@ -76,20 +67,17 @@ function calculateAge(dob) {
 }
 
 /**
- * Update age_months for all active patients in the database
- * @returns {Promise<{success: boolean, updated: number, errors: Array}>}
+ * Bulk update age_months for all active patients.
  */
 async function updateAllInfantAges() {
   const client = await pool.connect();
 
   try {
-    // First, ensure the age_months column exists
     await client.query(`
       ALTER TABLE public.patients
       ADD COLUMN IF NOT EXISTS age_months INTEGER
     `);
 
-    // Get all active patients with valid dob
     const patientsResult = await client.query(`
       SELECT id, dob
       FROM public.patients
@@ -100,7 +88,6 @@ async function updateAllInfantAges() {
     let updatedCount = 0;
     const errors = [];
 
-    // Update each patient's age in months
     for (const patient of patientsResult.rows) {
       try {
         const ageMonths = calculateAgeInMonths(patient.dob);
@@ -136,9 +123,7 @@ async function updateAllInfantAges() {
 }
 
 /**
- * Update age_months for a single patient by ID
- * @param {number} patientId - Patient ID
- * @returns {Promise<{success: boolean, ageMonths: number|null}>}
+ * Update age_months for a single patient.
  */
 async function updatePatientAge(patientId) {
   try {
@@ -153,7 +138,6 @@ async function updatePatientAge(patientId) {
     const { dob } = result.rows[0];
     const ageMonths = calculateAgeInMonths(dob);
 
-    // Ensure column exists
     await pool.query(`
       ALTER TABLE public.patients ADD COLUMN IF NOT EXISTS age_months INTEGER
     `);
@@ -170,9 +154,7 @@ async function updatePatientAge(patientId) {
 }
 
 /**
- * Get infant age information with calculated fields
- * @param {number} patientId - Patient ID
- * @returns {Promise<object>} Patient info with calculated age
+ * Fetch infant age info with calculated fields.
  */
 async function getInfantAgeInfo(patientId) {
   try {
@@ -207,14 +189,10 @@ async function getInfantAgeInfo(patientId) {
 }
 
 /**
- * Get all infants with their calculated ages
- * @param {number} limit - Max records to return
- * @param {number} offset - Records to skip
- * @returns {Promise<Array>} Array of infants with age info
+ * List infants with calculated ages.
  */
 async function getAllInfantsWithAges(limit = 100, offset = 0) {
   try {
-    // First ensure column exists
     await pool.query(`
       ALTER TABLE public.patients ADD COLUMN IF NOT EXISTS age_months INTEGER
     `);
@@ -248,8 +226,7 @@ async function getAllInfantsWithAges(limit = 100, offset = 0) {
 }
 
 /**
- * Get age statistics for all infants
- * @returns {Promise<object>} Age statistics
+ * Age statistics for all infants.
  */
 async function getAgeStatistics() {
   try {

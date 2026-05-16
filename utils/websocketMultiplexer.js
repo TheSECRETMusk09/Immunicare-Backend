@@ -1,7 +1,5 @@
 /**
- * WebSocket Connection Multiplexer
- * Manages multiple logical connections over a single physical connection
- * for improved performance and reduced resource usage
+ * WebSocket multiplexer for grouping logical channels per socket.
  */
 
 const EventEmitter = require('events');

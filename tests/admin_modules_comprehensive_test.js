@@ -19,7 +19,7 @@
  */
 
 const http = require('http');
-const https = require('https');
+require('https');
 const { Pool } = require('pg');
 
 // Test configuration
@@ -28,12 +28,12 @@ const CONFIG = {
   FRONTEND_BASE: 'http://localhost:3000',
   TEST_ADMIN: {
     username: 'admin',
-    password: 'Admin123!'
+    password: 'Admin123!',
   },
   TEST_GUARDIAN: {
     username: 'guardian@test.com',
-    password: 'Guardian123!'
-  }
+    password: 'Guardian123!',
+  },
 };
 
 // Database connection for direct testing
@@ -43,7 +43,7 @@ const testResults = {
   passed: 0,
   failed: 0,
   skipped: 0,
-  tests: []
+  tests: [],
 };
 
 // Helper function for API requests
@@ -58,8 +58,8 @@ function makeRequest(endpoint, options = {}) {
       headers: {
         'Content-Type': 'application/json',
         ...(authToken && { Authorization: `Bearer ${authToken}` }),
-        ...options.headers
-      }
+        ...options.headers,
+      },
     };
 
     const req = http.request(requestOptions, (res) => {
@@ -70,13 +70,13 @@ function makeRequest(endpoint, options = {}) {
           resolve({
             status: res.statusCode,
             headers: res.headers,
-            data: data ? JSON.parse(data) : null
+            data: data ? JSON.parse(data) : null,
           });
         } catch (e) {
           resolve({
             status: res.statusCode,
             headers: res.headers,
-            data: data
+            data: data,
           });
         }
       });
@@ -122,7 +122,7 @@ async function setupAuthentication() {
     // Test admin login
     const loginResponse = await makeRequest('/auth/login', {
       method: 'POST',
-      body: CONFIG.TEST_ADMIN
+      body: CONFIG.TEST_ADMIN,
     });
 
     if (loginResponse.status === 200 && loginResponse.data?.token) {
@@ -265,8 +265,8 @@ async function testInfantManagementModule() {
         last_name: 'Infant',
         dob: '2024-01-01',
         sex: 'M',
-        guardian_id: 1
-      }
+        guardian_id: 1,
+      },
     });
     if (response.status === 200 || response.status === 201) {
       logTest(module, 'Create infant endpoint', true);
@@ -492,7 +492,7 @@ async function testReportsModule() {
   try {
     const response = await makeRequest('/reports/generate', {
       method: 'POST',
-      body: { type: 'vaccination', format: 'pdf' }
+      body: { type: 'vaccination', format: 'pdf' },
     });
     if (response.status === 200 || response.status === 201) {
       logTest(module, 'Generate report endpoint', true);
@@ -531,8 +531,8 @@ async function testAnnouncementsModule() {
       body: {
         title: 'Test Announcement',
         content: 'Test content',
-        type: 'info'
-      }
+        type: 'info',
+      },
     });
     if (response.status === 200 || response.status === 201) {
       logTest(module, 'Create announcement endpoint', true);
@@ -609,7 +609,7 @@ async function testDatabaseConnectivity() {
       port: process.env.DB_PORT || 5432,
       database: process.env.DB_NAME || 'immunicare',
       user: process.env.DB_USER || 'immunicare_dev',
-      password: process.env.DB_PASSWORD || ''
+      password: process.env.DB_PASSWORD || '',
     });
 
     // Test connection
@@ -634,7 +634,7 @@ async function testDatabaseConnectivity() {
     // Test admin user exists
     try {
       const adminResult = await pool.query(
-        'SELECT id, username, role_id FROM users WHERE username = \'admin\' LIMIT 1'
+        "SELECT id, username, role_id FROM users WHERE username = 'admin' LIMIT 1"
       );
       if (adminResult.rows.length > 0) {
         logTest(module, 'Admin user exists', true);

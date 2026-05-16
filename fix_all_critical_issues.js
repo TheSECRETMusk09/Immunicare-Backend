@@ -8,7 +8,7 @@ const pool = new Pool({
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'immunicare_dev',
   user: process.env.DB_USER || 'immunicare_dev',
-  password: String(process.env.DB_PASSWORD || '')
+  password: String(process.env.DB_PASSWORD || ''),
 });
 
 async function main() {
@@ -358,7 +358,7 @@ async function fixPortConfiguration() {
   }
 }
 
-async function fixAuthenticationIssues(client) {
+async function fixAuthenticationIssues() {
   console.log('  Fixing authentication issues...');
 
   // Ensure JWT secrets are set

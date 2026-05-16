@@ -1,7 +1,7 @@
 const request = require('supertest');
 const jwt = require('jsonwebtoken');
 const { app } = require('../server');
-const db = require('../db');
+require('../db');
 
 /**
  * Authentication Unit and Integration Tests
@@ -93,7 +93,7 @@ describe('Authentication Tests', () => {
           buildGuardianRegistrationPayload({
             password: '123',
             confirmPassword: '123',
-          }),
+          })
         );
 
       expect([400, 429]).toContain(res.statusCode);
@@ -129,7 +129,7 @@ describe('Authentication Tests', () => {
     it('should reject login with invalid password', async () => {
       const res = await request(server).post('/api/auth/login').send({
         username: 'admin',
-        password: 'wrongpassword'
+        password: 'wrongpassword',
       });
 
       expect([401, 429]).toContain(res.statusCode);
@@ -138,7 +138,7 @@ describe('Authentication Tests', () => {
     it('should reject login with non-existent user', async () => {
       const res = await request(server).post('/api/auth/login').send({
         username: 'nonexistentuser12345',
-        password: 'somepassword'
+        password: 'somepassword',
       });
 
       expect([401, 429]).toContain(res.statusCode);
@@ -189,11 +189,9 @@ describe('Authentication Tests', () => {
     });
 
     it('should reject expired token', async () => {
-      const expiredToken = jwt.sign(
-        { id: 1, role: 'admin' },
-        process.env.JWT_SECRET,
-        { expiresIn: '-1h' }
-      );
+      const expiredToken = jwt.sign({ id: 1, role: 'admin' }, process.env.JWT_SECRET, {
+        expiresIn: '-1h',
+      });
 
       const res = await request(server)
         .get('/api/auth/verify')
@@ -241,7 +239,7 @@ describe('Authentication Tests', () => {
   describe('Password Management', () => {
     it('should initiate password reset', async () => {
       const res = await request(server).post('/api/auth/forgot-password').send({
-        email: 'admin@example.com'
+        email: 'admin@example.com',
       });
 
       // Should return success even if email doesn't exist (security)
@@ -250,7 +248,7 @@ describe('Authentication Tests', () => {
 
     it('should reject password reset for non-existent email', async () => {
       const res = await request(server).post('/api/auth/forgot-password').send({
-        email: 'nonexistent@example.com'
+        email: 'nonexistent@example.com',
       });
 
       // Should return success to prevent email enumeration
@@ -259,7 +257,7 @@ describe('Authentication Tests', () => {
 
     it('should validate password reset token', async () => {
       const res = await request(server).get('/api/auth/reset-password/invalid-token').send({
-        password: 'NewPassword123!'
+        password: 'NewPassword123!',
       });
 
       expect([400, 401, 404]).toContain(res.statusCode);
@@ -276,7 +274,7 @@ describe('Authentication Tests', () => {
         .set('Authorization', `Bearer ${authToken}`)
         .send({
           currentPassword: 'definitely-wrong-password',
-          newPassword: 'NewPassword123!'
+          newPassword: 'NewPassword123!',
         });
 
       expect([200, 400, 401]).toContain(res.statusCode);

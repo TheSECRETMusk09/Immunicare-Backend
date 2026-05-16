@@ -1,7 +1,5 @@
 /**
- * Infant Age Management API Routes
- *
- * Provides endpoints for calculating and managing infant ages in months
+ * Infant age routes and utilities.
  */
 
 const express = require('express');
@@ -40,8 +38,7 @@ const sanitizeOffset = (value, fallback = 0) => {
 
 /**
  * POST /api/infant-ages/update-all
- * Update age_months for all active infants in the database
- * Requires: patient:update permission
+ * Bulk update age_months for all active infants.
  */
 router.post('/update-all', requirePermission('patient:update'), async (req, res) => {
   try {
@@ -77,8 +74,7 @@ router.post('/update-all', requirePermission('patient:update'), async (req, res)
 
 /**
  * GET /api/infant-ages/stats
- * Get age statistics for all infants
- * Requires: patient:view permission
+ * Age statistics for all infants.
  */
 router.get('/stats', requirePermission('patient:view'), async (req, res) => {
   try {
@@ -115,8 +111,7 @@ router.get('/stats', requirePermission('patient:view'), async (req, res) => {
 
 /**
  * GET /api/infant-ages
- * Get all infants with their calculated ages
- * Requires: patient:view permission
+ * List infants with calculated ages.
  */
 router.get('/', requirePermission('patient:view'), async (req, res) => {
   try {
@@ -144,8 +139,7 @@ router.get('/', requirePermission('patient:view'), async (req, res) => {
 
 /**
  * GET /api/infant-ages/:id
- * Get detailed age information for a specific infant
- * Requires: patient:view permission
+ * Detailed age info for a single infant.
  */
 router.get('/:id(\\d+)', requirePermission('patient:view'), async (req, res) => {
   try {
@@ -182,8 +176,7 @@ router.get('/:id(\\d+)', requirePermission('patient:view'), async (req, res) => 
 
 /**
  * PUT /api/infant-ages/:id
- * Update age for a specific infant
- * Requires: patient:update permission
+ * Recalculate age for a single infant.
  */
 router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) => {
   try {
@@ -224,8 +217,7 @@ router.put('/:id(\\d+)', requirePermission('patient:update'), async (req, res) =
 
 /**
  * POST /api/infant-ages/calculate
- * Calculate age in months for a given date of birth (utility endpoint)
- * Does not require authentication - for testing/utility purposes
+ * Utility endpoint to calculate age for a DOB.
  */
 router.post('/calculate', async (req, res) => {
   try {

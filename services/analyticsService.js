@@ -4,7 +4,6 @@ const {
 } = require('../validators/analyticsValidators');
 const analyticsRepository = require('../repositories/analyticsRepository');
 const { getAdminMetricsSummary } = require('./adminMetricsService');
-const inventoryCalculationService = require('./inventoryCalculationService');
 const blockedDatesService = require('./blockedDatesService');
 const { AsyncResultCache, stableStringify } = require('../utils/asyncResultCache');
 const {
@@ -365,11 +364,15 @@ const buildDashboardCacheKey = (filters) =>
     appointmentScopeIds: filters.appointmentScopeIds || [],
   })}`;
 
+const resolveAppointmentVaccineIds = (vaccineType, vaccineIds) =>
+  vaccineType === 'ALL' ? [] : vaccineIds;
+
 const collectDashboardData = async ({ filters }) => {
   const { dimension, vaccineIds, vaccineKeys } = await buildDimensionAndLookup({
     vaccineType: filters.vaccineType,
   });
 
+  const appointmentVaccineIds = resolveAppointmentVaccineIds(filters.vaccineType, vaccineIds);
   const statusFilters = getStatusFilters(filters.vaccinationStatus);
 
   const [
@@ -379,6 +382,7 @@ const collectDashboardData = async ({ filters }) => {
     vaccinationStatusBreakdown,
     appointmentSnapshot,
     appointmentStatusBreakdown,
+    inventorySnapshot,
     inventoryByVaccine,
     vaccineProgress,
     vaccinationTrend,
@@ -388,7 +392,6 @@ const collectDashboardData = async ({ filters }) => {
     recentActivity,
     lowStockAlerts,
     failedSmsCount,
-    inventorySummary,
   ] = await Promise.all([
     getAdminMetricsSummary({
       startDate: filters.startDate,
@@ -424,6 +427,7 @@ const collectDashboardData = async ({ filters }) => {
       statuses: statusFilters.appointmentStatuses,
       overdueOnly: statusFilters.overdueOnly,
       guardianId: filters.guardianId,
+      vaccineIds: appointmentVaccineIds,
     }),
     analyticsRepository.getAppointmentStatusBreakdown({
       scopeIds: filters.appointmentScopeIds,
@@ -431,6 +435,12 @@ const collectDashboardData = async ({ filters }) => {
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
       guardianId: filters.guardianId,
+      overdueOnly: statusFilters.overdueOnly,
+      vaccineIds: appointmentVaccineIds,
+    }),
+    analyticsRepository.getInventorySnapshot({
+      facilityId: filters.facilityId,
+      vaccineIds,
     }),
     analyticsRepository.getInventoryByVaccine({
       facilityId: filters.facilityId,
@@ -460,6 +470,8 @@ const collectDashboardData = async ({ filters }) => {
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
       guardianId: filters.guardianId,
+      overdueOnly: statusFilters.overdueOnly,
+      vaccineIds: appointmentVaccineIds,
     }),
     analyticsRepository.getDemographics({
       facilityId: filters.facilityId,
@@ -486,21 +498,20 @@ const collectDashboardData = async ({ filters }) => {
       startDate: filters.startDate,
       endDate: filters.endDate,
     }),
-    inventoryCalculationService.getUnifiedSummary(filters.facilityId),
   ]);
 
   const todayKey = getClinicTodayDateKey();
   const blockedDate = todayKey
     ? await blockedDatesService.isDateBlocked({
-        date: todayKey,
-        clinicId: filters.facilityId,
-      })
+      date: todayKey,
+      clinicId: filters.facilityId,
+    })
     : null;
   const currentDateAvailability = todayKey
     ? isDateAvailableForBooking(todayKey, {
-        allowPast: true,
-        blockedDate,
-      })
+      allowPast: true,
+      blockedDate,
+    })
     : null;
 
   const totalInfants = mapInt(totals.total_infants);
@@ -531,10 +542,10 @@ const collectDashboardData = async ({ filters }) => {
     overdueVaccinations: mapInt(vaccinationSnapshot.overdue_count),
     pendingAppointments: mapInt(appointmentSnapshot.pending_in_period),
     lowStockVaccines:
-      mapInt(inventorySummary.low_stock_count)
-      + mapInt(inventorySummary.critical_count)
-      + mapInt(inventorySummary.out_of_stock_count),
-    totalAvailableVaccineDoses: mapInt(inventorySummary.stock_on_hand),
+      mapInt(inventorySnapshot.low_stock_count)
+      + mapInt(inventorySnapshot.critical_stock_count)
+      + mapInt(inventorySnapshot.out_of_stock_count),
+    totalAvailableVaccineDoses: mapInt(inventorySnapshot.total_available_doses),
     uniqueInfantsServed: mapInt(vaccinationSnapshot.unique_infants_served),
     currentDateAvailability,
   };
@@ -556,11 +567,11 @@ const collectDashboardData = async ({ filters }) => {
   };
 
   const inventory = {
-    totalItems: normalizedInventoryByVaccine.length,
-    totalAvailableDoses: mapInt(inventorySummary.stock_on_hand),
-    lowStockCount: mapInt(inventorySummary.low_stock_count),
-    criticalStockCount: mapInt(inventorySummary.critical_count),
-    outOfStockCount: mapInt(inventorySummary.out_of_stock_count),
+    totalItems: mapInt(inventorySnapshot.total_items),
+    totalAvailableDoses: mapInt(inventorySnapshot.total_available_doses),
+    lowStockCount: mapInt(inventorySnapshot.low_stock_count),
+    criticalStockCount: mapInt(inventorySnapshot.critical_stock_count),
+    outOfStockCount: mapInt(inventorySnapshot.out_of_stock_count),
     byVaccine: normalizedInventoryByVaccine,
   };
 
@@ -809,6 +820,7 @@ const getDashboardSummaryAnalytics = async ({ query, user }) => {
   const { vaccineIds } = await buildDimensionAndLookup({
     vaccineType: filters.vaccineType,
   });
+  const appointmentVaccineIds = resolveAppointmentVaccineIds(filters.vaccineType, vaccineIds);
   const statusFilters = getStatusFilters(filters.vaccinationStatus);
 
   const [
@@ -817,7 +829,7 @@ const getDashboardSummaryAnalytics = async ({ query, user }) => {
     appointmentSnapshot,
     appointmentStatusBreakdown,
     vaccinationTrend,
-    inventorySummary,
+    inventorySnapshot,
   ] = await Promise.all([
     analyticsRepository.getInfantGuardianTotals({
       facilityId: filters.facilityId,
@@ -839,6 +851,7 @@ const getDashboardSummaryAnalytics = async ({ query, user }) => {
       statuses: statusFilters.appointmentStatuses,
       overdueOnly: statusFilters.overdueOnly,
       guardianId: filters.guardianId,
+      vaccineIds: appointmentVaccineIds,
     }),
     analyticsRepository.getAppointmentStatusBreakdown({
       scopeIds: filters.appointmentScopeIds,
@@ -846,6 +859,8 @@ const getDashboardSummaryAnalytics = async ({ query, user }) => {
       endDate: filters.endDate,
       statuses: statusFilters.appointmentStatuses,
       guardianId: filters.guardianId,
+      overdueOnly: statusFilters.overdueOnly,
+      vaccineIds: appointmentVaccineIds,
     }),
     analyticsRepository.getDailyVaccinationTrend({
       facilityId: filters.facilityId,
@@ -855,7 +870,10 @@ const getDashboardSummaryAnalytics = async ({ query, user }) => {
       statuses: statusFilters.vaccinationStatuses,
       guardianId: filters.guardianId,
     }),
-    inventoryCalculationService.getUnifiedSummary(filters.facilityId),
+    analyticsRepository.getInventorySnapshot({
+      facilityId: filters.facilityId,
+      vaccineIds,
+    }),
   ]);
 
   const todayKey = getClinicTodayDateKey();
@@ -880,9 +898,9 @@ const getDashboardSummaryAnalytics = async ({ query, user }) => {
       totalGuardians: mapInt(totals.total_guardians),
       appointmentsToday: mapInt(appointmentSnapshot.today_total),
       lowStock:
-        mapInt(inventorySummary.low_stock_count)
-        + mapInt(inventorySummary.critical_count)
-        + mapInt(inventorySummary.out_of_stock_count),
+        mapInt(inventorySnapshot.low_stock_count)
+        + mapInt(inventorySnapshot.critical_stock_count)
+        + mapInt(inventorySnapshot.out_of_stock_count),
       overdueVaccinations: mapInt(vaccinationSnapshot.overdue_count),
       overdue: mapInt(vaccinationSnapshot.overdue_count),
       completedToday: mapInt(vaccinationSnapshot.completed_today),

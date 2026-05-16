@@ -1,16 +1,7 @@
-/**
- * Express Validator Middleware
- * Provides chain validation for POST and PUT routes
- * Includes sanitization with trim().escape() to prevent XSS
- */
-
 const { body, param, validationResult } = require('express-validator');
 const logger = require('../config/logger');
 
-/**
- * Format validation errors into consistent response
- */
-const formatValidationErrors = (errors) => {
+const fmtValErr = (errors) => {
   return errors.array().map((error) => ({
     field: error.path || error.param,
     message: error.msg,
@@ -19,9 +10,6 @@ const formatValidationErrors = (errors) => {
   }));
 };
 
-/**
- * Handle validation errors middleware
- */
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
 
@@ -38,7 +26,7 @@ const handleValidationErrors = (req, res, next) => {
       error: {
         code: 'VALIDATION_ERROR',
         message: 'Request validation failed',
-        details: formatValidationErrors(errors),
+        details: fmtValErr(errors),
       },
     });
   }
@@ -46,9 +34,6 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
-/**
- * Infant validation rules for POST/PUT
- */
 const infantValidationRules = [
   body('first_name')
     .trim()
@@ -112,9 +97,6 @@ const infantValidationRules = [
     .withMessage('Medical notes must not exceed 1000 characters'),
 ];
 
-/**
- * Appointment validation rules for POST/PUT
- */
 const appointmentValidationRules = [
   body('infant_id')
     .notEmpty()
@@ -173,27 +155,18 @@ const appointmentValidationRules = [
     .withMessage('Status must be one of: scheduled, pending, attended, cancelled, no_show'),
 ];
 
-/**
- * Appointment ID parameter validation
- */
 const appointmentIdValidation = [
   param('id')
     .isInt({ min: 1 })
     .withMessage('Appointment ID must be a positive integer'),
 ];
 
-/**
- * Infant ID parameter validation
- */
 const infantIdValidation = [
   param('id')
     .isInt({ min: 1 })
     .withMessage('Infant ID must be a positive integer'),
 ];
 
-/**
- * Phone number sanitization
- */
 const phoneValidationRules = [
   body('phone')
     .trim()
@@ -205,9 +178,6 @@ const phoneValidationRules = [
     .withMessage('Phone number must be between 10 and 20 characters'),
 ];
 
-/**
- * Email validation rules
- */
 const emailValidationRules = [
   body('email')
     .trim()

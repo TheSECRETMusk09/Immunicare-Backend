@@ -27,8 +27,7 @@ const resolvePatientBirthCertificateColumn = async () => {
 };
 
 /**
- * Encryption Service
- * Provides methods for encrypting and decrypting sensitive data using pgcrypto
+ * Encryption helpers using pgcrypto.
  */
 
 /**

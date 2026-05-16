@@ -25,7 +25,7 @@ router.get('/', (req, res) => {
 });
 
 // GET /api/vaccination-management/dashboard
-// Get comprehensive dashboard statistics
+// Get dashboard statistics
 router.get('/dashboard', auth, async (req, res) => {
   try {
 
@@ -122,14 +122,14 @@ router.get('/patients', auth, async (req, res) => {
     }
 
     if (search) {
+      // FIX: Patient search must filter by CHILD name only. Previously this
+      // also matched mother_name / father_name / phone fields, so a surname
+      // like 'samorin' on a parent surfaced every child of that parent
+      // regardless of the child's own last name.
       const searchCondition = patientService.buildTokenizedSearchCondition({
         searchValue: search,
         expressions: [
           ...patientService.buildPatientNameSearchExpressions('p'),
-          'p.mother_name',
-          'p.father_name',
-          'p.cellphone_number',
-          'p.contact',
         ],
         startingParamIndex: paramIndex,
       });

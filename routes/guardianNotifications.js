@@ -1,7 +1,5 @@
 /**
- * Guardian Notifications Routes
- * Dedicated routes for guardian-specific notifications
- * Ensures proper role-based filtering and no admin notifications leak through
+ * Guardian notification routes.
  */
 
 const express = require('express');
@@ -49,9 +47,8 @@ const parseNotificationId = (value) => {
 };
 
 /**
- * @route GET /api/guardian/notifications
- * @description Get all notifications for the authenticated guardian
- * @access Guardian only
+ * GET /api/guardian/notifications
+ * List notifications for the current guardian.
  */
 router.get('/', authenticateGuardian, async (req, res) => {
   try {
@@ -97,9 +94,8 @@ router.get('/', authenticateGuardian, async (req, res) => {
 });
 
 /**
- * @route GET /api/guardian/notifications/unread-count
- * @description Get unread notification count for the authenticated guardian
- * @access Guardian only
+ * GET /api/guardian/notifications/unread-count
+ * Unread count for the current guardian.
  */
 router.get('/unread-count', authenticateGuardian, async (req, res) => {
   try {
@@ -120,9 +116,8 @@ router.get('/unread-count', authenticateGuardian, async (req, res) => {
 });
 
 /**
- * @route GET /api/guardian/notifications/:id
- * @description Get a specific notification by ID
- * @access Guardian only (must own the notification)
+ * GET /api/guardian/notifications/:id
+ * Get a single notification.
  */
 router.get('/:id', authenticateGuardian, async (req, res) => {
   try {
@@ -162,9 +157,8 @@ router.get('/:id', authenticateGuardian, async (req, res) => {
 });
 
 /**
- * @route PATCH /api/guardian/notifications/:id/read
- * @description Mark a notification as read
- * @access Guardian only (must own the notification)
+ * PATCH /api/guardian/notifications/:id/read
+ * Mark a notification as read.
  */
 router.patch('/:id/read', authenticateGuardian, async (req, res) => {
   try {
@@ -217,9 +211,8 @@ router.patch('/:id/read', authenticateGuardian, async (req, res) => {
 });
 
 /**
- * @route PATCH /api/guardian/notifications/:id/unread
- * @description Mark a notification as unread
- * @access Guardian only (must own the notification)
+ * PATCH /api/guardian/notifications/:id/unread
+ * Mark a notification as unread.
  */
 router.patch('/:id/unread', authenticateGuardian, async (req, res) => {
   try {
@@ -263,9 +256,8 @@ router.patch('/:id/unread', authenticateGuardian, async (req, res) => {
 });
 
 /**
- * @route PATCH /api/guardian/notifications/read-all
- * @description Mark all notifications as read for the authenticated guardian
- * @access Guardian only
+ * PATCH /api/guardian/notifications/read-all
+ * Mark all notifications as read.
  */
 router.patch('/read-all', authenticateGuardian, async (req, res) => {
   try {
@@ -290,9 +282,8 @@ router.patch('/read-all', authenticateGuardian, async (req, res) => {
 });
 
 /**
- * @route DELETE /api/guardian/notifications/:id
- * @description Delete a notification
- * @access Guardian only (must own the notification)
+ * DELETE /api/guardian/notifications/:id
+ * Delete a notification.
  */
 router.delete('/:id', authenticateGuardian, async (req, res) => {
   try {
@@ -332,9 +323,8 @@ router.delete('/:id', authenticateGuardian, async (req, res) => {
 });
 
 /**
- * @route GET /api/guardian/notifications/stats/summary
- * @description Get notification statistics for the guardian dashboard
- * @access Guardian only
+ * GET /api/guardian/notifications/stats/summary
+ * Summary stats for the guardian dashboard.
  */
 router.get('/stats/summary', authenticateGuardian, async (req, res) => {
   try {

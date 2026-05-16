@@ -61,7 +61,7 @@ function runLoadTest(testConfig, testName, options = {}) {
       '0',
       '--quiet',
       '-o',
-      outputFile
+      outputFile,
     ];
 
     // Add custom headers if provided
@@ -93,7 +93,7 @@ function runLoadTest(testConfig, testName, options = {}) {
     const loadtest = spawn('npx', ['loadtest', ...args], {
       cwd: __dirname,
       stdio: 'inherit',
-      shell: true
+      shell: true,
     });
 
     loadtest.on('close', (code) => {
@@ -122,7 +122,7 @@ async function runCustomTest(testConfig, testName) {
   console.log(`${'='.repeat(60)}`);
 
   const results = [];
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  new Date().toISOString().replace(/[:.]/g, '-');
 
   // Run tests for each endpoint based on weight
   for (const endpoint of testConfig.endpoints) {
@@ -134,12 +134,12 @@ async function runCustomTest(testConfig, testName) {
           ...testConfig,
           name: `${testName} - ${endpoint.method} ${endpoint.path}`,
           totalRequests: Math.floor((testConfig.totalRequests || 100000) * (endpoint.weight / 100)),
-          concurrency: testConfig.concurrency || 100
+          concurrency: testConfig.concurrency || 100,
         },
         `${testName}-${endpoint.method}-${endpoint.path.replace(/\//g, '_')}`,
         {
           path: endpoint.path,
-          method: endpoint.method
+          method: endpoint.method,
         }
       );
       results.push(result);
@@ -159,7 +159,7 @@ async function runStressTest(stressConfig) {
   console.log(`Starting Stress Test: ${stressConfig.name}`);
   console.log(`${'='.repeat(60)}`);
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  new Date().toISOString().replace(/[:.]/g, '-');
   const phases = [];
 
   // Calculate total duration
@@ -186,7 +186,7 @@ async function runStressTest(stressConfig) {
       description: `Stress test phase ${i + 1} with ${currentUsers} users`,
       duration: Math.floor(stressConfig.rampUpTime / steps),
       concurrency: currentUsers,
-      totalRequests: currentUsers * 100
+      totalRequests: currentUsers * 100,
     };
 
     try {
@@ -194,7 +194,7 @@ async function runStressTest(stressConfig) {
       phases.push({
         users: currentUsers,
         result,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     } catch (err) {
       console.error(`Phase ${i + 1} failed:`, err.message);
@@ -211,7 +211,7 @@ async function runStressTest(stressConfig) {
     description: `Sustained load test at maximum ${stressConfig.maxUsers} users`,
     duration: stressConfig.sustainTime,
     concurrency: stressConfig.maxUsers,
-    totalRequests: stressConfig.maxUsers * 100
+    totalRequests: stressConfig.maxUsers * 100,
   };
 
   await runCustomTest(sustainConfig, 'Stress-Sustain-Max');
@@ -244,7 +244,7 @@ async function runSpikeTest(spikeConfig) {
       description: `Spike test ${spikeNum}`,
       duration: spikeConfig.spikeDuration,
       concurrency: spikeConfig.spikeUsers,
-      totalRequests: spikeConfig.spikeUsers * 50
+      totalRequests: spikeConfig.spikeUsers * 50,
     };
 
     await runCustomTest(spikeConfigRun, `Spike-${spikeNum}`);
@@ -279,7 +279,7 @@ async function runScalabilityTest(scalabilityConfig) {
       description: `Scalability test - ${phase.name}`,
       duration: phase.duration,
       concurrency: phase.users,
-      totalRequests: phase.users * 100
+      totalRequests: phase.users * 100,
     };
 
     try {
@@ -288,7 +288,7 @@ async function runScalabilityTest(scalabilityConfig) {
         phase: phase.name,
         users: phase.users,
         result,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     } catch (err) {
       console.error(`Phase ${phase.name} failed:`, err.message);
@@ -324,12 +324,12 @@ async function runVolumeTest(volumeConfig) {
       description: `Volume test - ${transaction.type}`,
       duration: Math.ceil(txRequests / (targetRPS / volumeConfig.transactions.length)),
       concurrency: volumeConfig.concurrentWriters,
-      totalRequests: txRequests
+      totalRequests: txRequests,
     };
 
     try {
       const result = await runLoadTest(txConfig, `Volume-${transaction.type}`, {
-        path: getEndpointForTransaction(transaction.type)
+        path: getEndpointForTransaction(transaction.type),
       });
       results.push(result);
     } catch (err) {
@@ -352,7 +352,7 @@ function getEndpointForTransaction(type) {
     update_inventory: '/api/inventory',
     record_vaccination: '/api/vaccinations',
     send_notification: '/api/notifications',
-    update_dashboard: '/api/dashboard/stats'
+    update_dashboard: '/api/dashboard/stats',
   };
   return mapping[type] || '/api/health';
 }
@@ -459,66 +459,66 @@ async function main() {
     let results;
 
     switch (testType) {
-    case 'load':
-      console.log('\n▶ Running Load Test...');
-      results = await runCustomTest(config.loadTest, 'LoadTest');
-      break;
+      case 'load':
+        console.log('\n▶ Running Load Test...');
+        results = await runCustomTest(config.loadTest, 'LoadTest');
+        break;
 
-    case 'stress':
-      console.log('\n▶ Running Stress Test...');
-      results = await runStressTest(config.stressTest);
-      break;
+      case 'stress':
+        console.log('\n▶ Running Stress Test...');
+        results = await runStressTest(config.stressTest);
+        break;
 
-    case 'spike':
-      console.log('\n▶ Running Spike Test...');
-      results = await runSpikeTest(config.spikeTest);
-      break;
+      case 'spike':
+        console.log('\n▶ Running Spike Test...');
+        results = await runSpikeTest(config.spikeTest);
+        break;
 
-    case 'endurance':
-      console.log('\n▶ Running Endurance Test...');
-      results = await runCustomTest(config.enduranceTest, 'EnduranceTest');
-      break;
+      case 'endurance':
+        console.log('\n▶ Running Endurance Test...');
+        results = await runCustomTest(config.enduranceTest, 'EnduranceTest');
+        break;
 
-    case 'scalability':
-      console.log('\n▶ Running Scalability Test (100K Users)...');
-      results = await runScalabilityTest(config.scalabilityTest);
-      break;
+      case 'scalability':
+        console.log('\n▶ Running Scalability Test (100K Users)...');
+        results = await runScalabilityTest(config.scalabilityTest);
+        break;
 
-    case 'volume':
-      console.log('\n▶ Running Volume Test (10M Transactions)...');
-      results = await runVolumeTest(config.volumeTest);
-      break;
+      case 'volume':
+        console.log('\n▶ Running Volume Test (10M Transactions)...');
+        results = await runVolumeTest(config.volumeTest);
+        break;
 
-    case 'custom':
-      console.log('\n▶ Running Custom Test...');
-      results = await runCustomTest(config.loadTest, 'CustomTest');
-      break;
+      case 'custom':
+        console.log('\n▶ Running Custom Test...');
+        results = await runCustomTest(config.loadTest, 'CustomTest');
+        break;
 
-    case 'report':
-      console.log('\n▶ Generating Report...');
-      generateReport(null, 'all');
-      return;
+      case 'report':
+        console.log('\n▶ Generating Report...');
+        generateReport(null, 'all');
+        return;
 
-    case 'all':
-    default:
-      console.log('\n▶ Running All Tests (Sequentially)...');
+      case 'all':
+      default:
+        console.log('\n▶ Running All Tests (Sequentially)...');
 
-      console.log('\n\n*** Phase 1: Load Test ***');
-      await runCustomTest(config.loadTest, 'LoadTest');
+        console.log('\n\n*** Phase 1: Load Test ***');
+        await runCustomTest(config.loadTest, 'LoadTest');
 
-      console.log('\n\n*** Phase 2: Scalability Test (100K Users) ***');
-      await runScalabilityTest(config.scalabilityTest);
+        console.log('\n\n*** Phase 2: Scalability Test (100K Users) ***');
+        await runScalabilityTest(config.scalabilityTest);
 
-      console.log('\n\n*** Phase 3: Volume Test (10M Transactions) ***');
-      await runVolumeTest(config.volumeTest);
+        console.log('\n\n*** Phase 3: Volume Test (10M Transactions) ***');
+        await runVolumeTest(config.volumeTest);
 
-      console.log('\n\n*** Phase 4: Stress Test ***');
-      results = await runStressTest(config.stressTest);
+        console.log('\n\n*** Phase 4: Stress Test ***');
+        results = await runStressTest(config.stressTest);
 
-      console.log('\n\n*** Phase 5: Spike Test ***');
-      await runSpikeTest(config.spikeTest);
+        console.log('\n\n*** Phase 5: Spike Test ***');
+        await runSpikeTest(config.spikeTest);
 
-      break;
+        break;
     }
 
     // Generate report
@@ -546,5 +546,5 @@ module.exports = {
   runSpikeTest,
   runScalabilityTest,
   runVolumeTest,
-  generateReport
+  generateReport,
 };

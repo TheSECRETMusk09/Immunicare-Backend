@@ -8,6 +8,7 @@ const {
   shiftClinicDateKey,
   toClinicDateKey,
 } = require('../utils/clinicCalendar');
+const { formatClinicDateTime } = require('../utils/appointmentDateTime');
 
 const notificationService = new NotificationService();
 
@@ -275,6 +276,99 @@ const buildSuggestionNotificationKey = ({
   ].join(':');
 };
 
+const buildSuggestedAppointmentMessage = ({
+  infantName,
+  vaccineLabel,
+  suggestedDate,
+  suggestedTime,
+}) =>
+  `A suggested appointment is available for ${infantName}: ${vaccineLabel} on ${suggestedDate} at ${suggestedTime}.`;
+
+const findExistingSuggestionNotification = async ({
+  guardianId,
+  infantId,
+  doseNumber,
+  suggestedDate,
+  idempotencyKey,
+  message,
+}) => {
+  if (!guardianId) {
+    return null;
+  }
+
+  try {
+    // 1) Strongest match: same idempotency key (covers read + unread).
+    if (idempotencyKey) {
+      const idempotencyResult = await pool.query(
+        `
+          SELECT id
+          FROM notifications
+          WHERE idempotency_key = $1
+          LIMIT 1
+        `,
+        [idempotencyKey],
+      );
+
+      if (idempotencyResult.rows[0]) {
+        return idempotencyResult.rows[0];
+      }
+    }
+
+    // 2) Structural match on guardian + infant + dose + suggested_date in metadata.
+    //    This prevents duplicates even if the idempotency_key column was not
+    //    populated by an earlier release or if the message text has drifted.
+    if (infantId && suggestedDate) {
+      const metadataResult = await pool.query(
+        `
+          SELECT id
+          FROM notifications
+          WHERE guardian_id = $1
+            AND notification_type = 'appointment_suggested'
+            AND COALESCE(metadata->>'infant_id', '') = $2
+            AND COALESCE(metadata->>'suggested_date', '') = $3
+            AND COALESCE(metadata->>'dose_number', '') = $4
+          ORDER BY created_at DESC
+          LIMIT 1
+        `,
+        [
+          guardianId,
+          String(infantId),
+          String(suggestedDate),
+          doseNumber !== null && doseNumber !== undefined ? String(doseNumber) : '',
+        ],
+      );
+
+      if (metadataResult.rows[0]) {
+        return metadataResult.rows[0];
+      }
+    }
+
+    // 3) Legacy fallback: exact message match for unread notifications.
+    if (message) {
+      const messageResult = await pool.query(
+        `
+          SELECT id
+          FROM notifications
+          WHERE guardian_id = $1
+            AND notification_type = 'appointment_suggested'
+            AND message = $2
+            AND COALESCE(is_read, false) = false
+          ORDER BY created_at DESC
+          LIMIT 1
+        `,
+        [guardianId, message],
+      );
+
+      return messageResult.rows[0] || null;
+    }
+
+    return null;
+  } catch (error) {
+    console.error('Error checking existing appointment suggestion notification:', error);
+    return null;
+  }
+};
+
 const findFirstSchedulableSlotWindow = async ({
   startDate,
   vaccineId,
@@ -337,6 +431,28 @@ const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId =
     const readinessResult = await calculateVaccineReadiness(normalizedInfantId);
     const readiness = readinessResult?.success ? readinessResult.data || {} : {};
     const nextDoseInfo = resolveNextVaccineFromReadiness(readiness);
+    const scheduledAppointment =
+      await appointmentSchedulingService.getUpcomingActiveAppointmentForInfant({
+        infantId: normalizedInfantId,
+        clinicId: normalizedClinicId,
+      });
+
+    if (scheduledAppointment) {
+      return {
+        suggestions: [],
+        message: `An appointment is already scheduled for this child on ${formatClinicDateTime(
+          scheduledAppointment.scheduled_date,
+        )}.`,
+        infant: {
+          id: infant.id,
+          name: `${infant.first_name} ${infant.last_name}`,
+          dob: infant.dob,
+        },
+        readinessStatus: readiness?.readinessStatus || 'UPCOMING',
+        nextDoseInfo: nextDoseInfo || null,
+        scheduledAppointment,
+      };
+    }
 
     if (!nextDoseInfo) {
       return {
@@ -396,6 +512,12 @@ const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId =
     if (normalizedGuardianId && suggestions.length > 0) {
       try {
         const primarySuggestion = suggestions[0];
+        const notificationMessage = buildSuggestedAppointmentMessage({
+          infantName: `${infant.first_name} ${infant.last_name}`.trim(),
+          vaccineLabel: nextDoseInfo.label,
+          suggestedDate: primarySuggestion.date,
+          suggestedTime: primarySuggestion.time,
+        });
         const suggestionDedupeKey = buildSuggestionNotificationKey({
           guardianId: normalizedGuardianId,
           infantId: infant.id,
@@ -404,6 +526,32 @@ const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId =
           doseNumber: nextDoseInfo.doseNumber,
           suggestedDate: primarySuggestion.date,
         });
+        const existingNotification = await findExistingSuggestionNotification({
+          guardianId: normalizedGuardianId,
+          infantId: infant.id,
+          doseNumber: nextDoseInfo.doseNumber,
+          suggestedDate: primarySuggestion.date,
+          idempotencyKey: suggestionDedupeKey,
+          message: notificationMessage,
+        });
+
+        if (existingNotification) {
+          return {
+            suggestions,
+            message: suggestions.length > 0
+              ? `Found ${suggestions.length} suggested appointment slots for ${nextDoseInfo.label}`
+              : `No time slots available on the earliest valid date for ${nextDoseInfo.label}`,
+            infant: {
+              id: infant.id,
+              name: `${infant.first_name} ${infant.last_name}`,
+              dob: infant.dob,
+            },
+            readinessStatus: readiness?.readinessStatus || 'UPCOMING',
+            nextDoseInfo,
+            earliestValidDate: earliestSlotWindow.date,
+            totalSlotsAvailable: earliestSlotWindow.slotWindow.slots.length,
+          };
+        }
 
         await notificationService.sendNotification({
           notification_type: 'appointment_suggested',
@@ -414,7 +562,7 @@ const generateAppointmentSuggestions = async ({ infantId, guardianId, clinicId =
           priority: 'normal',
           subject: 'Suggested appointment available',
           title: 'Suggested appointment available',
-          message: `A suggested appointment is available for ${infant.first_name} ${infant.last_name}: ${nextDoseInfo.label} on ${primarySuggestion.date} at ${primarySuggestion.time}.`,
+          message: notificationMessage,
           idempotency_key: suggestionDedupeKey,
           target_role: 'guardian',
           category: 'appointment',

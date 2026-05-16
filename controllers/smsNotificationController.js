@@ -1,12 +1,6 @@
 /**
- * SMS Notification Controller
- * Handles SMS notifications for appointments, vaccinations, and OTP
- *
- * Uses TextBee.dev for production SMS delivery in Philippines/Southeast Asia
- *
- * @module controllers/smsNotificationController
- * @version 2.0
- * @since 2026-03-01
+ * SMS notification controller.
+ * Covers OTPs plus appointment/vaccination messages.
  */
 
 const smsService = require('../services/smsService');

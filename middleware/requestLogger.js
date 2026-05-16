@@ -1,22 +1,11 @@
-/**
- * Request Logging Middleware
- * Logs all incoming requests and responses for debugging and auditing
- */
-
 const logger = require('../config/logger');
 
-/**
- * Request logging middleware
- * Logs request details including method, path, headers, and timing
- */
 const requestLogger = (req, res, next) => {
   const startTime = Date.now();
   const requestId = req.headers['x-request-id'] || `req-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-  // Attach request ID to request for tracking
   req.requestId = requestId;
 
-  // Log incoming request
   logger.info('Incoming request:', {
     requestId,
     method: req.method,
@@ -27,7 +16,6 @@ const requestLogger = (req, res, next) => {
     user: req.user?.id || 'anonymous',
   });
 
-  // Capture response finish event
   res.on('finish', () => {
     const duration = Date.now() - startTime;
     const logData = {
@@ -49,7 +37,6 @@ const requestLogger = (req, res, next) => {
     }
   });
 
-  // Capture response errors
   res.on('error', (error) => {
     logger.error('Response error:', {
       requestId,
@@ -61,20 +48,12 @@ const requestLogger = (req, res, next) => {
   next();
 };
 
-/**
- * Security headers middleware
- * Adds security headers to all responses
- */
 const securityHeaders = (req, res, next) => {
-  // Set security headers
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-
-  // Remove server identification
   res.removeHeader('X-Powered-By');
-
   next();
 };
 

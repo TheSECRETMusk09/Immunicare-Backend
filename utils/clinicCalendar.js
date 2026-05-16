@@ -2,7 +2,7 @@ const blockedDatesService = require('../services/blockedDatesService');
 const { getHolidayInfo: getHolidayInfoFromConfig } = require('../config/holidays');
 
 const CLINIC_TIMEZONE = 'Asia/Manila';
-const MAX_VACCINATION_APPOINTMENTS_PER_DAY = 83;
+const MAX_VACCINATION_APPOINTMENTS_PER_DAY = 400;
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 const clinicDateFormatter = new Intl.DateTimeFormat('sv-SE', {

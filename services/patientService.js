@@ -3,14 +3,7 @@ const immunizationScheduleService = require('./immunizationScheduleService');
 const { ensureAtBirthVaccinationRecords } = require('./atBirthVaccinationService');
 
 /**
- * PATIENT SERVICE - CANONICAL DATA LAYER
- *
- * This service provides unified access to patient/infant data
- * Canonical source: patients table
- * Legacy infant naming is still used in some route labels, but persisted
- * child records are stored in the canonical patients table.
- *
- * All modules should use this service instead of direct table access
+ * Patient data access helpers (canonical patients table).
  */
 
 const normalizePatientData = (record) => {
@@ -73,6 +66,7 @@ const normalizePatientData = (record) => {
 };
 
 let importedVaccinationPredicatePromise = null;
+let activeVaccinationSchedulePredicatePromise = null;
 
 const getImportedVaccinationPredicate = async () => {
   if (!importedVaccinationPredicatePromise) {
@@ -85,10 +79,10 @@ const getImportedVaccinationPredicate = async () => {
             AND table_name = 'immunization_records'
             AND column_name = 'is_imported'
           LIMIT 1
-        `,
+        `
       )
       .then((result) =>
-        result.rows.length > 0 ? 'COALESCE(ir.is_imported, false) = true' : 'false',
+        result.rows.length > 0 ? 'COALESCE(ir.is_imported, false) = true' : 'false'
       )
       .catch((error) => {
         importedVaccinationPredicatePromise = null;
@@ -97,6 +91,31 @@ const getImportedVaccinationPredicate = async () => {
   }
 
   return importedVaccinationPredicatePromise;
+};
+
+const getActiveVaccinationSchedulePredicate = async () => {
+  if (!activeVaccinationSchedulePredicatePromise) {
+    activeVaccinationSchedulePredicatePromise = pool
+      .query(
+        `
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'vaccination_schedules'
+            AND column_name = 'is_active'
+          LIMIT 1
+        `
+      )
+      .then((result) =>
+        result.rows.length > 0 ? 'COALESCE(vs.is_active, true) = true' : 'true'
+      )
+      .catch((error) => {
+        activeVaccinationSchedulePredicatePromise = null;
+        throw error;
+      });
+  }
+
+  return activeVaccinationSchedulePredicatePromise;
 };
 
 const sanitizeInteger = (value, fallback = null, { min = null, max = null } = {}) => {
@@ -130,13 +149,11 @@ const sanitizePage = (value, fallback = 1) => {
   return parsed === null ? fallback : parsed;
 };
 
-const sanitizeOffset = (value, fallback = 0) => {
-  const parsed = sanitizeInteger(value, null, { min: 0 });
-  return parsed === null ? fallback : parsed;
-};
-
 const sanitizeOrderBy = (value, fallback = 'p.created_at') => {
-  const normalized = String(value || '').trim().toLowerCase().replace(/^p\./, '');
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^p\./, '');
   if (normalized === 'name' || normalized === 'full_name') {
     return `
       LOWER(
@@ -163,7 +180,9 @@ const sanitizeOrderBy = (value, fallback = 'p.created_at') => {
 };
 
 const sanitizeOrderDirection = (value, fallback = 'DESC') => {
-  const normalized = String(value || '').trim().toUpperCase();
+  const normalized = String(value || '')
+    .trim()
+    .toUpperCase();
   return normalized === 'ASC' ? 'ASC' : fallback;
 };
 
@@ -179,11 +198,16 @@ const resolvePagination = (filters = {}, { defaultLimit = 25, maxLimit = 1000 } 
 const mergePendingDoseCounts = (rows = [], scheduleSummaryMap = new Map()) =>
   rows.map((row) => {
     const scheduleSummary = scheduleSummaryMap.get(Number.parseInt(row?.id, 10));
+    const pendingVaccinations =
+      Number(
+        scheduleSummary?.pendingUpcomingCount ??
+          (Number(scheduleSummary?.upcomingCount || 0) + Number(scheduleSummary?.futureCount || 0)),
+      ) || 0;
 
     return {
       ...row,
       completed_vaccinations: scheduleSummary?.completedCount || 0,
-      pending_vaccinations: scheduleSummary?.pendingCount || 0,
+      pending_vaccinations: pendingVaccinations,
       overdue_vaccinations: scheduleSummary?.overdueCount || 0,
       upcoming_vaccinations: scheduleSummary?.upcomingCount || 0,
     };
@@ -192,16 +216,13 @@ const mergePendingDoseCounts = (rows = [], scheduleSummaryMap = new Map()) =>
 const sumPendingDoseCounts = (scheduleSummaryMap = new Map()) =>
   Array.from(scheduleSummaryMap.values()).reduce(
     (total, summary) => total + Number(summary?.pendingCount || 0),
-    0,
+    0
   );
 
 const REVIEW_WORKFLOW_STATUSES = new Set([
   'for_validation',
   'needs_clarification',
   'pending_validation',
-  'pending',
-  'under_review',
-  'needs_review',
 ]);
 
 const normalizeWorkflowStatusValue = (value) =>
@@ -216,11 +237,62 @@ const isNeedsReviewStatus = (value) =>
 const resolveReviewWorkflowSource = (row = {}) =>
   row.validation_status ?? row.latest_transfer_case_status ?? null;
 
+const WORKFLOW_STATUS_VALUES = new Set([
+  'needs_review',
+  'pending_doses',
+  'in_progress',
+  'up_to_date',
+]);
+
+const sanitizeWorkflowStatusFilter = (value) => {
+  if (value === undefined || value === null || value === '') {
+    return [];
+  }
+
+  const raw = Array.isArray(value) ? value : String(value).split(',');
+  const seen = new Set();
+  raw.forEach((entry) => {
+    const normalized = normalizeWorkflowStatusValue(entry);
+    if (WORKFLOW_STATUS_VALUES.has(normalized)) {
+      seen.add(normalized);
+    }
+  });
+
+  return Array.from(seen);
+};
+
+const computeRowWorkflowStatus = (row = {}, scheduleSummary = null) => {
+  if (isNeedsReviewStatus(resolveReviewWorkflowSource(row))) {
+    return 'needs_review';
+  }
+
+  const pendingCount = Number(scheduleSummary?.pendingCount || 0);
+  if (pendingCount > 0) {
+    return 'pending_doses';
+  }
+
+  const completedCount = Number(scheduleSummary?.completedCount || 0);
+  if (completedCount > 0) {
+    return 'in_progress';
+  }
+
+  return 'up_to_date';
+};
+
 const logVaccinationSyncDebug = (message, payload = {}) => {
   if (process.env.DEBUG_VACCINATION_SYNC === 'true') {
     console.debug(`[vaccination-sync] ${message}`, payload);
   }
 };
+
+const normalizeWorkflowStatusSql = (expression) => `
+  REGEXP_REPLACE(
+    LOWER(BTRIM(COALESCE(${expression}, ''))),
+    '[\\s-]+',
+    '_',
+    'g'
+  )
+`;
 
 const resolvePatientInputField = (source = {}, camelKey, snakeKey = camelKey) => {
   if (Object.prototype.hasOwnProperty.call(source, camelKey)) {
@@ -257,7 +329,11 @@ const normalizePatientInput = (patientData = {}) => ({
   placeOfBirth: resolvePatientInputField(patientData, 'placeOfBirth', 'place_of_birth'),
   timeOfDelivery: resolvePatientInputField(patientData, 'timeOfDelivery', 'time_of_delivery'),
   typeOfDelivery: resolvePatientInputField(patientData, 'typeOfDelivery', 'type_of_delivery'),
-  doctorMidwifeNurse: resolvePatientInputField(patientData, 'doctorMidwifeNurse', 'doctor_midwife_nurse'),
+  doctorMidwifeNurse: resolvePatientInputField(
+    patientData,
+    'doctorMidwifeNurse',
+    'doctor_midwife_nurse'
+  ),
   nbsDone: resolvePatientInputField(patientData, 'nbsDone', 'nbs_done'),
   nbsDate: resolvePatientInputField(patientData, 'nbsDate', 'nbs_date'),
   cellphoneNumber: resolvePatientInputField(patientData, 'cellphoneNumber', 'cellphone_number'),
@@ -401,17 +477,19 @@ const buildPatientFilterClause = (filters = {}) => {
     paramIndex += 1;
   }
 
-  const searchTerm = String(filters.search || '').trim().replace(/\s+/g, ' ');
+  const searchTerm = String(filters.search || '')
+    .trim()
+    .replace(/\s+/g, ' ');
   if (searchTerm) {
+    // FIX: Search bar must filter by CHILD/INFANT name only. Previously this
+    // expression list also matched guardian name/phone and the child's own
+    // contact fields, so a surname like "samorin" present on a guardian would
+    // pull every child of that guardian regardless of the child's last name.
     const searchCondition = buildTokenizedSearchCondition({
       searchValue: searchTerm,
       expressions: [
         ...buildPatientNameSearchExpressions('p'),
         'p.control_number',
-        'p.cellphone_number',
-        'p.contact',
-        'g.name',
-        'g.phone',
         `TO_CHAR(p.dob, 'YYYY-MM-DD')`,
         `TO_CHAR(p.dob, 'MM/DD/YYYY')`,
       ],
@@ -429,13 +507,21 @@ const buildPatientFilterClause = (filters = {}) => {
     paramIndex += 1;
   }
 
-  if (filters.minAgeMonths !== undefined && filters.minAgeMonths !== null && filters.minAgeMonths !== '') {
+  if (
+    filters.minAgeMonths !== undefined &&
+    filters.minAgeMonths !== null &&
+    filters.minAgeMonths !== ''
+  ) {
     whereClause += ` AND EXTRACT(YEAR FROM AGE(p.dob)) * 12 + EXTRACT(MONTH FROM AGE(p.dob)) >= $${paramIndex}`;
     params.push(sanitizeInteger(filters.minAgeMonths, 0, { min: 0 }));
     paramIndex += 1;
   }
 
-  if (filters.maxAgeMonths !== undefined && filters.maxAgeMonths !== null && filters.maxAgeMonths !== '') {
+  if (
+    filters.maxAgeMonths !== undefined &&
+    filters.maxAgeMonths !== null &&
+    filters.maxAgeMonths !== ''
+  ) {
     whereClause += ` AND EXTRACT(YEAR FROM AGE(p.dob)) * 12 + EXTRACT(MONTH FROM AGE(p.dob)) <= $${paramIndex}`;
     params.push(sanitizeInteger(filters.maxAgeMonths, 0, { min: 0 }));
     paramIndex += 1;
@@ -481,6 +567,10 @@ const getPatients = async (filters = {}) => {
   const orderBy = sanitizeOrderBy(filters.orderBy, 'p.created_at');
   const orderDirection = sanitizeOrderDirection(filters.orderDirection, 'DESC');
   const importedVaccinationPredicate = await getImportedVaccinationPredicate();
+  const workflowStatusFilter = sanitizeWorkflowStatusFilter(
+    filters.workflowStatus ?? filters.workflow_status
+  );
+  const hasWorkflowFilter = workflowStatusFilter.length > 0;
 
   const listQuery = `
     SELECT
@@ -544,74 +634,262 @@ const getPatients = async (filters = {}) => {
     LIMIT $${params.length + 1}::bigint OFFSET $${params.length + 2}::bigint
   `;
 
-  const countQuery = `
-    SELECT COUNT(*)::int AS total
-    FROM public.patients p
-    LEFT JOIN public.guardians g ON g.id = p.guardian_id
-    ${whereClause}
-  `;
+  let listRowsPromise;
+  if (hasWorkflowFilter) {
+    listRowsPromise = Promise.resolve({ rows: [] });
+  } else {
+    listRowsPromise = pool.query(listQuery, [...params, pagination.limit, pagination.offset]);
+  }
 
-  const summaryPatientsQuery = `
-    SELECT
-      p.id,
-      p.dob,
-      p.facility_id,
-      p.validation_status,
-      (
-        SELECT tic.id
-        FROM public.transfer_in_cases tic
-        WHERE tic.infant_id = p.id
-        ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-        LIMIT 1
-      ) AS latest_transfer_case_id,
-      (
-        SELECT tic.validation_status
-        FROM public.transfer_in_cases tic
-        WHERE tic.infant_id = p.id
-        ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
-        LIMIT 1
-      ) AS latest_transfer_case_status
-    FROM public.patients p
-    LEFT JOIN public.guardians g ON g.id = p.guardian_id
-    ${whereClause}
-  `;
+  let patients;
+  let total = 0;
+  let filteredTotal = 0;
+  let needsReview = 0;
+  let withImportedHistory = 0;
+  let pendingVaccinations = 0;
+  let summarySource = 'aggregate-summary-query';
 
-  const [result, countResult, summaryPatientsResult] = await Promise.all([
-    pool.query(listQuery, [...params, pagination.limit, pagination.offset]),
-    pool.query(countQuery, params),
-    pool.query(summaryPatientsQuery, params),
-  ]);
+  if (hasWorkflowFilter) {
+    const countQuery = `
+      SELECT COUNT(*)::int AS total
+      FROM public.patients p
+      LEFT JOIN public.guardians g ON g.id = p.guardian_id
+      ${whereClause}
+    `;
 
-  const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
-    summaryPatientsResult.rows || [],
-  );
-  const patients = mergePendingDoseCounts(result.rows || [], scheduleSummaryMap);
+    const summaryPatientsQuery = `
+      SELECT
+        p.id,
+        p.dob,
+        p.facility_id,
+        p.validation_status,
+        (
+          SELECT tic.id
+          FROM public.transfer_in_cases tic
+          WHERE tic.infant_id = p.id
+          ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+          LIMIT 1
+        ) AS latest_transfer_case_id,
+        (
+          SELECT tic.validation_status
+          FROM public.transfer_in_cases tic
+          WHERE tic.infant_id = p.id
+          ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+          LIMIT 1
+        ) AS latest_transfer_case_status
+      FROM public.patients p
+      LEFT JOIN public.guardians g ON g.id = p.guardian_id
+      ${whereClause}
+      ORDER BY ${orderBy} ${orderDirection}
+    `;
 
-  const total = Number.parseInt(countResult.rows[0]?.total || 0, 10) || 0;
-  const summaryRows = summaryPatientsResult.rows || [];
-  const needsReview = summaryRows.filter((row) =>
-    isNeedsReviewStatus(resolveReviewWorkflowSource(row)),
-  ).length;
-  const withImportedHistory = summaryRows.filter((row) => row.latest_transfer_case_id).length;
-  const pendingVaccinations = sumPendingDoseCounts(scheduleSummaryMap);
+    const [countResult, summaryPatientsResult] = await Promise.all([
+      pool.query(countQuery, params),
+      pool.query(summaryPatientsQuery, params),
+    ]);
+
+    const scheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
+      summaryPatientsResult.rows || []
+    );
+
+    total = Number.parseInt(countResult.rows[0]?.total || 0, 10) || 0;
+    const summaryRows = summaryPatientsResult.rows || [];
+    needsReview = summaryRows.filter((row) =>
+      isNeedsReviewStatus(resolveReviewWorkflowSource(row))
+    ).length;
+    withImportedHistory = summaryRows.filter((row) => row.latest_transfer_case_id).length;
+    pendingVaccinations = sumPendingDoseCounts(scheduleSummaryMap);
+    filteredTotal = total;
+    summarySource = 'immunizationScheduleService.getScheduleSummariesForPatients';
+
+    const workflowFilterSet = new Set(workflowStatusFilter);
+    const matchingSummaryRows = summaryRows.filter((row) => {
+      const summary = scheduleSummaryMap.get(Number.parseInt(row.id, 10));
+      return workflowFilterSet.has(computeRowWorkflowStatus(row, summary));
+    });
+
+    filteredTotal = matchingSummaryRows.length;
+    const pageRows = matchingSummaryRows.slice(
+      pagination.offset,
+      pagination.offset + pagination.limit
+    );
+    const pageIds = pageRows.map((row) => Number.parseInt(row.id, 10)).filter(Boolean);
+
+    if (pageIds.length === 0) {
+      patients = [];
+    } else {
+      const fullRowsQuery = `
+        SELECT
+          p.*,
+          p.control_number,
+          g.name as guardian_name,
+          g.phone as guardian_phone,
+          (
+            SELECT COUNT(*)::int
+              FROM public.immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND (
+                LOWER(COALESCE(ir.status, '')) = 'completed'
+                OR ir.admin_date IS NOT NULL
+              )
+          ) AS completed_vaccinations,
+          (
+            SELECT COUNT(*)::int
+              FROM public.immunization_records ir
+            WHERE ir.patient_id = p.id
+              AND COALESCE(ir.is_active, true) = true
+              AND ${importedVaccinationPredicate}
+              AND (
+                LOWER(COALESCE(ir.status, '')) = 'completed'
+                OR ir.admin_date IS NOT NULL
+              )
+          ) AS imported_vaccinations,
+          (
+            SELECT tic.id
+            FROM public.transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_id,
+          (
+            SELECT tic.validation_status
+            FROM public.transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_status,
+          (
+            SELECT tic.source_facility
+            FROM public.transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_source_facility,
+          (
+            SELECT tic.updated_at
+            FROM public.transfer_in_cases tic
+            WHERE tic.infant_id = p.id
+            ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+            LIMIT 1
+          ) AS latest_transfer_case_updated_at
+        FROM public.patients p
+        LEFT JOIN public.guardians g ON g.id = p.guardian_id
+        WHERE p.id = ANY($1::bigint[])
+      `;
+
+      const fullRowsResult = await pool.query(fullRowsQuery, [pageIds]);
+      const rowsById = new Map(
+        (fullRowsResult.rows || []).map((row) => [Number.parseInt(row.id, 10), row])
+      );
+      const orderedRows = pageIds.map((id) => rowsById.get(id)).filter(Boolean);
+      patients = mergePendingDoseCounts(orderedRows, scheduleSummaryMap);
+    }
+  } else {
+    const activeVaccinationSchedulePredicate = await getActiveVaccinationSchedulePredicate();
+    const summaryMetricsQuery = `
+      WITH filtered_patients AS (
+        SELECT
+          p.id,
+          p.dob,
+          p.validation_status,
+          latest_transfer_case.id AS latest_transfer_case_id,
+          latest_transfer_case.validation_status AS latest_transfer_case_status
+        FROM public.patients p
+        LEFT JOIN public.guardians g ON g.id = p.guardian_id
+        LEFT JOIN LATERAL (
+          SELECT tic.id, tic.validation_status
+          FROM public.transfer_in_cases tic
+          WHERE tic.infant_id = p.id
+          ORDER BY tic.updated_at DESC NULLS LAST, tic.created_at DESC
+          LIMIT 1
+        ) latest_transfer_case ON true
+        ${whereClause}
+      ),
+      active_schedule_total AS (
+        SELECT COUNT(*)::int AS total
+        FROM public.vaccination_schedules vs
+        WHERE ${activeVaccinationSchedulePredicate}
+      ),
+      completed_schedule_doses AS (
+        SELECT COUNT(*)::int AS completed_dose_count
+        FROM (
+          SELECT DISTINCT ir.patient_id, vs.id
+          FROM public.immunization_records ir
+          INNER JOIN filtered_patients fp ON fp.id = ir.patient_id
+          INNER JOIN public.vaccination_schedules vs
+            ON vs.vaccine_id = ir.vaccine_id
+            AND CAST(vs.dose_number AS text) = CAST(ir.dose_no AS text)
+            AND ${activeVaccinationSchedulePredicate}
+          WHERE COALESCE(ir.is_active, true) = true
+            AND (
+              LOWER(COALESCE(ir.status, '')) = 'completed'
+              OR ir.admin_date IS NOT NULL
+            )
+        ) completed_doses
+      )
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (
+          WHERE ${normalizeWorkflowStatusSql(
+            'COALESCE(filtered_patients.validation_status, filtered_patients.latest_transfer_case_status)'
+          )} = ANY($${params.length + 1}::text[])
+        )::int AS needs_review,
+        COUNT(*) FILTER (
+          WHERE filtered_patients.latest_transfer_case_id IS NOT NULL
+        )::int AS with_imported_history,
+        GREATEST(
+          (
+            COUNT(*) FILTER (WHERE filtered_patients.dob IS NOT NULL)::int
+            * COALESCE((SELECT total FROM active_schedule_total), 0)
+          ) - COALESCE((SELECT completed_dose_count FROM completed_schedule_doses), 0),
+          0
+        )::int AS pending_vaccinations
+      FROM filtered_patients
+    `;
+
+    const [result, summaryMetricsResult] = await Promise.all([
+      listRowsPromise,
+      pool.query(summaryMetricsQuery, [...params, Array.from(REVIEW_WORKFLOW_STATUSES)]),
+    ]);
+
+    const pageScheduleSummaryMap = await immunizationScheduleService.getScheduleSummariesForPatients(
+      result.rows || []
+    );
+    const summaryMetrics = summaryMetricsResult.rows[0] || {};
+
+    total = Number.parseInt(summaryMetrics.total || 0, 10) || 0;
+    filteredTotal = total;
+    needsReview = Number.parseInt(summaryMetrics.needs_review || 0, 10) || 0;
+    withImportedHistory =
+      Number.parseInt(summaryMetrics.with_imported_history || 0, 10) || 0;
+    pendingVaccinations =
+      Number.parseInt(summaryMetrics.pending_vaccinations || 0, 10) || 0;
+    patients = mergePendingDoseCounts(result.rows || [], pageScheduleSummaryMap);
+  }
 
   logVaccinationSyncDebug('infant-management-summary', {
     total,
+    filteredTotal,
     needsReview,
     pendingVaccinations,
-    source: 'immunizationScheduleService.getScheduleSummariesForPatients',
+    workflowStatusFilter,
+    source: summarySource,
   });
+
+  const effectiveTotal = hasWorkflowFilter ? filteredTotal : total;
 
   return {
     patients,
-    total,
+    total: effectiveTotal,
     pagination: {
       page: pagination.page,
       limit: pagination.limit,
       offset: pagination.offset,
-      total,
-      totalPages: pagination.limit > 0 ? Math.ceil(total / pagination.limit) : 0,
-      hasNext: pagination.page * pagination.limit < total,
+      total: effectiveTotal,
+      totalPages:
+        pagination.limit > 0 ? Math.ceil(effectiveTotal / pagination.limit) : 0,
+      hasNext: pagination.page * pagination.limit < effectiveTotal,
       hasPrev: pagination.page > 1,
     },
     summary: {
@@ -628,7 +906,7 @@ const getPatients = async (filters = {}) => {
  */
 const getPatientById = async (id) => {
   const buildQuery = ({ includeFacilityJoin = true, includeActiveFilter = true } = {}) => `
-    SELECT 
+    SELECT
       p.*,
       g.name as guardian_name,
       g.email as guardian_email,
@@ -684,9 +962,10 @@ const createPatient = async (patientData) => {
     const normalizedInput = normalizePatientInput(patientData);
 
     // Insert into canonical patients table
-    const insertResult = await client.query(`
+    const insertResult = await client.query(
+      `
       INSERT INTO public.patients (
-        first_name, last_name, middle_name, dob, sex, national_id, 
+        first_name, last_name, middle_name, dob, sex, national_id,
       address, contact, guardian_id, facility_id, birth_height, birth_weight,
       mother_name, father_name, barangay, health_center, purok, street_color,
       family_no, place_of_birth, time_of_delivery, type_of_delivery,
@@ -697,36 +976,38 @@ const createPatient = async (patientData) => {
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       )
       RETURNING *
-    `, [
-      normalizedInput.firstName,
-      normalizedInput.lastName,
-      normalizedInput.middleName,
-      normalizedInput.dob,
-      normalizedInput.sex,
-      normalizedInput.nationalId,
-      normalizedInput.address,
-      normalizedInput.contact,
-      normalizedInput.guardianId,
-      normalizedInput.facilityId,
-      normalizedInput.birthHeight,
-      normalizedInput.birthWeight,
-      normalizedInput.motherName,
-      normalizedInput.fatherName,
-      normalizedInput.barangay,
-      normalizedInput.healthCenter,
-      normalizedInput.purok,
-      normalizedInput.streetColor,
-      normalizedInput.familyNo,
-      normalizedInput.placeOfBirth,
-      normalizedInput.timeOfDelivery,
-      normalizedInput.typeOfDelivery,
-      normalizedInput.doctorMidwifeNurse,
-      normalizedInput.nbsDone,
-      normalizedInput.nbsDate,
-      normalizedInput.cellphoneNumber,
-      normalizedInput.photoUrl,
-      normalizedInput.isActive !== undefined ? normalizedInput.isActive : true,
-    ]);
+    `,
+      [
+        normalizedInput.firstName,
+        normalizedInput.lastName,
+        normalizedInput.middleName,
+        normalizedInput.dob,
+        normalizedInput.sex,
+        normalizedInput.nationalId,
+        normalizedInput.address,
+        normalizedInput.contact,
+        normalizedInput.guardianId,
+        normalizedInput.facilityId,
+        normalizedInput.birthHeight,
+        normalizedInput.birthWeight,
+        normalizedInput.motherName,
+        normalizedInput.fatherName,
+        normalizedInput.barangay,
+        normalizedInput.healthCenter,
+        normalizedInput.purok,
+        normalizedInput.streetColor,
+        normalizedInput.familyNo,
+        normalizedInput.placeOfBirth,
+        normalizedInput.timeOfDelivery,
+        normalizedInput.typeOfDelivery,
+        normalizedInput.doctorMidwifeNurse,
+        normalizedInput.nbsDone,
+        normalizedInput.nbsDate,
+        normalizedInput.cellphoneNumber,
+        normalizedInput.photoUrl,
+        normalizedInput.isActive !== undefined ? normalizedInput.isActive : true,
+      ]
+    );
 
     const newPatient = normalizePatientData(insertResult.rows[0]);
 
@@ -738,7 +1019,7 @@ const createPatient = async (patientData) => {
     } catch (seedError) {
       console.warn(
         'At-birth vaccination seeding failed for new patient; continuing without blocking creation:',
-        seedError?.message || seedError,
+        seedError?.message || seedError
       );
     }
 
@@ -940,7 +1221,7 @@ const updatePatient = async (id, patientData) => {
     }
 
     const updateQuery = `
-      UPDATE public.patients 
+      UPDATE public.patients
       SET ${updateFields.join(', ')}
       WHERE id = $${paramIndex}
     `;
@@ -972,7 +1253,7 @@ const deletePatient = async (id) => {
 
     const result = await client.query(
       'UPDATE public.patients SET is_active = false WHERE id = $1 RETURNING *',
-      [id],
+      [id]
     );
 
     await client.query('COMMIT');
@@ -992,7 +1273,7 @@ const deletePatient = async (id) => {
 const patientExists = async (id) => {
   const result = await pool.query(
     'SELECT id FROM public.patients WHERE id = $1 AND is_active = true',
-    [id],
+    [id]
   );
 
   return result.rows.length > 0;
@@ -1019,7 +1300,11 @@ const getPatientsWithVaccinationFilters = async (filters = {}) => {
     customWhere = [],
   } = filters;
   const pagination = resolvePagination(filters, { defaultLimit: 25, maxLimit: 1000 });
-  const normalizedOrderBy = String(orderBy || '').trim().toLowerCase().replace(/^p\./, '').replace(/^vr\./, '');
+  const normalizedOrderBy = String(orderBy || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^p\./, '')
+    .replace(/^vr\./, '');
   const orderByClause =
     normalizedOrderBy === 'next_due_date' || normalizedOrderBy === 'upcoming_vaccination_date'
       ? 'vr.next_due_date'
@@ -1060,7 +1345,7 @@ const getPatientsWithVaccinationFilters = async (filters = {}) => {
       ORDER BY ${orderByClause} ${orderDirectionClause}
       LIMIT $${params.length + 1}::bigint OFFSET $${params.length + 2}::bigint
     `,
-    [...params, pagination.limit, pagination.offset],
+    [...params, pagination.limit, pagination.offset]
   );
 
   return {
@@ -1072,13 +1357,7 @@ const getPatientsWithVaccinationFilters = async (filters = {}) => {
  * Get patient statistics
  */
 const getPatientStatistics = async (filters = {}) => {
-  const {
-    facilityId,
-    guardianId,
-    isActive = true,
-    dateFrom,
-    dateTo,
-  } = filters;
+  const { facilityId, guardianId, isActive = true, dateFrom, dateTo } = filters;
 
   const params = [];
   let whereClause = 'WHERE is_active = $1';
@@ -1106,18 +1385,24 @@ const getPatientStatistics = async (filters = {}) => {
 
   const [totalResult, thisMonthResult, bySexResult] = await Promise.all([
     pool.query(`SELECT COUNT(*) as count FROM public.patients ${whereClause}`, params),
-    pool.query(`
+    pool.query(
+      `
       SELECT COUNT(*) as count
-      FROM public.patients 
+      FROM public.patients
       ${whereClause}
         AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)
-    `, params),
-    pool.query(`
+    `,
+      params
+    ),
+    pool.query(
+      `
       SELECT sex, COUNT(*) as count
-      FROM public.patients 
+      FROM public.patients
       ${whereClause}
       GROUP BY sex
-    `, params),
+    `,
+      params
+    ),
   ]);
 
   const sexStats = {};

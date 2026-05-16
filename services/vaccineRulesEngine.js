@@ -74,7 +74,7 @@ const daysToWeeks = (days) => days / WEEKS_TO_DAYS;
 
 // Constants for age conversion
 const WEEKS_TO_DAYS = 7;
-const DAYS_TO_WEEKS = 1 / 7;
+
 const MONTHS_TO_DAYS = 30.44;
 
 // Validate a single vaccination record
@@ -95,11 +95,14 @@ const validateVaccineRecord = (record, childDob) => {
   const vaccineRules = VACCINE_RULES[record.vaccine_code];
 
   // Validate age at administration
-  const ageUnit = record.vaccine_code === 'bcg' || record.vaccine_code === 'mcv' ? 'months' : 'weeks';
+  const ageUnit =
+    record.vaccine_code === 'bcg' || record.vaccine_code === 'mcv' ? 'months' : 'weeks';
   const age = ageUnit === 'months' ? daysToMonths(ageInDays) : daysToWeeks(ageInDays);
 
   if (age < vaccineRules.validAgeRange.min || age > vaccineRules.validAgeRange.max) {
-    errors.push(`Vaccine administered outside valid age range (${vaccineRules.validAgeRange.min}-${vaccineRules.validAgeRange.max} ${ageUnit})`);
+    errors.push(
+      `Vaccine administered outside valid age range (${vaccineRules.validAgeRange.min}-${vaccineRules.validAgeRange.max} ${ageUnit})`
+    );
   }
 
   // Validate dose number
@@ -145,13 +148,14 @@ const validateVaccinationHistory = async (childProfile, vaccinationHistory, faci
   // In a real system, this would come from a database or configuration
   const facilityVaccineAvailability = {
     // Example: facility_id => array of available vaccine codes
-    'san_nicolas': ['bcg', 'hep_b', 'penta', 'opv', 'ipv', 'pcv', 'mcv'],
-    'rural_health_unit': ['bcg', 'hep_b', 'penta', 'opv'], // Limited vaccines
+    san_nicolas: ['bcg', 'hep_b', 'penta', 'opv', 'ipv', 'pcv', 'mcv'],
+    rural_health_unit: ['bcg', 'hep_b', 'penta', 'opv'], // Limited vaccines
     // Add more facilities as needed
   };
 
   // Get available vaccines for this facility (default to all if facility not found)
-  const availableVaccines = facilityVaccineAvailability[facilityContext] || Object.keys(VACCINE_RULES);
+  const availableVaccines =
+    facilityVaccineAvailability[facilityContext] || Object.keys(VACCINE_RULES);
 
   // Validate each record
   for (let i = 0; i < vaccinationHistory.length; i++) {
@@ -191,11 +195,15 @@ const validateVaccinationHistory = async (childProfile, vaccinationHistory, faci
     if (validation.valid) {
       validationSummary.validDoses++;
     } else {
-      if (validation.errors.some(error => error.includes('Invalid date') || error.includes('future'))) {
+      if (
+        validation.errors.some(
+          (error) => error.includes('Invalid date') || error.includes('future')
+        )
+      ) {
         validationSummary.invalidDates++;
-      } else if (validation.errors.some(error => error.includes('Invalid dose'))) {
+      } else if (validation.errors.some((error) => error.includes('Invalid dose'))) {
         validationSummary.invalidDoses++;
-      } else if (validation.errors.some(error => error.includes('Invalid vaccine'))) {
+      } else if (validation.errors.some((error) => error.includes('Invalid vaccine'))) {
         validationSummary.invalidVaccines++;
       }
     }
@@ -212,8 +220,12 @@ const validateVaccinationHistory = async (childProfile, vaccinationHistory, faci
   let overallStatus = VALIDATION_STATUS.APPROVED;
   let nextAction = 'Ready for scheduling';
 
-  if (validationSummary.duplicateDoses > 0 || validationSummary.invalidDates > 0 ||
-      validationSummary.invalidDoses > 0 || validationSummary.invalidVaccines > 0) {
+  if (
+    validationSummary.duplicateDoses > 0 ||
+    validationSummary.invalidDates > 0 ||
+    validationSummary.invalidDoses > 0 ||
+    validationSummary.invalidVaccines > 0
+  ) {
     overallStatus = VALIDATION_STATUS.FOR_VALIDATION;
     nextAction = 'Needs nurse review';
 
@@ -238,11 +250,12 @@ const validateVaccinationHistory = async (childProfile, vaccinationHistory, faci
 const calculateVaccineReadiness = async (infantId, options = {}) => {
   try {
     ensureGlobalAtBirthVaccinationBackfillInitialized().catch(() => {});
+    const appointmentSchedulingService = require('./appointmentSchedulingService');
 
     // Get infant details
     const infantResult = await pool.query(
       'SELECT id, first_name, last_name, dob FROM patients WHERE id = $1 AND is_active = true',
-      [infantId],
+      [infantId]
     );
 
     if (infantResult.rows.length === 0) {
@@ -262,13 +275,17 @@ const calculateVaccineReadiness = async (infantId, options = {}) => {
       null,
       {
         referenceDate: options.referenceDate || options.scheduledDate || null,
-      },
+      }
     );
     if (guardianProjection?.error) {
       throw new Error(guardianProjection.error);
     }
 
     const readiness = guardianProjection?.readiness || {};
+    const scheduledAppointment =
+      await appointmentSchedulingService.getUpcomingActiveAppointmentForInfant({
+        infantId: infant.id,
+      });
 
     return {
       success: true,
@@ -279,6 +296,7 @@ const calculateVaccineReadiness = async (infantId, options = {}) => {
         overdueVaccines: Array.isArray(readiness.overdueVaccines) ? readiness.overdueVaccines : [],
         blockedVaccines: Array.isArray(readiness.blockedVaccines) ? readiness.blockedVaccines : [],
         nextAppointmentPrediction: readiness.nextAppointmentPrediction || null,
+        scheduledAppointment: scheduledAppointment || null,
       },
     };
   } catch (error) {

@@ -1,14 +1,5 @@
 /**
- * Infant Documents Router
- * Handles API routes for uploading and managing infant profile documents
- *
- * Endpoints:
- * - POST /api/infant-documents/:infantId - Upload document
- * - GET /api/infant-documents/:infantId - List documents
- * - GET /api/infant-documents/file/:documentId - Download document
- * - GET /api/infant-documents/info/:documentId - Get document metadata
- * - PUT /api/infant-documents/:documentId - Update document
- * - DELETE /api/infant-documents/:documentId - Delete document
+ * Infant document routes.
  */
 
 const express = require('express');
@@ -39,6 +30,40 @@ const ensureInfantDocsDirectory = async () => {
   }
 };
 ensureInfantDocsDirectory();
+
+const resolveDocumentReadPath = async (storedPath) => {
+  const normalizedPath = String(storedPath || '').trim();
+  if (!normalizedPath) {
+    return null;
+  }
+
+  const candidatePaths = [];
+  const storageRoot = resolveStorageRoot();
+  const fileName = path.basename(normalizedPath);
+
+  if (path.isAbsolute(normalizedPath)) {
+    candidatePaths.push(normalizedPath);
+  } else {
+    candidatePaths.push(path.join(storageRoot, normalizedPath));
+    candidatePaths.push(path.join(infantDocsDir, normalizedPath));
+  }
+
+  if (fileName) {
+    candidatePaths.push(path.join(infantDocsDir, fileName));
+  }
+
+  const uniqueCandidates = [...new Set(candidatePaths.filter(Boolean))];
+  for (const candidatePath of uniqueCandidates) {
+    try {
+      await fs.access(candidatePath);
+      return candidatePath;
+    } catch (_error) {
+      // Try the next path candidate.
+    }
+  }
+
+  return null;
+};
 
 // Multer storage for infant documents
 const infantDocStorage = multer.diskStorage({
@@ -219,10 +244,8 @@ const serializeInfantDocument = (doc = {}) => {
 
 const ADMIN_DOCUMENT_ROLES = new Set([
   'system_admin',
-  'super_admin',
   'admin',
   'healthcare_worker',
-  'clinic_manager',
 ]);
 
 const fetchInfantOwner = async (infantId) => {
@@ -503,22 +526,38 @@ router.get('/file/:documentId', async (req, res) => {
       });
     }
 
-    // Check if file exists
-    try {
-      await fs.access(doc.file_path);
-    } catch (error) {
+    const resolvedFilePath = await resolveDocumentReadPath(doc.file_path);
+    if (!resolvedFilePath) {
       return res.status(404).json({
         success: false,
         message: 'File not found on server',
       });
     }
 
-    // Read and serve the file
-    const fileBuffer = await fs.readFile(doc.file_path);
+    if (resolvedFilePath !== doc.file_path) {
+      pool
+        .query(
+          `UPDATE infant_documents
+           SET file_path = $1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $2`,
+          [resolvedFilePath, doc.id],
+        )
+        .catch((updateError) => {
+          console.warn('Unable to refresh infant document file path:', {
+            documentId: doc.id,
+            storedPath: doc.file_path,
+            resolvedFilePath,
+            error: updateError.message,
+          });
+        });
+    }
+
+    const fileBuffer = await fs.readFile(resolvedFilePath);
+    const fileStats = await fs.stat(resolvedFilePath);
 
     res.setHeader('Content-Type', doc.mime_type);
     res.setHeader('Content-Disposition', `inline; filename="${doc.original_filename}"`);
-    res.setHeader('Content-Length', doc.file_size);
+    res.setHeader('Content-Length', fileStats.size);
 
     res.send(fileBuffer);
   } catch (error) {

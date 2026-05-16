@@ -41,7 +41,14 @@ const colors = {
 };
 
 function log(message, type = 'info') {
-  const color = type === 'error' ? colors.red : type === 'success' ? colors.green : type === 'warning' ? colors.yellow : colors.blue;
+  const color =
+    type === 'error'
+      ? colors.red
+      : type === 'success'
+        ? colors.green
+        : type === 'warning'
+          ? colors.yellow
+          : colors.blue;
   console.log(`${color}[${type.toUpperCase()}]${colors.reset} ${message}`);
 }
 
@@ -92,25 +99,34 @@ async function fixAuthenticationIssues() {
 
     // Check roles
     const roleCheck = await pool.query('SELECT id, name FROM roles');
-    log(`Found ${roleCheck.rows.length} roles: ${roleCheck.rows.map(r => r.name).join(', ')}`, 'info');
+    log(
+      `Found ${roleCheck.rows.length} roles: ${roleCheck.rows.map((r) => r.name).join(', ')}`,
+      'info'
+    );
 
     // Check for guardians role
-    const guardianRole = roleCheck.rows.find(r => r.name === 'guardian');
-    const adminRole = roleCheck.rows.find(r => r.name === 'admin');
-    const nurseRole = roleCheck.rows.find(r => r.name === 'nurse');
+    const guardianRole = roleCheck.rows.find((r) => r.name === 'guardian');
+    const adminRole = roleCheck.rows.find((r) => r.name === 'admin');
+    const nurseRole = roleCheck.rows.find((r) => r.name === 'nurse');
 
     if (!guardianRole) {
-      await pool.query('INSERT INTO roles (name, display_name, description) VALUES (\'guardian\', \'Guardian\', \'Parent/Guardian of infant\') ON CONFLICT (name) DO NOTHING');
+      await pool.query(
+        "INSERT INTO roles (name, display_name, description) VALUES ('guardian', 'Guardian', 'Parent/Guardian of infant') ON CONFLICT (name) DO NOTHING"
+      );
       log('Created guardian role', 'success');
     }
 
     if (!adminRole) {
-      await pool.query('INSERT INTO roles (name, display_name, description) VALUES (\'admin\', \'Administrator\', \'System administrator\') ON CONFLICT (name) DO NOTHING');
+      await pool.query(
+        "INSERT INTO roles (name, display_name, description) VALUES ('admin', 'Administrator', 'System administrator') ON CONFLICT (name) DO NOTHING"
+      );
       log('Created admin role', 'success');
     }
 
     if (!nurseRole) {
-      await pool.query('INSERT INTO roles (name, display_name, description) VALUES (\'nurse\', \'Nurse\', \'Health worker/nurse\') ON CONFLICT (name) DO NOTHING');
+      await pool.query(
+        "INSERT INTO roles (name, display_name, description) VALUES ('nurse', 'Nurse', 'Health worker/nurse') ON CONFLICT (name) DO NOTHING"
+      );
       log('Created nurse role', 'success');
     }
 
@@ -124,17 +140,19 @@ async function fixAuthenticationIssues() {
 
     if (adminUserCheck.rows.length > 0) {
       const admin = adminUserCheck.rows[0];
-      log(`Admin user: ${admin.username}, Active: ${admin.is_active}, Role: ${admin.role_name}`, 'info');
+      log(
+        `Admin user: ${admin.username}, Active: ${admin.is_active}, Role: ${admin.role_name}`,
+        'info'
+      );
 
       if (!admin.is_active) {
-        await pool.query('UPDATE users SET is_active = true WHERE username = \'admin\'');
+        await pool.query("UPDATE users SET is_active = true WHERE username = 'admin'");
         log('Activated admin user', 'success');
       }
     }
 
     log('Authentication system verified', 'success');
     return { success: true, message: 'Authentication issues resolved' };
-
   } catch (error) {
     log(`Authentication fix error: ${error.message}`, 'error');
     throw error;
@@ -143,9 +161,11 @@ async function fixAuthenticationIssues() {
 
 async function createUsersTable() {
   // Get admin role ID
-  let adminRole = await pool.query('SELECT id FROM roles WHERE name = \'admin\' LIMIT 1');
+  let adminRole = await pool.query("SELECT id FROM roles WHERE name = 'admin' LIMIT 1");
   if (adminRole.rows.length === 0) {
-    const result = await pool.query('INSERT INTO roles (name, display_name, description) VALUES (\'admin\', \'Administrator\', \'System administrator\') RETURNING id');
+    const result = await pool.query(
+      "INSERT INTO roles (name, display_name, description) VALUES ('admin', 'Administrator', 'System administrator') RETURNING id"
+    );
     adminRole = result;
   }
 
@@ -173,11 +193,14 @@ async function createUsersTable() {
   const bcrypt = require('bcryptjs');
   const passwordHash = await bcrypt.hash('admin123', 10);
 
-  await pool.query(`
+  await pool.query(
+    `
     INSERT INTO users (username, password_hash, email, role_id, is_active, force_password_change)
     VALUES ('admin', $1, 'admin@immunicare.gov.ph', $2, true, false)
     ON CONFLICT (username) DO NOTHING
-  `, [passwordHash, adminRole.rows[0].id]);
+  `,
+    [passwordHash, adminRole.rows[0].id]
+  );
 
   log('Users table created with default admin', 'success');
 }
@@ -187,7 +210,7 @@ async function createDefaultAdmin() {
   const passwordHash = await bcrypt.hash('admin123', 10);
 
   // Get admin role
-  let adminRole = await pool.query('SELECT id FROM roles WHERE name = \'admin\' LIMIT 1');
+  let adminRole = await pool.query("SELECT id FROM roles WHERE name = 'admin' LIMIT 1");
   if (adminRole.rows.length === 0) {
     const result = await pool.query(`
       INSERT INTO roles (name, display_name, description)
@@ -198,14 +221,17 @@ async function createDefaultAdmin() {
   }
 
   // Create default admin
-  await pool.query(`
+  await pool.query(
+    `
     INSERT INTO users (username, password_hash, email, role_id, is_active, force_password_change)
     VALUES ('admin', $1, 'admin@immunicare.gov.ph', $2, true, false)
     ON CONFLICT (username) DO NOTHING
-  `, [passwordHash, adminRole.rows[0].id]);
+  `,
+    [passwordHash, adminRole.rows[0].id]
+  );
 
   // Also create test guardian
-  const guardianRole = await pool.query('SELECT id FROM roles WHERE name = \'guardian\' LIMIT 1');
+  const guardianRole = await pool.query("SELECT id FROM roles WHERE name = 'guardian' LIMIT 1");
   if (guardianRole.rows.length > 0) {
     const guardianPasswordHash = await bcrypt.hash('guardian123', 10);
 
@@ -218,11 +244,14 @@ async function createDefaultAdmin() {
     `);
 
     if (guardianResult.rows.length > 0) {
-      await pool.query(`
+      await pool.query(
+        `
         INSERT INTO users (username, password_hash, email, role_id, guardian_id, is_active, force_password_change)
         VALUES ('guardian', $1, 'guardian@test.com', $2, $3, true, false)
         ON CONFLICT (username) DO NOTHING
-      `, [guardianPasswordHash, guardianRole.rows[0].id, guardianResult.rows[0].id]);
+      `,
+        [guardianPasswordHash, guardianRole.rows[0].id, guardianResult.rows[0].id]
+      );
     }
   }
 
@@ -248,13 +277,16 @@ async function fixDatabaseSchema() {
 
   for (const tableName of missingTables) {
     try {
-      const exists = await pool.query(`
+      const exists = await pool.query(
+        `
         SELECT EXISTS (
           SELECT FROM information_schema.tables
           WHERE table_schema = 'public'
           AND table_name = $1
         ) as exists
-      `, [tableName]);
+      `,
+        [tableName]
+      );
 
       if (!exists.rows[0].exists) {
         log(`Table ${tableName} missing - creating...`, 'warning');
@@ -323,8 +355,8 @@ async function fixDatabaseSchema() {
 
 async function createMissingTable(tableName) {
   switch (tableName) {
-  case 'admins':
-    await pool.query(`
+    case 'admins':
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS admins (
           id SERIAL PRIMARY KEY,
           user_id INTEGER REFERENCES users(id),
@@ -339,18 +371,18 @@ async function createMissingTable(tableName) {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
-    // Create admin user if not exists
-    const bcrypt = require('bcryptjs');
-    const _passwordHash = await bcrypt.hash('admin123', 10);
-    await pool.query(`
+      // Create admin user if not exists
+      const bcrypt = require('bcryptjs');
+      await bcrypt.hash('admin123', 10);
+      await pool.query(`
         INSERT INTO admins (first_name, last_name, email, position, department)
         VALUES ('System', 'Administrator', 'admin@immunicare.gov.ph', 'System Admin', 'IT')
         ON CONFLICT (email) DO NOTHING
       `);
-    break;
+      break;
 
-  case 'access_logs':
-    await pool.query(`
+    case 'access_logs':
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS access_logs (
           id SERIAL PRIMARY KEY,
           user_id INTEGER REFERENCES users(id),
@@ -362,10 +394,10 @@ async function createMissingTable(tableName) {
           details JSONB
         )
       `);
-    break;
+      break;
 
-  case 'vaccine_supply':
-    await pool.query(`
+    case 'vaccine_supply':
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS vaccine_supply (
           id SERIAL PRIMARY KEY,
           vaccine_id INTEGER REFERENCES vaccines(id),
@@ -381,10 +413,10 @@ async function createMissingTable(tableName) {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
-    break;
+      break;
 
-  case 'vaccine_transactions':
-    await pool.query(`
+    case 'vaccine_transactions':
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS vaccine_transactions (
           id SERIAL PRIMARY KEY,
           supply_id INTEGER REFERENCES vaccine_supply(id),
@@ -398,10 +430,10 @@ async function createMissingTable(tableName) {
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
-    break;
+      break;
 
-  case 'vaccination_reminders':
-    await pool.query(`
+    case 'vaccination_reminders':
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS vaccination_reminders (
           id SERIAL PRIMARY KEY,
           infant_id INTEGER REFERENCES infants(id),
@@ -414,10 +446,10 @@ async function createMissingTable(tableName) {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
-    break;
+      break;
 
-  case 'vaccination_reminder_templates':
-    await pool.query(`
+    case 'vaccination_reminder_templates':
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS vaccination_reminder_templates (
           id SERIAL PRIMARY KEY,
           vaccine_id INTEGER REFERENCES vaccines(id),
@@ -429,8 +461,8 @@ async function createMissingTable(tableName) {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
-    // Insert default templates
-    await pool.query(`
+      // Insert default templates
+      await pool.query(`
         INSERT INTO vaccination_reminder_templates (vaccine_id, dose_number, age_months, template_message)
         VALUES
           (1, 1, 0, 'Your infant is due for their first Hepatitis B vaccination today.'),
@@ -439,10 +471,10 @@ async function createMissingTable(tableName) {
           (3, 1, 0, 'Your infant is due for their first OPV vaccination.')
         ON CONFLICT DO NOTHING
       `);
-    break;
+      break;
 
-  case 'guardian_notification_preferences':
-    await pool.query(`
+    case 'guardian_notification_preferences':
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS guardian_notification_preferences (
           id SERIAL PRIMARY KEY,
           guardian_id INTEGER REFERENCES guardians(id) UNIQUE,
@@ -454,7 +486,7 @@ async function createMissingTable(tableName) {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
-    break;
+      break;
   }
 
   log(`Created table: ${tableName}`, 'success');
@@ -534,9 +566,12 @@ async function fixDataIntegrity() {
 
       // Assign orphaned infants to default guardian
       for (const infant of orphanedInfants.rows) {
-        await pool.query(`
+        await pool.query(
+          `
           UPDATE infants SET guardian_id = $1 WHERE id = $2
-        `, [defaultGuardian.rows[0].id, infant.id]);
+        `,
+          [defaultGuardian.rows[0].id, infant.id]
+        );
         log(`Fixed orphaned infant ID: ${infant.id}`, 'success');
       }
     }
@@ -567,9 +602,12 @@ async function fixDataIntegrity() {
       }
 
       // Assign to default guardian
-      await pool.query(`
+      await pool.query(
+        `
         UPDATE infants SET guardian_id = $1 WHERE guardian_id IS NULL
-      `, [defaultGuardian.rows[0].id]);
+      `,
+        [defaultGuardian.rows[0].id]
+      );
       log('Assigned infants to default guardian', 'success');
     }
 
@@ -813,10 +851,13 @@ async function fixCookieSettings() {
   const serverContent = fs.readFileSync(serverPath, 'utf8');
 
   // Check if cookie settings need to be fixed
-  const _hasSecureFalse = serverContent.includes('secure: process.env.NODE_ENV');
-  const _hasHttpOnlyFalse = serverContent.includes('httpOnly: true');
+  serverContent.includes('secure: process.env.NODE_ENV');
+  serverContent.includes('httpOnly: true');
 
-  if (!serverContent.includes('secure: true') && !serverContent.includes('secure: process.env.NODE_ENV === \'production\'')) {
+  if (
+    !serverContent.includes('secure: true') &&
+    !serverContent.includes("secure: process.env.NODE_ENV === 'production'")
+  ) {
     // Fix is already in place - auth.js has proper production checks
     log('Cookie security settings are properly configured', 'info');
   } else {
@@ -970,10 +1011,12 @@ async function main() {
     // Summary
     separator('FIX SUMMARY');
 
-    const allSuccess = Object.values(results).every(r => r && r.success);
+    const allSuccess = Object.values(results).every((r) => r && r.success);
 
     for (const [key, result] of Object.entries(results)) {
-      const status = result?.success ? `${colors.green}✓${colors.reset}` : `${colors.red}✗${colors.reset}`;
+      const status = result?.success
+        ? `${colors.green}✓${colors.reset}`
+        : `${colors.red}✗${colors.reset}`;
       console.log(`${status} ${key}: ${result?.message || 'Failed'}`);
     }
 
@@ -986,9 +1029,10 @@ async function main() {
       console.log('2. Run tests: npm test');
       console.log('3. If using HTTPS, enable it in .env: ENABLE_HTTPS=true');
     } else {
-      console.log(`${colors.yellow}${colors.bright}Some fixes may require manual intervention${colors.reset}`);
+      console.log(
+        `${colors.yellow}${colors.bright}Some fixes may require manual intervention${colors.reset}`
+      );
     }
-
   } catch (error) {
     log(`Fatal error: ${error.message}`, 'error');
     console.error(error.stack);

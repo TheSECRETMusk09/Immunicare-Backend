@@ -45,7 +45,6 @@ const {
   NOTIFICATION_CATEGORIES,
   clearDedupCache,
   generateDedupKey,
-  shouldSendAlert,
 } = require('../services/adminNotificationService');
 
 describe('Admin Notification Service - Targeted Tests', () => {
@@ -84,7 +83,13 @@ describe('Admin Notification Service - Targeted Tests', () => {
       });
       mockSendNotification.mockResolvedValue({ success: true, notification: { id: 101 } });
 
-      const result = await sendExpiryAlert('Hepatitis B Vaccine', 2, new Date('2026-03-20'), 6, 'LOT002');
+      const result = await sendExpiryAlert(
+        'Hepatitis B Vaccine',
+        2,
+        new Date('2026-03-20'),
+        6,
+        'LOT002'
+      );
 
       expect(result.success).toBe(true);
       // Critical expiry should trigger SMS
@@ -143,7 +148,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
           title: 'Test Alert',
           message: 'This is a test system alert',
           priority: 'high',
-        }),
+        })
       );
     });
 
@@ -155,7 +160,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
 
       const metadata = { vaccineId: 5, batchNumber: 'LOT005', currentStock: 0 };
 
-      const result = await sendAdminNotification({
+      await sendAdminNotification({
         category: NOTIFICATION_CATEGORIES.OUT_OF_STOCK,
         title: 'Stock Alert',
         message: 'Vaccine out of stock',
@@ -171,7 +176,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
         'admin-notification',
         expect.objectContaining({
           metadata,
-        }),
+        })
       );
     });
   });
@@ -200,7 +205,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
       expect(mockSendSMS).toHaveBeenCalledWith(
         '+639936997484',
         expect.stringContaining('[Immunicare]'),
-        'admin_alert',
+        'admin_alert'
       );
     });
 
@@ -231,8 +236,8 @@ describe('Admin Notification Service - Targeted Tests', () => {
       expect(result.results.smsLogged).toBe(true);
 
       // Should have tried to insert into sms_logs
-      const logCall = mockPoolQuery.mock.calls.find(call =>
-        call[0].includes('INSERT INTO sms_logs'),
+      const logCall = mockPoolQuery.mock.calls.find((call) =>
+        call[0].includes('INSERT INTO sms_logs')
       );
       expect(logCall).toBeDefined();
     });
@@ -258,7 +263,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
       expect(mockSendSMS).toHaveBeenCalledWith(
         '+639936997484', // Should be formatted correctly
         expect.any(String),
-        'admin_alert',
+        'admin_alert'
       );
 
       // Test other formats
@@ -275,11 +280,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
         smsRecipient: '+639936997484', // With +63
       });
 
-      expect(mockSendSMS).toHaveBeenCalledWith(
-        '+639936997484',
-        expect.any(String),
-        'admin_alert',
-      );
+      expect(mockSendSMS).toHaveBeenCalledWith('+639936997484', expect.any(String), 'admin_alert');
 
       mockSendSMS.mockClear();
 
@@ -294,11 +295,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
         smsRecipient: '639936997484', // With 63 prefix
       });
 
-      expect(mockSendSMS).toHaveBeenCalledWith(
-        '+639936997484',
-        expect.any(String),
-        'admin_alert',
-      );
+      expect(mockSendSMS).toHaveBeenCalledWith('+639936997484', expect.any(String), 'admin_alert');
     });
   });
 
@@ -493,7 +490,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
       expect(mockSendNotification).toHaveBeenCalledWith(
         expect.objectContaining({
           priority: 5, // urgent = 5
-        }),
+        })
       );
 
       mockSendNotification.mockClear();
@@ -511,7 +508,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
       expect(mockSendNotification).toHaveBeenCalledWith(
         expect.objectContaining({
           priority: 2, // low = 2
-        }),
+        })
       );
     });
   });
@@ -564,7 +561,7 @@ describe('Admin Notification Service - Targeted Tests', () => {
       expect(mockSendSMS).toHaveBeenCalledWith(
         expect.any(String),
         expect.stringMatching(/^.{0,160}$/),
-        expect.any(String),
+        expect.any(String)
       );
     });
 

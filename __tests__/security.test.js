@@ -1,6 +1,6 @@
 const request = require('supertest');
 const { app } = require('../server');
-const db = require('../db');
+require('../db');
 
 /**
  * Comprehensive Security Tests
@@ -47,8 +47,8 @@ describe('Security Tests', () => {
   describe('SQL Injection Prevention', () => {
     it('should prevent SQL injection in login endpoint', async () => {
       const res = await request(server).post('/api/auth/login').send({
-        email: '\' OR \'1\'=\'1',
-        password: 'anything\' OR \'1\'=\'1'
+        email: "' OR '1'='1",
+        password: "anything' OR '1'='1",
       });
 
       expect([400, 401]).toContain(res.statusCode);
@@ -61,7 +61,7 @@ describe('Security Tests', () => {
       }
 
       const res = await request(server)
-        .get('/api/infants?search=\'; DROP TABLE patients; --')
+        .get("/api/infants?search='; DROP TABLE patients; --")
         .set('Authorization', `Bearer ${authToken}`);
 
       // Should not crash or execute malicious SQL
@@ -103,8 +103,8 @@ describe('Security Tests', () => {
       }
 
       const xssPayload = {
-        first_name: '<script>alert(\'xss\')</script>',
-        last_name: '<img src=x onerror=alert(\'xss\')>'
+        first_name: "<script>alert('xss')</script>",
+        last_name: "<img src=x onerror=alert('xss')>",
       };
 
       const res = await request(server)
@@ -114,7 +114,7 @@ describe('Security Tests', () => {
 
       // Should not contain unescaped script tags in response
       if (res.text) {
-        expect(res.text).not.toContain('<script>alert(\'xss\')</script>');
+        expect(res.text).not.toContain("<script>alert('xss')</script>");
       }
     });
 
@@ -125,7 +125,7 @@ describe('Security Tests', () => {
       }
 
       const xssPayload = {
-        notes: '<div onmouseover=\'alert(1)\'>Hover me</div>'
+        notes: "<div onmouseover='alert(1)'>Hover me</div>",
       };
 
       const res = await request(server)
@@ -145,7 +145,7 @@ describe('Security Tests', () => {
       }
 
       const xssPayload = {
-        website: 'javascript:alert(\'xss\')'
+        website: "javascript:alert('xss')",
       };
 
       const res = await request(server)
@@ -161,7 +161,7 @@ describe('Security Tests', () => {
     it('should prevent NoSQL operator injection', async () => {
       const nosqlPayload = {
         username: { $ne: null },
-        password: { $exists: true }
+        password: { $exists: true },
       };
 
       const res = await request(server).post('/api/auth/login').send(nosqlPayload);
@@ -172,7 +172,7 @@ describe('Security Tests', () => {
     it('should prevent $where clause injection', async () => {
       const wherePayload = {
         username: 'admin',
-        $where: 'this.password.length > 0'
+        $where: 'this.password.length > 0',
       };
 
       const res = await request(server).post('/api/auth/login').send(wherePayload);
@@ -185,7 +185,7 @@ describe('Security Tests', () => {
     it('should require CSRF token for state-changing requests', async () => {
       const res = await request(server).post('/api/auth/login').send({
         email: 'test@example.com',
-        password: 'password'
+        password: 'password',
       });
 
       // API should still work without CSRF token for login (stateless JWT)
@@ -209,7 +209,7 @@ describe('Security Tests', () => {
       for (let i = 0; i < 15; i++) {
         const res = await request(server).post('/api/auth/login').send({
           email: 'test@example.com',
-          password: 'wrongpassword'
+          password: 'wrongpassword',
         });
         loginAttempts.push(res.statusCode);
       }
@@ -257,11 +257,9 @@ describe('Security Tests', () => {
     it('should reject expired tokens', async () => {
       // Create an expired token
       const jwt = require('jsonwebtoken');
-      const expiredToken = jwt.sign(
-        { id: 1, role: 'admin' },
-        process.env.JWT_SECRET,
-        { expiresIn: '-1h' }
-      );
+      const expiredToken = jwt.sign({ id: 1, role: 'admin' }, process.env.JWT_SECRET, {
+        expiresIn: '-1h',
+      });
 
       const res = await request(server)
         .get('/api/dashboard/stats')
@@ -334,17 +332,15 @@ describe('Security Tests', () => {
 
   describe('Input Validation Security', () => {
     it('should validate email format', async () => {
-      const res = await request(server)
-        .post('/api/auth/register/guardian')
-        .send({
-          email: 'invalid-email-format',
-          password: 'ValidPassword123!',
-          confirmPassword: 'ValidPassword123!',
-          firstName: 'Test',
-          lastName: 'Guardian',
-          phone: '09171234567',
-          relationship: 'Mother',
-        });
+      const res = await request(server).post('/api/auth/register/guardian').send({
+        email: 'invalid-email-format',
+        password: 'ValidPassword123!',
+        confirmPassword: 'ValidPassword123!',
+        firstName: 'Test',
+        lastName: 'Guardian',
+        phone: '09171234567',
+        relationship: 'Mother',
+      });
 
       expect([400, 429]).toContain(res.statusCode);
     });
@@ -377,7 +373,7 @@ describe('Security Tests', () => {
         .post('/api/infants')
         .set('Authorization', `Bearer ${authToken}`)
         .send({
-          first_name: longString
+          first_name: longString,
         });
 
       expect([400, 413, 403]).toContain(res.statusCode);
@@ -423,7 +419,7 @@ describe('Security Tests', () => {
 
       const pollutionPayload = {
         first_name: 'Test',
-        '__proto__.isAdmin': true
+        '__proto__.isAdmin': true,
       };
 
       const res = await request(server)
@@ -442,7 +438,7 @@ describe('Security Tests', () => {
 
       const pollutionPayload = {
         first_name: 'Test',
-        'constructor.prototype.isAdmin': true
+        'constructor.prototype.isAdmin': true,
       };
 
       const res = await request(server)

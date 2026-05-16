@@ -56,7 +56,15 @@ const CRITICAL_COLUMNS = {
   guardians: ['id', 'name', 'phone', 'email', 'password_hash', 'is_active'],
   infants: ['id', 'first_name', 'last_name', 'dob', 'sex', 'guardian_id', 'is_active'],
   vaccines: ['id', 'code', 'name', 'doses_required', 'is_active'],
-  vaccination_records: ['id', 'infant_id', 'vaccine_id', 'batch_id', 'dose_no', 'admin_date', 'is_active'],
+  vaccination_records: [
+    'id',
+    'infant_id',
+    'vaccine_id',
+    'batch_id',
+    'dose_no',
+    'admin_date',
+    'is_active',
+  ],
   appointments: ['id', 'infant_id', 'scheduled_date', 'status', 'is_active'],
   vaccine_inventory: ['id', 'vaccine_id', 'clinic_id', 'is_low_stock', 'is_critical_stock'],
   notifications: ['id', 'notification_type', 'target_type', 'target_id', 'status'],
@@ -67,37 +75,12 @@ const CRITICAL_COLUMNS = {
 };
 
 // Expected Foreign Key Relationships
-const EXPECTED_RELATIONSHIPS = [
-  { table: 'users', column: 'role_id', references: 'roles(id)' },
-  { table: 'users', column: 'clinic_id', references: 'clinics(id)' },
-  { table: 'users', column: 'guardian_id', references: 'guardians(id)' },
-  { table: 'infants', column: 'guardian_id', references: 'guardians(id)' },
-  { table: 'infants', column: 'clinic_id', references: 'clinics(id)' },
-  { table: 'vaccination_records', column: 'infant_id', references: 'infants(id)' },
-  { table: 'vaccination_records', column: 'vaccine_id', references: 'vaccines(id)' },
-  { table: 'vaccination_records', column: 'batch_id', references: 'vaccine_batches(id)' },
-  { table: 'vaccination_records', column: 'administered_by', references: 'users(id)' },
-  { table: 'appointments', column: 'infant_id', references: 'infants(id)' },
-  { table: 'appointments', column: 'created_by', references: 'users(id)' },
-  { table: 'appointments', column: 'clinic_id', references: 'clinics(id)' },
-  { table: 'vaccine_batches', column: 'vaccine_id', references: 'vaccines(id)' },
-  { table: 'vaccine_batches', column: 'clinic_id', references: 'clinics(id)' },
-  { table: 'vaccine_inventory', column: 'vaccine_id', references: 'vaccines(id)' },
-  { table: 'vaccine_inventory', column: 'clinic_id', references: 'clinics(id)' },
-  { table: 'vaccine_inventory', column: 'created_by', references: 'users(id)' },
-  { table: 'announcements', column: 'created_by', references: 'users(id)' },
-  { table: 'audit_logs', column: 'user_id', references: 'users(id)' },
-  { table: 'security_events', column: 'user_id', references: 'users(id)' },
-  { table: 'user_sessions', column: 'user_id', references: 'users(id)' },
-  { table: 'refresh_tokens', column: 'user_id', references: 'users(id)' },
-];
 
 // ============================================================================
 // SCHEMA VALIDATION TESTS
 // ============================================================================
 
 describe('Database - Schema Validation', () => {
-
   describe('Table Existence', () => {
     test('should have all expected tables', async () => {
       try {
@@ -108,8 +91,8 @@ describe('Database - Schema Validation', () => {
           AND table_type = 'BASE TABLE'
         `);
 
-        const existingTables = result.rows.map(r => r.table_name);
-        const missingTables = EXPECTED_TABLES.filter(t => !existingTables.includes(t));
+        const existingTables = result.rows.map((r) => r.table_name);
+        const missingTables = EXPECTED_TABLES.filter((t) => !existingTables.includes(t));
 
         if (missingTables.length > 0) {
           console.log('Missing tables:', missingTables);
@@ -171,8 +154,8 @@ describe('Database - Schema Validation', () => {
         WHERE table_name = 'users'
       `);
 
-      const existingColumns = result.rows.map(r => r.column_name);
-      const missingColumns = CRITICAL_COLUMNS.users.filter(c => !existingColumns.includes(c));
+      const existingColumns = result.rows.map((r) => r.column_name);
+      const missingColumns = CRITICAL_COLUMNS.users.filter((c) => !existingColumns.includes(c));
 
       expect(missingColumns.length).toBe(0);
     });
@@ -184,8 +167,8 @@ describe('Database - Schema Validation', () => {
         WHERE table_name = 'guardians'
       `);
 
-      const existingColumns = result.rows.map(r => r.column_name);
-      const missingColumns = CRITICAL_COLUMNS.guardians.filter(c => !existingColumns.includes(c));
+      const existingColumns = result.rows.map((r) => r.column_name);
+      const missingColumns = CRITICAL_COLUMNS.guardians.filter((c) => !existingColumns.includes(c));
 
       expect(missingColumns.length).toBe(0);
     });
@@ -197,8 +180,8 @@ describe('Database - Schema Validation', () => {
         WHERE table_name = 'infants'
       `);
 
-      const existingColumns = result.rows.map(r => r.column_name);
-      const missingColumns = CRITICAL_COLUMNS.infants.filter(c => !existingColumns.includes(c));
+      const existingColumns = result.rows.map((r) => r.column_name);
+      const missingColumns = CRITICAL_COLUMNS.infants.filter((c) => !existingColumns.includes(c));
 
       expect(missingColumns.length).toBe(0);
     });
@@ -210,8 +193,10 @@ describe('Database - Schema Validation', () => {
         WHERE table_name = 'vaccination_records'
       `);
 
-      const existingColumns = result.rows.map(r => r.column_name);
-      const missingColumns = CRITICAL_COLUMNS.vaccination_records.filter(c => !existingColumns.includes(c));
+      const existingColumns = result.rows.map((r) => r.column_name);
+      const missingColumns = CRITICAL_COLUMNS.vaccination_records.filter(
+        (c) => !existingColumns.includes(c)
+      );
 
       expect(missingColumns.length).toBe(0);
     });
@@ -227,7 +212,7 @@ describe('Database - Schema Validation', () => {
       `);
 
       const columns = {};
-      result.rows.forEach(r => {
+      result.rows.forEach((r) => {
         columns[r.column_name] = r.data_type;
       });
 
@@ -244,7 +229,7 @@ describe('Database - Schema Validation', () => {
       `);
 
       const columns = {};
-      result.rows.forEach(r => {
+      result.rows.forEach((r) => {
         columns[r.column_name] = r.data_type;
       });
 
@@ -261,7 +246,7 @@ describe('Database - Schema Validation', () => {
       `);
 
       const columns = {};
-      result.rows.forEach(r => {
+      result.rows.forEach((r) => {
         columns[r.column_name] = r.data_type;
       });
 
@@ -275,7 +260,6 @@ describe('Database - Schema Validation', () => {
 // ============================================================================
 
 describe('Database - Relationships', () => {
-
   describe('Foreign Key Constraints', () => {
     test('should have foreign key users->roles', async () => {
       const result = await pool.query(`
@@ -379,7 +363,6 @@ describe('Database - Relationships', () => {
 // ============================================================================
 
 describe('Database - Indexes', () => {
-
   describe('Index Existence', () => {
     test('should have primary key indexes', async () => {
       const result = await pool.query(`
@@ -465,7 +448,7 @@ describe('Database - Indexes', () => {
         EXPLAIN SELECT * FROM users WHERE username = 'admin'
       `);
 
-      const plan = result.rows.map(r => r['QUERY PLAN']).join(' ');
+      const plan = result.rows.map((r) => r['QUERY PLAN']).join(' ');
       expect(plan).toContain('Index Scan');
     });
 
@@ -474,7 +457,7 @@ describe('Database - Indexes', () => {
         EXPLAIN SELECT * FROM infants WHERE guardian_id = 1
       `);
 
-      const plan = result.rows.map(r => r['QUERY PLAN']).join(' ');
+      const plan = result.rows.map((r) => r['QUERY PLAN']).join(' ');
       expect(plan).toContain('Index Scan');
     });
 
@@ -483,7 +466,7 @@ describe('Database - Indexes', () => {
         EXPLAIN SELECT * FROM appointments WHERE scheduled_date > NOW()
       `);
 
-      const plan = result.rows.map(r => r['QUERY PLAN']).join(' ');
+      const plan = result.rows.map((r) => r['QUERY PLAN']).join(' ');
       expect(plan).toContain('Index Scan');
     });
   });
@@ -494,7 +477,6 @@ describe('Database - Indexes', () => {
 // ============================================================================
 
 describe('Database - Data Integrity', () => {
-
   describe('Constraints', () => {
     test('should enforce unique usernames', async () => {
       try {
@@ -550,7 +532,7 @@ describe('Database - Data Integrity', () => {
 
   describe('Check Constraints', () => {
     test('should validate infant sex values', async () => {
-      const result = await pool.query(`
+      await pool.query(`
         SELECT column_name, check_clause
         FROM information_schema.check_constraints
         WHERE constraint_name LIKE '%infants%sex%'
@@ -568,7 +550,7 @@ describe('Database - Data Integrity', () => {
       `);
 
       const validStatuses = ['scheduled', 'attended', 'cancelled', 'no-show', 'rescheduled'];
-      result.rows.forEach(row => {
+      result.rows.forEach((row) => {
         expect(validStatuses).toContain(row.status);
       });
     });
@@ -580,7 +562,6 @@ describe('Database - Data Integrity', () => {
 // ============================================================================
 
 describe('Database - Data Quality', () => {
-
   describe('Data Population', () => {
     test('should have users in database', async () => {
       const result = await pool.query('SELECT COUNT(*) as count FROM users');
@@ -654,7 +635,6 @@ describe('Database - Data Quality', () => {
 // ============================================================================
 
 describe('Database - Security', () => {
-
   describe('Extension Status', () => {
     test('should have pgcrypto extension installed', async () => {
       const result = await pool.query(`
@@ -741,7 +721,6 @@ describe('Database - Security', () => {
 // ============================================================================
 
 describe('Database - Performance', () => {
-
   describe('Query Performance', () => {
     test('should execute users query within 1 second', async () => {
       const start = Date.now();
@@ -791,7 +770,6 @@ describe('Database - Performance', () => {
 // ============================================================================
 
 describe('Database - Enum Types', () => {
-
   test('should have infant_sex enum type', async () => {
     const result = await pool.query(`
       SELECT typname FROM pg_type

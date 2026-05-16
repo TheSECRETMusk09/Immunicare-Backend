@@ -9,13 +9,9 @@
  */
 
 const http = require('http');
-const https = require('https');
+require('https');
 const { Pool } = require('pg');
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
-
-// Test configuration
-const BASE_URL = 'http://localhost:5000';
-const API_BASE = `${BASE_URL}/api`;
 
 // Colors for console output
 const colors = {
@@ -109,18 +105,18 @@ async function testServerHealth() {
     testResults.performance.healthCheck = healthRes.responseTime;
     if (healthRes.responseTime < 100) {
       console.log(
-        `${colors.green}✓${colors.reset} Health check response time: ${healthRes.responseTime}ms (Excellent)`,
+        `${colors.green}✓${colors.reset} Health check response time: ${healthRes.responseTime}ms (Excellent)`
       );
       testResults.passed++;
     } else if (healthRes.responseTime < 500) {
       console.log(
-        `${colors.yellow}⚠${colors.reset} Health check response time: ${healthRes.responseTime}ms (Acceptable)`,
+        `${colors.yellow}⚠${colors.reset} Health check response time: ${healthRes.responseTime}ms (Acceptable)`
       );
       testResults.warnings.push('Health check response time is acceptable but could be improved');
       testResults.passed++;
     } else {
       console.log(
-        `${colors.red}✗${colors.reset} Health check response time: ${healthRes.responseTime}ms (Too slow)`,
+        `${colors.red}✗${colors.reset} Health check response time: ${healthRes.responseTime}ms (Too slow)`
       );
       testResults.failed++;
     }
@@ -175,12 +171,12 @@ async function testDatabaseConnections() {
     // Test 2: Query execution time
     if (queryTime < 100) {
       console.log(
-        `${colors.green}✓${colors.reset} Query execution time: ${queryTime}ms (Excellent)`,
+        `${colors.green}✓${colors.reset} Query execution time: ${queryTime}ms (Excellent)`
       );
       testResults.passed++;
     } else if (queryTime < 500) {
       console.log(
-        `${colors.yellow}⚠${colors.reset} Query execution time: ${queryTime}ms (Acceptable)`,
+        `${colors.yellow}⚠${colors.reset} Query execution time: ${queryTime}ms (Acceptable)`
       );
       testResults.warnings.push(`Query execution time: ${queryTime}ms`);
       testResults.passed++;
@@ -216,12 +212,12 @@ async function testDatabaseConnections() {
 
     if (concurrentTime < 1000) {
       console.log(
-        `${colors.green}✓${colors.reset} 10 concurrent queries completed in ${concurrentTime}ms`,
+        `${colors.green}✓${colors.reset} 10 concurrent queries completed in ${concurrentTime}ms`
       );
       testResults.passed++;
     } else {
       console.log(
-        `${colors.yellow}⚠${colors.reset} 10 concurrent queries took ${concurrentTime}ms`,
+        `${colors.yellow}⚠${colors.reset} 10 concurrent queries took ${concurrentTime}ms`
       );
       testResults.warnings.push(`Concurrent queries slow: ${concurrentTime}ms`);
       testResults.passed++;
@@ -238,7 +234,7 @@ async function testDatabaseConnections() {
     ];
     for (const table of tables) {
       try {
-        const tableResult = await pool.query(`SELECT COUNT(*) FROM ${table} LIMIT 1`);
+        await pool.query(`SELECT COUNT(*) FROM ${table} LIMIT 1`);
         console.log(`${colors.green}✓${colors.reset} Table '${table}' exists and accessible`);
         testResults.passed++;
       } catch (err) {
@@ -316,7 +312,7 @@ async function testAPIEndpoints() {
           ? `${colors.green}✓${colors.reset}`
           : `${colors.yellow}⚠${colors.reset}`;
       console.log(
-        `${timeStatus} ${endpoint.method} ${endpoint.path} - ${res.status} (${res.responseTime}ms)`,
+        `${timeStatus} ${endpoint.method} ${endpoint.path} - ${res.status} (${res.responseTime}ms)`
       );
 
       if (res.status >= 200 && res.status < 400) {
@@ -341,7 +337,7 @@ async function testAPIEndpoints() {
       }
     } catch (err) {
       console.log(
-        `${colors.red}✗${colors.reset} ${endpoint.method} ${endpoint.path} - Error: ${err.message}`,
+        `${colors.red}✗${colors.reset} ${endpoint.method} ${endpoint.path} - Error: ${err.message}`
       );
       testResults.errors.push(`${endpoint.path}: ${err.message}`);
       testResults.failed++;
@@ -408,7 +404,7 @@ async function testErrorHandling() {
 
       if (res.status === test.expectedStatus) {
         console.log(
-          `${colors.green}✓${colors.reset} ${test.name} - Correctly returned ${res.status}`,
+          `${colors.green}✓${colors.reset} ${test.name} - Correctly returned ${res.status}`
         );
         testResults.passed++;
       } else if (res.status >= 500) {
@@ -417,7 +413,7 @@ async function testErrorHandling() {
         testResults.failed++;
       } else {
         console.log(
-          `${colors.yellow}⚠${colors.reset} ${test.name} - Expected ${test.expectedStatus}, got ${res.status}`,
+          `${colors.yellow}⚠${colors.reset} ${test.name} - Expected ${test.expectedStatus}, got ${res.status}`
         );
         testResults.warnings.push(`${test.name}: Unexpected status ${res.status}`);
         testResults.passed++;
@@ -461,12 +457,12 @@ async function testSecurity() {
     const uniqueStatuses = [...new Set(rateLimitResults)];
     if (uniqueStatuses.every((s) => s === 200)) {
       console.log(
-        `${colors.green}✓${colors.reset} All requests processed (rate limiting may not be triggered at this endpoint)`,
+        `${colors.green}✓${colors.reset} All requests processed (rate limiting may not be triggered at this endpoint)`
       );
       testResults.passed++;
     } else {
       console.log(
-        `${colors.yellow}⚠${colors.reset} Rate limiting detected: ${uniqueStatuses.join(', ')}`,
+        `${colors.yellow}⚠${colors.reset} Rate limiting detected: ${uniqueStatuses.join(', ')}`
       );
       testResults.passed++;
     }
@@ -482,7 +478,7 @@ async function testSecurity() {
 
     if (corsRes.headers['access-control-allow-origin']) {
       console.log(
-        `${colors.green}✓${colors.reset} CORS headers present: ${corsRes.headers['access-control-allow-origin']}`,
+        `${colors.green}✓${colors.reset} CORS headers present: ${corsRes.headers['access-control-allow-origin']}`
       );
       testResults.passed++;
     } else {
@@ -502,7 +498,7 @@ async function testSecurity() {
 
     if (securityHeaderCount > 0) {
       console.log(
-        `${colors.green}✓${colors.reset} ${securityHeaderCount} security header(s) present`,
+        `${colors.green}✓${colors.reset} ${securityHeaderCount} security header(s) present`
       );
       testResults.passed++;
     } else {
@@ -536,16 +532,16 @@ async function testPerformance() {
             port: 5000,
             path: '/api/health',
             method: 'GET',
-          }),
+          })
         );
       }
 
-      const results = await Promise.all(promises);
+      await Promise.all(promises);
       const totalTime = Date.now() - startTime;
       const avgTime = totalTime / concurrent;
 
       console.log(
-        `${colors.green}✓${colors.reset} ${concurrent} concurrent request(s): ${totalTime}ms total, ${avgTime.toFixed(2)}ms avg`,
+        `${colors.green}✓${colors.reset} ${concurrent} concurrent request(s): ${totalTime}ms total, ${avgTime.toFixed(2)}ms avg`
       );
 
       testResults.performance[`load_${concurrent}`] = { total: totalTime, avg: avgTime };
@@ -570,7 +566,7 @@ async function testPerformance() {
           port: 5000,
           path: '/api/health',
           method: 'GET',
-        }),
+        })
       );
     }
 
@@ -579,7 +575,7 @@ async function testPerformance() {
     const sustainedAvg = sustainedTime / 20;
 
     console.log(
-      `${colors.green}✓${colors.reset} Sustained load: ${sustainedTime}ms total, ${sustainedAvg.toFixed(2)}ms avg`,
+      `${colors.green}✓${colors.reset} Sustained load: ${sustainedTime}ms total, ${sustainedAvg.toFixed(2)}ms avg`
     );
     testResults.performance.sustainedLoad = { total: sustainedTime, avg: sustainedAvg };
 
@@ -627,7 +623,7 @@ async function testFrontendIntegration() {
       }
     } else {
       console.log(
-        `${colors.yellow}⚠${colors.reset} Frontend returned status ${frontendRes.status}`,
+        `${colors.yellow}⚠${colors.reset} Frontend returned status ${frontendRes.status}`
       );
       testResults.warnings.push(`Frontend status: ${frontendRes.status}`);
       testResults.passed++;

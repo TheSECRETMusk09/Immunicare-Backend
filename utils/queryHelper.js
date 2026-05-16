@@ -1,32 +1,18 @@
-/**
- * Database Query Helper Utilities
- * Provides safe query execution with error handling and logging
- */
-
 const logger = require('../config/logger');
 
-/**
- * Execute a database query with error handling
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {string} query - SQL query string
- * @param {Array} params - Query parameters
- * @param {Object} options - Additional options
- * @returns {Promise<{rows: Array, error: Error|null, rowCount: number}>}
- */
 async function safeQuery(pool, query, params = [], options = {}) {
-  const { logErrors = true, fallback = [], context = {} } = options;
+  const { logErrors: catchLog = true, fallback: fbVal = [], context: ctx = {} } = options;
   const startTime = Date.now();
 
   try {
     const result = await pool.query(query, params);
     const duration = Date.now() - startTime;
 
-    // Log slow queries (> 1 second)
     if (duration > 1000) {
       logger.warn('Slow query detected', {
         query: query.substring(0, 200),
         duration,
-        ...context
+        ...ctx
       });
     }
 
@@ -39,18 +25,18 @@ async function safeQuery(pool, query, params = [], options = {}) {
   } catch (error) {
     const duration = Date.now() - startTime;
 
-    if (logErrors) {
+    if (catchLog) {
       logger.error('Query error', {
         error: error.message,
         query: query.substring(0, 200),
         params: params.length > 0 ? '[params]' : 'none',
         duration,
-        ...context
+        ...ctx
       });
     }
 
     return {
-      rows: fallback,
+      rows: fbVal,
       error,
       rowCount: 0,
       duration
@@ -58,15 +44,8 @@ async function safeQuery(pool, query, params = [], options = {}) {
   }
 }
 
-/**
- * Execute a transaction with multiple queries
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {Function} callback - Async function receiving client
- * @param {Object} options - Additional options
- * @returns {Promise<{success: boolean, result: any, error: Error|null}>}
- */
 async function transaction(pool, callback, options = {}) {
-  const { logErrors = true, context = {} } = options;
+  const { logErrors: catchLog = true, context: ctx = {} } = options;
   const client = await pool.connect();
   const startTime = Date.now();
 
@@ -76,18 +55,18 @@ async function transaction(pool, callback, options = {}) {
     await client.query('COMMIT');
 
     const duration = Date.now() - startTime;
-    logger.info('Transaction completed', { duration, ...context });
+    logger.info('Transaction completed', { duration, ...ctx });
 
     return { success: true, result, error: null };
   } catch (error) {
     await client.query('ROLLBACK');
     const duration = Date.now() - startTime;
 
-    if (logErrors) {
+    if (catchLog) {
       logger.error('Transaction failed', {
         error: error.message,
         duration,
-        ...context
+        ...ctx
       });
     }
 
@@ -97,14 +76,6 @@ async function transaction(pool, callback, options = {}) {
   }
 }
 
-/**
- * Execute a query and return first row only
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {string} query - SQL query string
- * @param {Array} params - Query parameters
- * @param {Object} options - Additional options
- * @returns {Promise<{row: Object|null, error: Error|null}>}
- */
 async function queryOne(pool, query, params = [], options = {}) {
   const result = await safeQuery(pool, query, params, options);
   return {
@@ -113,15 +84,6 @@ async function queryOne(pool, query, params = [], options = {}) {
   };
 }
 
-/**
- * Execute a query and return a single value
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {string} query - SQL query string
- * @param {Array} params - Query parameters
- * @param {string} column - Column name to extract
- * @param {Object} options - Additional options
- * @returns {Promise<{value: any, error: Error|null}>}
- */
 async function queryValue(pool, query, params = [], column = null, options = {}) {
   const result = await safeQuery(pool, query, params, options);
   if (result.error) {
@@ -135,27 +97,12 @@ async function queryValue(pool, query, params = [], column = null, options = {})
   return { value, error: null };
 }
 
-/**
- * Check if a record exists
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {string} table - Table name
- * @param {string} column - Column name to check
- * @param {any} value - Value to check for
- * @returns {Promise<boolean>}
- */
 async function exists(pool, table, column, value) {
   const query = `SELECT 1 FROM ${table} WHERE ${column} = $1 LIMIT 1`;
   const result = await safeQuery(pool, query, [value], { logErrors: false });
   return result.rows.length > 0;
 }
 
-/**
- * Count records in a table with optional conditions
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {string} table - Table name
- * @param {Object} conditions - Optional where conditions {column: value}
- * @returns {Promise<number>}
- */
 async function count(pool, table, conditions = {}) {
   let query = `SELECT COUNT(*) FROM ${table}`;
   const params = [];
@@ -175,14 +122,6 @@ async function count(pool, table, conditions = {}) {
   return result.rows.length > 0 ? parseInt(result.rows[0].count) : 0;
 }
 
-/**
- * Insert a record and return the inserted row
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {string} table - Table name
- * @param {Object} data - Data to insert {column: value}
- * @param {Object} options - Additional options
- * @returns {Promise<{row: Object|null, error: Error|null}>}
- */
 async function insert(pool, table, data, options = {}) {
   const { returning = '*' } = options;
   const columns = Object.keys(data);
@@ -202,15 +141,6 @@ async function insert(pool, table, data, options = {}) {
   };
 }
 
-/**
- * Update records and return affected rows
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {string} table - Table name
- * @param {Object} data - Data to update {column: value}
- * @param {Object} conditions - Where conditions {column: value}
- * @param {Object} options - Additional options
- * @returns {Promise<{rows: Array, error: Error|null, rowCount: number}>}
- */
 async function update(pool, table, data, conditions, options = {}) {
   const { returning = '*' } = options;
   const setClauses = [];
@@ -218,14 +148,12 @@ async function update(pool, table, data, conditions, options = {}) {
   const params = [];
   let paramIndex = 1;
 
-  // Build SET clause
   for (const [column, value] of Object.entries(data)) {
     setClauses.push(`${column} = $${paramIndex}`);
     params.push(value);
     paramIndex++;
   }
 
-  // Build WHERE clause
   for (const [column, value] of Object.entries(conditions)) {
     whereClauses.push(`${column} = $${paramIndex}`);
     params.push(value);
@@ -247,13 +175,6 @@ async function update(pool, table, data, conditions, options = {}) {
   };
 }
 
-/**
- * Delete records and return affected count
- * @param {Pool} pool - PostgreSQL connection pool
- * @param {string} table - Table name
- * @param {Object} conditions - Where conditions {column: value}
- * @returns {Promise<{rowCount: number, error: Error|null}>}
- */
 async function deleteRecords(pool, table, conditions) {
   const whereClauses = [];
   const params = [];

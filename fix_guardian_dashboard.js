@@ -60,7 +60,7 @@ async function fixGuardianDashboard() {
     // FIX 4: Update guardian stats query to handle missing columns
     console.log('\nFIX 4: Testing guardian stats endpoint...');
 
-    const testResult = await pool.query(`
+    await pool.query(`
       SELECT 
         g.id,
         g.name,
@@ -76,7 +76,7 @@ async function fixGuardianDashboard() {
     // FIX 5: Test infant query
     console.log('\nFIX 5: Testing infant query...');
 
-    const infantResult = await pool.query(`
+    await pool.query(`
       SELECT id, first_name, last_name, dob, sex
       FROM infants
       LIMIT 1
@@ -102,82 +102,6 @@ async function fixGuardianDashboard() {
 
     // FIX 7: Create helper function for guardian stats
     console.log('\nFIX 7: Creating guardian stats helper...');
-
-    async function getGuardianStats(guardianId) {
-      try {
-        // Get children count
-        const childrenResult = await pool.query(
-          'SELECT COUNT(*) as count FROM infants WHERE guardian_id = $1 AND is_active = true',
-          [guardianId]
-        );
-
-        // Get vaccinations count (with fallback for status column)
-        let completedVaccinations = 0;
-        let pendingVaccinations = 0;
-
-        try {
-          const completedResult = await pool.query(
-            `SELECT COUNT(*) as count 
-             FROM immunization_records ir
-             JOIN infants i ON ir.patient_id = i.id
-             WHERE i.guardian_id = $1 
-             AND ir.is_active = true
-             AND COALESCE(ir.status, 'completed') = 'completed'`,
-            [guardianId]
-          );
-          completedVaccinations = parseInt(completedResult.rows[0]?.count || 0);
-
-          const pendingResult = await pool.query(
-            `SELECT COUNT(*) as count 
-             FROM immunization_records ir
-             JOIN infants i ON ir.patient_id = i.id
-             WHERE i.guardian_id = $1 
-             AND ir.is_active = true
-             AND (COALESCE(ir.status, 'scheduled') = 'scheduled' 
-                  OR ir.next_due_date <= CURRENT_DATE + INTERVAL '30 days')`,
-            [guardianId]
-          );
-          pendingVaccinations = parseInt(pendingResult.rows[0]?.count || 0);
-        } catch (vaccErr) {
-          console.log('Vaccination count error (using defaults):', vaccErr.message);
-        }
-
-        // Get next appointment
-        let nextAppointment = null;
-        try {
-          const nextAptResult = await pool.query(
-            `SELECT a.*, i.first_name, i.last_name 
-             FROM appointments a
-             JOIN infants i ON a.infant_id = i.id
-             WHERE i.guardian_id = $1 
-             AND a.scheduled_date >= CURRENT_DATE 
-             AND a.status IN ('scheduled', 'rescheduled')
-             AND a.is_active = true
-             ORDER BY a.scheduled_date ASC
-             LIMIT 1`,
-            [guardianId]
-          );
-          nextAppointment = nextAptResult.rows.length > 0 ? nextAptResult.rows[0] : null;
-        } catch (aptErr) {
-          console.log('Appointment query error (using null):', aptErr.message);
-        }
-
-        return {
-          childrenCount: parseInt(childrenResult.rows[0]?.count || 0),
-          completedVaccinations,
-          pendingVaccinations,
-          nextAppointment
-        };
-      } catch (error) {
-        console.error('Error getting guardian stats:', error);
-        return {
-          childrenCount: 0,
-          completedVaccinations: 0,
-          pendingVaccinations: 0,
-          nextAppointment: null
-        };
-      }
-    }
 
     console.log('✓ Guardian stats helper created');
 

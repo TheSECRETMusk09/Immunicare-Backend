@@ -1,10 +1,8 @@
 const db = require('../db');
 
-// Role-based access control middleware
 const checkPermission = (requiredRoles) => {
   return async (req, res, next) => {
     try {
-      // Check if user is authenticated
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required',
@@ -15,20 +13,16 @@ const checkPermission = (requiredRoles) => {
       const user = req.user;
       const userRole = user.role;
 
-      // Map database role names to middleware role names for permission checking
       const roleMapping = {
         physician: 'doctor',
-        healthcare_worker: 'health_worker',
+        healthcare_worker: 'healthcare_worker',
+        hcw: 'healthcare_worker',
         midwife: 'staff',
-        nutritionist: 'staff',
-        dentist: 'doctor',
       };
 
-      // Use mapped role if the exact role doesn't exist in requiredRoles
       const mappedRole = roleMapping[userRole] || userRole;
       const healthCenterId = user.health_center_id || user.clinic_id;
 
-      // Check if user has required role (check both original and mapped role)
       const rolesToCheck = [...requiredRoles, mappedRole];
       if (!rolesToCheck.includes(userRole) && !rolesToCheck.includes(mappedRole)) {
         return res.status(403).json({
@@ -40,7 +34,6 @@ const checkPermission = (requiredRoles) => {
         });
       }
 
-      // Add user context to request
       req.userContext = {
         id: user.id,
         username: user.username,
@@ -50,7 +43,6 @@ const checkPermission = (requiredRoles) => {
         permissions: getUserPermissions(mappedRole),
       };
 
-      // Log access for audit trail
       console.log(`Access granted to ${user.username} (${mappedRole || userRole}) for ${req.path}`);
 
       next();
@@ -64,12 +56,10 @@ const checkPermission = (requiredRoles) => {
   };
 };
 
-// Multi-factor authentication middleware
 const requireMFA = async (req, res, next) => {
   try {
     const user = req.user;
 
-    // Check if user has MFA enabled
     if (!user.mfa_enabled) {
       return res.status(403).json({
         error: 'Multi-factor authentication required for this action',
@@ -78,7 +68,6 @@ const requireMFA = async (req, res, next) => {
       });
     }
 
-    // Check if MFA was verified in this session
     if (!req.session.mfa_verified) {
       return res.status(403).json({
         error: 'Multi-factor authentication verification required',
@@ -97,7 +86,6 @@ const requireMFA = async (req, res, next) => {
   }
 };
 
-// Enhanced RBAC with permission checking
 const checkPermissionEnhanced = (requiredPermission) => {
   return async (req, res, next) => {
     try {
@@ -111,7 +99,6 @@ const checkPermissionEnhanced = (requiredPermission) => {
       const user = req.user;
       const userPermissions = getUserPermissions(user.role);
 
-      // Check if user has the required permission
       if (!userPermissions.includes(requiredPermission)) {
         return res.status(403).json({
           error: 'Insufficient permissions',
@@ -132,22 +119,18 @@ const checkPermissionEnhanced = (requiredPermission) => {
   };
 };
 
-// Get user permissions based on role
 const getUserPermissions = (role) => {
-  // Map database role names to middleware role names
   const roleMapping = {
     physician: 'doctor',
-    healthcare_worker: 'health_worker',
+    healthcare_worker: 'healthcare_worker',
+    hcw: 'healthcare_worker',
     midwife: 'staff',
-    nutritionist: 'staff',
-    dentist: 'doctor',
   };
 
-  // Use mapped role if the exact role doesn't exist in permissions
   const mappedRole = roleMapping[role] || role;
 
   const permissions = {
-    super_admin: [
+    system_admin: [
       'read:dashboard',
       'read:patients',
       'create:patients',
@@ -211,7 +194,7 @@ const getUserPermissions = (role) => {
       'create:certificates',
       'read:reports',
     ],
-    health_worker: [
+    healthcare_worker: [
       'read:dashboard',
       'read:patients',
       'create:patients',
@@ -219,6 +202,7 @@ const getUserPermissions = (role) => {
       'read:inventory',
       'create:inventory',
       'update:inventory',
+      'delete:inventory',
       'read:appointments',
       'create:appointments',
       'update:appointments',
@@ -255,6 +239,7 @@ const getUserPermissions = (role) => {
       'read:inventory',
       'create:inventory',
       'update:inventory',
+      'delete:inventory',
       'read:appointments',
       'create:appointments',
       'update:appointments',
@@ -281,7 +266,6 @@ const getUserPermissions = (role) => {
   return permissions[mappedRole] || permissions[role] || [];
 };
 
-// Check if user can access specific patient data
 const checkPatientAccess = async (req, res, next) => {
   try {
     const user = req.user;
@@ -291,24 +275,22 @@ const checkPatientAccess = async (req, res, next) => {
       return next();
     }
 
-    // Map database role names to middleware role names
     const roleMapping = {
       physician: 'doctor',
-      healthcare_worker: 'health_worker',
+      healthcare_worker: 'healthcare_worker',
+      hcw: 'healthcare_worker',
       midwife: 'staff',
-      nutritionist: 'staff',
-      dentist: 'doctor',
     };
 
     const userRole = roleMapping[user.role] || user.role;
 
-    // Admin and health workers can access all patients in their health center
     if (
       userRole === 'admin' ||
-      userRole === 'health_worker' ||
+      userRole === 'system_admin' ||
+      userRole === 'healthcare_worker' ||
       user.role === 'admin' ||
-      user.role === 'health_worker' ||
-      user.role === 'super_admin'
+      user.role === 'system_admin' ||
+      user.role === 'healthcare_worker'
     ) {
       const query = `
         SELECT health_center_id FROM patients WHERE id = $1
@@ -335,7 +317,6 @@ const checkPatientAccess = async (req, res, next) => {
       return next();
     }
 
-    // Guardians can only access their own family members
     if (userRole === 'guardian' || user.role === 'guardian') {
       const query = `
         SELECT id FROM patients
@@ -353,7 +334,6 @@ const checkPatientAccess = async (req, res, next) => {
       return next();
     }
 
-    // Nurses and doctors have limited access
     if (
       userRole === 'nurse' ||
       userRole === 'doctor' ||
@@ -395,7 +375,6 @@ const checkPatientAccess = async (req, res, next) => {
   }
 };
 
-// Check if user can access specific inventory data
 const checkInventoryAccess = async (req, res, next) => {
   try {
     const user = req.user;
@@ -405,26 +384,22 @@ const checkInventoryAccess = async (req, res, next) => {
       return next();
     }
 
-    // Map database role names to middleware role names
     const roleMapping = {
       physician: 'doctor',
-      healthcare_worker: 'health_worker',
+      healthcare_worker: 'healthcare_worker',
+      hcw: 'healthcare_worker',
       midwife: 'staff',
-      nutritionist: 'staff',
-      dentist: 'doctor',
     };
 
     const userRole = roleMapping[user.role] || user.role;
 
-    // Only admin, health_worker, doctor, nurse can access inventory
     const allowedRoles = [
       'admin',
-      'health_worker',
+      'system_admin',
+      'healthcare_worker',
       'doctor',
       'nurse',
-      'super_admin',
       'physician',
-      'healthcare_worker',
     ];
     if (!allowedRoles.includes(userRole) && !allowedRoles.includes(user.role)) {
       return res.status(403).json({
@@ -465,7 +440,6 @@ const checkInventoryAccess = async (req, res, next) => {
   }
 };
 
-// Audit log middleware
 const auditLog = async (req, res, next) => {
   try {
     const user = req.user;
@@ -474,7 +448,6 @@ const auditLog = async (req, res, next) => {
     const ipAddress = req.ip || req.connection.remoteAddress;
     const userAgent = req.get('User-Agent');
 
-    // Log sensitive operations
     const sensitiveOperations = ['POST', 'PUT', 'DELETE'];
     const sensitivePaths = ['/patients', '/inventory', '/vaccinations', '/appointments'];
 
@@ -489,14 +462,12 @@ const auditLog = async (req, res, next) => {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `;
 
-      // For now, we'll log the operation without detailed values
-      // In production, you'd want to capture the actual data changes
       await db.query(auditQuery, [
         resource.replace('/', ''),
         req.params.id || null,
         action,
-        null, // old_values
-        JSON.stringify(req.body), // new_values
+        null,
+        JSON.stringify(req.body),
         user.id,
         user.health_center_id,
         ipAddress,
@@ -507,12 +478,10 @@ const auditLog = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Audit log error:', error);
-    // Don't fail the request if audit logging fails
     next();
   }
 };
 
-// Rate limiting middleware
 const rateLimit = (maxRequests = 100, windowMs = 15 * 60 * 1000) => {
   const requests = new Map();
 
@@ -521,14 +490,12 @@ const rateLimit = (maxRequests = 100, windowMs = 15 * 60 * 1000) => {
     const now = Date.now();
     const windowStart = now - windowMs;
 
-    // Clean old entries
     if (requests.has(ip)) {
       const userRequests = requests.get(ip);
       const validRequests = userRequests.filter((time) => time > windowStart);
       requests.set(ip, validRequests);
     }
 
-    // Check current request count
     const userRequests = requests.get(ip) || [];
 
     if (userRequests.length >= maxRequests) {
@@ -539,7 +506,6 @@ const rateLimit = (maxRequests = 100, windowMs = 15 * 60 * 1000) => {
       });
     }
 
-    // Add current request
     userRequests.push(now);
     requests.set(ip, userRequests);
 
@@ -547,7 +513,6 @@ const rateLimit = (maxRequests = 100, windowMs = 15 * 60 * 1000) => {
   };
 };
 
-// Data validation middleware
 const validateInput = (schema) => {
   return (req, res, next) => {
     const { error } = schema.validate(req.body);
@@ -562,9 +527,7 @@ const validateInput = (schema) => {
   };
 };
 
-// Security headers middleware
 const securityHeaders = (req, res, next) => {
-  // Set security headers
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');

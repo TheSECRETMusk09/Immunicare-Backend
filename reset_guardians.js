@@ -6,8 +6,8 @@
  * Usage: node reset_guardians.js
  */
 
-const fs = require('fs');
-const path = require('path');
+require('fs');
+require('path');
 const pool = require('./db');
 const bcrypt = require('bcryptjs');
 
@@ -45,7 +45,7 @@ async function resetGuardians() {
     for (const col of columnsToAdd) {
       try {
         await client.query(
-          `ALTER TABLE guardians ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`,
+          `ALTER TABLE guardians ADD COLUMN IF NOT EXISTS ${col.name} ${col.type}`
         );
       } catch (e) {
         // Column might already exist, ignore
@@ -57,9 +57,9 @@ async function resetGuardians() {
     await client.query('TRUNCATE TABLE guardians RESTART IDENTITY CASCADE');
 
     // Get role and clinic IDs
-    const roleResult = await client.query('SELECT id FROM roles WHERE name = \'guardian\'');
+    const roleResult = await client.query("SELECT id FROM roles WHERE name = 'guardian'");
     const clinicResult = await client.query(
-      'SELECT id FROM clinics WHERE name = \'Guardian Portal\'',
+      "SELECT id FROM clinics WHERE name = 'Guardian Portal'"
     );
 
     let guardianRoleId = roleResult.rows[0]?.id;
@@ -183,7 +183,7 @@ async function resetGuardians() {
                 INSERT INTO guardians (id, name, first_name, last_name, phone, email, relationship, password, is_password_set, is_active, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             `,
-        [g.id, fullName, g.first_name, g.last_name, g.phone, g.email, g.rel, hashedPassword],
+        [g.id, fullName, g.first_name, g.last_name, g.phone, g.email, g.rel, hashedPassword]
       );
       console.log(`   ✅ Inserted guardian: ${fullName}`);
     }
@@ -211,7 +211,7 @@ async function resetGuardians() {
                         is_active = true
                     WHERE guardian_id = $4
                 `,
-          [hashedPassword, g.email, g.phone, g.id],
+          [hashedPassword, g.email, g.phone, g.id]
         );
         console.log(`   🔄 Updated user: ${username}`);
       } else {
@@ -221,7 +221,7 @@ async function resetGuardians() {
                     INSERT INTO users (username, password_hash, role_id, clinic_id, email, contact, guardian_id, is_active)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, true)
                 `,
-          [username, hashedPassword, guardianRoleId, guardianClinicId, g.email, g.phone, g.id],
+          [username, hashedPassword, guardianRoleId, guardianClinicId, g.email, g.phone, g.id]
         );
         console.log(`   ✅ Created user: ${username}`);
       }

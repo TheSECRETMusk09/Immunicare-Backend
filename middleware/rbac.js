@@ -1,16 +1,11 @@
-/**
- * Canonical Two-Role RBAC Middleware
- * Runtime roles:
- *  - SYSTEM_ADMIN
- *  - GUARDIAN
- */
+// Two runtime roles: SYSTEM_ADMIN and GUARDIAN.
+// All staff roles (nurse, midwife, clinic_manager, super_admin, etc.) map into SYSTEM_ADMIN.
 
 const db = require('../db');
 const { AuthorizationError, AuthenticationError } = require('./errorHandler');
 
 const CANONICAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: 'SYSTEM_ADMIN',
-  CLINIC_MANAGER: 'CLINIC_MANAGER',
   GUARDIAN: 'GUARDIAN',
 });
 
@@ -21,12 +16,16 @@ const LEGACY_SYSTEM_ADMIN_ROLES = new Set([
   'superadministrator',
   'admin',
   'administrator',
+  'clinic_manager',
+  'CLINIC_MANAGER',
+  'station_admin',
   'public_health_nurse',
   'inventory_manager',
   'physician',
   'doctor',
   'health_worker',
   'healthcare_worker',
+  'hcw',
   'nurse',
   'midwife',
   'nutritionist',
@@ -34,90 +33,73 @@ const LEGACY_SYSTEM_ADMIN_ROLES = new Set([
   'staff',
 ]);
 
-const LEGACY_CLINIC_MANAGER_ROLES = new Set(['clinic_manager']);
-
 const LEGACY_GUARDIAN_ROLES = new Set(['guardian', 'user', 'parent']);
 
-/**
- * Permission definitions in canonical roles.
- * Unknown permissions default to SYSTEM_ADMIN-only access.
- */
+// Permission map - anything not listed here defaults to SYSTEM_ADMIN only
 const PERMISSIONS = {
-  // Dashboard
-  'dashboard:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
-  'dashboard:analytics': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'dashboard:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
+  'dashboard:analytics': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // Infants / Patients
-  'patient:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'patient:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'patient:view:own': [CANONICAL_ROLES.GUARDIAN],
-  'patient:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'patient:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'patient:create:own': [CANONICAL_ROLES.GUARDIAN],
-  'patient:update': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'patient:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'patient:update:own': [CANONICAL_ROLES.GUARDIAN],
-  'patient:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'patient:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'patient:delete:own': [CANONICAL_ROLES.GUARDIAN],
 
-  // Appointments (policy C)
-  'appointment:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'appointment:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'appointment:view:own': [CANONICAL_ROLES.GUARDIAN],
-  'appointment:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'appointment:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'appointment:create:own': [CANONICAL_ROLES.GUARDIAN],
-  'appointment:update': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'appointment:cancel': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'appointment:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'appointment:cancel': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'appointment:cancel:own': [CANONICAL_ROLES.GUARDIAN],
-  'appointment:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'appointment:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // Vaccinations
-  'vaccination:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'vaccination:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'vaccination:view:own': [CANONICAL_ROLES.GUARDIAN],
-  'vaccination:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'vaccination:update': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'vaccination:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'vaccination:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'vaccination:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'vaccination:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // Inventory
-  'inventory:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'inventory:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'inventory:update': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'inventory:correct': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'inventory:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'inventory:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'inventory:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'inventory:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'inventory:correct': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'inventory:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // Transfer workflow
-  'transfer:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'transfer:validate': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'transfer:approve': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'transfer:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'transfer:validate': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'transfer:approve': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // Reports
-  'report:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'report:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'report:export': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'report:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'report:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'report:export': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // Users / Roles
   'user:view': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'user:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'user:update': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'user:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'user:manage_roles': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // System
   'system:settings': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'system:audit': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'system:sms_config': [CANONICAL_ROLES.SYSTEM_ADMIN],
   'admin:override': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // Notifications
-  'notification:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
-  'notification:send': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'notification:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
+  'notification:send': [CANONICAL_ROLES.SYSTEM_ADMIN],
 
-  // Documents
-  'document:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
-  'document:export': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER, CANONICAL_ROLES.GUARDIAN],
-  'document:create': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
-  'document:delete': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER],
+  'document:view': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
+  'document:export': [CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.GUARDIAN],
+  'document:create': [CANONICAL_ROLES.SYSTEM_ADMIN],
+  'document:delete': [CANONICAL_ROLES.SYSTEM_ADMIN],
 };
 
 const ROLE_HIERARCHY = {
   [CANONICAL_ROLES.SYSTEM_ADMIN]: 100,
-  [CANONICAL_ROLES.CLINIC_MANAGER]: 50,
   [CANONICAL_ROLES.GUARDIAN]: 10,
 };
 
@@ -128,18 +110,14 @@ const normalizeRole = (role) => {
 
   const normalized = String(role).trim();
 
-  if (normalized === CANONICAL_ROLES.SYSTEM_ADMIN || normalized === CANONICAL_ROLES.CLINIC_MANAGER || normalized === CANONICAL_ROLES.GUARDIAN) {
+  if (normalized === CANONICAL_ROLES.SYSTEM_ADMIN || normalized === CANONICAL_ROLES.GUARDIAN) {
     return normalized;
   }
 
   const lower = normalized.toLowerCase();
 
-  if (LEGACY_SYSTEM_ADMIN_ROLES.has(lower)) {
+  if (LEGACY_SYSTEM_ADMIN_ROLES.has(lower) || LEGACY_SYSTEM_ADMIN_ROLES.has(normalized)) {
     return CANONICAL_ROLES.SYSTEM_ADMIN;
-  }
-
-  if (LEGACY_CLINIC_MANAGER_ROLES.has(lower)) {
-    return CANONICAL_ROLES.CLINIC_MANAGER;
   }
 
   if (LEGACY_GUARDIAN_ROLES.has(lower)) {
@@ -201,31 +179,24 @@ const requirePermission = (permission) => {
   };
 };
 
-const requireRole = (...roles) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return next(new AuthenticationError('Authentication required'));
-    }
+const requireRole = (...roles) => (req, res, next) => {
+  if (!req.user) return next(new AuthenticationError('Authentication required'));
 
-    const canonicalRole = getCanonicalRole(req);
-    req.user.runtime_role = canonicalRole;
-    req.user.permissions = getRolePermissions(canonicalRole);
+  const canonicalRole = getCanonicalRole(req);
+  req.user.runtime_role = canonicalRole;
+  req.user.permissions = getRolePermissions(canonicalRole);
 
-    const requiredCanonical = roles
-      .flat()
-      .map((role) => normalizeRole(role))
-      .filter(Boolean);
+  const required = roles.flat().map((r) => normalizeRole(r)).filter(Boolean);
 
-    if (requiredCanonical.length === 0) {
-      return next(new AuthorizationError('Access denied. Invalid role requirement.'));
-    }
+  if (required.length === 0) {
+    return next(new AuthorizationError('Access denied. Invalid role requirement.'));
+  }
 
-    if (!requiredCanonical.includes(canonicalRole)) {
-      return next(new AuthorizationError(`Access denied. Required role: ${requiredCanonical.join(' or ')}`));
-    }
+  if (!required.includes(canonicalRole)) {
+    return next(new AuthorizationError(`Access denied. Required role: ${required.join(' or ')}`));
+  }
 
-    next();
-  };
+  next();
 };
 
 const requireMinRole = (minRole) => {
@@ -258,89 +229,76 @@ const requireAdmin = requireSystemAdmin;
 const requireSuperAdmin = requireSystemAdmin;
 
 const requireHealthWorker = (req, res, next) => {
-  return requireRole(CANONICAL_ROLES.SYSTEM_ADMIN, CANONICAL_ROLES.CLINIC_MANAGER)(req, res, next);
+  return requireRole(CANONICAL_ROLES.SYSTEM_ADMIN)(req, res, next);
 };
 
 const requireOwnershipOrRole = (
   resourceType,
   resourceIdParam = 'id',
   minRole = CANONICAL_ROLES.SYSTEM_ADMIN,
-) => {
-  return async (req, res, next) => {
-    try {
-      if (!req.user) {
-        return next(new AuthenticationError('Authentication required'));
-      }
+) => async (req, res, next) => {
+  try {
+    if (!req.user) return next(new AuthenticationError('Authentication required'));
 
-      const canonicalRole = getCanonicalRole(req);
-      req.user.runtime_role = canonicalRole;
+    const canonicalRole = getCanonicalRole(req);
+    req.user.runtime_role = canonicalRole;
 
-      if (hasRoleLevel(canonicalRole, minRole)) {
-        return next();
-      }
+    // Admins skip the ownership check entirely
+    if (hasRoleLevel(canonicalRole, minRole)) return next();
+    if (canonicalRole !== CANONICAL_ROLES.GUARDIAN) return next(new AuthorizationError('Access denied'));
 
-      if (canonicalRole !== CANONICAL_ROLES.GUARDIAN) {
-        return next(new AuthorizationError('Access denied'));
-      }
+    const resourceId = req.params[resourceIdParam] || req.body[resourceIdParam];
+    const guardianId = parseInt(req.user.guardian_id, 10);
 
-      const resourceId = req.params[resourceIdParam] || req.body[resourceIdParam];
-      const guardianId = parseInt(req.user.guardian_id, 10);
+    if (!guardianId || !resourceId) {
+      return next(new AuthorizationError('Guardian ownership validation failed'));
+    }
 
-      if (!guardianId || !resourceId) {
-        return next(new AuthorizationError('Guardian ownership validation failed'));
-      }
-
-      let query;
-      switch (resourceType) {
-      case 'patient':
-      case 'infant':
-        query = `
-          SELECT 1
-          FROM patients p
-          WHERE p.id = $1 AND p.guardian_id = $2 AND p.is_active = true
-          LIMIT 1
-        `;
-        break;
-      case 'appointment':
-        query = `
-          SELECT 1
-          FROM appointments a
-          LEFT JOIN patients p ON p.id = a.infant_id
-          WHERE a.id = $1
-            AND p.guardian_id = $2
-          LIMIT 1
-        `;
-        break;
-      case 'vaccination':
-        query = `
-          SELECT 1
-          FROM immunization_records ir
-          LEFT JOIN patients p ON p.id = ir.patient_id
-          WHERE ir.id = $1
-            AND p.guardian_id = $2
-          LIMIT 1
-        `;
-        break;
-      case 'guardian':
-        if (parseInt(resourceId, 10) !== guardianId) {
-          return next(new AuthorizationError('Access denied: You do not own this resource'));
-        }
-        return next();
-      default:
-        return next(new AuthorizationError('Unknown resource type'));
-      }
-
-      const result = await db.query(query, [resourceId, guardianId]);
-      if (result.rows.length === 0) {
+    let query;
+    switch (resourceType) {
+    case 'patient':
+    case 'infant':
+      query = `
+        SELECT 1 FROM patients p
+        WHERE p.id = $1 AND p.guardian_id = $2 AND p.is_active = true
+        LIMIT 1
+      `;
+      break;
+    case 'appointment':
+      query = `
+        SELECT 1 FROM appointments a
+        LEFT JOIN patients p ON p.id = a.infant_id
+        WHERE a.id = $1 AND p.guardian_id = $2
+        LIMIT 1
+      `;
+      break;
+    case 'vaccination':
+      query = `
+        SELECT 1 FROM immunization_records ir
+        LEFT JOIN patients p ON p.id = ir.patient_id
+        WHERE ir.id = $1 AND p.guardian_id = $2
+        LIMIT 1
+      `;
+      break;
+    case 'guardian':
+      if (parseInt(resourceId, 10) !== guardianId) {
         return next(new AuthorizationError('Access denied: You do not own this resource'));
       }
-
-      next();
-    } catch (error) {
-      console.error('Ownership check error:', error);
-      next(error);
+      return next();
+    default:
+      return next(new AuthorizationError('Unknown resource type'));
     }
-  };
+
+    const result = await db.query(query, [resourceId, guardianId]);
+    if (result.rows.length === 0) {
+      return next(new AuthorizationError('Access denied: You do not own this resource'));
+    }
+
+    next();
+  } catch (error) {
+    console.error('Ownership check error:', error);
+    next(error);
+  }
 };
 
 const BARANGAY_SCOPE = Object.freeze({
@@ -348,30 +306,26 @@ const BARANGAY_SCOPE = Object.freeze({
   barangay_name: 'Barangay San Nicolas, Pasig City',
 });
 
-const requireHealthCenterAccess = () => {
-  return async (req, res, next) => {
-    try {
-      if (!req.user) {
-        return next(new AuthenticationError('Authentication required'));
-      }
+const requireHealthCenterAccess = () => async (req, res, next) => {
+  try {
+    if (!req.user) return next(new AuthenticationError('Authentication required'));
 
-      const canonicalRole = getCanonicalRole(req);
-      req.user.runtime_role = canonicalRole;
-      req.user.permissions = getRolePermissions(canonicalRole);
+    const canonicalRole = getCanonicalRole(req);
+    req.user.runtime_role = canonicalRole;
+    req.user.permissions = getRolePermissions(canonicalRole);
 
-      const healthCenterId = req.user.health_center_id || req.user.clinic_id || null;
-      req.healthCenterFilter = {
-        health_center_id: healthCenterId,
-        clinic_id: healthCenterId,
-        ...BARANGAY_SCOPE,
-      };
+    const healthCenterId = req.user.health_center_id || req.user.clinic_id || null;
+    req.healthCenterFilter = {
+      health_center_id: healthCenterId,
+      clinic_id: healthCenterId,
+      ...BARANGAY_SCOPE,
+    };
 
-      next();
-    } catch (error) {
-      console.error('Health center access check error:', error);
-      next(error);
-    }
-  };
+    next();
+  } catch (error) {
+    console.error('Health center access check error:', error);
+    next(error);
+  }
 };
 
 const combineMiddleware = (...middlewares) => middlewares;
@@ -394,20 +348,14 @@ module.exports = {
   ROLE_HIERARCHY,
   PERMISSIONS,
   BARANGAY_SCOPE,
-
-  // Normalization
   normalizeRole,
   getCanonicalRole,
   getNormalizedRole: normalizeRole,
-
-  // Checks
   hasPermission,
   hasRoleLevel,
   getRoleLevel,
   getRolePermissions,
   isValidRole,
-
-  // Middleware
   requireAuth,
   requirePermission,
   requireRole,
@@ -419,7 +367,5 @@ module.exports = {
   requireGuardian,
   requireOwnershipOrRole,
   requireHealthCenterAccess,
-
-  // Utility
   combineMiddleware,
 };

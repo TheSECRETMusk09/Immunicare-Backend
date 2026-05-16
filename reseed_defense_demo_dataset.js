@@ -2,9 +2,7 @@ require('dotenv').config();
 
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const {
-  MAX_VACCINATION_APPOINTMENTS_PER_DAY,
-} = require('./utils/clinicCalendar');
+const { MAX_VACCINATION_APPOINTMENTS_PER_DAY } = require('./utils/clinicCalendar');
 
 process.env.DB_QUERY_TIMEOUT = '0';
 process.env.DB_STATEMENT_TIMEOUT = '0';
@@ -121,12 +119,15 @@ const randomDateBetween = (start, end) => {
 const startOfMonth = (value) => new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
 const endOfMonth = (value) =>
   new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 0, 23, 59, 59, 999));
-const monthKey = (value) => `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}`;
+const monthKey = (value) =>
+  `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}`;
 const monthName = (value) =>
   cloneDate(value).toLocaleString('en-PH', { month: 'long', timeZone: 'Asia/Manila' });
 const dateDifferenceInDays = (a, b) => Math.round((a.getTime() - b.getTime()) / 86400000);
-const formatMobile = () => `+639${String(randomInt(10, 99))}${String(randomInt(0, 9999999)).padStart(7, '0')}`;
-const formatLandline = () => `(02) ${String(randomInt(8000, 8999))}-${String(randomInt(1000, 9999))}`;
+const formatMobile = () =>
+  `+639${String(randomInt(10, 99))}${String(randomInt(0, 9999999)).padStart(7, '0')}`;
+const formatLandline = () =>
+  `(02) ${String(randomInt(8000, 8999))}-${String(randomInt(1000, 9999))}`;
 const safeJson = (value) => JSON.stringify(value || {});
 
 const monthSeries = (start, end) => {
@@ -149,11 +150,6 @@ const dailySeries = (start, end) => {
   return values;
 };
 
-const isWeekendDay = (value) => {
-  const dow = value.getUTCDay();
-  return dow === 0 || dow === 6;
-};
-
 const rollForwardToWeekday = (value) => {
   let cursor = cloneDate(value);
   while (!isDateAvailableForBooking(toIsoDate(cursor), { allowPast: true }).isAvailable) {
@@ -163,14 +159,14 @@ const rollForwardToWeekday = (value) => {
 };
 
 const weekdaySeries = (start, end) =>
-  dailySeries(start, end).filter((day) =>
-    isDateAvailableForBooking(toIsoDate(day), { allowPast: true }).isAvailable,
+  dailySeries(start, end).filter(
+    (day) => isDateAvailableForBooking(toIsoDate(day), { allowPast: true }).isAvailable
   );
 
 const buildOperationalServiceDays = (
   start,
   end,
-  { maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR } = {},
+  { maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR } = {}
 ) => {
   const weekdays = weekdaySeries(start, end);
   const daysByYear = new Map();
@@ -193,10 +189,7 @@ const buildOperationalServiceDays = (
 
     const step = yearlyDays.length / maxDaysPerYear;
     for (let index = 0; index < maxDaysPerYear; index += 1) {
-      const sourceIndex = Math.min(
-        yearlyDays.length - 1,
-        Math.floor(index * step),
-      );
+      const sourceIndex = Math.min(yearlyDays.length - 1, Math.floor(index * step));
       serviceDays.push(yearlyDays[sourceIndex]);
     }
   }
@@ -211,7 +204,7 @@ const createOperationalDayAllocator = (
     category = 'operational schedule',
     maxPerDay = MAX_VACCINATION_APPOINTMENTS_PER_DAY,
     maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR,
-  } = {},
+  } = {}
 ) => {
   const serviceDays = buildOperationalServiceDays(start, end, { maxDaysPerYear });
 
@@ -248,7 +241,7 @@ const createOperationalDayAllocator = (
     }
 
     throw new Error(
-      `Unable to allocate ${category}; service-day capacity of ${serviceDays.length * maxPerDay} has been exhausted.`,
+      `Unable to allocate ${category}; service-day capacity of ${serviceDays.length * maxPerDay} has been exhausted.`
     );
   };
 
@@ -299,7 +292,8 @@ const buildHouseholdGuardian = () => {
 const buildGuardianEmail = (guardian, sequence) =>
   `${slugify(`${guardian.firstName}.${guardian.lastName}`)}.${String(sequence).padStart(4, '0')}@demo-immunicare.ph`;
 const buildGuardianUsername = (sequence) => `demo.guardian.${String(sequence).padStart(4, '0')}`;
-const buildInfantControlNumber = (sequence) => `${DEMO_MARKER}-INF-${String(sequence).padStart(6, '0')}`;
+const buildInfantControlNumber = (sequence) =>
+  `${DEMO_MARKER}-INF-${String(sequence).padStart(6, '0')}`;
 const buildAppointmentControlNumber = (sequence) =>
   `${DEMO_MARKER}-APT-${String(sequence).padStart(7, '0')}`;
 const buildBatchNumber = (code, period, sequence) =>
@@ -345,7 +339,14 @@ const vaccineDemandBaseline = {
 };
 
 const visitTemplates = [
-  { code: 'BIRTH', ageMonths: 0, vaccines: [{ code: 'BCG', dose: 1 }, { code: 'HEP-B', dose: 1 }] },
+  {
+    code: 'BIRTH',
+    ageMonths: 0,
+    vaccines: [
+      { code: 'BCG', dose: 1 },
+      { code: 'HEP-B', dose: 1 },
+    ],
+  },
   {
     code: 'VISIT_1M',
     ageMonths: 1,
@@ -390,7 +391,8 @@ const buildInsertQuery = (tableName, columns, rows, returningColumns = []) => {
     return `(${placeholders.join(', ')})`;
   });
 
-  const returningClause = returningColumns.length > 0 ? ` RETURNING ${returningColumns.join(', ')}` : '';
+  const returningClause =
+    returningColumns.length > 0 ? ` RETURNING ${returningColumns.join(', ')}` : '';
 
   return {
     text: `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueGroups.join(', ')}${returningClause}`,
@@ -448,7 +450,7 @@ const updateInfantGuardianLinks = async (client, updates) => {
         ) AS links(infant_id, parent_guardian_id)
         WHERE i.id = links.infant_id
       `,
-      values,
+      values
     );
   }
 };
@@ -491,7 +493,7 @@ const deleteMatchingRowsInBatches = async (client, tableName, predicateSql, opti
         WHERE id IN (SELECT id FROM target_rows)
         RETURNING id
       `,
-      [batchSize],
+      [batchSize]
     );
 
     deletedCount += result.rowCount;
@@ -508,49 +510,57 @@ const deleteMatchingRowsInBatches = async (client, tableName, predicateSql, opti
 };
 
 const fetchReferenceData = async (client) => {
-  const [rolesResult, clinicsResult, vaccinesResult, scheduleResult, suppliersResult] = await Promise.all([
-    client.query(`SELECT id, name FROM roles`),
-    client.query(`SELECT id, name FROM clinics`),
-    client.query(`
+  const [rolesResult, clinicsResult, vaccinesResult, scheduleResult, suppliersResult] =
+    await Promise.all([
+      client.query(`SELECT id, name FROM roles`),
+      client.query(`SELECT id, name FROM clinics`),
+      client.query(`
       SELECT id, code, name, manufacturer
       FROM vaccines
       WHERE is_active = true
         AND code !~ '^SYNPH26-'
     `),
-    client.query(`
+      client.query(`
       SELECT id, vaccine_id, vaccine_name, vaccine_code, dose_number, age_in_months, target_age_months
       FROM vaccination_schedules
       WHERE is_active = true
     `),
-    client.query(`
+      client.query(`
       SELECT id, name, supplier_code
       FROM suppliers
       WHERE is_active = true
         AND COALESCE(supplier_code, '') !~ '^SYNPH26SUP'
       ORDER BY id
     `),
-  ]);
+    ]);
 
   return {
     rolesByName: new Map(rolesResult.rows.map((row) => [row.name, row.id])),
     clinicsByName: new Map(clinicsResult.rows.map((row) => [row.name, row.id])),
     vaccinesByCode: new Map(vaccinesResult.rows.map((row) => [row.code, row])),
     schedulesByKey: new Map(
-      scheduleResult.rows.map((row) => [`${row.vaccine_id}:${row.dose_number}`, row]),
+      scheduleResult.rows.map((row) => [`${row.vaccine_id}:${row.dose_number}`, row])
     ),
     suppliers: suppliersResult.rows,
   };
 };
 
 const generateStaffUsers = async (client, referenceData) => {
-  const adminRoleId = referenceData.rolesByName.get('admin') || referenceData.rolesByName.get('system_admin');
-  const nurseRoleId = referenceData.rolesByName.get('nurse') || referenceData.rolesByName.get('healthcare_worker');
-  const midwifeRoleId = referenceData.rolesByName.get('midwife') || referenceData.rolesByName.get('healthcare_worker');
-  const physicianRoleId = referenceData.rolesByName.get('physician') || referenceData.rolesByName.get('healthcare_worker');
+  const adminRoleId =
+    referenceData.rolesByName.get('admin') || referenceData.rolesByName.get('system_admin');
+  const nurseRoleId =
+    referenceData.rolesByName.get('nurse') || referenceData.rolesByName.get('healthcare_worker');
+  const midwifeRoleId =
+    referenceData.rolesByName.get('midwife') || referenceData.rolesByName.get('healthcare_worker');
+  const physicianRoleId =
+    referenceData.rolesByName.get('physician') ||
+    referenceData.rolesByName.get('healthcare_worker');
   const inventoryRoleId =
-    referenceData.rolesByName.get('inventory_manager') || referenceData.rolesByName.get('healthcare_worker');
+    referenceData.rolesByName.get('inventory_manager') ||
+    referenceData.rolesByName.get('healthcare_worker');
   const healthWorkerRoleId =
-    referenceData.rolesByName.get('health_worker') || referenceData.rolesByName.get('healthcare_worker');
+    referenceData.rolesByName.get('health_worker') ||
+    referenceData.rolesByName.get('healthcare_worker');
   const clinicId =
     referenceData.clinicsByName.get('San Nicolas Health Center') ||
     referenceData.clinicsByName.get('Main Health Center') ||
@@ -662,7 +672,10 @@ const generateStaffUsers = async (client, referenceData) => {
         definition.roleName,
       ];
     }),
-    { chunkSize: 100, returningColumns: ['id', 'username', 'email', 'role_id', 'first_name', 'last_name'] },
+    {
+      chunkSize: 100,
+      returningColumns: ['id', 'username', 'email', 'role_id', 'first_name', 'last_name'],
+    }
   );
 };
 
@@ -716,7 +729,7 @@ const generateChildren = (families, healthCenterClinicId) => {
       const createdAt = clampDate(
         randomDateBetween(WINDOW_START, addDays(WINDOW_START, 200)),
         addDays(dob, 1),
-        addDays(WINDOW_END, -365),
+        addDays(WINDOW_END, -365)
       );
 
       const child = {
@@ -764,7 +777,9 @@ const generateChildren = (families, healthCenterClinicId) => {
           { value: 'for_validation', weight: 14 },
           { value: 'pending', weight: 8 },
         ]),
-        transferInSource: chance(0.12) ? 'Transferred from another Pasig vaccination facility' : null,
+        transferInSource: chance(0.12)
+          ? 'Transferred from another Pasig vaccination facility'
+          : null,
       };
 
       child.doctorMidwifeNurseShort =
@@ -866,8 +881,17 @@ const buildInfantRows = (children) =>
   ]);
 
 const createBatchPlan = (referenceData, clinicId) => {
-  const inventoryCodes = ['BCG', 'BCG-DIL', 'HEP-B', 'PENTA', 'OPV-20', 'PCV-13-10', 'MMR', 'MMR-DIL', 'IPV-MULTI']
-    .filter((code) => referenceData.vaccinesByCode.has(code));
+  const inventoryCodes = [
+    'BCG',
+    'BCG-DIL',
+    'HEP-B',
+    'PENTA',
+    'OPV-20',
+    'PCV-13-10',
+    'MMR',
+    'MMR-DIL',
+    'IPV-MULTI',
+  ].filter((code) => referenceData.vaccinesByCode.has(code));
   const periods = monthSeries(WINDOW_START, WINDOW_END);
   const batches = [];
   let batchSequence = 1;
@@ -885,7 +909,11 @@ const createBatchPlan = (referenceData, clinicId) => {
       const residualFactor = chance(0.28) ? randomFloat(0.02, 0.22) : randomFloat(0, 0.08);
       const qtyCurrent = Math.max(0, Math.round(qtyReceived * residualFactor));
       const status =
-        expiryDate < CURRENT_DATE ? 'expired' : qtyCurrent <= Math.max(5, Math.round(qtyReceived * 0.04)) ? 'depleted' : 'active';
+        expiryDate < CURRENT_DATE
+          ? 'expired'
+          : qtyCurrent <= Math.max(5, Math.round(qtyReceived * 0.04))
+            ? 'depleted'
+            : 'active';
 
       batches.push({
         vaccineId: vaccine.id,
@@ -931,7 +959,14 @@ const createBatchPlan = (referenceData, clinicId) => {
   };
 };
 
-const createInventoryRows = (referenceData, batchByCodeAndMonth, staffUsers, clinicId, periods, inventoryCodes) => {
+const createInventoryRows = (
+  referenceData,
+  batchByCodeAndMonth,
+  staffUsers,
+  clinicId,
+  periods,
+  inventoryCodes
+) => {
   const inventoryRows = [];
   const inventoryDetails = [];
   const carryover = new Map();
@@ -944,14 +979,16 @@ const createInventoryRows = (referenceData, batchByCodeAndMonth, staffUsers, cli
       const key = `${vaccine.id}`;
       const beginningBalance = carryover.get(key) ?? randomInt(55, 140);
       const batch = batchByCodeAndMonth.get(`${code}:${monthKey(periodStart)}`) || null;
-      const received = batch ? Math.round(batch.qtyReceived * randomFloat(0.55, 0.82)) : randomInt(0, 42);
+      const received = batch
+        ? Math.round(batch.qtyReceived * randomFloat(0.55, 0.82))
+        : randomInt(0, 42);
       const issuance = randomInt(config.issuance[0], config.issuance[1]);
       const transferredIn = chance(0.18) ? randomInt(0, 28) : 0;
       const transferredOut = chance(0.14) ? randomInt(0, 20) : 0;
       const expiredWasted = chance(0.28) ? randomInt(0, 8) : 0;
       const stockOnHand = Math.max(
         0,
-        beginningBalance + received + transferredIn - transferredOut - expiredWasted - issuance,
+        beginningBalance + received + transferredIn - transferredOut - expiredWasted - issuance
       );
       const createdBy = pick(staffUsers).id;
       const updatedBy = chance(0.7) ? createdBy : pick(staffUsers).id;
@@ -1015,7 +1052,7 @@ const buildGrowthMeasurement = (dob, measurementDate, sex) => {
     weight: randomFloat(
       baseWeight + ageMonths * 0.52 - Math.max(0, ageMonths - 9) * 0.18,
       baseWeight + ageMonths * 0.62 - Math.max(0, ageMonths - 9) * 0.08,
-      2,
+      2
     ),
     height: randomFloat(50 + ageMonths * 1.65, 51.5 + ageMonths * 1.82, 2),
     headCircumference: randomFloat(34 + ageMonths * 0.42, 35 + ageMonths * 0.47, 2),
@@ -1038,12 +1075,58 @@ async function reseedDefenseDemoDataset() {
 
     console.log('\n[1/8] Cleaning current synthetic and guardian-facing demo data...');
     const cleanupGroups = [
-      ['appointment_confirmations', 'vaccination_reminders', 'sms_logs', 'audit_logs', 'notifications', 'appointments', 'immunization_records'],
-      ['announcement_recipient_deliveries', 'messages', 'reports', 'user_sessions', 'admin_activity_log', 'notification_logs', 'access_logs', 'security_events'],
-      ['vaccine_availability_notifications', 'vaccine_waitlist', 'transfer_in_cases', 'vaccination_records', 'vaccine_transactions'],
-      ['documents', 'document_downloads', 'infant_documents', 'health_records', 'growth', 'growth_records', 'infant_growth', 'patient_growth', 'paper_completion_status'],
-      ['vaccine_inventory_transactions', 'inventory_transactions', 'vaccine_inventory', 'vaccine_batches'],
-      ['guardian_notification_preferences', 'guardian_phone_numbers', 'notification_preferences', 'password_history', 'password_reset_otps', 'password_reset_tokens', 'user_preferences'],
+      [
+        'appointment_confirmations',
+        'vaccination_reminders',
+        'sms_logs',
+        'audit_logs',
+        'notifications',
+        'appointments',
+        'immunization_records',
+      ],
+      [
+        'announcement_recipient_deliveries',
+        'messages',
+        'reports',
+        'user_sessions',
+        'admin_activity_log',
+        'notification_logs',
+        'access_logs',
+        'security_events',
+      ],
+      [
+        'vaccine_availability_notifications',
+        'vaccine_waitlist',
+        'transfer_in_cases',
+        'vaccination_records',
+        'vaccine_transactions',
+      ],
+      [
+        'documents',
+        'document_downloads',
+        'infant_documents',
+        'health_records',
+        'growth',
+        'growth_records',
+        'infant_growth',
+        'patient_growth',
+        'paper_completion_status',
+      ],
+      [
+        'vaccine_inventory_transactions',
+        'inventory_transactions',
+        'vaccine_inventory',
+        'vaccine_batches',
+      ],
+      [
+        'guardian_notification_preferences',
+        'guardian_phone_numbers',
+        'notification_preferences',
+        'password_history',
+        'password_reset_otps',
+        'password_reset_tokens',
+        'user_preferences',
+      ],
       ['parent_guardian', 'infants', 'patients'],
     ];
 
@@ -1069,18 +1152,18 @@ async function reseedDefenseDemoDataset() {
         OR email LIKE '%@demo-immunicare.ph'
         OR email LIKE '%@immunicare.test'
       `,
-      { batchSize: 10000, label: 'users' },
+      { batchSize: 10000, label: 'users' }
     );
 
-    const deletedGuardians = await deleteMatchingRowsInBatches(
-      client,
-      'guardians',
-      `TRUE`,
-      { batchSize: 10000, label: 'guardians' },
-    );
+    const deletedGuardians = await deleteMatchingRowsInBatches(client, 'guardians', `TRUE`, {
+      batchSize: 10000,
+      label: 'guardians',
+    });
     await client.query("SET session_replication_role = 'origin'");
 
-    console.log(`Removed ${deletedGuardianUsers} guardian/demo users and ${deletedGuardians} guardian records`);
+    console.log(
+      `Removed ${deletedGuardianUsers} guardian/demo users and ${deletedGuardians} guardian records`
+    );
 
     await client.query(`
       UPDATE vaccination_schedules AS vs
@@ -1102,7 +1185,9 @@ async function reseedDefenseDemoDataset() {
       `);
     }
 
-    await client.query(`DELETE FROM vaccination_schedules WHERE vaccine_id IN (SELECT id FROM vaccines WHERE code ~ '^SYNPH26-')`);
+    await client.query(
+      `DELETE FROM vaccination_schedules WHERE vaccine_id IN (SELECT id FROM vaccines WHERE code ~ '^SYNPH26-')`
+    );
     await client.query(`DELETE FROM vaccines WHERE code ~ '^SYNPH26-'`);
     await client.query(`DELETE FROM suppliers WHERE COALESCE(supplier_code, '') ~ '^SYNPH26SUP'`);
 
@@ -1128,7 +1213,9 @@ async function reseedDefenseDemoDataset() {
 
     console.log(`Created ${staffUsers.length} demo staff users`);
 
-    console.log('\n[3/8] Generating realistic Pasig families, guardians, infants, and compatibility rows...');
+    console.log(
+      '\n[3/8] Generating realistic Pasig families, guardians, infants, and compatibility rows...'
+    );
     const families = generateFamilies();
     const children = generateChildren(families, healthCenterClinicId);
     const guardianPasswordHash = await bcrypt.hash(DEFAULT_GUARDIAN_PASSWORD, 10);
@@ -1189,12 +1276,12 @@ async function reseedDefenseDemoDataset() {
           guardian.emergencyPhone,
         ];
       }),
-      { chunkSize: 250, returningColumns: ['id', 'email'] },
+      { chunkSize: 250, returningColumns: ['id', 'email'] }
     );
 
     const guardianIdByEmail = new Map(insertedGuardians.map((row) => [row.email, row.id]));
     const guardianIdByFamilySequence = new Map(
-      families.map((family) => [family.sequence, guardianIdByEmail.get(family.guardian.email)]),
+      families.map((family) => [family.sequence, guardianIdByEmail.get(family.guardian.email)])
     );
 
     const insertedGuardianUsers = await insertRows(
@@ -1239,11 +1326,11 @@ async function reseedDefenseDemoDataset() {
           'guardian',
         ];
       }),
-      { chunkSize: 250, returningColumns: ['id', 'username', 'guardian_id', 'email'] },
+      { chunkSize: 250, returningColumns: ['id', 'username', 'guardian_id', 'email'] }
     );
 
     const guardianUserIdByGuardianId = new Map(
-      insertedGuardianUsers.map((row) => [row.guardian_id, row.id]),
+      insertedGuardianUsers.map((row) => [row.guardian_id, row.id])
     );
 
     await insertRows(
@@ -1277,7 +1364,7 @@ async function reseedDefenseDemoDataset() {
         '09:00:00',
         true,
       ]),
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -1303,7 +1390,7 @@ async function reseedDefenseDemoDataset() {
         family.guardian.createdAt,
         family.guardian.createdAt,
       ]),
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -1316,7 +1403,7 @@ async function reseedDefenseDemoDataset() {
         WINDOW_START,
         addMonths(WINDOW_END, 12),
       ]),
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -1369,7 +1456,7 @@ async function reseedDefenseDemoDataset() {
           null,
         ],
       ]),
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -1397,7 +1484,7 @@ async function reseedDefenseDemoDataset() {
         WINDOW_START,
         WINDOW_START,
       ]),
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     const insertedPatients = await insertRows(
@@ -1446,11 +1533,11 @@ async function reseedDefenseDemoDataset() {
         'age_months',
       ],
       buildPatientRows(children, guardianIdByFamilySequence),
-      { chunkSize: 200, returningColumns: ['id', 'control_number'] },
+      { chunkSize: 200, returningColumns: ['id', 'control_number'] }
     );
 
     const patientIdByControlNumber = new Map(
-      insertedPatients.map((row) => [row.control_number, row.id]),
+      insertedPatients.map((row) => [row.control_number, row.id])
     );
 
     const insertedInfants = await insertRows(
@@ -1487,11 +1574,11 @@ async function reseedDefenseDemoDataset() {
         'patient_control_number',
       ],
       buildInfantRows(children),
-      { chunkSize: 200, returningColumns: ['id', 'patient_control_number'] },
+      { chunkSize: 200, returningColumns: ['id', 'patient_control_number'] }
     );
 
     const infantIdByControlNumber = new Map(
-      insertedInfants.map((row) => [row.patient_control_number, row.id]),
+      insertedInfants.map((row) => [row.patient_control_number, row.id])
     );
 
     const insertedParentGuardians = await insertRows(
@@ -1536,11 +1623,11 @@ async function reseedDefenseDemoDataset() {
           true,
         ];
       }),
-      { chunkSize: 200, returningColumns: ['id', 'infant_id'] },
+      { chunkSize: 200, returningColumns: ['id', 'infant_id'] }
     );
 
     const parentGuardianIdByInfantId = new Map(
-      insertedParentGuardians.map((row) => [row.infant_id, row.id]),
+      insertedParentGuardians.map((row) => [row.infant_id, row.id])
     );
 
     await updateInfantGuardianLinks(
@@ -1548,9 +1635,9 @@ async function reseedDefenseDemoDataset() {
       children.map((child) => ({
         infantId: infantIdByControlNumber.get(child.controlNumber),
         parentGuardianId: parentGuardianIdByInfantId.get(
-          infantIdByControlNumber.get(child.controlNumber),
+          infantIdByControlNumber.get(child.controlNumber)
         ),
-      })),
+      }))
     );
 
     children.forEach((child) => {
@@ -1563,7 +1650,9 @@ async function reseedDefenseDemoDataset() {
       families[child.familySequence - 1].guardianUserId = child.guardianUserId;
     });
 
-    console.log(`Inserted ${families.length} guardians and ${children.length} linked infants/patients`);
+    console.log(
+      `Inserted ${families.length} guardians and ${children.length} linked infants/patients`
+    );
 
     console.log('\n[4/8] Building inventory, stock, batch, and utilization coverage...');
     const batchPlan = createBatchPlan(referenceData, healthCenterClinicId);
@@ -1588,12 +1677,17 @@ async function reseedDefenseDemoDataset() {
         'lot_number',
       ],
       batchPlan.batchRows,
-      { chunkSize: 150, returningColumns: ['id', 'vaccine_id', 'lot_no', 'expiry_date', 'created_at'] },
+      {
+        chunkSize: 150,
+        returningColumns: ['id', 'vaccine_id', 'lot_no', 'expiry_date', 'created_at'],
+      }
     );
 
     const batchLookup = new Map();
     for (const batch of insertedBatchRows) {
-      const vaccine = [...referenceData.vaccinesByCode.values()].find((entry) => entry.id === batch.vaccine_id);
+      const vaccine = [...referenceData.vaccinesByCode.values()].find(
+        (entry) => entry.id === batch.vaccine_id
+      );
       if (!vaccine) {
         continue;
       }
@@ -1601,7 +1695,8 @@ async function reseedDefenseDemoDataset() {
         id: batch.id,
         lotNo: batch.lot_no,
         expiryDate: new Date(batch.expiry_date),
-        qtyReceived: batchPlan.batches.find((entry) => entry.lotNo === batch.lot_no)?.qtyReceived || 0,
+        qtyReceived:
+          batchPlan.batches.find((entry) => entry.lotNo === batch.lot_no)?.qtyReceived || 0,
       });
     }
 
@@ -1611,7 +1706,7 @@ async function reseedDefenseDemoDataset() {
       staffUsers,
       healthCenterClinicId,
       batchPlan.periods,
-      batchPlan.inventoryCodes,
+      batchPlan.inventoryCodes
     );
 
     const insertedInventoryRows = await insertRows(
@@ -1642,7 +1737,7 @@ async function reseedDefenseDemoDataset() {
         'expiry_date',
       ],
       inventoryRows,
-      { chunkSize: 150, returningColumns: ['id', 'vaccine_id', 'period_start'] },
+      { chunkSize: 150, returningColumns: ['id', 'vaccine_id', 'period_start'] }
     );
 
     inventoryDetails.forEach((detail, index) => {
@@ -1772,7 +1867,7 @@ async function reseedDefenseDemoDataset() {
         'created_at',
       ],
       vaccineInventoryTransactionRows,
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await insertRows(
@@ -1780,15 +1875,21 @@ async function reseedDefenseDemoDataset() {
       'inventory_transactions',
       ['batch_id', 'txn_type', 'qty', 'user_id', 'notes', 'created_at'],
       inventoryTransactionRows.filter((row) => row[0]),
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
-    console.log(`Inserted ${insertedBatchRows.length} batches, ${insertedInventoryRows.length} inventory rows`);
+    console.log(
+      `Inserted ${insertedBatchRows.length} batches, ${insertedInventoryRows.length} inventory rows`
+    );
 
-    console.log('\n[5/8] Generating immunization history, appointments, reminders, transfers, and waitlists...');
+    console.log(
+      '\n[5/8] Generating immunization history, appointments, reminders, transfers, and waitlists...'
+    );
     const contemporaryBatchByVaccineCode = new Map();
     for (const row of insertedBatchRows) {
-      const vaccine = [...referenceData.vaccinesByCode.values()].find((entry) => entry.id === row.vaccine_id);
+      const vaccine = [...referenceData.vaccinesByCode.values()].find(
+        (entry) => entry.id === row.vaccine_id
+      );
       if (!vaccine) {
         continue;
       }
@@ -1810,7 +1911,7 @@ async function reseedDefenseDemoDataset() {
     const selectBatchForVaccine = (vaccineCode, adminDate) => {
       const options = contemporaryBatchByVaccineCode.get(vaccineCode) || [];
       const valid = options.filter(
-        (option) => option.createdAt <= adminDate && option.expiryDate >= adminDate,
+        (option) => option.createdAt <= adminDate && option.expiryDate >= adminDate
       );
       if (valid.length) {
         return valid[valid.length - 1];
@@ -1836,12 +1937,12 @@ async function reseedDefenseDemoDataset() {
     const completedVisitAllocator = createOperationalDayAllocator(
       OPERATIONAL_HISTORY_START,
       CURRENT_DATE,
-      { category: 'defense demo completed visits' },
+      { category: 'defense demo completed visits' }
     );
     const futureAppointmentAllocator = createOperationalDayAllocator(
       addDays(CURRENT_DATE, 1),
       WINDOW_END,
-      { category: 'defense demo scheduled appointments' },
+      { category: 'defense demo scheduled appointments' }
     );
 
     for (const child of children) {
@@ -1849,26 +1950,30 @@ async function reseedDefenseDemoDataset() {
 
       for (const template of visitTemplates) {
         const dueDate = addMonths(child.dob, template.ageMonths);
-        const jitteredAdminDate = clampDate(addDays(dueDate, randomInt(-4, 21)), child.dob, WINDOW_END);
+        const jitteredAdminDate = clampDate(
+          addDays(dueDate, randomInt(-4, 21)),
+          child.dob,
+          WINDOW_END
+        );
         const dueByToday = dueDate <= CURRENT_DATE;
         const overdueDays = dateDifferenceInDays(CURRENT_DATE, dueDate);
-        const completionProbability =
-          !dueByToday
-            ? 0
-            : overdueDays > 240
-              ? 0.93
-              : overdueDays > 90
-                ? 0.87
-                : overdueDays > 14
-                  ? 0.74
-                  : 0.48;
+        const completionProbability = !dueByToday
+          ? 0
+          : overdueDays > 240
+            ? 0.93
+            : overdueDays > 90
+              ? 0.87
+              : overdueDays > 14
+                ? 0.74
+                : 0.48;
 
         const isCompleted = dueByToday && chance(completionProbability);
 
         if (isCompleted) {
-          const preferredAdminDate = dueDate < WINDOW_START
-            ? dueDate
-            : clampDate(jitteredAdminDate, WINDOW_START, CURRENT_DATE);
+          const preferredAdminDate =
+            dueDate < WINDOW_START
+              ? dueDate
+              : clampDate(jitteredAdminDate, WINDOW_START, CURRENT_DATE);
           const actualAdminDate = completedVisitAllocator.allocate(preferredAdminDate);
           const recordCreatedAt =
             actualAdminDate < WINDOW_START
@@ -1887,8 +1992,14 @@ async function reseedDefenseDemoDataset() {
               continue;
             }
 
-            const batch = actualAdminDate >= WINDOW_START ? selectBatchForVaccine(vaccineDose.code, actualAdminDate) : null;
-            const notePrefix = actualAdminDate < WINDOW_START ? 'Historical record imported during demo reseed.' : 'Administered at health center visit.';
+            const batch =
+              actualAdminDate >= WINDOW_START
+                ? selectBatchForVaccine(vaccineDose.code, actualAdminDate)
+                : null;
+            const notePrefix =
+              actualAdminDate < WINDOW_START
+                ? 'Historical record imported during demo reseed.'
+                : 'Administered at health center visit.';
 
             immunizationRows.push([
               child.patientId,
@@ -1907,8 +2018,10 @@ async function reseedDefenseDemoDataset() {
               chance(0.07) ? 'Mild fever resolved within 24 hours' : null,
               pick(['Nurse Clarisse Reyes', 'Midwife Mariel Lim', 'Dr. Michael Tan']),
               scheduleIdFor(vaccineDose.code, vaccineDose.dose),
-              batch?.lotNo || `${DEMO_MARKER}-HIST-${vaccineDose.code}-${toIsoDate(actualAdminDate)}`,
-              batch?.lotNo || `${DEMO_MARKER}-HIST-${vaccineDose.code}-${toIsoDate(actualAdminDate)}`,
+              batch?.lotNo ||
+                `${DEMO_MARKER}-HIST-${vaccineDose.code}-${toIsoDate(actualAdminDate)}`,
+              batch?.lotNo ||
+                `${DEMO_MARKER}-HIST-${vaccineDose.code}-${toIsoDate(actualAdminDate)}`,
             ]);
 
             if (batch?.id) {
@@ -2006,20 +2119,21 @@ async function reseedDefenseDemoDataset() {
 
           const scheduledAppointmentDate = futureAppointmentAllocator.allocate(appointmentDate);
 
-          const appointmentStatus = dueDate <= CURRENT_DATE
-            ? weightedPick([
-                { value: 'scheduled', weight: 44 },
-                { value: 'confirmed', weight: 28 },
-                { value: 'rescheduled', weight: 12 },
-                { value: 'no-show', weight: 10 },
-                { value: 'cancelled', weight: 6 },
-              ])
-            : weightedPick([
-                { value: 'scheduled', weight: 54 },
-                { value: 'confirmed', weight: 32 },
-                { value: 'rescheduled', weight: 10 },
-                { value: 'cancelled', weight: 4 },
-              ]);
+          const appointmentStatus =
+            dueDate <= CURRENT_DATE
+              ? weightedPick([
+                  { value: 'scheduled', weight: 44 },
+                  { value: 'confirmed', weight: 28 },
+                  { value: 'rescheduled', weight: 12 },
+                  { value: 'no-show', weight: 10 },
+                  { value: 'cancelled', weight: 6 },
+                ])
+              : weightedPick([
+                  { value: 'scheduled', weight: 54 },
+                  { value: 'confirmed', weight: 32 },
+                  { value: 'rescheduled', weight: 10 },
+                  { value: 'cancelled', weight: 4 },
+                ]);
 
           appointmentRows.push([
             child.infantId,
@@ -2057,11 +2171,16 @@ async function reseedDefenseDemoDataset() {
             child.infantId,
             referenceData.vaccinesByCode.get(template.vaccines[0].code)?.id || null,
             toIsoDate(dueDate),
-            toIsoDate(addDays(scheduledAppointmentDate, -weightedPick([
-              { value: 1, weight: 22 },
-              { value: 3, weight: 54 },
-              { value: 5, weight: 24 },
-            ]))),
+            toIsoDate(
+              addDays(
+                scheduledAppointmentDate,
+                -weightedPick([
+                  { value: 1, weight: 22 },
+                  { value: 3, weight: 54 },
+                  { value: 5, weight: 24 },
+                ])
+              )
+            ),
             appointmentStatus === 'no-show' ? 'overdue' : 'scheduled',
             null,
             addDays(scheduledAppointmentDate, -randomInt(12, 20)),
@@ -2128,7 +2247,10 @@ async function reseedDefenseDemoDataset() {
         'sms_missed_notification_sent',
       ],
       appointmentRows,
-      { chunkSize: 200, returningColumns: ['id', 'guardian_id', 'status', 'scheduled_date', 'control_number'] },
+      {
+        chunkSize: 200,
+        returningColumns: ['id', 'guardian_id', 'status', 'scheduled_date', 'control_number'],
+      }
     );
 
     await insertRows(
@@ -2144,7 +2266,9 @@ async function reseedDefenseDemoDataset() {
         'created_at',
       ],
       insertedAppointments
-        .filter((appointment) => ['scheduled', 'confirmed', 'rescheduled'].includes(appointment.status))
+        .filter((appointment) =>
+          ['scheduled', 'confirmed', 'rescheduled'].includes(appointment.status)
+        )
         .slice(0, 7000)
         .map((appointment) => {
           const createdAt = addDays(new Date(appointment.scheduled_date), -1);
@@ -2154,16 +2278,18 @@ async function reseedDefenseDemoDataset() {
             appointment.guardian_id,
             `${DEMO_MARKER} Please confirm ${appointment.control_number} for your child vaccination visit.`,
             responseReceived,
-            responseReceived ? weightedPick([
-              { value: 'confirmed', weight: 72 },
-              { value: 'reschedule_requested', weight: 18 },
-              { value: 'cancelled', weight: 10 },
-            ]) : null,
+            responseReceived
+              ? weightedPick([
+                  { value: 'confirmed', weight: 72 },
+                  { value: 'reschedule_requested', weight: 18 },
+                  { value: 'cancelled', weight: 10 },
+                ])
+              : null,
             responseReceived ? addDays(createdAt, 1) : null,
             createdAt,
           ];
         }),
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -2190,7 +2316,7 @@ async function reseedDefenseDemoDataset() {
         'batch_number',
       ],
       immunizationRows,
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -2214,7 +2340,7 @@ async function reseedDefenseDemoDataset() {
         'updated_at',
       ],
       legacyVaccinationRows,
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -2240,7 +2366,7 @@ async function reseedDefenseDemoDataset() {
         'notes',
       ],
       reminderRows,
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -2266,15 +2392,27 @@ async function reseedDefenseDemoDataset() {
         'validated_by',
       ],
       transferCaseRows.slice(0, 600),
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     const insertedWaitlistRows = await insertRows(
       client,
       'vaccine_waitlist',
-      ['infant_id', 'vaccine_id', 'guardian_id', 'clinic_id', 'status', 'notified_at', 'created_at', 'updated_at'],
+      [
+        'infant_id',
+        'vaccine_id',
+        'guardian_id',
+        'clinic_id',
+        'status',
+        'notified_at',
+        'created_at',
+        'updated_at',
+      ],
       waitlistRows.slice(0, 320),
-      { chunkSize: 200, returningColumns: ['id', 'infant_id', 'vaccine_id', 'guardian_id', 'status', 'created_at'] },
+      {
+        chunkSize: 200,
+        returningColumns: ['id', 'infant_id', 'vaccine_id', 'guardian_id', 'status', 'created_at'],
+      }
     );
 
     await insertRows(
@@ -2305,16 +2443,22 @@ async function reseedDefenseDemoDataset() {
           chance(0.8) ? addDays(new Date(row.created_at), 1) : null,
           row.created_at,
         ]),
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
-    console.log(`Inserted ${immunizationRows.length} immunization rows, ${insertedAppointments.length} appointments`);
+    console.log(
+      `Inserted ${immunizationRows.length} immunization rows, ${insertedAppointments.length} appointments`
+    );
 
-    console.log('\n[6/8] Populating reminders, notifications, announcements, messages, growth, documents, and reports...');
+    console.log(
+      '\n[6/8] Populating reminders, notifications, announcements, messages, growth, documents, and reports...'
+    );
     const reminderNotificationRows = reminderRows.map((reminder, index) => {
       const guardianId = reminder[9];
       const guardianUserId = guardianUserIdByGuardianId.get(guardianId);
-      const child = children.find((entry) => entry.guardianId === guardianId && entry.patientId === reminder[8]);
+      const child = children.find(
+        (entry) => entry.guardianId === guardianId && entry.patientId === reminder[8]
+      );
       const createdAt = reminder[6];
       return [
         'appointment_reminder',
@@ -2383,7 +2527,9 @@ async function reseedDefenseDemoDataset() {
       .filter((detail) => detail.stockOnHand <= 45 && detail.periodStart <= CURRENT_DATE)
       .slice(0, 1200)
       .map((detail) => {
-        const vaccine = [...referenceData.vaccinesByCode.values()].find((row) => row.id === detail.vaccineId);
+        const vaccine = [...referenceData.vaccinesByCode.values()].find(
+          (row) => row.id === detail.vaccineId
+        );
         const createdAt = addDays(detail.periodStart, 26);
         const adminUser = pick(staffUsers);
         return [
@@ -2490,15 +2636,26 @@ async function reseedDefenseDemoDataset() {
       [...reminderNotificationRows, ...adminNotificationRows],
       {
         chunkSize: 200,
-        returningColumns: ['id', 'channel', 'guardian_id', 'user_id', 'message', 'status', 'recipient_phone', 'recipient_name', 'created_at'],
-      },
+        returningColumns: [
+          'id',
+          'channel',
+          'guardian_id',
+          'user_id',
+          'message',
+          'status',
+          'recipient_phone',
+          'recipient_name',
+          'created_at',
+        ],
+      }
     );
 
     const announcementRows = [];
     let announcementSequence = 1;
     const announcementMonths = batchPlan.periods.filter((_, index) => index % 2 === 0);
     for (const period of announcementMonths) {
-      const template = ANNOUNCEMENT_TEMPLATES[(announcementSequence - 1) % ANNOUNCEMENT_TEMPLATES.length];
+      const template =
+        ANNOUNCEMENT_TEMPLATES[(announcementSequence - 1) % ANNOUNCEMENT_TEMPLATES.length];
       const createdBy = pick(staffUsers).id;
       const startDate = addDays(period, randomInt(0, 4));
       const endDate = addDays(endOfMonth(period), randomInt(10, 35));
@@ -2541,7 +2698,7 @@ async function reseedDefenseDemoDataset() {
         'deleted_at',
       ],
       announcementRows,
-      { chunkSize: 120, returningColumns: ['id', 'title', 'created_at', 'target_audience'] },
+      { chunkSize: 120, returningColumns: ['id', 'title', 'created_at', 'target_audience'] }
     );
 
     const guardianAnnouncementRows = [];
@@ -2602,13 +2759,15 @@ async function reseedDefenseDemoDataset() {
         'updated_at',
       ],
       guardianAnnouncementRows,
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     const messageRows = [];
     for (let index = 0; index < 3200; index += 1) {
       const child = pick(children);
-      const guardianUser = insertedGuardianUsers.find((user) => user.guardian_id === child.guardianId);
+      const guardianUser = insertedGuardianUsers.find(
+        (user) => user.guardian_id === child.guardianId
+      );
       const staffUser = pick(staffUsers);
       const createdAt = randomDateBetween(WINDOW_START, CURRENT_DATE);
       const guardianStartsThread = chance(0.58);
@@ -2620,10 +2779,12 @@ async function reseedDefenseDemoDataset() {
         pick(MESSAGE_SUBJECTS),
         pick(MESSAGE_BODIES),
         guardianStartsThread ? 'guardian_inquiry' : 'staff_reply',
-        guardianStartsThread ? 'normal' : weightedPick([
-          { value: 'normal', weight: 72 },
-          { value: 'high', weight: 28 },
-        ]),
+        guardianStartsThread
+          ? 'normal'
+          : weightedPick([
+              { value: 'normal', weight: 72 },
+              { value: 'high', weight: 28 },
+            ]),
         weightedPick([
           { value: 'sent', weight: 24 },
           { value: 'delivered', weight: 42 },
@@ -2665,7 +2826,7 @@ async function reseedDefenseDemoDataset() {
         'conversation_id',
       ],
       messageRows,
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     const growthRecordRows = [];
@@ -2790,17 +2951,39 @@ async function reseedDefenseDemoDataset() {
     await insertRows(
       client,
       'growth_records',
-      ['infant_id', 'record_date', 'weight', 'height', 'head_circumference', 'notes', 'recorded_by', 'created_at', 'updated_at', 'age_in_days'],
+      [
+        'infant_id',
+        'record_date',
+        'weight',
+        'height',
+        'head_circumference',
+        'notes',
+        'recorded_by',
+        'created_at',
+        'updated_at',
+        'age_in_days',
+      ],
       growthRecordRows,
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
       client,
       'growth',
-      ['infant_id', 'date_recorded', 'weight_kg', 'height_cm', 'head_circumference_cm', 'age_in_days', 'notes', 'created_by', 'created_at', 'updated_at'],
+      [
+        'infant_id',
+        'date_recorded',
+        'weight_kg',
+        'height_cm',
+        'head_circumference_cm',
+        'age_in_days',
+        'notes',
+        'created_by',
+        'created_at',
+        'updated_at',
+      ],
       legacyGrowthRows,
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     await insertRows(
@@ -2853,7 +3036,7 @@ async function reseedDefenseDemoDataset() {
         'updated_at',
       ],
       infantGrowthRows,
-      { chunkSize: 150 },
+      { chunkSize: 150 }
     );
 
     await insertRows(
@@ -2876,7 +3059,7 @@ async function reseedDefenseDemoDataset() {
         'age_in_days',
       ],
       patientGrowthRows,
-      { chunkSize: 250 },
+      { chunkSize: 250 }
     );
 
     const documentsRows = [];
@@ -2992,17 +3175,42 @@ async function reseedDefenseDemoDataset() {
     await insertRows(
       client,
       'documents',
-      ['infant_id', 'template_id', 'document_type', 'file_path', 'file_name', 'file_size', 'generated_by', 'download_count', 'status', 'created_at', 'updated_at'],
+      [
+        'infant_id',
+        'template_id',
+        'document_type',
+        'file_path',
+        'file_name',
+        'file_size',
+        'generated_by',
+        'download_count',
+        'status',
+        'created_at',
+        'updated_at',
+      ],
       documentsRows,
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await insertRows(
       client,
       'infant_documents',
-      ['infant_id', 'document_type', 'file_path', 'original_filename', 'mime_type', 'file_size', 'uploaded_by', 'uploaded_at', 'description', 'is_active', 'created_at', 'updated_at'],
+      [
+        'infant_id',
+        'document_type',
+        'file_path',
+        'original_filename',
+        'mime_type',
+        'file_size',
+        'uploaded_by',
+        'uploaded_at',
+        'description',
+        'is_active',
+        'created_at',
+        'updated_at',
+      ],
       infantDocumentRows,
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await insertRows(
@@ -3048,15 +3256,23 @@ async function reseedDefenseDemoDataset() {
         'updated_at',
       ],
       healthRecordRows,
-      { chunkSize: 150 },
+      { chunkSize: 150 }
     );
 
     await insertRows(
       client,
       'document_downloads',
-      ['template_id', 'infant_id', 'user_id', 'download_date', 'download_status', 'created_at', 'patient_id'],
+      [
+        'template_id',
+        'infant_id',
+        'user_id',
+        'download_date',
+        'download_status',
+        'created_at',
+        'patient_id',
+      ],
       documentDownloadRows,
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     const reportRows = [];
@@ -3088,14 +3304,35 @@ async function reseedDefenseDemoDataset() {
     await insertRows(
       client,
       'reports',
-      ['type', 'title', 'description', 'parameters', 'file_path', 'file_format', 'status', 'generated_by', 'date_generated', 'expires_at', 'download_count', 'error_message', 'is_active', 'created_at', 'updated_at', 'file_size'],
+      [
+        'type',
+        'title',
+        'description',
+        'parameters',
+        'file_path',
+        'file_format',
+        'status',
+        'generated_by',
+        'date_generated',
+        'expires_at',
+        'download_count',
+        'error_message',
+        'is_active',
+        'created_at',
+        'updated_at',
+        'file_size',
+      ],
       reportRows,
-      { chunkSize: 150 },
+      { chunkSize: 150 }
     );
 
-    console.log(`Inserted ${insertedNotifications.length} notifications, ${guardianAnnouncementRows.length} announcement deliveries`);
+    console.log(
+      `Inserted ${insertedNotifications.length} notifications, ${guardianAnnouncementRows.length} announcement deliveries`
+    );
 
-    console.log('\n[7/8] Writing sessions, admin logs, audit trails, SMS traces, and access activity...');
+    console.log(
+      '\n[7/8] Writing sessions, admin logs, audit trails, SMS traces, and access activity...'
+    );
     const allOperationalUsers = [...staffUsers, ...insertedGuardianUsers];
 
     await insertRows(
@@ -3142,35 +3379,55 @@ async function reseedDefenseDemoDataset() {
           null,
           null,
         ]),
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await insertRows(
       client,
       'notification_logs',
-      ['recipient_type', 'recipient_id', 'notification_type', 'channel', 'subject', 'content', 'status', 'external_message_id', 'metadata', 'error_details', 'sent_at', 'delivered_at', 'failed_at', 'created_at', 'updated_at'],
-      insertedNotifications.slice(0, 11000).map((notification, index) => [
-        notification.guardian_id ? 'guardian' : 'user',
-        notification.guardian_id || notification.user_id,
-        'portal_notification',
-        notification.channel === 'both' ? 'in_app' : notification.channel,
-        notification.recipient_name || notification.message.slice(0, 40),
-        notification.message,
-        notification.status === 'read'
-          ? 'delivered'
-          : notification.status === 'queued'
-            ? 'pending'
-            : notification.status,
-        buildReferenceNumber('NLOG', index + 1),
-        safeJson({ sourceNotificationId: notification.id }),
-        notification.status === 'failed' ? 'Simulated provider failure' : null,
-        notification.status === 'queued' ? null : addDays(new Date(notification.created_at), 1),
-        ['delivered', 'read'].includes(notification.status) ? addDays(new Date(notification.created_at), 1) : null,
-        notification.status === 'failed' ? addDays(new Date(notification.created_at), 1) : null,
-        notification.created_at,
-        notification.created_at,
-      ]),
-      { chunkSize: 200 },
+      [
+        'recipient_type',
+        'recipient_id',
+        'notification_type',
+        'channel',
+        'subject',
+        'content',
+        'status',
+        'external_message_id',
+        'metadata',
+        'error_details',
+        'sent_at',
+        'delivered_at',
+        'failed_at',
+        'created_at',
+        'updated_at',
+      ],
+      insertedNotifications
+        .slice(0, 11000)
+        .map((notification, index) => [
+          notification.guardian_id ? 'guardian' : 'user',
+          notification.guardian_id || notification.user_id,
+          'portal_notification',
+          notification.channel === 'both' ? 'in_app' : notification.channel,
+          notification.recipient_name || notification.message.slice(0, 40),
+          notification.message,
+          notification.status === 'read'
+            ? 'delivered'
+            : notification.status === 'queued'
+              ? 'pending'
+              : notification.status,
+          buildReferenceNumber('NLOG', index + 1),
+          safeJson({ sourceNotificationId: notification.id }),
+          notification.status === 'failed' ? 'Simulated provider failure' : null,
+          notification.status === 'queued' ? null : addDays(new Date(notification.created_at), 1),
+          ['delivered', 'read'].includes(notification.status)
+            ? addDays(new Date(notification.created_at), 1)
+            : null,
+          notification.status === 'failed' ? addDays(new Date(notification.created_at), 1) : null,
+          notification.created_at,
+          notification.created_at,
+        ]),
+      { chunkSize: 200 }
     );
 
     const sessionRows = [];
@@ -3183,8 +3440,13 @@ async function reseedDefenseDemoDataset() {
         user.id,
         crypto.randomUUID(),
         `203.177.${randomInt(1, 254)}.${randomInt(1, 254)}`,
-        chance(0.65) ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' : 'Mozilla/5.0 (Linux; Android 13)',
-        safeJson({ device: chance(0.65) ? 'desktop' : 'mobile', browser: chance(0.5) ? 'Chrome' : 'Edge' }),
+        chance(0.65)
+          ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+          : 'Mozilla/5.0 (Linux; Android 13)',
+        safeJson({
+          device: chance(0.65) ? 'desktop' : 'mobile',
+          browser: chance(0.5) ? 'Chrome' : 'Edge',
+        }),
         safeJson({ city: DEFAULT_CITY, region: DEFAULT_REGION }),
         loginTime,
         logoutTime,
@@ -3204,15 +3466,52 @@ async function reseedDefenseDemoDataset() {
     await insertRows(
       client,
       'user_sessions',
-      ['user_id', 'session_token', 'ip_address', 'user_agent', 'device_info', 'location_info', 'login_time', 'logout_time', 'last_activity', 'session_duration', 'is_active', 'login_method', 'impersonated_by', 'security_events', 'metadata', 'created_at', 'updated_at', 'expires_at'],
+      [
+        'user_id',
+        'session_token',
+        'ip_address',
+        'user_agent',
+        'device_info',
+        'location_info',
+        'login_time',
+        'logout_time',
+        'last_activity',
+        'session_duration',
+        'is_active',
+        'login_method',
+        'impersonated_by',
+        'security_events',
+        'metadata',
+        'created_at',
+        'updated_at',
+        'expires_at',
+      ],
       sessionRows,
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await insertRows(
       client,
       'access_logs',
-      ['user_id', 'action', 'resource', 'ip_address', 'user_agent', 'timestamp', 'details', 'username', 'role', 'permission', 'path', 'method', 'resource_type', 'resource_id', 'status', 'accessed_at', 'created_at'],
+      [
+        'user_id',
+        'action',
+        'resource',
+        'ip_address',
+        'user_agent',
+        'timestamp',
+        'details',
+        'username',
+        'role',
+        'permission',
+        'path',
+        'method',
+        'resource_type',
+        'resource_id',
+        'status',
+        'accessed_at',
+        'created_at',
+      ],
       Array.from({ length: 9000 }, (_, index) => {
         const user = pick(allOperationalUsers);
         const timestamp = randomDateBetween(WINDOW_START, WINDOW_END);
@@ -3227,7 +3526,9 @@ async function reseedDefenseDemoDataset() {
           ]),
           isGuardian ? 'guardian_dashboard' : 'admin_dashboard',
           `203.177.${randomInt(1, 254)}.${randomInt(1, 254)}`,
-          chance(0.64) ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' : 'Mozilla/5.0 (Linux; Android 13)',
+          chance(0.64)
+            ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            : 'Mozilla/5.0 (Linux; Android 13)',
           timestamp,
           safeJson({ index }),
           user.username || user.email,
@@ -3242,13 +3543,23 @@ async function reseedDefenseDemoDataset() {
           timestamp,
         ];
       }),
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await insertRows(
       client,
       'security_events',
-      ['user_id', 'event_type', 'severity', 'ip_address', 'user_agent', 'resource_type', 'resource_id', 'details', 'created_at'],
+      [
+        'user_id',
+        'event_type',
+        'severity',
+        'ip_address',
+        'user_agent',
+        'resource_type',
+        'resource_id',
+        'details',
+        'created_at',
+      ],
       Array.from({ length: 420 }, () => {
         const user = pick(allOperationalUsers);
         const createdAt = randomDateBetween(WINDOW_START, WINDOW_END);
@@ -3273,7 +3584,7 @@ async function reseedDefenseDemoDataset() {
           createdAt,
         ];
       }),
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await insertRows(
@@ -3298,13 +3609,24 @@ async function reseedDefenseDemoDataset() {
           createdAt,
         ];
       }),
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await insertRows(
       client,
       'audit_logs',
-      ['user_id', 'event_type', 'entity_type', 'entity_id', 'old_values', 'new_values', 'metadata', 'timestamp', 'ip_address', 'user_agent'],
+      [
+        'user_id',
+        'event_type',
+        'entity_type',
+        'entity_id',
+        'old_values',
+        'new_values',
+        'metadata',
+        'timestamp',
+        'ip_address',
+        'user_agent',
+      ],
       Array.from({ length: 7200 }, (_, index) => {
         const actor = pick([...staffUsers, ...insertedGuardianUsers.slice(0, 600)]);
         const timestamp = randomDateBetween(WINDOW_START, WINDOW_END);
@@ -3333,7 +3655,7 @@ async function reseedDefenseDemoDataset() {
           'Mozilla/5.0',
         ];
       }),
-      { chunkSize: 200 },
+      { chunkSize: 200 }
     );
 
     await client.query(`
@@ -3398,22 +3720,26 @@ async function reseedDefenseDemoDataset() {
       reportRows.length;
 
     if (counts.patients < INFANT_TARGET || counts.infants < INFANT_TARGET) {
-      throw new Error(`Seed validation failed: expected at least ${INFANT_TARGET} patients and infants.`);
+      throw new Error(
+        `Seed validation failed: expected at least ${INFANT_TARGET} patients and infants.`
+      );
     }
 
     if (counts.guardians !== counts.guardian_users) {
       throw new Error(
-        `Seed validation failed: expected guardian records (${counts.guardians}) to match linked guardian user accounts (${counts.guardian_users}).`,
+        `Seed validation failed: expected guardian records (${counts.guardians}) to match linked guardian user accounts (${counts.guardian_users}).`
       );
     }
 
     if (counts.role_mismatches > 0) {
-      throw new Error(`Seed validation failed: found ${counts.role_mismatches} users with mismatched role strings.`);
+      throw new Error(
+        `Seed validation failed: found ${counts.role_mismatches} users with mismatched role strings.`
+      );
     }
 
     if (totalTransactions < MIN_TOTAL_TRANSACTIONS) {
       throw new Error(
-        `Seed validation failed: expected at least ${MIN_TOTAL_TRANSACTIONS} activity rows, got ${totalTransactions}.`,
+        `Seed validation failed: expected at least ${MIN_TOTAL_TRANSACTIONS} activity rows, got ${totalTransactions}.`
       );
     }
 

@@ -7,7 +7,6 @@
 
 const db = require('../db');
 const ExcelJS = require('exceljs');
-const { parsePagination, buildPaginationMeta, getPaginationClause } = require('../utils/pagination');
 const { validateApprovedVaccineName } = require('../utils/approvedVaccines');
 
 // Helper function to generate unique numbers
@@ -46,9 +45,7 @@ const generateReportNumber = (type) => {
   );
 };
 
-// ===========================================
-// DISTRIBUTION REQUESTS (Barangay → City)
-// ===========================================
+// Distribution requests (barangay to city)
 
 /**
  * Create Distribution Request
@@ -194,7 +191,7 @@ exports.getDistributionRequests = async (req, res) => {
 exports.approveDistributionRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, approvalNotes, approvedQuantity } = req.body;
+    const { status, approvalNotes } = req.body;
     const userId = req.user.id;
 
     if (!['approved', 'rejected', 'partial'].includes(status)) {
@@ -241,9 +238,7 @@ exports.approveDistributionRequest = async (req, res) => {
   }
 };
 
-// ===========================================
-// DISTRIBUTIONS (City → Barangay)
-// ===========================================
+// Distributions (city to barangay)
 
 /**
  * Create Distribution (Dispatch vaccines to BHC)
@@ -357,7 +352,7 @@ exports.createDistribution = async (req, res) => {
 exports.receiveDistribution = async (req, res) => {
   try {
     const { id } = req.params;
-    const { receivedCondition, receiptNotes, temperatureReading } = req.body;
+    const { receivedCondition, receiptNotes } = req.body;
     const userId = req.user.id;
     const clinicId = req.user.clinic_id;
 
@@ -466,7 +461,7 @@ exports.receiveDistribution = async (req, res) => {
  */
 exports.getDistributions = async (req, res) => {
   try {
-    const { status, vaccineId, dateFrom, dateTo } = req.query;
+    const { status, vaccineId } = req.query;
     const clinicId = req.user.clinic_id;
     const userRole = req.user.role;
 
@@ -624,7 +619,6 @@ exports.createPeriodicReport = async (req, res) => {
       coverageRates,
       coldChainStatus,
       challenges,
-      equipmentIssues,
     } = req.body;
 
     const clinicId = req.user.clinic_id;

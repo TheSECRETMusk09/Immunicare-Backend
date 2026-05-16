@@ -8,11 +8,7 @@ const notificationAnalytics = require('../services/notificationAnalytics');
 const notificationPreferences = require('../services/notificationPreferences');
 const { sendEmailNotification, sendSMSNotification } = require('../services/notificationService');
 const logger = require('../config/logger');
-const {
-  CANONICAL_ROLES,
-  getCanonicalRole,
-  normalizeRole,
-} = require('../middleware/rbac');
+const { CANONICAL_ROLES, getCanonicalRole, normalizeRole } = require('../middleware/rbac');
 
 const PRIORITY_WEIGHT = Object.freeze({
   urgent: 5,
@@ -111,7 +107,7 @@ router.get('/', auth, async (req, res) => {
       // Apply filters manually for admin
       if (filters.priority) {
         notifications = notifications.filter(
-          (n) => toPriorityLabel(n.priority) === filters.priority,
+          (n) => toPriorityLabel(n.priority) === filters.priority
         );
       }
       if (filters.category) {
@@ -130,7 +126,7 @@ router.get('/', auth, async (req, res) => {
     // Apply pagination
     const paginatedNotifications = notifications.slice(
       parseInt(offset),
-      parseInt(offset) + parseInt(limit),
+      parseInt(offset) + parseInt(limit)
     );
 
     res.json({
@@ -309,7 +305,7 @@ router.post('/preferences/dnd', auth, async (req, res) => {
     const preferences = await notificationPreferences.setDoNotDisturb(
       userId,
       enabled,
-      durationMinutes,
+      durationMinutes
     );
     res.json(preferences);
   } catch (error) {
@@ -592,8 +588,7 @@ router.post('/alerts', auth, async (req, res) => {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
-    const { type, severity, vaccineId, patientId, healthCenterId, message, additionalData } =
-      req.body;
+    const { type, severity, message, additionalData } = req.body;
 
     const alert = await Alert.create({
       title: `New ${type.replace('_', ' ')} Alert`,
@@ -695,14 +690,14 @@ router.get('/category/:category', auth, async (req, res) => {
     if (isSystemAdminUser(user)) {
       notifications = await require('../db').query(
         'SELECT * FROM notifications WHERE category = $1 ORDER BY created_at DESC',
-        [category],
+        [category]
       );
     } else {
       notifications = await require('../db').query(
         `SELECT * FROM notifications
          WHERE category = $1 AND (user_id = $2 OR user_id IS NULL)
          ORDER BY created_at DESC`,
-        [category, userId],
+        [category, userId]
       );
     }
 

@@ -86,7 +86,7 @@ async function unlockAdminAccount() {
     );
 
     if (columnCheck.rows[0].exists) {
-      const unlockResult = await client.query(
+      await client.query(
         `UPDATE users 
          SET locked_until = NULL 
          WHERE id = $1`,

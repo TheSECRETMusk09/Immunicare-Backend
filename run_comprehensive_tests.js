@@ -4,7 +4,7 @@
  */
 
 const http = require('http');
-const https = require('https');
+require('https');
 
 const BASE_URL = 'http://localhost:5000';
 const results = {
@@ -28,7 +28,7 @@ function makeRequest(options, postData = null) {
 
     const req = http.request(reqOptions, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
         try {
           const json = data ? JSON.parse(data) : {};
@@ -66,94 +66,208 @@ async function testAdminLogin() {
   console.log('\n=== Testing Admin Login ===');
 
   // Test 1.1: Valid Admin Login
-  const validLogin = await makeRequest({
-    method: 'POST',
-    path: '/api/auth/login',
-    headers: { 'Content-Type': 'application/json' },
-  }, { username: 'admin', password: 'Immunicare2026!' });
+  const validLogin = await makeRequest(
+    {
+      method: 'POST',
+      path: '/api/auth/login',
+      headers: { 'Content-Type': 'application/json' },
+    },
+    { username: 'admin', password: 'Immunicare2026!' }
+  );
 
   const adminToken = validLogin.data.token || validLogin.data.accessToken;
-  addResult('adminDashboard', 'Admin Login - Valid Credentials',
+  addResult(
+    'adminDashboard',
+    'Admin Login - Valid Credentials',
     validLogin.status === 200 && !!adminToken,
-    `Status: ${validLogin.status}`);
+    `Status: ${validLogin.status}`
+  );
 
   return adminToken;
 }
 
 async function testAdminDashboardModules(adminToken) {
   console.log('\n=== Testing Admin Dashboard Modules ===');
-  const authHeader = { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' };
+  const authHeader = { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' };
 
   // 1.2 Dashboard Stats
-  const stats = await makeRequest({ method: 'GET', path: '/api/dashboard/stats', headers: authHeader });
-  addResult('adminDashboard', 'Dashboard Stats Module', stats.status === 200, `Status: ${stats.status}`);
+  const stats = await makeRequest({
+    method: 'GET',
+    path: '/api/dashboard/stats',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Dashboard Stats Module',
+    stats.status === 200,
+    `Status: ${stats.status}`
+  );
 
   // 1.3 User Management
   const users = await makeRequest({ method: 'GET', path: '/api/users', headers: authHeader });
-  addResult('adminDashboard', 'User Management - List Users', users.status === 200, `Status: ${users.status}`);
+  addResult(
+    'adminDashboard',
+    'User Management - List Users',
+    users.status === 200,
+    `Status: ${users.status}`
+  );
 
   // 1.4 Infant Management
   const infants = await makeRequest({ method: 'GET', path: '/api/infants', headers: authHeader });
-  addResult('adminDashboard', 'Infant Management - List Infants', infants.status === 200, `Status: ${infants.status}`);
+  addResult(
+    'adminDashboard',
+    'Infant Management - List Infants',
+    infants.status === 200,
+    `Status: ${infants.status}`
+  );
 
   // 1.5 Vaccinations
-  const vaccinations = await makeRequest({ method: 'GET', path: '/api/vaccinations', headers: authHeader });
-  addResult('adminDashboard', 'Vaccinations Module', vaccinations.status === 200, `Status: ${vaccinations.status}`);
+  const vaccinations = await makeRequest({
+    method: 'GET',
+    path: '/api/vaccinations',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Vaccinations Module',
+    vaccinations.status === 200,
+    `Status: ${vaccinations.status}`
+  );
 
   // 1.6 Appointments
-  const appointments = await makeRequest({ method: 'GET', path: '/api/appointments', headers: authHeader });
-  addResult('adminDashboard', 'Appointments Module', appointments.status === 200, `Status: ${appointments.status}`);
+  const appointments = await makeRequest({
+    method: 'GET',
+    path: '/api/appointments',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Appointments Module',
+    appointments.status === 200,
+    `Status: ${appointments.status}`
+  );
 
   // 1.7 Announcements
-  const announcements = await makeRequest({ method: 'GET', path: '/api/announcements', headers: authHeader });
-  addResult('adminDashboard', 'Announcements Module', announcements.status === 200, `Status: ${announcements.status}`);
+  const announcements = await makeRequest({
+    method: 'GET',
+    path: '/api/announcements',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Announcements Module',
+    announcements.status === 200,
+    `Status: ${announcements.status}`
+  );
 
   // 1.8 Inventory Management
-  const inventory = await makeRequest({ method: 'GET', path: '/api/inventory', headers: authHeader });
-  addResult('adminDashboard', 'Inventory Management Module',
+  const inventory = await makeRequest({
+    method: 'GET',
+    path: '/api/inventory',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Inventory Management Module',
     inventory.status === 200 || inventory.status === 404,
-    `Status: ${inventory.status} (404 = route issue)`);
+    `Status: ${inventory.status} (404 = route issue)`
+  );
 
   // 1.9 Reports
   const reports = await makeRequest({ method: 'GET', path: '/api/reports', headers: authHeader });
-  addResult('adminDashboard', 'Reports Module', reports.status === 200, `Status: ${reports.status}`);
+  addResult(
+    'adminDashboard',
+    'Reports Module',
+    reports.status === 200,
+    `Status: ${reports.status}`
+  );
 
   // 1.10 Analytics
-  const analytics = await makeRequest({ method: 'GET', path: '/api/analytics', headers: authHeader });
-  addResult('adminDashboard', 'Analytics Module', analytics.status === 200, `Status: ${analytics.status}`);
+  const analytics = await makeRequest({
+    method: 'GET',
+    path: '/api/analytics',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Analytics Module',
+    analytics.status === 200,
+    `Status: ${analytics.status}`
+  );
 
   // 1.11 Notifications
-  const notifications = await makeRequest({ method: 'GET', path: '/api/notifications', headers: authHeader });
-  addResult('adminDashboard', 'Notifications Module', notifications.status === 200, `Status: ${notifications.status}`);
+  const notifications = await makeRequest({
+    method: 'GET',
+    path: '/api/notifications',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Notifications Module',
+    notifications.status === 200,
+    `Status: ${notifications.status}`
+  );
 
   // 1.12 Settings
   const settings = await makeRequest({ method: 'GET', path: '/api/settings', headers: authHeader });
-  addResult('adminDashboard', 'Settings Module', settings.status === 200, `Status: ${settings.status}`);
+  addResult(
+    'adminDashboard',
+    'Settings Module',
+    settings.status === 200,
+    `Status: ${settings.status}`
+  );
 
   // 1.13 Growth Monitoring
   const growth = await makeRequest({ method: 'GET', path: '/api/growth', headers: authHeader });
-  addResult('adminDashboard', 'Growth Monitoring Module',
+  addResult(
+    'adminDashboard',
+    'Growth Monitoring Module',
     growth.status === 200 || growth.status === 500,
-    `Status: ${growth.status} (500 = DB column issue)`);
+    `Status: ${growth.status} (500 = DB column issue)`
+  );
 
   // 1.14 Digital Papers
-  const papers = await makeRequest({ method: 'GET', path: '/api/paper-templates', headers: authHeader });
-  addResult('adminDashboard', 'Digital Papers Module', papers.status === 200, `Status: ${papers.status}`);
+  const papers = await makeRequest({
+    method: 'GET',
+    path: '/api/paper-templates',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Digital Papers Module',
+    papers.status === 200,
+    `Status: ${papers.status}`
+  );
 
   // 1.15 SMS & Messages
   const sms = await makeRequest({ method: 'GET', path: '/api/sms', headers: authHeader });
-  addResult('adminDashboard', 'SMS Module',
+  addResult(
+    'adminDashboard',
+    'SMS Module',
     sms.status === 200 || sms.status === 404,
-    `Status: ${sms.status} (404 = route issue)`);
+    `Status: ${sms.status} (404 = route issue)`
+  );
 
   const messages = await makeRequest({ method: 'GET', path: '/api/messages', headers: authHeader });
-  addResult('adminDashboard', 'Messages Module',
+  addResult(
+    'adminDashboard',
+    'Messages Module',
     messages.status === 200 || messages.status === 404,
-    `Status: ${messages.status} (404 = route issue)`);
+    `Status: ${messages.status} (404 = route issue)`
+  );
 
   // 1.16 Vaccine Management
-  const vaccineWaitlist = await makeRequest({ method: 'GET', path: '/api/vaccine-waitlist', headers: authHeader });
-  addResult('adminDashboard', 'Vaccine Waitlist Module', vaccineWaitlist.status === 200, `Status: ${vaccineWaitlist.status}`);
+  const vaccineWaitlist = await makeRequest({
+    method: 'GET',
+    path: '/api/vaccine-waitlist',
+    headers: authHeader,
+  });
+  addResult(
+    'adminDashboard',
+    'Vaccine Waitlist Module',
+    vaccineWaitlist.status === 200,
+    `Status: ${vaccineWaitlist.status}`
+  );
 }
 
 // ==================== PHASE 2: GUARDIAN DASHBOARD TESTS ====================
@@ -161,68 +275,138 @@ async function testAdminDashboardModules(adminToken) {
 async function testGuardianLogin() {
   console.log('\n=== Testing Guardian Login ===');
 
-  const validLogin = await makeRequest({
-    method: 'POST',
-    path: '/api/auth/login',
-    headers: { 'Content-Type': 'application/json' },
-  }, { email: 'maria.santos@email.com', password: 'guardian123' });
+  const validLogin = await makeRequest(
+    {
+      method: 'POST',
+      path: '/api/auth/login',
+      headers: { 'Content-Type': 'application/json' },
+    },
+    { email: 'maria.santos@email.com', password: 'guardian123' }
+  );
 
   const guardianToken = validLogin.data.token || validLogin.data.accessToken;
-  addResult('guardianDashboard', 'Guardian Login - Valid Credentials',
+  addResult(
+    'guardianDashboard',
+    'Guardian Login - Valid Credentials',
     validLogin.status === 200 && !!guardianToken,
-    `Status: ${validLogin.status}`);
+    `Status: ${validLogin.status}`
+  );
 
   return guardianToken;
 }
 
 async function testGuardianDashboardModules(guardianToken) {
   console.log('\n=== Testing Guardian Dashboard Modules ===');
-  const authHeader = { 'Authorization': `Bearer ${guardianToken}`, 'Content-Type': 'application/json' };
+  const authHeader = {
+    Authorization: `Bearer ${guardianToken}`,
+    'Content-Type': 'application/json',
+  };
 
   // 2.2 Guardian Dashboard Stats
   // First get guardian ID
-  const guardianProfile = await makeRequest({ method: 'GET', path: '/api/guardian/profile', headers: authHeader });
+  const guardianProfile = await makeRequest({
+    method: 'GET',
+    path: '/api/guardian/profile',
+    headers: authHeader,
+  });
   const guardianId = guardianProfile.data?.id || 1;
 
-  const guardianStats = await makeRequest({ method: 'GET', path: `/api/dashboard/guardian/${guardianId}/stats`, headers: authHeader });
-  addResult('guardianDashboard', 'Guardian Dashboard Stats', guardianStats.status === 200, `Status: ${guardianStats.status}`);
+  const guardianStats = await makeRequest({
+    method: 'GET',
+    path: `/api/dashboard/guardian/${guardianId}/stats`,
+    headers: authHeader,
+  });
+  addResult(
+    'guardianDashboard',
+    'Guardian Dashboard Stats',
+    guardianStats.status === 200,
+    `Status: ${guardianStats.status}`
+  );
 
   // 2.3 My Children/Infants
-  const children = await makeRequest({ method: 'GET', path: '/api/guardian/children', headers: authHeader });
-  addResult('guardianDashboard', 'My Children Module', children.status === 200, `Status: ${children.status}`);
+  const children = await makeRequest({
+    method: 'GET',
+    path: '/api/guardian/children',
+    headers: authHeader,
+  });
+  addResult(
+    'guardianDashboard',
+    'My Children Module',
+    children.status === 200,
+    `Status: ${children.status}`
+  );
 
   // 2.4 Guardian Appointments
-  const guardianAppts = await makeRequest({ method: 'GET', path: '/api/guardian/appointments', headers: authHeader });
-  addResult('guardianDashboard', 'Guardian Appointments Module', guardianAppts.status === 200, `Status: ${guardianAppts.status}`);
+  const guardianAppts = await makeRequest({
+    method: 'GET',
+    path: '/api/guardian/appointments',
+    headers: authHeader,
+  });
+  addResult(
+    'guardianDashboard',
+    'Guardian Appointments Module',
+    guardianAppts.status === 200,
+    `Status: ${guardianAppts.status}`
+  );
 
   // 2.5 Immunization Chart
-  const immunChart = await makeRequest({ method: 'GET', path: '/api/guardian/immunization-chart', headers: authHeader });
-  addResult('guardianDashboard', 'Immunization Chart Module',
+  const immunChart = await makeRequest({
+    method: 'GET',
+    path: '/api/guardian/immunization-chart',
+    headers: authHeader,
+  });
+  addResult(
+    'guardianDashboard',
+    'Immunization Chart Module',
     immunChart.status === 200 || immunChart.status === 404,
-    `Status: ${immunChart.status}`);
+    `Status: ${immunChart.status}`
+  );
 
   // 2.6 Guardian Notifications
-  const guardianNotifs = await makeRequest({ method: 'GET', path: '/api/guardian/notifications', headers: authHeader });
-  addResult('guardianDashboard', 'Guardian Notifications Module',
+  const guardianNotifs = await makeRequest({
+    method: 'GET',
+    path: '/api/guardian/notifications',
+    headers: authHeader,
+  });
+  addResult(
+    'guardianDashboard',
+    'Guardian Notifications Module',
     guardianNotifs.status === 200 || guardianNotifs.status === 500,
-    `Status: ${guardianNotifs.status}`);
+    `Status: ${guardianNotifs.status}`
+  );
 
   // 2.7 Health Information
-  const healthInfo = await makeRequest({ method: 'GET', path: '/api/guardian/health-information', headers: authHeader });
-  addResult('guardianDashboard', 'Health Information Module',
+  const healthInfo = await makeRequest({
+    method: 'GET',
+    path: '/api/guardian/health-information',
+    headers: authHeader,
+  });
+  addResult(
+    'guardianDashboard',
+    'Health Information Module',
     healthInfo.status === 200 || healthInfo.status === 404,
-    `Status: ${healthInfo.status}`);
+    `Status: ${healthInfo.status}`
+  );
 
   // 2.8 Profile/Settings
-  const profile = await makeRequest({ method: 'GET', path: '/api/guardian/profile', headers: authHeader });
-  addResult('guardianDashboard', 'Guardian Profile Module', profile.status === 200, `Status: ${profile.status}`);
+  const profile = await makeRequest({
+    method: 'GET',
+    path: '/api/guardian/profile',
+    headers: authHeader,
+  });
+  addResult(
+    'guardianDashboard',
+    'Guardian Profile Module',
+    profile.status === 200,
+    `Status: ${profile.status}`
+  );
 }
 
 // ==================== PHASE 3: DATABASE TESTS ====================
 
 async function testDatabaseConnections(adminToken) {
   console.log('\n=== Testing Database Connections ===');
-  const authHeader = { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' };
+  const authHeader = { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' };
 
   // Test all major tables
   const tables = [
@@ -239,32 +423,41 @@ async function testDatabaseConnections(adminToken) {
 
   for (const table of tables) {
     const result = await makeRequest({ method: 'GET', path: table.endpoint, headers: authHeader });
-    addResult('database', `Database - ${table.name} Table`,
+    addResult(
+      'database',
+      `Database - ${table.name} Table`,
       result.status === 200 || result.status === 404,
-      `Status: ${result.status}`);
+      `Status: ${result.status}`
+    );
   }
 
   // Test CRUD operations on key tables
   // Test creating a test announcement
-  const createTest = await makeRequest({
-    method: 'POST',
-    path: '/api/announcements',
-    headers: authHeader,
-  }, {
-    title: 'Test Announcement',
-    message: 'Test message',
-    priority: 'normal',
-  });
-  addResult('database', 'Database - Create Operation (Announcements)',
+  const createTest = await makeRequest(
+    {
+      method: 'POST',
+      path: '/api/announcements',
+      headers: authHeader,
+    },
+    {
+      title: 'Test Announcement',
+      message: 'Test message',
+      priority: 'normal',
+    }
+  );
+  addResult(
+    'database',
+    'Database - Create Operation (Announcements)',
     createTest.status === 200 || createTest.status === 201 || createTest.status === 400,
-    `Status: ${createTest.status}`);
+    `Status: ${createTest.status}`
+  );
 }
 
 // ==================== PHASE 4: SMS & EMAIL API TESTS ====================
 
 async function testSmsEmailApis(adminToken) {
   console.log('\n=== Testing SMS & Email APIs ===');
-  const authHeader = { 'Authorization': `Bearer ${adminToken}`, 'Content-Type': 'application/json' };
+  const authHeader = { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' };
 
   // SMS Routes
   const smsRoutes = [
@@ -276,21 +469,30 @@ async function testSmsEmailApis(adminToken) {
 
   for (const route of smsRoutes) {
     const result = await makeRequest({ method: 'GET', path: route.endpoint, headers: authHeader });
-    addResult('smsEmail', `SMS API - ${route.name}`,
+    addResult(
+      'smsEmail',
+      `SMS API - ${route.name}`,
       result.status === 200 || result.status === 404,
-      `Status: ${result.status}`);
+      `Status: ${result.status}`
+    );
   }
 
   // Test SMS Service directly
   try {
-    const smsTest = await makeRequest({
-      method: 'POST',
-      path: '/api/sms/test',
-      headers: authHeader,
-    }, { phoneNumber: '09123456789', message: 'Test SMS' });
-    addResult('smsEmail', 'SMS Service - Direct Send Test',
+    const smsTest = await makeRequest(
+      {
+        method: 'POST',
+        path: '/api/sms/test',
+        headers: authHeader,
+      },
+      { phoneNumber: '09123456789', message: 'Test SMS' }
+    );
+    addResult(
+      'smsEmail',
+      'SMS Service - Direct Send Test',
       smsTest.status === 200 || smsTest.status === 400 || smsTest.status === 500,
-      `Status: ${smsTest.status}`);
+      `Status: ${smsTest.status}`
+    );
   } catch (e) {
     addResult('smsEmail', 'SMS Service - Direct Send Test', false, 'Connection error');
   }
@@ -303,16 +505,26 @@ async function testSmsEmailApis(adminToken) {
 
   for (const route of emailRoutes) {
     const result = await makeRequest({ method: 'GET', path: route.endpoint, headers: authHeader });
-    addResult('smsEmail', `Email API - ${route.name}`,
+    addResult(
+      'smsEmail',
+      `Email API - ${route.name}`,
       result.status === 200 || result.status === 404,
-      `Status: ${result.status}`);
+      `Status: ${result.status}`
+    );
   }
 
   // Test Email Service Configuration
-  const emailConfig = await makeRequest({ method: 'GET', path: '/api/settings/email', headers: authHeader });
-  addResult('smsEmail', 'Email Service - Configuration Check',
+  const emailConfig = await makeRequest({
+    method: 'GET',
+    path: '/api/settings/email',
+    headers: authHeader,
+  });
+  addResult(
+    'smsEmail',
+    'Email Service - Configuration Check',
     emailConfig.status === 200 || emailConfig.status === 404,
-    `Status: ${emailConfig.status}`);
+    `Status: ${emailConfig.status}`
+  );
 }
 
 // ==================== MAIN TEST RUNNER ====================
@@ -345,7 +557,6 @@ async function runAllTests() {
     if (adminToken) {
       await testSmsEmailApis(adminToken);
     }
-
   } catch (error) {
     console.error('Test execution error:', error.message);
   }
@@ -378,10 +589,7 @@ async function runAllTests() {
 
   // Save results to file
   const fs = require('fs');
-  fs.writeFileSync(
-    './COMPREHENSIVE_TEST_RESULTS_FINAL.json',
-    JSON.stringify(results, null, 2),
-  );
+  fs.writeFileSync('./COMPREHENSIVE_TEST_RESULTS_FINAL.json', JSON.stringify(results, null, 2));
   console.log('\nResults saved to COMPREHENSIVE_TEST_RESULTS_FINAL.json');
 }
 

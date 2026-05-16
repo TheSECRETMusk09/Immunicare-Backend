@@ -1,22 +1,12 @@
-/**
- * Audit Logging Middleware for Access Control
- * Logs all access attempts, authorization failures, and security events
- */
-
-const jwt = require('jsonwebtoken');
+require('jsonwebtoken');
 const pool = require('../db');
 const { getUserPermissions } = require('./role-based-access');
 
-// In-memory audit log buffer (for performance)
 const auditBuffer = [];
-const BUFFER_FLUSH_INTERVAL = 60000; // Flush every 60 seconds
+const BUFFER_FLUSH_INTERVAL = 60000;
 const MAX_BUFFER_SIZE = 100;
 
-/**
- * Audit event types
- */
 const AuditEventTypes = {
-  // Authentication events
   LOGIN_SUCCESS: 'LOGIN_SUCCESS',
   LOGIN_FAILED: 'LOGIN_FAILED',
   LOGOUT: 'LOGOUT',
@@ -24,48 +14,34 @@ const AuditEventTypes = {
   TOKEN_EXPIRED: 'TOKEN_EXPIRED',
   PASSWORD_CHANGE: 'PASSWORD_CHANGE',
   PASSWORD_RESET: 'PASSWORD_RESET',
-
-  // Authorization events
   ACCESS_GRANTED: 'ACCESS_GRANTED',
   ACCESS_DENIED: 'ACCESS_DENIED',
   PERMISSION_CHECK: 'PERMISSION_CHECK',
   ROLE_CHANGE: 'ROLE_CHANGE',
-
-  // Data access events
   DATA_READ: 'DATA_READ',
   DATA_CREATE: 'DATA_CREATE',
   DATA_UPDATE: 'DATA_UPDATE',
   DATA_DELETE: 'DATA_DELETE',
   DATA_EXPORT: 'DATA_EXPORT',
-
-  // Security events
   SUSPICIOUS_ACTIVITY: 'SUSPICIOUS_ACTIVITY',
   BRUTE_FORCE_DETECTED: 'BRUTE_FORCE_DETECTED',
   UNAUTHORIZED_ACCESS_ATTEMPT: 'UNAUTHORIZED_ACCESS_ATTEMPT',
   ACCOUNT_LOCKED: 'ACCOUNT_LOCKED',
   ACCOUNT_UNLOCKED: 'ACCOUNT_UNLOCKED',
-
-  // System events
   SYSTEM_CONFIG_CHANGE: 'SYSTEM_CONFIG_CHANGE',
   USER_CREATED: 'USER_CREATED',
   USER_DELETED: 'USER_DELETED',
   USER_DISABLED: 'USER_DISABLED',
-  USER_ENABLED: 'USER_ENABLED'
+  USER_ENABLED: 'USER_ENABLED',
 };
 
-/**
- * Audit severity levels
- */
 const AuditSeverity = {
   INFO: 'INFO',
   WARNING: 'WARNING',
   ERROR: 'ERROR',
-  CRITICAL: 'CRITICAL'
+  CRITICAL: 'CRITICAL',
 };
 
-/**
- * Create an audit log entry
- */
 async function createAuditLog({
   userId,
   username,
@@ -79,10 +55,10 @@ async function createAuditLog({
   userAgent,
   details,
   success = true,
-  errorMessage
+  errorMessage,
 }) {
   const entry = {
-    id: null, // Will be set after DB insert
+    id: null,
     timestamp: new Date().toISOString(),
     userId,
     username,
@@ -96,18 +72,15 @@ async function createAuditLog({
     userAgent,
     details: details ? JSON.stringify(details) : null,
     success,
-    errorMessage
+    errorMessage,
   };
 
-  // Add to buffer
   auditBuffer.push(entry);
 
-  // Flush if buffer is full
   if (auditBuffer.length >= MAX_BUFFER_SIZE) {
     await flushAuditBuffer();
   }
 
-  // Schedule periodic flush
   if (!auditBuffer.flushScheduled) {
     auditBuffer.flushScheduled = true;
     setTimeout(async () => {
@@ -119,9 +92,6 @@ async function createAuditLog({
   return entry;
 }
 
-/**
- * Flush audit buffer to database
- */
 async function flushAuditBuffer() {
   if (auditBuffer.length === 0) {
     return;
@@ -155,12 +125,12 @@ async function flushAuditBuffer() {
           entry.userAgent?.substring(0, 255),
           entry.details,
           entry.success,
-          entry.errorMessage
+          entry.errorMessage,
         ]);
         entry.id = result.rows[0].id;
       } catch (err) {
         console.error('Failed to insert audit log entry:', err.message);
-        // Re-add to buffer for retry
+        // retry
         auditBuffer.push(entry);
       }
     }
@@ -169,42 +139,29 @@ async function flushAuditBuffer() {
   }
 }
 
-/**
- * Middleware to audit all API requests
- */
 const auditRequest = (options = {}) => {
   const {
     logBody = false,
     sensitiveFields = ['password', 'password_hash', 'token', 'refresh_token'],
-    excludePaths = ['/api/health', '/api/test']
   } = options;
 
   return async (req, res, next) => {
     const startTime = Date.now();
 
-    // Capture original end function
     const originalEnd = res.end;
 
     res.end = function (chunk, encoding) {
-      // Calculate response time
       const responseTime = Date.now() - startTime;
 
-      // Get user info if authenticated
       const userId = req.user?.id || null;
       const username =
         req.user?.username || req.cookies?.token ? 'authenticated_user' : 'anonymous';
       const role = req.user?.role || null;
 
-      // Determine event type based on method and path
       const eventType = getEventType(req.method, req.path);
-
-      // Determine severity based on status code
       const severity = getSeverity(res.statusCode);
-
-      // Determine success
       const success = res.statusCode >= 200 && res.statusCode < 400;
 
-      // Filter sensitive data from request body
       let requestDetails = null;
       if (req.body && Object.keys(req.body).length > 0) {
         const sanitizedBody = { ...req.body };
@@ -216,7 +173,6 @@ const auditRequest = (options = {}) => {
         requestDetails = sanitizedBody;
       }
 
-      // Log the request
       createAuditLog({
         userId,
         username,
@@ -231,12 +187,11 @@ const auditRequest = (options = {}) => {
         details: {
           requestDetails: logBody ? requestDetails : undefined,
           statusCode: res.statusCode,
-          responseTime
+          responseTime,
         },
-        success
+        success,
       });
 
-      // Call original end function
       originalEnd.call(this, chunk, encoding);
     };
 
@@ -244,9 +199,6 @@ const auditRequest = (options = {}) => {
   };
 };
 
-/**
- * Middleware to audit access control violations
- */
 const auditAccessControl = (options = {}) => {
   const { logRequest = true, returnError = true } = options;
 
@@ -255,7 +207,6 @@ const auditAccessControl = (options = {}) => {
     const username = req.user?.username || 'anonymous';
     const role = req.user?.role || null;
 
-    // Check if user is authenticated
     if (!req.user && !req.cookies?.token && !req.headers.authorization) {
       if (logRequest) {
         await createAuditLog({
@@ -269,19 +220,18 @@ const auditAccessControl = (options = {}) => {
           ipAddress: req.ip || req.connection?.remoteAddress,
           userAgent: req.get('User-Agent'),
           success: false,
-          errorMessage: 'No authentication token provided'
+          errorMessage: 'No authentication token provided',
         });
       }
 
       if (returnError) {
         return res.status(401).json({
           error: 'Authentication required',
-          code: 'UNAUTHORIZED'
+          code: 'UNAUTHORIZED',
         });
       }
     }
 
-    // Check role if specified
     if (req.requiredRoles && role) {
       const hasAccess = req.requiredRoles.includes(role);
 
@@ -300,10 +250,10 @@ const auditAccessControl = (options = {}) => {
           details: {
             requiredRoles: req.requiredRoles,
             userRole: role,
-            path: req.path
+            path: req.path,
           },
           success: false,
-          errorMessage: `Role ${role} not in required roles: ${req.requiredRoles.join(', ')}`
+          errorMessage: `Role ${role} not in required roles: ${req.requiredRoles.join(', ')}`,
         });
 
         if (returnError) {
@@ -311,7 +261,7 @@ const auditAccessControl = (options = {}) => {
             error: 'Insufficient permissions',
             code: 'FORBIDDEN',
             requiredRoles: req.requiredRoles,
-            currentRole: role
+            currentRole: role,
           });
         }
       }
@@ -321,9 +271,6 @@ const auditAccessControl = (options = {}) => {
   };
 };
 
-/**
- * Middleware to audit permission checks
- */
 const auditPermissionCheck = (requiredPermission) => {
   return async (req, res, next) => {
     const userId = req.user?.id || null;
@@ -346,17 +293,17 @@ const auditPermissionCheck = (requiredPermission) => {
       details: {
         requiredPermission,
         userPermissions,
-        hasPermission
+        hasPermission,
       },
       success: hasPermission,
-      errorMessage: hasPermission ? null : `Missing permission: ${requiredPermission}`
+      errorMessage: hasPermission ? null : `Missing permission: ${requiredPermission}`,
     });
 
     if (!hasPermission) {
       return res.status(403).json({
         error: 'Permission denied',
         code: 'PERMISSION_DENIED',
-        requiredPermission
+        requiredPermission,
       });
     }
 
@@ -364,13 +311,9 @@ const auditPermissionCheck = (requiredPermission) => {
   };
 };
 
-/**
- * Helper function to get event type based on method and path
- */
 function getEventType(method, path) {
-  const pathLower = path.toLowerCase();
+  path.toLowerCase();
 
-  // Authentication events
   if (path.includes('/auth/login')) {
     return AuditEventTypes.LOGIN_SUCCESS;
   }
@@ -384,7 +327,6 @@ function getEventType(method, path) {
     return AuditEventTypes.PASSWORD_CHANGE;
   }
 
-  // Data access events
   if (method === 'GET') {
     return AuditEventTypes.DATA_READ;
   }
@@ -401,9 +343,6 @@ function getEventType(method, path) {
   return AuditEventTypes.ACCESS_GRANTED;
 }
 
-/**
- * Helper function to get severity based on status code
- */
 function getSeverity(statusCode) {
   if (statusCode >= 500) {
     return AuditSeverity.ERROR;
@@ -414,14 +353,10 @@ function getSeverity(statusCode) {
   return AuditSeverity.INFO;
 }
 
-/**
- * Middleware to log login attempts
- */
 const auditLoginAttempt = async (req, res, next) => {
   const originalJson = res.json;
 
   res.json = function (data) {
-    // Determine if login was successful
     const success = res.statusCode === 200 && data.message?.includes('success');
 
     createAuditLog({
@@ -436,10 +371,10 @@ const auditLoginAttempt = async (req, res, next) => {
       userAgent: req.get('User-Agent'),
       details: {
         email: req.body?.email,
-        rememberMe: req.body?.rememberMe
+        rememberMe: req.body?.rememberMe,
       },
       success,
-      errorMessage: success ? null : data.error || data.message
+      errorMessage: success ? null : data.error || data.message,
     });
 
     return originalJson.call(this, data);
@@ -448,9 +383,6 @@ const auditLoginAttempt = async (req, res, next) => {
   next();
 };
 
-/**
- * Get audit logs with filtering
- */
 async function getAuditLogs(options = {}) {
   const {
     userId,
@@ -461,7 +393,7 @@ async function getAuditLogs(options = {}) {
     startDate,
     endDate,
     limit = 100,
-    offset = 0
+    offset = 0,
   } = options;
 
   let query = `
@@ -513,9 +445,6 @@ async function getAuditLogs(options = {}) {
   return result.rows;
 }
 
-/**
- * Get audit statistics
- */
 async function getAuditStats(startDate, endDate) {
   const query = `
     SELECT 
@@ -533,9 +462,6 @@ async function getAuditStats(startDate, endDate) {
   return result.rows;
 }
 
-/**
- * Clean up old audit logs (for data retention)
- */
 async function cleanupOldLogs(daysToKeep = 90) {
   const query = `
     DELETE FROM audit_logs 
@@ -558,5 +484,5 @@ module.exports = {
   getAuditStats,
   cleanupOldLogs,
   AuditEventTypes,
-  AuditSeverity
+  AuditSeverity,
 };

@@ -1,11 +1,7 @@
 const express = require('express');
 const patientService = require('../services/patientService');
 const { authenticateToken } = require('../middleware/auth');
-const {
-  CANONICAL_ROLES,
-  getCanonicalRole,
-  requirePermission,
-} = require('../middleware/rbac');
+const { CANONICAL_ROLES, getCanonicalRole } = require('../middleware/rbac');
 const {
   isScopeRequestAllowed,
   resolveEffectiveScope,
@@ -31,10 +27,10 @@ const requireGuardianOwnership = async (req, res, next) => {
     const patientId = parseInt(req.params.id || req.params.patientId);
     const guardianId = req.user?.id;
 
-    if (!await guardianOwnsPatient(guardianId, patientId)) {
+    if (!(await guardianOwnsPatient(guardianId, patientId))) {
       return res.status(403).json({
         error: 'Access denied',
-        message: 'You can only access your own patients'
+        message: 'You can only access your own patients',
       });
     }
   }
@@ -49,7 +45,7 @@ router.get('/', async (req, res) => {
     if (!isScopeRequestAllowed(req.user, 'patients', 'read', effectiveScope)) {
       return res.status(403).json({
         error: 'Insufficient permissions',
-        message: 'You do not have permission to read patients'
+        message: 'You do not have permission to read patients',
       });
     }
 
@@ -67,7 +63,7 @@ router.get('/', async (req, res) => {
       limit: Math.min(parseInt(req.query.limit) || 25, 100), // Cap at 100 for performance
       offset: parseInt(req.query.offset) || 0,
       orderBy: req.query.orderBy || 'created_at',
-      orderDirection: req.query.orderDirection || 'DESC'
+      orderDirection: req.query.orderDirection || 'DESC',
     };
 
     // Guardian can only see their own patients
@@ -87,12 +83,11 @@ router.get('/', async (req, res) => {
       },
       summary: result.summary || null,
     });
-
   } catch (error) {
     console.error('Error fetching patients:', error);
     res.status(500).json({
       error: 'Failed to fetch patients',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -105,7 +100,7 @@ router.get('/:id', requireGuardianOwnership, async (req, res) => {
     if (!isScopeRequestAllowed(req.user, 'patients', 'read', effectiveScope)) {
       return res.status(403).json({
         error: 'Insufficient permissions',
-        message: 'You do not have permission to read patients'
+        message: 'You do not have permission to read patients',
       });
     }
 
@@ -113,29 +108,28 @@ router.get('/:id', requireGuardianOwnership, async (req, res) => {
     if (isNaN(patientId)) {
       return res.status(400).json({
         error: 'Invalid patient ID',
-        message: 'Patient ID must be a valid number'
+        message: 'Patient ID must be a valid number',
       });
     }
 
     const patient = await patientService.getPatientById(patientId);
-    
+
     if (!patient) {
       return res.status(404).json({
         error: 'Patient not found',
-        message: 'Patient with the specified ID was not found'
+        message: 'Patient with the specified ID was not found',
       });
     }
 
     res.json({
       success: true,
-      data: patient
+      data: patient,
     });
-
   } catch (error) {
     console.error('Error fetching patient:', error);
     res.status(500).json({
       error: 'Failed to fetch patient',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -148,7 +142,7 @@ router.get('/guardian/:guardianId', async (req, res) => {
     if (!isScopeRequestAllowed(req.user, 'patients', 'read', effectiveScope)) {
       return res.status(403).json({
         error: 'Insufficient permissions',
-        message: 'You do not have permission to read patients'
+        message: 'You do not have permission to read patients',
       });
     }
 
@@ -156,7 +150,7 @@ router.get('/guardian/:guardianId', async (req, res) => {
     if (isNaN(guardianId)) {
       return res.status(400).json({
         error: 'Invalid guardian ID',
-        message: 'Guardian ID must be a valid number'
+        message: 'Guardian ID must be a valid number',
       });
     }
 
@@ -164,7 +158,7 @@ router.get('/guardian/:guardianId', async (req, res) => {
     if (isGuardian(req) && guardianId !== req.user.id) {
       return res.status(403).json({
         error: 'Access denied',
-        message: 'You can only access your own patients'
+        message: 'You can only access your own patients',
       });
     }
 
@@ -179,7 +173,7 @@ router.get('/guardian/:guardianId', async (req, res) => {
       limit: Math.min(parseInt(req.query.limit) || 25, 100),
       offset: parseInt(req.query.offset) || 0,
       orderBy: req.query.orderBy || 'created_at',
-      orderDirection: req.query.orderDirection || 'DESC'
+      orderDirection: req.query.orderDirection || 'DESC',
     };
 
     const patients = await patientService.getPatientsByGuardianId(guardianId, filters);
@@ -194,12 +188,11 @@ router.get('/guardian/:guardianId', async (req, res) => {
       },
       summary: patients.summary || null,
     });
-
   } catch (error) {
     console.error('Error fetching patients by guardian:', error);
     res.status(500).json({
       error: 'Failed to fetch patients',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -212,27 +205,30 @@ router.get('/stats', async (req, res) => {
     if (!isScopeRequestAllowed(req.user, 'patients', 'read', effectiveScope)) {
       return res.status(403).json({
         error: 'Insufficient permissions',
-        message: 'You do not have permission to read patient statistics'
+        message: 'You do not have permission to read patient statistics',
       });
     }
 
     const filters = {
       facilityId: await resolvePatientFacilityId(req.user, effectiveScope),
-      guardianId: isGuardian(req) ? req.user.id : req.query.guardianId ? parseInt(req.query.guardianId) : undefined
+      guardianId: isGuardian(req)
+        ? req.user.id
+        : req.query.guardianId
+          ? parseInt(req.query.guardianId)
+          : undefined,
     };
 
     const stats = await patientService.getPatientStats(filters);
 
     res.json({
       success: true,
-      data: stats
+      data: stats,
     });
-
   } catch (error) {
     console.error('Error fetching patient stats:', error);
     res.status(500).json({
       error: 'Failed to fetch patient statistics',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -245,7 +241,7 @@ router.post('/', async (req, res) => {
     if (!isScopeRequestAllowed(req.user, 'patients', 'create', effectiveScope)) {
       return res.status(403).json({
         error: 'Insufficient permissions',
-        message: 'You do not have permission to create patients'
+        message: 'You do not have permission to create patients',
       });
     }
 
@@ -276,14 +272,14 @@ router.post('/', async (req, res) => {
       nbsDone,
       nbsDate,
       cellphoneNumber,
-      photoUrl
+      photoUrl,
     } = req.body;
 
     // Validate required fields
     if (!firstName || !lastName || !dob || !sex || !guardianId) {
       return res.status(400).json({
         error: 'Missing required fields',
-        message: 'First name, last name, date of birth, sex, and guardian ID are required'
+        message: 'First name, last name, date of birth, sex, and guardian ID are required',
       });
     }
 
@@ -291,7 +287,7 @@ router.post('/', async (req, res) => {
     if (isGuardian(req) && guardianId !== req.user.id) {
       return res.status(403).json({
         error: 'Access denied',
-        message: 'You can only create patients for yourself'
+        message: 'You can only create patients for yourself',
       });
     }
 
@@ -323,7 +319,7 @@ router.post('/', async (req, res) => {
       nbsDate: nbsDate ? new Date(nbsDate) : null,
       cellphoneNumber: cellphoneNumber ? cellphoneNumber.trim() : null,
       photoUrl: photoUrl ? photoUrl.trim() : null,
-      isActive: true
+      isActive: true,
     };
 
     const patient = await patientService.createPatient(patientData, req.user.id);
@@ -337,14 +333,13 @@ router.post('/', async (req, res) => {
     res.status(201).json({
       success: true,
       data: patient,
-      message: 'Patient created successfully'
+      message: 'Patient created successfully',
     });
-
   } catch (error) {
     console.error('Error creating patient:', error);
     res.status(500).json({
       error: 'Failed to create patient',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -357,7 +352,7 @@ router.put('/:id', requireGuardianOwnership, async (req, res) => {
     if (!isScopeRequestAllowed(req.user, 'patients', 'update', effectiveScope)) {
       return res.status(403).json({
         error: 'Insufficient permissions',
-        message: 'You do not have permission to update patients'
+        message: 'You do not have permission to update patients',
       });
     }
 
@@ -365,7 +360,7 @@ router.put('/:id', requireGuardianOwnership, async (req, res) => {
     if (isNaN(patientId)) {
       return res.status(400).json({
         error: 'Invalid patient ID',
-        message: 'Patient ID must be a valid number'
+        message: 'Patient ID must be a valid number',
       });
     }
 
@@ -374,7 +369,7 @@ router.put('/:id', requireGuardianOwnership, async (req, res) => {
     if (!existingPatient) {
       return res.status(404).json({
         error: 'Patient not found',
-        message: 'Patient with the specified ID was not found'
+        message: 'Patient with the specified ID was not found',
       });
     }
 
@@ -405,7 +400,7 @@ router.put('/:id', requireGuardianOwnership, async (req, res) => {
       nbsDate,
       cellphoneNumber,
       photoUrl,
-      isActive
+      isActive,
     } = req.body;
 
     const patientData = {};
@@ -420,22 +415,30 @@ router.put('/:id', requireGuardianOwnership, async (req, res) => {
     if (address !== undefined) patientData.address = address ? address.trim() : null;
     if (contact !== undefined) patientData.contact = contact ? contact.trim() : null;
     if (facilityId !== undefined) patientData.facilityId = facilityId ? parseInt(facilityId) : null;
-    if (birthHeight !== undefined) patientData.birthHeight = birthHeight ? parseFloat(birthHeight) : null;
-    if (birthWeight !== undefined) patientData.birthWeight = birthWeight ? parseFloat(birthWeight) : null;
+    if (birthHeight !== undefined)
+      patientData.birthHeight = birthHeight ? parseFloat(birthHeight) : null;
+    if (birthWeight !== undefined)
+      patientData.birthWeight = birthWeight ? parseFloat(birthWeight) : null;
     if (motherName !== undefined) patientData.motherName = motherName ? motherName.trim() : null;
     if (fatherName !== undefined) patientData.fatherName = fatherName ? fatherName.trim() : null;
     if (barangay !== undefined) patientData.barangay = barangay ? barangay.trim() : null;
-    if (healthCenter !== undefined) patientData.healthCenter = healthCenter ? healthCenter.trim() : null;
+    if (healthCenter !== undefined)
+      patientData.healthCenter = healthCenter ? healthCenter.trim() : null;
     if (purok !== undefined) patientData.purok = purok ? purok.trim() : null;
-    if (streetColor !== undefined) patientData.streetColor = streetColor ? streetColor.trim() : null;
+    if (streetColor !== undefined)
+      patientData.streetColor = streetColor ? streetColor.trim() : null;
     if (familyNo !== undefined) patientData.familyNo = familyNo ? familyNo.trim() : null;
-    if (placeOfBirth !== undefined) patientData.placeOfBirth = placeOfBirth ? placeOfBirth.trim() : null;
+    if (placeOfBirth !== undefined)
+      patientData.placeOfBirth = placeOfBirth ? placeOfBirth.trim() : null;
     if (timeOfDelivery !== undefined) patientData.timeOfDelivery = timeOfDelivery || null;
-    if (typeOfDelivery !== undefined) patientData.typeOfDelivery = typeOfDelivery ? typeOfDelivery.trim() : null;
-    if (doctorMidwifeNurse !== undefined) patientData.doctorMidwifeNurse = doctorMidwifeNurse ? doctorMidwifeNurse.trim() : null;
+    if (typeOfDelivery !== undefined)
+      patientData.typeOfDelivery = typeOfDelivery ? typeOfDelivery.trim() : null;
+    if (doctorMidwifeNurse !== undefined)
+      patientData.doctorMidwifeNurse = doctorMidwifeNurse ? doctorMidwifeNurse.trim() : null;
     if (nbsDone !== undefined) patientData.nbsDone = nbsDone === true || nbsDone === 'true';
     if (nbsDate !== undefined) patientData.nbsDate = nbsDate ? new Date(nbsDate) : null;
-    if (cellphoneNumber !== undefined) patientData.cellphoneNumber = cellphoneNumber ? cellphoneNumber.trim() : null;
+    if (cellphoneNumber !== undefined)
+      patientData.cellphoneNumber = cellphoneNumber ? cellphoneNumber.trim() : null;
     if (photoUrl !== undefined) patientData.photoUrl = photoUrl ? photoUrl.trim() : null;
     if (isActive !== undefined) patientData.isActive = isActive === true || isActive === 'true';
 
@@ -453,14 +456,13 @@ router.put('/:id', requireGuardianOwnership, async (req, res) => {
     res.json({
       success: true,
       data: patient,
-      message: 'Patient updated successfully'
+      message: 'Patient updated successfully',
     });
-
   } catch (error) {
     console.error('Error updating patient:', error);
     res.status(500).json({
       error: 'Failed to update patient',
-      message: error.message
+      message: error.message,
     });
   }
 });
@@ -473,7 +475,7 @@ router.delete('/:id', requireGuardianOwnership, async (req, res) => {
     if (!isScopeRequestAllowed(req.user, 'patients', 'delete', effectiveScope)) {
       return res.status(403).json({
         error: 'Insufficient permissions',
-        message: 'You do not have permission to delete patients'
+        message: 'You do not have permission to delete patients',
       });
     }
 
@@ -481,7 +483,7 @@ router.delete('/:id', requireGuardianOwnership, async (req, res) => {
     if (isNaN(patientId)) {
       return res.status(400).json({
         error: 'Invalid patient ID',
-        message: 'Patient ID must be a valid number'
+        message: 'Patient ID must be a valid number',
       });
     }
 
@@ -490,7 +492,7 @@ router.delete('/:id', requireGuardianOwnership, async (req, res) => {
     if (!patient) {
       return res.status(404).json({
         error: 'Patient not found',
-        message: 'Patient with the specified ID was not found'
+        message: 'Patient with the specified ID was not found',
       });
     }
 
@@ -503,14 +505,13 @@ router.delete('/:id', requireGuardianOwnership, async (req, res) => {
     res.json({
       success: true,
       data: patient,
-      message: 'Patient deleted successfully'
+      message: 'Patient deleted successfully',
     });
-
   } catch (error) {
     console.error('Error deleting patient:', error);
     res.status(500).json({
       error: 'Failed to delete patient',
-      message: error.message
+      message: error.message,
     });
   }
 });

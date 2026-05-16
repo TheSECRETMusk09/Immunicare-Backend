@@ -1,10 +1,5 @@
 /**
- * SMS Notification Routes
- * Handles all SMS-related endpoints for appointments, OTP, and vaccination reminders
- *
- * @module routes/smsNotifications
- * @version 2.0
- * @since 2026-03-01
+ * SMS notification routes.
  */
 
 const express = require('express');

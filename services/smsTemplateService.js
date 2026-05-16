@@ -1,27 +1,5 @@
 /**
- * SMS Template Service for Immunicare
- *
- * This service provides a unified interface for generating and sending
- * SMS messages using the template system defined in smsTemplates.js
- *
- * It integrates with the existing smsService.js to send formatted messages
- * to guardians and administrators.
- *
- * Usage:
- *   const smsTemplateService = require('./smsTemplateService');
- *
- *   // Send an appointment reminder
- *   await smsTemplateService.sendAppointmentReminder({
- *     guardianPhone: '+639123456789',
- *     babyName: 'John',
- *     infantId: 'INF001',
- *     appointmentDate: '25/02',
- *     appointmentTime: '9:00 AM',
- *     clinicName: 'San Nicolas Health Center',
- *     clinicAddress: 'San Nicolas, Ilocos Norte',
- *     doctorName: 'Dr. Smith',
- *     documentsReq: 'birth cert, MC'
- *   });
+ * SMS template helpers built on top of smsTemplates.js.
  */
 
 const smsService = require('./smsService');

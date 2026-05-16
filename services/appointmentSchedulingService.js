@@ -33,7 +33,7 @@ const {
   parseAppointmentDateTimeInput,
 } = require('../utils/appointmentDateTime');
 
-const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
+const FALLBACK_COLS = Object.freeze({
   appointmentsPatient: 'infant_id',
   appointmentsScope: 'clinic_id',
   patientsScope: 'clinic_id',
@@ -43,13 +43,13 @@ const FALLBACK_SCHEMA_COLUMNS = Object.freeze({
 
 const notificationService = new NotificationService();
 
-let schemaColumnMappingPromise = null;
-let notificationColumnsCache = null;
-let notificationColumnsCachedAt = 0;
-const NOTIFICATION_COLUMNS_CACHE_TTL_MS = 5 * 60 * 1000;
+let schemaMappingPromise = null;
+let notifColsCache = null;
+let notifColsCachedAt = 0;
+const NOTIF_COLS_TTL = 5 * 60 * 1000;
 
-const resolveSchemaColumnMappings = async () => {
-  const mappings = { ...FALLBACK_SCHEMA_COLUMNS };
+const resolveColMappings = async () => {
+  const mappings = { ...FALLBACK_COLS };
 
   try {
     const result = await pool.query(
@@ -63,11 +63,11 @@ const resolveSchemaColumnMappings = async () => {
       [
         ['appointments', 'patients', 'vaccine_batches'],
         ['patient_id', 'infant_id', 'facility_id', 'clinic_id', 'vaccine_id'],
-      ],
+      ]
     );
 
     const available = new Set(
-      (result.rows || []).map((row) => `${row.table_name}.${row.column_name}`),
+      (result.rows || []).map((row) => `${row.table_name}.${row.column_name}`)
     );
 
     if (available.has('appointments.patient_id')) {
@@ -105,11 +105,11 @@ const resolveSchemaColumnMappings = async () => {
 };
 
 const getSchemaColumnMappings = async () => {
-  if (!schemaColumnMappingPromise) {
-    schemaColumnMappingPromise = resolveSchemaColumnMappings();
+  if (!schemaMappingPromise) {
+    schemaMappingPromise = resolveColMappings();
   }
 
-  return schemaColumnMappingPromise;
+  return schemaMappingPromise;
 };
 
 const toDateKey = (value) => {
@@ -120,10 +120,13 @@ const parseDate = (value) => {
   return parseClinicDate(value);
 };
 
-const getNotificationColumns = async () => {
+const getNotifCols = async () => {
   const now = Date.now();
-  if (notificationColumnsCache && now - notificationColumnsCachedAt < NOTIFICATION_COLUMNS_CACHE_TTL_MS) {
-    return notificationColumnsCache;
+  if (
+    notifColsCache &&
+    now - notifColsCachedAt < NOTIF_COLS_TTL
+  ) {
+    return notifColsCache;
   }
 
   try {
@@ -133,12 +136,12 @@ const getNotificationColumns = async () => {
         FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name = 'notifications'
-      `,
+      `
     );
 
-    notificationColumnsCache = new Set(result.rows.map((row) => row.column_name));
-    notificationColumnsCachedAt = now;
-    return notificationColumnsCache;
+    notifColsCache = new Set(result.rows.map((row) => row.column_name));
+    notifColsCachedAt = now;
+    return notifColsCache;
   } catch (error) {
     console.error('Error resolving notification columns:', error);
     return new Set();
@@ -153,12 +156,14 @@ const TIME_SLOT_CONFIG = Object.freeze({
   lunchEnd: '13:00',
 });
 
-const timeToMinutes = (timeValue) => {
+const toMinutes = (timeValue) => {
   if (!timeValue) {
     return null;
   }
 
-  const [hours, minutes] = String(timeValue).split(':').map((part) => parseInt(part, 10));
+  const [hours, minutes] = String(timeValue)
+    .split(':')
+    .map((part) => parseInt(part, 10));
   if (Number.isNaN(hours) || Number.isNaN(minutes)) {
     return null;
   }
@@ -166,18 +171,18 @@ const timeToMinutes = (timeValue) => {
   return hours * 60 + minutes;
 };
 
-const minutesToTime = (totalMinutes) => {
+const fromMinutes = (totalMinutes) => {
   const safeMinutes = Math.max(0, totalMinutes);
   const hours = Math.floor(safeMinutes / 60);
   const minutes = safeMinutes % 60;
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 };
 
-const buildDailyTimeSlots = () => {
-  const startMinutes = timeToMinutes(TIME_SLOT_CONFIG.start);
-  const endMinutes = timeToMinutes(TIME_SLOT_CONFIG.end);
-  const lunchStartMinutes = timeToMinutes(TIME_SLOT_CONFIG.lunchStart);
-  const lunchEndMinutes = timeToMinutes(TIME_SLOT_CONFIG.lunchEnd);
+const buildTimeSlots = () => {
+  const startMinutes = toMinutes(TIME_SLOT_CONFIG.start);
+  const endMinutes = toMinutes(TIME_SLOT_CONFIG.end);
+  const lunchStartMinutes = toMinutes(TIME_SLOT_CONFIG.lunchStart);
+  const lunchEndMinutes = toMinutes(TIME_SLOT_CONFIG.lunchEnd);
 
   if (
     startMinutes === null ||
@@ -189,11 +194,15 @@ const buildDailyTimeSlots = () => {
   }
 
   const slots = [];
-  for (let current = startMinutes; current <= endMinutes; current += TIME_SLOT_CONFIG.intervalMinutes) {
+  for (
+    let current = startMinutes;
+    current <= endMinutes;
+    current += TIME_SLOT_CONFIG.intervalMinutes
+  ) {
     if (current >= lunchStartMinutes && current < lunchEndMinutes) {
       continue;
     }
-    slots.push(minutesToTime(current));
+    slots.push(fromMinutes(current));
   }
 
   return slots;
@@ -238,12 +247,7 @@ const resolveDateRange = ({ month, startDate, endDate }) => {
   return { start: firstDay, end: lastDay };
 };
 
-const toMonthKey = (value) => {
-  const dateKey = toDateKey(value);
-  return dateKey ? dateKey.slice(0, 7) : null;
-};
-
-const buildVaccinationAppointmentPredicate = (mappings, alias = 'a') => {
+const buildVaccPredicate = (mappings, alias = 'a') => {
   const textPredicates = [
     `LOWER(COALESCE(${alias}.type::text, '')) LIKE '%vacc%'`,
     `LOWER(COALESCE(${alias}.type::text, '')) LIKE '%immun%'`,
@@ -257,19 +261,21 @@ const buildVaccinationAppointmentPredicate = (mappings, alias = 'a') => {
   return `(${textPredicates.join(' OR ')})`;
 };
 
-const buildNormalizedStatusSql = (alias = null) => {
+const buildStatusSql = (alias = null) => {
   const prefix = alias ? `${alias}.` : '';
   return `LOWER(REPLACE(COALESCE(${prefix}status::text, ''), '-', '_'))`;
 };
 
-const normalizeStatusToken = (value) =>
-  String(value || '').trim().toLowerCase().replace(/-/g, '_');
+const normalizeStatus = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, '_');
 
-const getVaccineStockSummary = async (clinicId = null) => {
+const getStockSummary = async (clinicId = null) => {
   try {
     const { vaccineBatchesScope } = await getSchemaColumnMappings();
 
-    // Build query based on whether clinicId is provided
     let query;
     let params = [];
 
@@ -310,8 +316,13 @@ const getVaccineStockSummary = async (clinicId = null) => {
     const result = await pool.query(query, params);
 
     const rows = result.rows || [];
-    const totalAvailableStock = rows.reduce((sum, row) => sum + parseInt(row.available_stock || 0, 10), 0);
-    const availableVaccines = rows.filter((row) => parseInt(row.available_stock || 0, 10) > 0).length;
+    const totalAvailableStock = rows.reduce(
+      (sum, row) => sum + parseInt(row.available_stock || 0, 10),
+      0
+    );
+    const availableVaccines = rows.filter(
+      (row) => parseInt(row.available_stock || 0, 10) > 0
+    ).length;
 
     return {
       vaccines: rows,
@@ -319,7 +330,7 @@ const getVaccineStockSummary = async (clinicId = null) => {
       availableVaccines,
     };
   } catch (error) {
-    console.error('Error in getVaccineStockSummary:', error);
+    console.error('Error in getStockSummary:', error);
     return {
       vaccines: [],
       totalAvailableStock: 0,
@@ -328,17 +339,8 @@ const getVaccineStockSummary = async (clinicId = null) => {
   }
 };
 
-/**
- * Check vaccine stock availability for a specific date, time, and vaccine
- * @param {string} date - Date in YYYY-MM-DD format
- * @param {string} time - Time in HH:MM format
- * @param {number} vaccineId - Vaccine ID
- * @param {number} clinicId - Clinic ID
- * @returns {Object} Availability information
- */
-const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId }) => {
+const checkStockAt = async ({ date, time, vaccineId, clinicId }) => {
   try {
-    // Validate inputs
     if (!date || !time || !vaccineId) {
       return {
         available: false,
@@ -351,11 +353,11 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
       return {
         available: false,
         code: 'INVALID_TIME',
-        message: 'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
+        message:
+          'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
       };
     }
 
-    // Parse the date and time
     const appointmentDateTime = combineClinicDateTime(date, time);
     if (!appointmentDateTime) {
       return {
@@ -365,10 +367,9 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
       };
     }
 
-    // Get vaccine stock summary
-    const stockSummary = await getVaccineStockSummary(clinicId);
+    const stockSummary = await getStockSummary(clinicId);
     const vaccineStock = stockSummary.vaccines.find(
-      v => parseInt(v.vaccine_id, 10) === parseInt(vaccineId, 10),
+      (v) => parseInt(v.vaccine_id, 10) === parseInt(vaccineId, 10)
     );
 
     if (!vaccineStock) {
@@ -381,7 +382,6 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
 
     const totalStock = parseInt(vaccineStock.available_stock || 0, 10);
 
-    // Block booking only when stock is actually depleted
     if (totalStock <= 0) {
       return {
         available: false,
@@ -391,18 +391,13 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
       };
     }
 
-    // Check how many appointments are already scheduled for this vaccine at this date/time
-    const {
-      appointmentsPatient,
-      appointmentsScope,
-      appointmentsVaccine,
-      patientsScope,
-    } = await getSchemaColumnMappings();
+    const { appointmentsPatient, appointmentsScope, appointmentsVaccine, patientsScope } =
+      await getSchemaColumnMappings();
     const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
     const appointmentTimeExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::time`;
     const appointmentVaccineFilter = appointmentsVaccine
       ? `AND a.${appointmentsVaccine} = $3`
-      : `AND ${buildVaccinationAppointmentPredicate({ appointmentsVaccine: null }, 'a')}`;
+      : `AND ${buildVaccPredicate({ appointmentsVaccine: null }, 'a')}`;
 
     const appointmentCountResult = await pool.query(
       `
@@ -413,12 +408,10 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
           AND ${appointmentTimeExpr} = $2::time
           ${appointmentVaccineFilter}
           AND a.is_active = true
-          AND ${buildNormalizedStatusSql('a')} NOT IN ('cancelled', 'attended', 'completed')
+          AND ${buildStatusSql('a')} NOT IN ('cancelled', 'attended', 'completed')
           ${clinicId ? `AND COALESCE(p.${patientsScope}, a.${appointmentsScope}) = $4` : ''}
       `,
-      clinicId
-        ? [date, time, vaccineId, clinicId]
-        : [date, time, vaccineId],
+      clinicId ? [date, time, vaccineId, clinicId] : [date, time, vaccineId]
     );
 
     const appointmentCount = parseInt(appointmentCountResult.rows[0].count, 10);
@@ -427,15 +420,16 @@ const checkVaccineStockForDateTime = async ({ date, time, vaccineId, clinicId })
     return {
       available: availableSlots > 0,
       code: availableSlots > 0 ? 'STOCK_AVAILABLE' : 'NO_STOCK_AVAILABLE',
-      message: availableSlots > 0
-        ? `${availableSlots} dose(s) available for ${vaccineStock.vaccine_name} at ${date} ${time}`
-        : `No stock available for ${vaccineStock.vaccine_name} at ${date} ${time}. ${appointmentCount} appointment(s) already scheduled.`,
+      message:
+        availableSlots > 0
+          ? `${availableSlots} dose(s) available for ${vaccineStock.vaccine_name} at ${date} ${time}`
+          : `No stock available for ${vaccineStock.vaccine_name} at ${date} ${time}. ${appointmentCount} appointment(s) already scheduled.`,
       stock: totalStock,
       booked: appointmentCount,
       availableSlots,
     };
   } catch (error) {
-    console.error('Error in checkVaccineStockForDateTime:', error);
+    console.error('Error in checkStockAt:', error);
     return {
       available: false,
       code: 'STOCK_CHECK_FAILED',
@@ -454,18 +448,11 @@ const getDailyVaccinationAppointmentCount = async ({
     return 0;
   }
 
-  const {
-    appointmentsPatient,
-    appointmentsScope,
-    patientsScope,
-    appointmentsVaccine,
-  } = await getSchemaColumnMappings();
+  const { appointmentsPatient, appointmentsScope, patientsScope, appointmentsVaccine } =
+    await getSchemaColumnMappings();
 
   const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
-  const vaccinationPredicate = buildVaccinationAppointmentPredicate(
-    { appointmentsVaccine },
-    'a',
-  );
+  const vaccinationPredicate = buildVaccPredicate({ appointmentsVaccine }, 'a');
   const params = [dateKey];
   let query = `
     SELECT COUNT(*)::int AS count
@@ -511,12 +498,14 @@ const checkBookingAvailability = async ({
       };
     }
 
-    const effectiveTime = time || (parsedAppointmentDate.hasTime ? parsedAppointmentDate.time : null);
+    const effectiveTime =
+      time || (parsedAppointmentDate.hasTime ? parsedAppointmentDate.time : null);
     if (effectiveTime && !isAllowedAppointmentTimeSlot(effectiveTime)) {
       return {
         available: false,
         code: 'INVALID_TIME',
-        message: 'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
+        message:
+          'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
       };
     }
 
@@ -553,7 +542,6 @@ const checkBookingAvailability = async ({
       };
     }
 
-    // Check if date is blocked by admin
     try {
       const blockedDate = await blockedDatesService.isDateBlocked({
         date: toDateKey(dateOnly),
@@ -575,12 +563,15 @@ const checkBookingAvailability = async ({
       }
     } catch (blockError) {
       console.error('Error checking blocked date:', blockError.message);
-      // Continue with availability check if blocked date check fails
     }
 
+    let dailyCapacity = null;
+
     if (
-      isVaccinationAppointmentType(appointmentType, { treatMissingTypeAsVaccination: Boolean(vaccineId) })
-      || Number.isInteger(Number.parseInt(vaccineId, 10))
+      isVaccinationAppointmentType(appointmentType, {
+        treatMissingTypeAsVaccination: Boolean(vaccineId),
+      }) ||
+      Number.isInteger(Number.parseInt(vaccineId, 10))
     ) {
       const vaccinationCount = await getDailyVaccinationAppointmentCount({
         scheduledDate: scheduledManila,
@@ -588,23 +579,24 @@ const checkBookingAvailability = async ({
         excludeAppointmentId,
       });
 
+      dailyCapacity = {
+        current: vaccinationCount,
+        maximum: MAX_VACCINATION_APPOINTMENTS_PER_DAY,
+        remaining: Math.max(0, MAX_VACCINATION_APPOINTMENTS_PER_DAY - vaccinationCount),
+      };
+
       if (vaccinationCount >= MAX_VACCINATION_APPOINTMENTS_PER_DAY) {
         return {
           available: false,
           code: 'DAILY_CAPACITY_REACHED',
           message: `Daily vaccination capacity is limited to ${MAX_VACCINATION_APPOINTMENTS_PER_DAY} appointments on active weekdays.`,
-          capacity: {
-            current: vaccinationCount,
-            maximum: MAX_VACCINATION_APPOINTMENTS_PER_DAY,
-            remaining: 0,
-          },
+          capacity: dailyCapacity,
         };
       }
     }
 
-    // If time is provided, use stock-aware checking for specific date/time
     if (effectiveTime && vaccineId) {
-      const stockCheck = await checkVaccineStockForDateTime({
+      const stockCheck = await checkStockAt({
         date: scheduledManila,
         time: effectiveTime,
         vaccineId,
@@ -612,12 +604,16 @@ const checkBookingAvailability = async ({
       });
 
       if (stockCheck.code === 'STOCK_CHECK_FAILED') {
-        console.warn('[checkBookingAvailability] Vaccine stock check failed; allowing booking with stock_warning:', stockCheck.message);
+        console.warn(
+          '[checkBookingAvailability] Vaccine stock check failed; allowing booking with stock_warning:',
+          stockCheck.message
+        );
         return {
           available: true,
           code: 'STOCK_UNVERIFIED',
           message: 'Booking date is available (vaccine stock could not be verified)',
           stock_warning: 'Could not verify vaccine stock availability',
+          ...(dailyCapacity ? { capacity: dailyCapacity } : {}),
         };
       }
 
@@ -628,22 +624,25 @@ const checkBookingAvailability = async ({
         stock: stockCheck.stock,
         booked: stockCheck.booked,
         availableSlots: stockCheck.availableSlots,
+        ...(dailyCapacity ? { capacity: dailyCapacity } : {}),
       };
     }
 
-    const stock = await getVaccineStockSummary(clinicId);
+    const stock = await getStockSummary(clinicId);
 
     if (vaccineId) {
-      const selected = stock.vaccines.find((row) => parseInt(row.vaccine_id, 10) === parseInt(vaccineId, 10));
+      const selected = stock.vaccines.find(
+        (row) => parseInt(row.vaccine_id, 10) === parseInt(vaccineId, 10)
+      );
       const selectedStock = parseInt(selected?.available_stock || 0, 10);
 
-      // Block booking only when stock is actually depleted
       if (selectedStock <= 0) {
         return {
           available: false,
           code: 'SELECTED_VACCINE_OUT_OF_STOCK',
           message: 'No vaccines available for the selected vaccine. Please choose another vaccine.',
           stock,
+          ...(dailyCapacity ? { capacity: dailyCapacity } : {}),
         };
       }
     }
@@ -653,6 +652,7 @@ const checkBookingAvailability = async ({
       code: 'BOOKING_AVAILABLE',
       message: 'Booking date is available',
       stock,
+      ...(dailyCapacity ? { capacity: dailyCapacity } : {}),
     };
   } catch (error) {
     console.error('Error in checkBookingAvailability:', error);
@@ -664,9 +664,15 @@ const checkBookingAvailability = async ({
   }
 };
 
-const getDailyAppointmentCounts = async ({ startDate, endDate, guardianId = null, clinicId = null }) => {
+const getDailyCounts = async ({
+  startDate,
+  endDate,
+  guardianId = null,
+  clinicId = null,
+}) => {
   try {
-    const { appointmentsPatient, appointmentsScope, patientsScope } = await getSchemaColumnMappings();
+    const { appointmentsPatient, appointmentsScope, patientsScope } =
+      await getSchemaColumnMappings();
     const appointmentDateExpr = `(a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date`;
 
     const params = [toDateKey(startDate), toDateKey(endDate)];
@@ -678,7 +684,7 @@ const getDailyAppointmentCounts = async ({ startDate, endDate, guardianId = null
       LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
       WHERE ${appointmentDateExpr} BETWEEN $1::date AND $2::date
         AND a.is_active = true
-        AND ${buildNormalizedStatusSql('a')} <> 'cancelled'
+        AND ${buildStatusSql('a')} <> 'cancelled'
     `;
 
     if (guardianId) {
@@ -702,16 +708,21 @@ const getDailyAppointmentCounts = async ({ startDate, endDate, guardianId = null
 
     return counts;
   } catch (error) {
-    console.error('Error in getDailyAppointmentCounts:', error);
+    console.error('Error in getDailyCounts:', error);
     return {};
   }
 };
 
-const getCalendarAvailability = async ({ month, startDate, endDate, guardianId = null, clinicId = null }) => {
+const getCalendarAvailability = async ({
+  month,
+  startDate,
+  endDate,
+  guardianId = null,
+  clinicId = null,
+}) => {
   try {
     const range = resolveDateRange({ month, startDate, endDate });
     if (!range) {
-      // Return safe default instead of throwing
       return {
         startDate: null,
         endDate: null,
@@ -726,19 +737,22 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
 
     const { start, end } = range;
 
-    // Get data with error handling - if either fails, continue with empty data
     let dailyCounts = {};
     let stock = { vaccines: [], totalAvailableStock: 0, availableVaccines: 0 };
 
     try {
-      const countsResult = await getDailyAppointmentCounts({ startDate: start, endDate: end, guardianId, clinicId });
+      const countsResult = await getDailyCounts({
+        startDate: start,
+        endDate: end,
+        clinicId,
+      });
       dailyCounts = countsResult || {};
     } catch (countsError) {
       console.error('Error getting daily counts:', countsError.message);
     }
 
     try {
-      const stockResult = await getVaccineStockSummary(clinicId);
+      const stockResult = await getStockSummary(clinicId);
       stock = stockResult || { vaccines: [], totalAvailableStock: 0, availableVaccines: 0 };
     } catch (stockError) {
       console.error('Error getting stock summary:', stockError.message);
@@ -751,7 +765,7 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
         startDate: start,
         endDate: end,
         clinicId,
-      }),
+      })
     );
 
     while (cursor <= end) {
@@ -774,16 +788,15 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
 
       days.push({
         date: dateKey,
-        totalAppointments: blockedReason ? 0 : (dailyCounts[dateKey] || 0),
+        totalAppointments: blockedReason ? 0 : dailyCounts[dateKey] || 0,
         isWeekend: weekend,
         isHoliday: Boolean(holiday),
         holidayName: holiday?.name || null,
         noVaccineAvailability,
         hasVaccineAvailability: stock.totalAvailableStock > 0,
         isAdminBlocked: blockedDateKeys.has(dateKey) && !weekend && !holiday,
-        adminBlockReason: blockedDateKeys.has(dateKey) && !weekend && !holiday
-          ? 'blocked by clinic rule'
-          : null,
+        adminBlockReason:
+          blockedDateKeys.has(dateKey) && !weekend && !holiday ? 'blocked by clinic rule' : null,
         blocked: Boolean(blockedReason),
         blockedReason,
       });
@@ -809,7 +822,8 @@ const getCalendarAvailability = async ({ month, startDate, endDate, guardianId =
 
 const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null }) => {
   try {
-    const { appointmentsPatient, appointmentsScope, patientsScope } = await getSchemaColumnMappings();
+    const { appointmentsPatient, appointmentsScope, patientsScope } =
+      await getSchemaColumnMappings();
 
     const parsedDate = parseDate(date);
     if (!parsedDate) {
@@ -827,7 +841,7 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
     });
 
     if (!availability.isAvailable) {
-      const stock = await getVaccineStockSummary(clinicId);
+      const stock = await getStockSummary(clinicId);
       return {
         date: dateKey,
         isWeekend: isWeekend(parsedDate),
@@ -877,7 +891,7 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
 
     const [appointmentsResult, stock] = await Promise.all([
       pool.query(query, params),
-      getVaccineStockSummary(clinicId),
+      getStockSummary(clinicId),
     ]);
 
     const appointments = (appointmentsResult.rows || []).map(normalizeAppointmentRecordForResponse);
@@ -889,7 +903,7 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
         acc.byStatus[status] = (acc.byStatus[status] || 0) + 1;
         return acc;
       },
-      { total: 0, byStatus: {} },
+      { total: 0, byStatus: {} }
     );
 
     return {
@@ -911,9 +925,14 @@ const getCalendarDateDetails = async ({ date, guardianId = null, clinicId = null
   }
 };
 
-const getBookedTimeSlots = async ({ scheduledDate, clinicId = null, excludeAppointmentId = null }) => {
+const getBookedSlots = async ({
+  scheduledDate,
+  clinicId = null,
+  excludeAppointmentId = null,
+}) => {
   try {
-    const { appointmentsPatient, appointmentsScope, patientsScope } = await getSchemaColumnMappings();
+    const { appointmentsPatient, appointmentsScope, patientsScope } =
+      await getSchemaColumnMappings();
     const dateKey = toDateKey(scheduledDate);
     if (!dateKey) {
       return [];
@@ -927,7 +946,7 @@ const getBookedTimeSlots = async ({ scheduledDate, clinicId = null, excludeAppoi
       LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
       WHERE ${appointmentDateExpr} = $1::date
         AND a.is_active = true
-        AND ${buildNormalizedStatusSql('a')} <> 'cancelled'
+        AND ${buildStatusSql('a')} <> 'cancelled'
     `;
 
     if (excludeAppointmentId) {
@@ -948,10 +967,9 @@ const getBookedTimeSlots = async ({ scheduledDate, clinicId = null, excludeAppoi
           return null;
         }
 
-        const value = normalizeAppointmentDateTimeForDisplay(row.scheduled_date)
-          || (row.scheduled_date instanceof Date
-            ? row.scheduled_date
-            : new Date(row.scheduled_date));
+        const value =
+          normalizeAppointmentDateTimeForDisplay(row.scheduled_date) ||
+          (row.scheduled_date instanceof Date ? row.scheduled_date : new Date(row.scheduled_date));
         if (Number.isNaN(value.getTime())) {
           return null;
         }
@@ -1008,8 +1026,8 @@ const getAvailableTimeSlots = async ({
       };
     }
 
-    const slots = buildDailyTimeSlots();
-    const bookedSlots = await getBookedTimeSlots({
+    const slots = buildTimeSlots();
+    const bookedSlots = await getBookedSlots({
       scheduledDate: dateOnly,
       clinicId,
       excludeAppointmentId,
@@ -1026,9 +1044,9 @@ const getAvailableTimeSlots = async ({
         minute: '2-digit',
         hour12: false,
       }).format(new Date());
-      const currentMinutes = timeToMinutes(currentTimeInManila);
+      const currentMinutes = toMinutes(currentTimeInManila);
       availableSlots = availableSlots.filter((slot) => {
-        const slotMinutes = timeToMinutes(slot);
+        const slotMinutes = toMinutes(slot);
         return slotMinutes !== null && currentMinutes !== null && slotMinutes > currentMinutes;
       });
     }
@@ -1059,14 +1077,9 @@ const getAvailableTimeSlots = async ({
   }
 };
 
-/**
- * Retrieves upcoming appointments for a specific guardian.
- * @param {number} guardianId - The ID of the guardian.
- * @param {number} limit - Number of appointments to return.
- */
 const getAppointmentsByGuardian = async (guardianId, limit = 5) => {
   try {
-  const query = `
+    const query = `
       SELECT
         a.id,
         a.scheduled_date,
@@ -1081,7 +1094,7 @@ const getAppointmentsByGuardian = async (guardianId, limit = 5) => {
       LEFT JOIN clinics c ON a.clinic_id = c.id
       WHERE p.guardian_id = $1
       AND (a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date >= (CURRENT_TIMESTAMP AT TIME ZONE '${CLINIC_TIMEZONE}')::date
-      AND ${buildNormalizedStatusSql('a')} NOT IN ('cancelled', 'attended', 'completed')
+      AND ${buildStatusSql('a')} NOT IN ('cancelled', 'attended', 'completed')
       ORDER BY a.scheduled_date ASC
       LIMIT $2
     `;
@@ -1090,6 +1103,59 @@ const getAppointmentsByGuardian = async (guardianId, limit = 5) => {
   } catch (error) {
     console.error('Error fetching guardian appointments:', error);
     return [];
+  }
+};
+
+const getUpcomingActiveAppointmentForInfant = async ({
+  infantId,
+  clinicId = null,
+} = {}) => {
+  try {
+    const normalizedInfantId = Number.parseInt(infantId, 10);
+    if (!Number.isInteger(normalizedInfantId) || normalizedInfantId <= 0) {
+      return null;
+    }
+
+    const { appointmentsPatient, appointmentsScope, patientsScope } =
+      await getSchemaColumnMappings();
+
+    const params = [normalizedInfantId];
+    let query = `
+      SELECT
+        a.*,
+        p.first_name AS first_name,
+        p.last_name AS last_name,
+        p.control_number AS control_number,
+        g.name AS guardian_name,
+        g.phone AS guardian_phone,
+        v.name AS vaccine_name
+      FROM appointments a
+      LEFT JOIN patients p ON p.id = a.${appointmentsPatient}
+      LEFT JOIN guardians g ON g.id = p.guardian_id
+      LEFT JOIN vaccines v ON v.id = a.vaccine_id
+      WHERE a.${appointmentsPatient} = $1
+        AND a.is_active = true
+        AND ${buildStatusSql('a')} IN ('pending', 'scheduled', 'confirmed', 'rescheduled')
+        AND (a.scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date >=
+            (CURRENT_TIMESTAMP AT TIME ZONE '${CLINIC_TIMEZONE}')::date
+    `;
+
+    if (clinicId) {
+      query += ` AND COALESCE(p.${patientsScope}, a.${appointmentsScope}) = $${params.length + 1}`;
+      params.push(clinicId);
+    }
+
+    query += ' ORDER BY a.scheduled_date ASC LIMIT 1';
+
+    const result = await pool.query(query, params);
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    return normalizeAppointmentRecordForResponse(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching upcoming active appointment for infant:', error);
+    return null;
   }
 };
 
@@ -1111,7 +1177,7 @@ const findConflictingActiveAppointment = async ({
     WHERE ${appointmentsPatient} = $1
       AND (scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date = $2::date
       AND is_active = true
-      AND ${buildNormalizedStatusSql()} IN ('pending', 'scheduled', 'confirmed', 'rescheduled')
+      AND ${buildStatusSql()} IN ('pending', 'scheduled', 'confirmed', 'rescheduled')
   `;
 
   if (excludeAppointmentId) {
@@ -1125,23 +1191,18 @@ const findConflictingActiveAppointment = async ({
   return result.rows[0] || null;
 };
 
-/**
- * Creates a new appointment and sends notifications.
- * This is a new, production-ready function demonstrating the usage of the notification service.
- * @param {object} appointmentData - The data for the new appointment.
- * @returns {Promise<object>} The created appointment record.
- */
 const createAppointmentAndNotify = async (appointmentData) => {
   const { infant_id, scheduled_date, vaccine_id, clinic_id, notes } = appointmentData;
 
-  // In a real app, you would wrap this in a database transaction
   try {
     const parsedScheduledDate = parseAppointmentDateTimeInput(scheduled_date, {
       requireTime: true,
     });
 
     if (!parsedScheduledDate || !isAllowedAppointmentTimeSlot(parsedScheduledDate.time)) {
-      const error = new Error('Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.');
+      const error = new Error(
+        'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.'
+      );
       error.statusCode = 400;
       error.code = 'INVALID_TIME';
       throw error;
@@ -1149,16 +1210,20 @@ const createAppointmentAndNotify = async (appointmentData) => {
 
     const normalizedScheduledDate = parsedScheduledDate.normalizedIsoString;
 
-    // 1. Insert the appointment into the database
     const insertQuery = `
       INSERT INTO appointments (infant_id, scheduled_date, vaccine_id, clinic_id, notes, status)
       VALUES ($1, $2, $3, $4, $5, 'scheduled')
       RETURNING *;
     `;
-    const result = await pool.query(insertQuery, [infant_id, normalizedScheduledDate, vaccine_id, clinic_id, notes]);
+    const result = await pool.query(insertQuery, [
+      infant_id,
+      normalizedScheduledDate,
+      vaccine_id,
+      clinic_id,
+      notes,
+    ]);
     const newAppointment = normalizeAppointmentRecordForResponse(result.rows[0]);
 
-    // 2. Fetch related data for notifications
     const detailsQuery = `
       SELECT
         p.first_name AS "infantName",
@@ -1177,30 +1242,31 @@ const createAppointmentAndNotify = async (appointmentData) => {
     const detailsResult = await pool.query(detailsQuery, [vaccine_id, clinic_id, infant_id]);
     const details = detailsResult.rows[0];
 
-    // 3. Send notifications (offloaded, doesn't block the response)
     if (details && details.guardianPhone) {
       const appointmentDate = formatClinicDateTime(normalizedScheduledDate);
       const appointmentTime = formatClinicTime(normalizedScheduledDate);
 
-      // Send SMS using the improved smsService
       const smsService = require('./smsService');
-      smsService.sendAppointmentConfirmation({
-        phoneNumber: details.guardianPhone,
-        guardianName: details.guardianName,
-        childName: details.infantName,
-        vaccineName: details.vaccineName,
-        scheduledDate: normalizedScheduledDate,
-        location: details.clinicName,
-      }).catch(err => console.error('Appointment confirmation SMS failed:', err.message));
+      smsService
+        .sendAppointmentConfirmation({
+          phoneNumber: details.guardianPhone,
+          guardianName: details.guardianName,
+          childName: details.infantName,
+          vaccineName: details.vaccineName,
+          scheduledDate: normalizedScheduledDate,
+          location: details.clinicName,
+        })
+        .catch((err) => console.error('Appointment confirmation SMS failed:', err.message));
 
-      // Send Email
       const notificationService = require('./notificationService');
-      notificationService.sendEmail(
-        details.guardianEmail,
-        'Immunicare Appointment Confirmation',
-        'appointmentConfirmation',
-        { ...details, appointmentDate, appointmentTime },
-      ).catch(err => console.error('Appointment confirmation email failed:', err.message));
+      notificationService
+        .sendEmail(
+          details.guardianEmail,
+          'Immunicare Appointment Confirmation',
+          'appointmentConfirmation',
+          { ...details, appointmentDate, appointmentTime }
+        )
+        .catch((err) => console.error('Appointment confirmation email failed:', err.message));
     }
 
     return newAppointment;
@@ -1210,19 +1276,10 @@ const createAppointmentAndNotify = async (appointmentData) => {
   }
 };
 
-/**
- * Generate a unique control number for a new infant
- * Format: INF-YYYY-XXXXXX (e.g., INF-2024-000001)
- * Uses PostgreSQL sequence for atomicity
- */
 const generateControlNumber = async (client = null) => {
   return generateInfantControlNumber(client || pool);
 };
 
-/**
- * Ensure an infant record exists for appointment scheduling
- * Checks by name/DOB/guardian or creates a new one with a control number
- */
 const ensureInfantRecord = async (infantData, guardianId, client = null) => {
   const dbClient = client || pool;
 
@@ -1237,7 +1294,7 @@ const ensureInfantRecord = async (infantData, guardianId, client = null) => {
         middle_name: infantData?.middle_name || null,
       },
     },
-    dbClient,
+    dbClient
   );
 
   return {
@@ -1246,7 +1303,7 @@ const ensureInfantRecord = async (infantData, guardianId, client = null) => {
   };
 };
 
-const resolveGuardianContact = async (guardianId) => {
+const fetchGuardianContact = async (guardianId) => {
   if (!guardianId) {
     return null;
   }
@@ -1259,7 +1316,7 @@ const resolveGuardianContact = async (guardianId) => {
         WHERE g.id = $1
         LIMIT 1
       `,
-      [guardianId],
+      [guardianId]
     );
 
     return result.rows[0] || null;
@@ -1269,7 +1326,7 @@ const resolveGuardianContact = async (guardianId) => {
   }
 };
 
-const resolveVaccineName = async (vaccineId) => {
+const fetchVaccineName = async (vaccineId) => {
   if (!vaccineId) {
     return 'selected vaccine';
   }
@@ -1282,7 +1339,7 @@ const resolveVaccineName = async (vaccineId) => {
         WHERE id = $1
         LIMIT 1
       `,
-      [vaccineId],
+      [vaccineId]
     );
 
     return result.rows[0]?.name || 'selected vaccine';
@@ -1292,21 +1349,21 @@ const resolveVaccineName = async (vaccineId) => {
   }
 };
 
-const buildUnavailableNotificationMessage = ({ guardianName, vaccineName, scheduledDate }) => {
+const buildUnavailMsg = ({ guardianName, vaccineName, scheduledDate }) => {
   const dateLabel = scheduledDate
     ? new Date(scheduledDate).toLocaleDateString('en-PH', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    })
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
     : 'your selected date';
 
   return `Hi ${guardianName}, ${vaccineName} is currently unavailable for ${dateLabel}. We'll notify you once stock is replenished.`;
 };
 
-const VACCINE_UNAVAILABLE_NOTIFICATION_TYPE = 'vaccine_unavailable';
+const UNAVAIL_NOTIF_TYPE = 'vaccine_unavailable';
 
-const buildGuardianNotificationScopeClause = (notificationColumns, guardianId, params) => {
+const buildGuardianScopeClause = (notificationColumns, guardianId, params) => {
   if (notificationColumns.has('guardian_id')) {
     params.push(guardianId);
     return `guardian_id = $${params.length}`;
@@ -1323,14 +1380,14 @@ const buildGuardianNotificationScopeClause = (notificationColumns, guardianId, p
   return null;
 };
 
-const shouldDedupeUnavailableNotification = async ({ guardianId, vaccineId, dateKey }) => {
+const shouldDedupeNotif = async ({ guardianId, vaccineId, dateKey }) => {
   try {
-    const notificationColumns = await getNotificationColumns();
-    const params = [VACCINE_UNAVAILABLE_NOTIFICATION_TYPE];
-    const guardianScopeClause = buildGuardianNotificationScopeClause(
+    const notificationColumns = await getNotifCols();
+    const params = [UNAVAIL_NOTIF_TYPE];
+    const guardianScopeClause = buildGuardianScopeClause(
       notificationColumns,
       guardianId,
-      params,
+      params
     );
 
     if (!guardianScopeClause) {
@@ -1362,7 +1419,7 @@ const shouldDedupeUnavailableNotification = async ({ guardianId, vaccineId, date
         ORDER BY created_at DESC
         LIMIT 1
       `,
-      params,
+      params
     );
 
     return (result.rows || []).length > 0;
@@ -1372,7 +1429,13 @@ const shouldDedupeUnavailableNotification = async ({ guardianId, vaccineId, date
   }
 };
 
-const buildVaccineUnavailableMetadata = ({ guardianId, infantId, vaccineId, dateKey, clinicId }) => ({
+const buildUnavailMetadata = ({
+  guardianId,
+  infantId,
+  vaccineId,
+  dateKey,
+  clinicId,
+}) => ({
   guardian_id: guardianId,
   infant_id: infantId || null,
   vaccine_id: vaccineId,
@@ -1381,15 +1444,14 @@ const buildVaccineUnavailableMetadata = ({ guardianId, infantId, vaccineId, date
   reason: 'out_of_stock',
 });
 
-const withVaccineUnavailableLock = async ({ guardianId, vaccineId, dateKey }, callback) => {
+const withUnavailLock = async ({ guardianId, vaccineId, dateKey }, callback) => {
   const lockKey = `vaccine_unavailable:${guardianId}:${vaccineId}:${dateKey}`;
   let lockAcquired = false;
 
   try {
-    const lockResult = await pool.query(
-      'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
-      [lockKey],
-    );
+    const lockResult = await pool.query('SELECT pg_try_advisory_lock(hashtext($1)) AS locked', [
+      lockKey,
+    ]);
 
     lockAcquired = Boolean(lockResult.rows[0]?.locked);
     if (!lockAcquired) {
@@ -1402,7 +1464,10 @@ const withVaccineUnavailableLock = async ({ guardianId, vaccineId, dateKey }, ca
       try {
         await pool.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]);
       } catch (unlockError) {
-        console.error('Failed to release vaccine unavailable notification lock:', unlockError.message);
+        console.error(
+          'Failed to release vaccine unavailable notification lock:',
+          unlockError.message
+        );
       }
     }
   }
@@ -1424,107 +1489,105 @@ const notifyGuardianVaccineUnavailable = async ({
     return { notified: false, reason: 'invalid_date' };
   }
 
-  return withVaccineUnavailableLock(
-    { guardianId, vaccineId, dateKey },
-    async () => {
-      const shouldSkip = await shouldDedupeUnavailableNotification({
-        guardianId,
-        vaccineId,
-        dateKey,
+  return withUnavailLock({ guardianId, vaccineId, dateKey }, async () => {
+    const shouldSkip = await shouldDedupeNotif({
+      guardianId,
+      vaccineId,
+      dateKey,
+    });
+
+    if (shouldSkip) {
+      return { notified: false, reason: 'duplicate' };
+    }
+
+    const [guardian, vaccineName] = await Promise.all([
+      fetchGuardianContact(guardianId),
+      fetchVaccineName(vaccineId),
+    ]);
+
+    const guardianName = guardian?.name || `Guardian #${guardianId}`;
+    const message = buildUnavailMsg({
+      guardianName,
+      vaccineName,
+      scheduledDate,
+    });
+
+    const metadata = buildUnavailMetadata({
+      guardianId,
+      infantId,
+      vaccineId,
+      dateKey,
+      clinicId,
+    });
+
+    try {
+      const dispatchResult = await notificationService.sendNotification({
+        notification_type: UNAVAIL_NOTIF_TYPE,
+        target_type: 'guardian',
+        target_id: guardianId,
+        recipient_name: guardianName,
+        recipient_phone: guardian?.phone || null,
+        recipient_email: guardian?.email || null,
+        channel: 'sms',
+        priority: 'high',
+        subject: 'Vaccine Unavailable',
+        message,
+        created_by: null,
+        guardian_id: guardianId,
+        target_role: 'guardian',
+        title: 'Vaccine Unavailable',
+        type: 'alert',
+        category: 'inventory',
+        is_read: false,
+        metadata,
+        template_data: {
+          guardian_name: guardianName,
+          vaccine_name: vaccineName,
+          date_key: dateKey,
+        },
       });
 
-      if (shouldSkip) {
-        return { notified: false, reason: 'duplicate' };
-      }
+      const notificationId = dispatchResult?.notification?.id || null;
+      let persistedNotification = null;
 
-      const [guardian, vaccineName] = await Promise.all([
-        resolveGuardianContact(guardianId),
-        resolveVaccineName(vaccineId),
-      ]);
-
-      const guardianName = guardian?.name || `Guardian #${guardianId}`;
-      const message = buildUnavailableNotificationMessage({
-        guardianName,
-        vaccineName,
-        scheduledDate,
-      });
-
-      const metadata = buildVaccineUnavailableMetadata({
-        guardianId,
-        infantId,
-        vaccineId,
-        dateKey,
-        clinicId,
-      });
-
-      try {
-        const dispatchResult = await notificationService.sendNotification({
-          notification_type: VACCINE_UNAVAILABLE_NOTIFICATION_TYPE,
-          target_type: 'guardian',
-          target_id: guardianId,
-          recipient_name: guardianName,
-          recipient_phone: guardian?.phone || null,
-          recipient_email: guardian?.email || null,
-          channel: 'sms',
-          priority: 'high',
-          subject: 'Vaccine Unavailable',
-          message,
-          created_by: null,
-          guardian_id: guardianId,
-          target_role: 'guardian',
-          title: 'Vaccine Unavailable',
-          type: 'alert',
-          category: 'inventory',
-          is_read: false,
-          metadata,
-          template_data: {
-            guardian_name: guardianName,
-            vaccine_name: vaccineName,
-            date_key: dateKey,
-          },
-        });
-
-        const notificationId = dispatchResult?.notification?.id || null;
-        let persistedNotification = null;
-
-        if (notificationId) {
-          try {
-            persistedNotification = await notificationService.getNotification(notificationId);
-          } catch (readError) {
-            console.error('Failed to fetch vaccine unavailable notification status:', readError.message);
-          }
+      if (notificationId) {
+        try {
+          persistedNotification = await notificationService.getNotification(notificationId);
+        } catch (readError) {
+          console.error(
+            'Failed to fetch vaccine unavailable notification status:',
+            readError.message
+          );
         }
-
-        const finalStatus =
-          persistedNotification?.status || dispatchResult?.notification?.status || null;
-
-        return {
-          notified: Boolean(notificationId),
-          notificationId,
-          smsSent: finalStatus === 'sent',
-          status: finalStatus,
-        };
-      } catch (notificationError) {
-        console.error('Failed to trigger vaccine unavailable notification pipeline:', notificationError.message);
-        return {
-          notified: false,
-          reason: 'notification_pipeline_failed',
-          error: notificationError.message,
-        };
       }
-    },
-  );
+
+      const finalStatus =
+        persistedNotification?.status || dispatchResult?.notification?.status || null;
+
+      return {
+        notified: Boolean(notificationId),
+        notificationId,
+        smsSent: finalStatus === 'sent',
+        status: finalStatus,
+      };
+    } catch (notificationError) {
+      console.error(
+        'Failed to trigger vaccine unavailable notification pipeline:',
+        notificationError.message
+      );
+      return {
+        notified: false,
+        reason: 'notification_pipeline_failed',
+        error: notificationError.message,
+      };
+    }
+  });
 };
 
-/**
- * Process missed appointments and send SMS notifications
- * This should be called periodically (e.g., daily) to detect and notify about missed appointments
- */
 const processMissedAppointments = async () => {
   try {
     const { appointmentsPatient } = await getSchemaColumnMappings();
 
-    // Find appointments that were scheduled but not attended
     const query = `
       SELECT
         a.id as appointment_id,
@@ -1542,7 +1605,7 @@ const processMissedAppointments = async () => {
       JOIN patients p ON a.${appointmentsPatient} = p.id
       JOIN guardians g ON p.guardian_id = g.id
       WHERE a.scheduled_date < NOW() - INTERVAL '2 hours'
-        AND ${buildNormalizedStatusSql('a')} IN ('scheduled', 'confirmed', 'rescheduled', 'no_show')
+        AND ${buildStatusSql('a')} IN ('scheduled', 'confirmed', 'rescheduled', 'no_show')
         AND a.is_active = true
         AND (a.sms_missed_notification_sent IS NULL OR a.sms_missed_notification_sent = FALSE)
     `;
@@ -1560,15 +1623,18 @@ const processMissedAppointments = async () => {
 
     for (const appointment of missedAppointments) {
       if (!appointment.guardian_phone) {
-        console.warn(`No guardian phone for missed appointment ${appointment.appointment_id}, skipping SMS`);
+        console.warn(
+          `No guardian phone for missed appointment ${appointment.appointment_id}, skipping SMS`
+        );
         failedCount++;
         continue;
       }
 
-      // Format phone number to E.164 before sending SMS
       const formattedPhone = smsService.formatPhoneNumber(appointment.guardian_phone);
       if (!formattedPhone) {
-        console.warn(`Invalid phone number for appointment ${appointment.appointment_id}: ${appointment.guardian_phone}`);
+        console.warn(
+          `Invalid phone number for appointment ${appointment.appointment_id}: ${appointment.guardian_phone}`
+        );
         failedCount++;
         continue;
       }
@@ -1584,28 +1650,33 @@ const processMissedAppointments = async () => {
         });
 
         if (result.success) {
-          // Mark notification as sent
           await pool.query(
             'UPDATE appointments SET sms_missed_notification_sent = TRUE WHERE id = $1',
-            [appointment.appointment_id],
+            [appointment.appointment_id]
           );
           sentCount++;
 
-          // Attempt to auto-reschedule the missed appointment
           try {
-            const rescheduleResult = await autoRescheduleMissedAppointment(appointment.appointment_id);
+            const rescheduleResult = await autoReschedule(
+              appointment.appointment_id
+            );
             if (rescheduleResult.success) {
               rescheduledCount++;
               console.log(`Auto-rescheduled missed appointment ${appointment.appointment_id}`);
             } else {
-              console.warn(`Failed to auto-reschedule missed appointment ${appointment.appointment_id}: ${rescheduleResult.error}`);
+              console.warn(
+                `Failed to auto-reschedule missed appointment ${appointment.appointment_id}: ${rescheduleResult.error}`
+              );
             }
           } catch (rescheduleError) {
-            console.error(`Error auto-rescheduling missed appointment ${appointment.appointment_id}:`, rescheduleError.message);
+            console.error(
+              `Error auto-rescheduling missed appointment ${appointment.appointment_id}:`,
+              rescheduleError.message
+            );
           }
         } else {
           console.warn(
-            `Missed appointment SMS was not sent for appointment ${appointment.appointment_id}: ${result.error || 'unknown reason'}`,
+            `Missed appointment SMS was not sent for appointment ${appointment.appointment_id}: ${result.error || 'unknown reason'}`
           );
           failedCount++;
         }
@@ -1627,22 +1698,17 @@ const processMissedAppointments = async () => {
   }
 };
 
-const fetchAppointmentById = async (appointmentId) => {
+const fetchApptById = async (appointmentId) => {
   const normalizedAppointmentId = Number.parseInt(appointmentId, 10);
   if (!normalizedAppointmentId || normalizedAppointmentId <= 0) {
     return null;
   }
 
   try {
-    const {
-      appointmentsPatient,
-      appointmentsScope,
-      appointmentsVaccine,
-    } = await getSchemaColumnMappings();
+    const { appointmentsPatient, appointmentsScope, appointmentsVaccine } =
+      await getSchemaColumnMappings();
 
-    const vaccineColumnSql = appointmentsVaccine
-      ? `a.${appointmentsVaccine}`
-      : 'NULL';
+    const vaccineColumnSql = appointmentsVaccine ? `a.${appointmentsVaccine}` : 'NULL';
 
     const appointmentResult = await pool.query(
       `
@@ -1666,7 +1732,7 @@ const fetchAppointmentById = async (appointmentId) => {
         WHERE a.id = $1
         LIMIT 1
       `,
-      [normalizedAppointmentId],
+      [normalizedAppointmentId]
     );
 
     return appointmentResult.rows[0] || null;
@@ -1676,14 +1742,13 @@ const fetchAppointmentById = async (appointmentId) => {
   }
 };
 
-const findEarliestValidDateFallback = async (startDateStr, clinicId = null) => {
+const findEarliestDate = async (startDateStr, clinicId = null) => {
   const normalizedStartDate = toDateKey(startDateStr) || getClinicTodayDateKey();
   const currentDate = parseDate(normalizedStartDate);
   if (!currentDate) {
     return null;
   }
 
-  // Search up to 3 months for the next day that passes booking availability checks.
   for (let offset = 0; offset < 90; offset += 1) {
     const candidateDate = new Date(currentDate);
     candidateDate.setDate(candidateDate.getDate() + offset);
@@ -1706,15 +1771,9 @@ const findEarliestValidDateFallback = async (startDateStr, clinicId = null) => {
   return null;
 };
 
-/**
- * Automatically reschedule a missed appointment to the next available slot
- * @param {number} appointmentId - The ID of the missed appointment
- * @returns {Object} Result of the rescheduling attempt
- */
-const autoRescheduleMissedAppointment = async (appointmentId) => {
+const autoReschedule = async (appointmentId) => {
   try {
-    // Get the missed appointment details
-    const appointment = await fetchAppointmentById(appointmentId);
+    const appointment = await fetchApptById(appointmentId);
     if (!appointment) {
       return {
         success: false,
@@ -1722,11 +1781,11 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
       };
     }
 
-    // Check if appointment is actually missed (scheduled in past and not attended)
-    const appointmentDate = normalizeAppointmentDateTimeForDisplay(appointment.scheduled_date)
-      || new Date(appointment.scheduled_date);
+    const appointmentDate =
+      normalizeAppointmentDateTimeForDisplay(appointment.scheduled_date) ||
+      new Date(appointment.scheduled_date);
     const now = new Date();
-    const normalizedAppointmentStatus = normalizeStatusToken(appointment.status);
+    const normalizedAppointmentStatus = normalizeStatus(appointment.status);
     if (
       appointmentDate >= now ||
       !['scheduled', 'confirmed', 'rescheduled', 'no_show'].includes(normalizedAppointmentStatus)
@@ -1737,10 +1796,9 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
       };
     }
 
-    // Get infant and vaccine details
     const infantResult = await pool.query(
       'SELECT id, first_name, last_name, dob, guardian_id FROM patients WHERE id = $1',
-      [appointment.infant_id],
+      [appointment.infant_id]
     );
 
     if (infantResult.rows.length === 0) {
@@ -1752,8 +1810,6 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
 
     const infant = infantResult.rows[0];
 
-    // Get vaccination history to determine next due vaccine.
-    // Some environments only have immunization_records, so fall back when needed.
     let vaccinationsResult;
     try {
       vaccinationsResult = await pool.query(
@@ -1762,7 +1818,7 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
          JOIN vaccines v ON vr.vaccine_id = v.id
          WHERE vr.infant_id = $1
          ORDER BY vr.administered_at`,
-        [infant.id],
+        [infant.id]
       );
     } catch (primaryHistoryError) {
       if (primaryHistoryError?.code !== '42P01') {
@@ -1780,7 +1836,7 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
            LEFT JOIN vaccines v ON ir.vaccine_id = v.id
            WHERE ir.patient_id = $1
            ORDER BY COALESCE(ir.admin_date::timestamp, ir.created_at)`,
-          [infant.id],
+          [infant.id]
         );
       } catch (fallbackHistoryError) {
         if (fallbackHistoryError?.code !== '42P01') {
@@ -1791,16 +1847,16 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
       }
     }
 
-    const vaccinationHistory = vaccinationsResult.rows.map(record => ({
+    const vaccinationHistory = vaccinationsResult.rows.map((record) => ({
       vaccine: record.vaccine_name,
       dose_no: record.dose_no,
       date_administered: record.administered_at,
     }));
 
-    // Calculate next valid dose when helper is available.
-    const nextDoseInfo = typeof calculateNextValidDose === 'function'
-      ? calculateNextValidDose(infant.dob, vaccinationHistory)
-      : { date: getClinicTodayDateKey() };
+    const nextDoseInfo =
+      typeof calculateNextValidDose === 'function'
+        ? calculateNextValidDose(infant.dob, vaccinationHistory)
+        : { date: getClinicTodayDateKey() };
 
     if (!nextDoseInfo) {
       return {
@@ -1809,16 +1865,13 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
       };
     }
 
-    // Find earliest valid date for the vaccine
-    const earliestValidDate = typeof findEarliestValidDate === 'function'
-      ? await findEarliestValidDate(
-        getClinicTodayDateKey(),
-        appointment.resolved_clinic_id,
-      )
-      : await findEarliestValidDateFallback(
-        getClinicTodayDateKey(),
-        appointment.resolved_clinic_id,
-      );
+    const earliestValidDate =
+      typeof findEarliestValidDate === 'function'
+        ? await findEarliestValidDate(getClinicTodayDateKey(), appointment.resolved_clinic_id)
+        : await findEarliestDate(
+            getClinicTodayDateKey(),
+            appointment.resolved_clinic_id
+          );
 
     if (!earliestValidDate) {
       return {
@@ -1827,26 +1880,27 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
       };
     }
 
-    // Get available time slots for that date and vaccine
     const availabilityResult = await getAvailableTimeSlots({
       scheduledDate: earliestValidDate,
       vaccineId: appointment.vaccine_id,
       clinicId: appointment.resolved_clinic_id,
     });
 
-    if (!availabilityResult.available || !availabilityResult.slots || availabilityResult.slots.length === 0) {
+    if (
+      !availabilityResult.available ||
+      !availabilityResult.slots ||
+      availabilityResult.slots.length === 0
+    ) {
       return {
         success: false,
         error: 'No time slots available on the earliest valid date',
       };
     }
 
-    // Use the first available slot
     const newTime = availabilityResult.slots[0];
     const newDateTime = `${earliestValidDate} ${newTime}:00`;
 
-    // Update the appointment with new date/time
-    const { _appointmentsScope } = await getSchemaColumnMappings();
+    await getSchemaColumnMappings();
 
     const updateResult = await pool.query(
       `
@@ -1857,7 +1911,7 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
         WHERE id = $2
         RETURNING *
       `,
-      [newDateTime, appointmentId],
+      [newDateTime, appointmentId]
     );
 
     if (updateResult.rows.length === 0) {
@@ -1869,13 +1923,13 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
 
     const updatedAppointment = updateResult.rows[0];
 
-    // Send rescheduling notification
     if (updatedAppointment.guardian_phone) {
       try {
         await smsService.sendAppointmentRescheduledNotification({
           phoneNumber: updatedAppointment.guardian_phone,
           guardianName: updatedAppointment.guardian_name || 'Guardian',
-          childName: `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim(),
+          childName:
+            `${updatedAppointment.first_name || ''} ${updatedAppointment.last_name || ''}`.trim(),
           vaccineName: updatedAppointment.type || 'Vaccination',
           oldScheduledDate: appointment.scheduled_date,
           newScheduledDate: updatedAppointment.scheduled_date,
@@ -1883,7 +1937,6 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
         });
       } catch (notificationError) {
         console.warn(`Failed to send rescheduling notification: ${notificationError.message}`);
-        // Don't fail the rescheduling if notification fails
       }
     }
 
@@ -1893,7 +1946,7 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
       message: `Appointment rescheduled to ${earliestValidDate} at ${newTime}`,
     };
   } catch (error) {
-    console.error('Error in autoRescheduleMissedAppointment:', error);
+    console.error('Error in autoReschedule:', error);
     return {
       success: false,
       error: 'Failed to auto-reschedule missed appointment',
@@ -1901,19 +1954,13 @@ const autoRescheduleMissedAppointment = async (appointmentId) => {
   }
 };
 
-/**
- * Auto-approve appointment if all validation rules pass
- * @param {Object} appointmentData - The appointment data
- * @returns {Object} Result with autoApproval status and reason
- */
 const checkAutoApprovalEligibility = async (appointmentData) => {
   const { infant_id, scheduled_date, vaccine_id, clinic_id } = appointmentData;
 
   try {
-    // Step 1: Check if infant exists and is active
     const infantResult = await pool.query(
       'SELECT id, first_name, last_name, dob, guardian_id FROM patients WHERE id = $1 AND is_active = true',
-      [infant_id],
+      [infant_id]
     );
 
     if (infantResult.rows.length === 0) {
@@ -1924,13 +1971,12 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
       };
     }
 
-    // Step 2: Check for duplicate/pending appointments
     const existingAppointmentResult = await pool.query(
       `SELECT id FROM appointments
        WHERE infant_id = $1 AND is_active = true
-      AND ${buildNormalizedStatusSql()} IN ('scheduled', 'confirmed', 'rescheduled', 'pending')
+      AND ${buildStatusSql()} IN ('scheduled', 'confirmed', 'rescheduled', 'pending')
        AND (scheduled_date AT TIME ZONE '${CLINIC_TIMEZONE}')::date = $2::date`,
-      [infant_id, scheduled_date],
+      [infant_id, scheduled_date]
     );
 
     if (existingAppointmentResult.rows.length > 0) {
@@ -1941,7 +1987,6 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
       };
     }
 
-    // Step 3: Check vaccine stock availability
     const parsedAppointmentDate = parseAppointmentDateTimeInput(scheduled_date, {
       requireTime: true,
     });
@@ -1949,13 +1994,14 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
       return {
         eligible: false,
         autoApproved: false,
-        reason: 'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
+        reason:
+          'Appointments can only be scheduled between 8:00 AM and 4:00 PM in 30-minute slots.',
       };
     }
 
     const scheduledDateKey = parsedAppointmentDate.dateKey;
     const scheduledTime = parsedAppointmentDate.time;
-    const stockCheck = await checkVaccineStockForDateTime({
+    const stockCheck = await checkStockAt({
       date: scheduledDateKey,
       time: scheduledTime,
       vaccineId: vaccine_id,
@@ -1970,7 +2016,6 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
       };
     }
 
-    // Step 4: Check if child is ready for this vaccine
     const { calculateVaccineReadiness } = require('./vaccineRulesEngine');
     const readinessResult = await calculateVaccineReadiness(infant_id);
 
@@ -1984,7 +2029,6 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
 
     const readiness = readinessResult.data;
 
-    // If there are due or overdue vaccines, auto-approve
     if (readiness.readinessStatus === 'READY' || readiness.readinessStatus === 'OVERDUE') {
       return {
         eligible: true,
@@ -1994,7 +2038,6 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
       };
     }
 
-    // If no vaccines are due yet, still allow booking but mark for confirmation
     if (readiness.readinessStatus === 'UPCOMING') {
       return {
         eligible: true,
@@ -2004,7 +2047,6 @@ const checkAutoApprovalEligibility = async (appointmentData) => {
       };
     }
 
-    // Default: require manual review
     return {
       eligible: true,
       autoApproved: false,
@@ -2029,13 +2071,14 @@ module.exports = {
   getCalendarDateDetails,
   getHolidayInfo,
   isWeekend,
-  createAppointmentAndNotify, // Export the new function
+  createAppointmentAndNotify,
   getAppointmentsByGuardian,
   generateControlNumber,
   ensureInfantRecord,
   getSchemaColumnMappings,
+  getUpcomingActiveAppointmentForInfant,
   notifyGuardianVaccineUnavailable,
-  processMissedAppointments, // Export missed appointment processor
-  checkAutoApprovalEligibility, // Export auto-approval checker
+  processMissedAppointments,
+  checkAutoApprovalEligibility,
   findConflictingActiveAppointment,
 };

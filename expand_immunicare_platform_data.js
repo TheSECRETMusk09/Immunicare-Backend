@@ -29,7 +29,7 @@ const TARGET_INFANTS = 95000;
 const WINDOW_START = new Date('2025-08-01T00:00:00.000Z');
 const WINDOW_END = new Date('2030-07-31T23:59:59.999Z');
 const OPERATIONAL_ACTIVE_DAYS_PER_YEAR = 243;
-const OPERATIONAL_WINDOW_YEARS = 5;
+
 const DEFAULT_GUARDIAN_PASSWORD = 'GuardianExpand2026!';
 const DEMO_CITY = 'Pasig City';
 const DEMO_REGION = 'NCR';
@@ -38,7 +38,9 @@ const DEFAULT_HEALTH_CENTER = 'San Nicolas Health Center';
 const toIsoDate = (value) => new Date(value.getTime()).toISOString().slice(0, 10);
 const countOperationalDaysInWindow = (start, end) => {
   let count = 0;
-  const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+  const cursor = new Date(
+    Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate())
+  );
 
   while (cursor <= end) {
     if (isDateAvailableForBooking(toIsoDate(cursor), { allowPast: true }).isAvailable) {
@@ -56,9 +58,7 @@ const WINDOW_OPERATIONAL_VACCINATION_CAPACITY =
 const COMPLETED_VISIT_1_TARGET = 4200;
 const COMPLETED_VISIT_2_TARGET = 1600;
 const COMPLETED_DOSE_TARGET =
-  (TARGET_INFANTS * 2)
-  + (COMPLETED_VISIT_1_TARGET * 4)
-  + (COMPLETED_VISIT_2_TARGET * 3);
+  TARGET_INFANTS * 2 + COMPLETED_VISIT_1_TARGET * 4 + COMPLETED_VISIT_2_TARGET * 3;
 
 const TRANSACTION_TARGETS = Object.freeze({
   immunization_records: COMPLETED_DOSE_TARGET,
@@ -74,7 +74,7 @@ const TRANSACTION_TARGETS = Object.freeze({
 
 const TARGET_TRANSACTIONS = Object.values(TRANSACTION_TARGETS).reduce(
   (sum, value) => sum + value,
-  0,
+  0
 );
 
 const SESSION_TARGET = 50000;
@@ -148,13 +148,9 @@ const addMonths = (value, months) => {
 const startOfMonth = (value) => new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
 const endOfMonth = (value) =>
   new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 0, 23, 59, 59, 999));
-const monthKey = (value) => `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}`;
+const monthKey = (value) =>
+  `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}`;
 const safeJson = (value) => JSON.stringify(value || {});
-const randomDateBetween = (start, end) => {
-  const startMs = start.getTime();
-  const endMs = end.getTime();
-  return new Date(startMs + Math.floor(rand() * (endMs - startMs + 1)));
-};
 
 const weightedPick = (choices) => {
   const total = choices.reduce((sum, choice) => sum + choice.weight, 0);
@@ -169,12 +165,17 @@ const weightedPick = (choices) => {
   return choices[choices.length - 1].value;
 };
 
-const buildGuardianEmail = (sequence) => `${MARKER.toLowerCase()}.guardian.${String(sequence).padStart(6, '0')}@immunicare.test`;
-const buildGuardianUsername = (sequence) => `${MARKER.toLowerCase()}.guardian.${String(sequence).padStart(6, '0')}`;
+const buildGuardianEmail = (sequence) =>
+  `${MARKER.toLowerCase()}.guardian.${String(sequence).padStart(6, '0')}@immunicare.test`;
+const buildGuardianUsername = (sequence) =>
+  `${MARKER.toLowerCase()}.guardian.${String(sequence).padStart(6, '0')}`;
 const buildInfantControlNumber = (sequence) => `${MARKER}-INF-${String(sequence).padStart(6, '0')}`;
-const buildAppointmentControlNumber = (sequence) => `${MARKER}-APT-${String(sequence).padStart(7, '0')}`;
-const buildReferenceNumber = (prefix, sequence) => `${MARKER}-${prefix}-${String(sequence).padStart(8, '0')}`;
-const formatMobile = () => `+639${String(randomInt(10, 99))}${String(randomInt(0, 9999999)).padStart(7, '0')}`;
+const buildAppointmentControlNumber = (sequence) =>
+  `${MARKER}-APT-${String(sequence).padStart(7, '0')}`;
+const buildReferenceNumber = (prefix, sequence) =>
+  `${MARKER}-${prefix}-${String(sequence).padStart(8, '0')}`;
+const formatMobile = () =>
+  `+639${String(randomInt(10, 99))}${String(randomInt(0, 9999999)).padStart(7, '0')}`;
 
 const buildAddress = (barangay) => {
   const block = randomInt(1, 30);
@@ -207,14 +208,14 @@ const rollForwardToWeekday = (value) => {
 };
 
 const weekdaySeries = (start, end) =>
-  dailySeries(start, end).filter((day) =>
-    isDateAvailableForBooking(toIsoDate(day), { allowPast: true }).isAvailable,
+  dailySeries(start, end).filter(
+    (day) => isDateAvailableForBooking(toIsoDate(day), { allowPast: true }).isAvailable
   );
 
 const buildOperationalServiceDays = (
   start,
   end,
-  { maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR } = {},
+  { maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR } = {}
 ) => {
   const weekdays = weekdaySeries(start, end);
   const daysByYear = new Map();
@@ -237,10 +238,7 @@ const buildOperationalServiceDays = (
 
     const step = yearlyDays.length / maxDaysPerYear;
     for (let index = 0; index < maxDaysPerYear; index += 1) {
-      const sourceIndex = Math.min(
-        yearlyDays.length - 1,
-        Math.floor(index * step),
-      );
+      const sourceIndex = Math.min(yearlyDays.length - 1, Math.floor(index * step));
       serviceDays.push(yearlyDays[sourceIndex]);
     }
   }
@@ -255,7 +253,7 @@ const createOperationalDayAllocator = (
     category = 'operational service days',
     maxPerDay = MAX_VACCINATION_APPOINTMENTS_PER_DAY,
     maxDaysPerYear = OPERATIONAL_ACTIVE_DAYS_PER_YEAR,
-  } = {},
+  } = {}
 ) => {
   const serviceDays = buildOperationalServiceDays(start, end, { maxDaysPerYear });
 
@@ -292,7 +290,7 @@ const createOperationalDayAllocator = (
     }
 
     throw new Error(
-      `Unable to allocate ${category}; service-day capacity of ${serviceDays.length * maxPerDay} has been exhausted.`,
+      `Unable to allocate ${category}; service-day capacity of ${serviceDays.length * maxPerDay} has been exhausted.`
     );
   };
 
@@ -330,10 +328,16 @@ const distributeByDay = (total, days, { minPerDay = 1, category = 'generic' } = 
     const dayOfMonth = day.getUTCDate();
 
     const weekendFactor = dow === 0 || dow === 6 ? 0.62 : 1.0;
-    const monthFactor = [8, 9, 10].includes(month) ? 1.22 : [12, 1].includes(month) ? 1.12 : [3, 4].includes(month) ? 1.15 : 1.0;
+    const monthFactor = [8, 9, 10].includes(month)
+      ? 1.22
+      : [12, 1].includes(month)
+        ? 1.12
+        : [3, 4].includes(month)
+          ? 1.15
+          : 1.0;
     const campaignFactor = dayOfMonth <= 5 && [3, 8, 10].includes(month) ? 1.35 : 1.0;
     const endMonthFactor = dayOfMonth >= 25 ? 1.08 : 1.0;
-    const oscillation = 0.9 + ((index % 14) / 100);
+    const oscillation = 0.9 + (index % 14) / 100;
     return weekendFactor * monthFactor * campaignFactor * endMonthFactor * oscillation;
   });
 
@@ -392,7 +396,7 @@ const rebalanceCappedDistribution = (counts, maxPerDay, category) => {
 
   if (overflow > 0) {
     throw new Error(
-      `Unable to rebalance ${category} within the ${maxPerDay}/day weekday capacity.`,
+      `Unable to rebalance ${category} within the ${maxPerDay}/day weekday capacity.`
     );
   }
 
@@ -402,17 +406,14 @@ const rebalanceCappedDistribution = (counts, maxPerDay, category) => {
 const distributeByWeekdayCapacity = (
   total,
   days,
-  {
-    category = 'vaccination appointments',
-    maxPerDay = MAX_VACCINATION_APPOINTMENTS_PER_DAY,
-  } = {},
+  { category = 'vaccination appointments', maxPerDay = MAX_VACCINATION_APPOINTMENTS_PER_DAY } = {}
 ) => {
   const weekdays = days.filter((day) => !isWeekendDay(day));
   const maxCapacity = weekdays.length * maxPerDay;
 
   if (total > maxCapacity) {
     throw new Error(
-      `Cannot distribute ${total} ${category}; weekday capacity is only ${maxCapacity}.`,
+      `Cannot distribute ${total} ${category}; weekday capacity is only ${maxCapacity}.`
     );
   }
 
@@ -480,10 +481,18 @@ const ensureSyntheticSupportTables = async (client, tables) => {
         data_source JSONB
       )
     `);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_document_generation_logs_template_id ON document_generation_logs(template_id)`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_document_generation_logs_patient_id ON document_generation_logs(patient_id)`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_document_generation_logs_admin_id ON document_generation_logs(admin_id)`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_document_generation_logs_generation_date ON document_generation_logs(generation_date)`);
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_document_generation_logs_template_id ON document_generation_logs(template_id)`
+    );
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_document_generation_logs_patient_id ON document_generation_logs(patient_id)`
+    );
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_document_generation_logs_admin_id ON document_generation_logs(admin_id)`
+    );
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_document_generation_logs_generation_date ON document_generation_logs(generation_date)`
+    );
     tables.add('document_generation_logs');
   }
 };
@@ -522,11 +531,11 @@ const getColumnLengthMap = async (client, tableName) => {
         AND table_name = $1
         AND character_maximum_length IS NOT NULL
     `,
-    [tableName],
+    [tableName]
   );
 
   const lengths = new Map(
-    result.rows.map((row) => [row.column_name, Number(row.character_maximum_length)]),
+    result.rows.map((row) => [row.column_name, Number(row.character_maximum_length)])
   );
   columnLengthCache.set(tableName, lengths);
   return lengths;
@@ -541,7 +550,7 @@ const getExistingColumns = async (client, tableName, candidateColumns) => {
         AND table_name = $1
         AND column_name = ANY($2::text[])
     `,
-    [tableName, candidateColumns],
+    [tableName, candidateColumns]
   );
 
   return new Set(result.rows.map((row) => row.column_name));
@@ -580,9 +589,13 @@ const insertObjectRows = async (client, tableName, columnsMap, rows, options = {
     return [];
   }
 
-  const columns = Object.keys(filteredRows[0]).filter((column) => filteredRows.every((row) => Object.prototype.hasOwnProperty.call(row, column)));
+  const columns = Object.keys(filteredRows[0]).filter((column) =>
+    filteredRows.every((row) => Object.prototype.hasOwnProperty.call(row, column))
+  );
   const valueRows = filteredRows.map((row) => columns.map((column) => row[column] ?? null));
-  const returningColumns = (options.returningColumns || []).filter((column) => availableColumns.has(column));
+  const returningColumns = (options.returningColumns || []).filter((column) =>
+    availableColumns.has(column)
+  );
   const chunkSize = options.chunkSize || 500;
   const inserted = [];
 
@@ -623,7 +636,14 @@ const fetchReferenceData = async (client) => {
     'contact',
   ].filter((column) => userColumns.has(column));
 
-  const [rolesResult, clinicsResult, vaccinesResult, schedulesResult, suppliersResult, usersResult] = await Promise.all([
+  const [
+    rolesResult,
+    clinicsResult,
+    vaccinesResult,
+    schedulesResult,
+    suppliersResult,
+    usersResult,
+  ] = await Promise.all([
     client.query(`SELECT id, name FROM roles`),
     client.query(`SELECT id, name FROM clinics`),
     client.query(`
@@ -637,12 +657,16 @@ const fetchReferenceData = async (client) => {
       FROM vaccination_schedules
       WHERE COALESCE(is_active, true) = true
     `),
-    client.query(`
+    client
+      .query(
+        `
       SELECT id, name, supplier_code
       FROM suppliers
       WHERE COALESCE(is_active, true) = true
       ORDER BY id
-    `).catch(() => ({ rows: [] })),
+    `
+      )
+      .catch(() => ({ rows: [] })),
     client.query(`
       SELECT ${selectableUserColumns.join(', ')}
       FROM users
@@ -659,7 +683,7 @@ const fetchReferenceData = async (client) => {
     vaccinesByCode: new Map(vaccinesResult.rows.map((row) => [row.code, row])),
     vaccines: vaccinesResult.rows,
     schedulesByKey: new Map(
-      schedulesResult.rows.map((row) => [`${row.vaccine_id}:${row.dose_number}`, row]),
+      schedulesResult.rows.map((row) => [`${row.vaccine_id}:${row.dose_number}`, row])
     ),
     suppliers: suppliersResult.rows,
     staffUsers: usersResult.rows,
@@ -693,9 +717,7 @@ const resolveScopeIds = (referenceData) => {
     referenceData.clinicsByName.get('Guardian Portal') ||
     1;
 
-  const guardianPortalClinicId =
-    referenceData.clinicsByName.get('Guardian Portal') ||
-    clinicId;
+  const guardianPortalClinicId = referenceData.clinicsByName.get('Guardian Portal') || clinicId;
 
   const facilityId = clinicId === 1 ? 203 : clinicId;
 
@@ -704,7 +726,9 @@ const resolveScopeIds = (referenceData) => {
 
 const chooseStaffUsers = (referenceData) => {
   if (!referenceData.staffUsers.length) {
-    throw new Error('No active non-guardian staff users found. Cannot assign generated operational records.');
+    throw new Error(
+      'No active non-guardian staff users found. Cannot assign generated operational records.'
+    );
   }
   return referenceData.staffUsers;
 };
@@ -851,7 +875,13 @@ const buildGuardianObjects = (families) =>
     emergency_phone: guardian.emergencyPhone,
   }));
 
-const buildGuardianUserObjects = (families, guardianIdsBySequence, guardianRoleId, { clinicId, facilityId }, passwordHash) =>
+const buildGuardianUserObjects = (
+  families,
+  guardianIdsBySequence,
+  guardianRoleId,
+  { clinicId, facilityId },
+  passwordHash
+) =>
   families.map(({ sequence, guardian }) => ({
     username: guardian.username,
     password_hash: passwordHash,
@@ -916,7 +946,10 @@ const buildPatientObjects = (children, guardianIdsBySequence) =>
     transfer_in_source: child.transferInSource,
     validation_status: child.validationStatus,
     auto_computed_next_vaccine: null,
-    age_months: Math.max(0, Math.floor((WINDOW_END.getTime() - child.dob.getTime()) / (30.4 * 86400000))),
+    age_months: Math.max(
+      0,
+      Math.floor((WINDOW_END.getTime() - child.dob.getTime()) / (30.4 * 86400000))
+    ),
   }));
 
 const buildInfantObjects = (children) =>
@@ -952,7 +985,13 @@ const buildInfantObjects = (children) =>
     patient_control_number: child.controlNumber,
   }));
 
-const buildParentGuardianObjects = (children, guardianUsersByGuardianId, guardianIdsBySequence, infantIdsByControlNumber, passwordHash) =>
+const buildParentGuardianObjects = (
+  children,
+  guardianUsersByGuardianId,
+  guardianIdsBySequence,
+  infantIdsByControlNumber,
+  passwordHash
+) =>
   children.map((child) => {
     const guardianId = guardianIdsBySequence.get(child.sequence);
     const guardianUser = guardianUsersByGuardianId.get(guardianId);
@@ -1015,7 +1054,7 @@ const createPaperTemplatesIfNeeded = async (client, columnsMap, staffUsers) => {
       created_at: WINDOW_START,
       updated_at: WINDOW_START,
     })),
-    { returningColumns: ['id', 'name', 'template_type'], chunkSize: 50 },
+    { returningColumns: ['id', 'name', 'template_type'], chunkSize: 50 }
   );
 
   return [...existing.rows, ...inserted];
@@ -1036,10 +1075,10 @@ const generateImmunizationData = ({
   }
 
   const visit1Children = new Set(
-    shuffled.slice(0, COMPLETED_VISIT_1_TARGET).map((child) => child.controlNumber),
+    shuffled.slice(0, COMPLETED_VISIT_1_TARGET).map((child) => child.controlNumber)
   );
   const visit2Children = new Set(
-    shuffled.slice(0, COMPLETED_VISIT_2_TARGET).map((child) => child.controlNumber),
+    shuffled.slice(0, COMPLETED_VISIT_2_TARGET).map((child) => child.controlNumber)
   );
 
   const immunizationRows = [];
@@ -1071,18 +1110,20 @@ const generateImmunizationData = ({
 
     for (const visitCode of completedVisits) {
       const template = VISIT_TEMPLATES.find((entry) => entry.code === visitCode);
-      const adminDate = visitCode === 'BIRTH'
-        ? addDays(child.dob, randomInt(0, 3))
-        : visitCode === 'VISIT_1M'
-          ? addDays(addMonths(child.dob, 1), randomInt(-3, 8))
-          : addDays(addMonths(child.dob, 2), randomInt(-3, 10));
+      const adminDate =
+        visitCode === 'BIRTH'
+          ? addDays(child.dob, randomInt(0, 3))
+          : visitCode === 'VISIT_1M'
+            ? addDays(addMonths(child.dob, 1), randomInt(-3, 8))
+            : addDays(addMonths(child.dob, 2), randomInt(-3, 10));
       const boundedAdminDate = adminDate > WINDOW_END ? cloneDate(WINDOW_END) : adminDate;
       const safeAdminDate = completedVisitAllocator.allocate(boundedAdminDate);
       const recordCreatedAt = safeAdminDate < child.createdAt ? child.createdAt : safeAdminDate;
       const nextTemplateIndex = VISIT_TEMPLATES.findIndex((entry) => entry.code === visitCode) + 1;
-      const nextDueDate = nextTemplateIndex < VISIT_TEMPLATES.length
-        ? addMonths(child.dob, VISIT_TEMPLATES[nextTemplateIndex].ageMonths)
-        : null;
+      const nextDueDate =
+        nextTemplateIndex < VISIT_TEMPLATES.length
+          ? addMonths(child.dob, VISIT_TEMPLATES[nextTemplateIndex].ageMonths)
+          : null;
       const administeredBy = pick(staffUsers).id;
 
       visitAppointmentSeeds.push({
@@ -1099,7 +1140,10 @@ const generateImmunizationData = ({
           continue;
         }
 
-        const batch = batchIdByCodeAndMonth.get(`${vaccineDose.code}:${monthKey(startOfMonth(safeAdminDate))}`) || null;
+        const batch =
+          batchIdByCodeAndMonth.get(
+            `${vaccineDose.code}:${monthKey(startOfMonth(safeAdminDate))}`
+          ) || null;
         const batchNumber = batch?.lotNo || buildReferenceNumber(vaccineDose.code, child.sequence);
 
         immunizationRows.push({
@@ -1146,7 +1190,9 @@ const generateImmunizationData = ({
   }
 
   if (immunizationRows.length !== TRANSACTION_TARGETS.immunization_records) {
-    throw new Error(`Expected ${TRANSACTION_TARGETS.immunization_records} immunization rows, generated ${immunizationRows.length}`);
+    throw new Error(
+      `Expected ${TRANSACTION_TARGETS.immunization_records} immunization rows, generated ${immunizationRows.length}`
+    );
   }
 
   return { immunizationRows, legacyVaccinationRows, visitAppointmentSeeds, completionIndexByChild };
@@ -1205,7 +1251,13 @@ const createBatchRows = (referenceData, scopeIds) => {
   return { batchRows, batchIdByCodeAndMonth };
 };
 
-const createInventoryData = ({ referenceData, scopeIds, staffUsers, usageByMonth, batchLookup }) => {
+const createInventoryData = ({
+  referenceData,
+  scopeIds,
+  staffUsers,
+  usageByMonth,
+  batchLookup,
+}) => {
   const months = monthSeries(WINDOW_START, WINDOW_END);
   const inventoryRows = [];
   const inventoryMeta = [];
@@ -1220,10 +1272,14 @@ const createInventoryData = ({ referenceData, scopeIds, staffUsers, usageByMonth
       const beginning = carryoverByVaccine.get(code) ?? randomInt(180, 360);
       const issuance = Math.max(usage, 60);
       const received = Math.max(issuance + randomInt(70, 200), randomInt(180, 480));
-      const wastage = usage > 0 ? randomInt(0, Math.max(2, Math.floor(usage * 0.04))) : randomInt(0, 2);
+      const wastage =
+        usage > 0 ? randomInt(0, Math.max(2, Math.floor(usage * 0.04))) : randomInt(0, 2);
       const transferredIn = randomInt(0, 30);
       const transferredOut = randomInt(0, 16);
-      const stockOnHand = Math.max(0, beginning + received + transferredIn - transferredOut - wastage - issuance);
+      const stockOnHand = Math.max(
+        0,
+        beginning + received + transferredIn - transferredOut - wastage - issuance
+      );
       const thresholds = { low: 45, critical: 20 };
       const batch = batchLookup.get(`${code}:${monthKey(month)}`);
       const createdBy = pick(staffUsers).id;
@@ -1287,9 +1343,15 @@ const splitIntegerIntoParts = (total, parts) => {
   return values.filter((value) => value > 0);
 };
 
-const createInventoryTransactions = ({ inventoryMeta, insertedInventoryRows, staffUsers, scopeIds }) => {
+const createInventoryTransactions = ({
+  inventoryMeta,
+  insertedInventoryRows,
+  staffUsers,
+  scopeIds,
+}) => {
   const transactions = [];
-  const extraTxRows = TRANSACTION_TARGETS.vaccine_inventory_transactions - (inventoryMeta.length * 46);
+  const extraTxRows =
+    TRANSACTION_TARGETS.vaccine_inventory_transactions - inventoryMeta.length * 46;
   let globalSequence = 1;
 
   inventoryMeta.forEach((detail, index) => {
@@ -1298,7 +1360,10 @@ const createInventoryTransactions = ({ inventoryMeta, insertedInventoryRows, sta
     const approvedBy = pick(staffUsers).id;
     const totalTxForRow = 46 + (index < Math.max(0, extraTxRows) ? 1 : 0);
     const issueTxCount = totalTxForRow - 2;
-    const issueQuantities = splitIntegerIntoParts(Math.max(issueTxCount, detail.issuance), issueTxCount);
+    const issueQuantities = splitIntegerIntoParts(
+      Math.max(issueTxCount, detail.issuance),
+      issueTxCount
+    );
     const maxIssueDay = Math.min(24, issueQuantities.length);
 
     transactions.push({
@@ -1378,7 +1443,9 @@ const createInventoryTransactions = ({ inventoryMeta, insertedInventoryRows, sta
   });
 
   if (transactions.length !== TRANSACTION_TARGETS.vaccine_inventory_transactions) {
-    throw new Error(`Expected ${TRANSACTION_TARGETS.vaccine_inventory_transactions} inventory tx rows, generated ${transactions.length}`);
+    throw new Error(
+      `Expected ${TRANSACTION_TARGETS.vaccine_inventory_transactions} inventory tx rows, generated ${transactions.length}`
+    );
   }
 
   return transactions;
@@ -1412,33 +1479,33 @@ const createAppointments = ({
       childCursor += 1;
       const nextVisitIndex = Math.min(
         completionIndexByChild.get(child.controlNumber) + 1,
-        VISIT_TEMPLATES.length - 1,
+        VISIT_TEMPLATES.length - 1
       );
       const nextVisit = VISIT_TEMPLATES[nextVisitIndex];
       const status = weightedPick(
         inPast
           ? [
-            { value: 'attended', weight: 54 },
-            { value: 'no-show', weight: 13 },
-            { value: 'cancelled', weight: 8 },
-            { value: 'rescheduled', weight: 14 },
-            { value: 'confirmed', weight: 6 },
-            { value: 'scheduled', weight: 5 },
-          ]
+              { value: 'attended', weight: 54 },
+              { value: 'no-show', weight: 13 },
+              { value: 'cancelled', weight: 8 },
+              { value: 'rescheduled', weight: 14 },
+              { value: 'confirmed', weight: 6 },
+              { value: 'scheduled', weight: 5 },
+            ]
           : isToday
             ? [
-              { value: 'scheduled', weight: 44 },
-              { value: 'confirmed', weight: 24 },
-              { value: 'rescheduled', weight: 16 },
-              { value: 'attended', weight: 10 },
-              { value: 'cancelled', weight: 6 },
-            ]
+                { value: 'scheduled', weight: 44 },
+                { value: 'confirmed', weight: 24 },
+                { value: 'rescheduled', weight: 16 },
+                { value: 'attended', weight: 10 },
+                { value: 'cancelled', weight: 6 },
+              ]
             : [
-              { value: 'scheduled', weight: 49 },
-              { value: 'confirmed', weight: 28 },
-              { value: 'rescheduled', weight: 15 },
-              { value: 'cancelled', weight: 8 },
-            ],
+                { value: 'scheduled', weight: 49 },
+                { value: 'confirmed', weight: 28 },
+                { value: 'rescheduled', weight: 15 },
+                { value: 'cancelled', weight: 8 },
+              ]
       );
       const createdAt = addDays(day, -randomInt(1, inPast ? 21 : 35));
       const normalizedCreatedAt = createdAt > day ? addDays(day, -1) : createdAt;
@@ -1485,19 +1552,30 @@ const createAppointments = ({
 
   if (visitAppointmentSeeds.length > WINDOW_OPERATIONAL_VACCINATION_CAPACITY) {
     console.warn(
-      `[${MARKER}] Historical visit seeds (${visitAppointmentSeeds.length}) exceed operational appointment capacity (${WINDOW_OPERATIONAL_VACCINATION_CAPACITY}); synthetic appointment output is generated from the operational-day allocator instead of mirroring every completed visit.`,
+      `[${MARKER}] Historical visit seeds (${visitAppointmentSeeds.length}) exceed operational appointment capacity (${WINDOW_OPERATIONAL_VACCINATION_CAPACITY}); synthetic appointment output is generated from the operational-day allocator instead of mirroring every completed visit.`
     );
   }
 
   if (appointments.length !== TRANSACTION_TARGETS.appointments) {
-    throw new Error(`Expected ${TRANSACTION_TARGETS.appointments} appointments, generated ${appointments.length}`);
+    throw new Error(
+      `Expected ${TRANSACTION_TARGETS.appointments} appointments, generated ${appointments.length}`
+    );
   }
 
   return appointments;
 };
 
-const createNotifications = ({ days, children, guardianUsersByGuardianId, guardianIdsBySequence, staffUsers }) => {
-  const counts = distributeByDay(TRANSACTION_TARGETS.notifications, days, { minPerDay: 1, category: 'notifications' });
+const createNotifications = ({
+  days,
+  children,
+  guardianUsersByGuardianId,
+  guardianIdsBySequence,
+  staffUsers,
+}) => {
+  const counts = distributeByDay(TRANSACTION_TARGETS.notifications, days, {
+    minPerDay: 1,
+    category: 'notifications',
+  });
   const notifications = [];
   let childCursor = 0;
   for (let dayIndex = 0; dayIndex < days.length; dayIndex += 1) {
@@ -1531,7 +1609,9 @@ const createNotifications = ({ days, children, guardianUsersByGuardianId, guardi
         notification_type: notificationType,
         target_type: isGuardianNotification ? 'guardian' : 'user',
         target_id: isGuardianNotification ? guardianId : staff.id,
-        recipient_name: isGuardianNotification ? `${child.firstName} ${child.lastName}` : `${staff.first_name} ${staff.last_name}`,
+        recipient_name: isGuardianNotification
+          ? `${child.firstName} ${child.lastName}`
+          : `${staff.first_name} ${staff.last_name}`,
         recipient_email: isGuardianNotification ? guardianUser?.email || null : staff.email,
         recipient_phone: isGuardianNotification ? guardianUser?.contact || null : staff.contact,
         channel,
@@ -1576,7 +1656,10 @@ const createNotifications = ({ days, children, guardianUsersByGuardianId, guardi
 };
 
 const createReports = (days, staffUsers) => {
-  const counts = distributeByDay(TRANSACTION_TARGETS.reports, days, { minPerDay: 1, category: 'reports' });
+  const counts = distributeByDay(TRANSACTION_TARGETS.reports, days, {
+    minPerDay: 1,
+    category: 'reports',
+  });
   const reports = [];
   let sequence = 1;
   for (let dayIndex = 0; dayIndex < days.length; dayIndex += 1) {
@@ -1613,8 +1696,17 @@ const createReports = (days, staffUsers) => {
   return reports;
 };
 
-const createTransferCases = (days, children, guardianIdsBySequence, patientIdsByControlNumber, staffUsers) => {
-  const counts = distributeByDay(TRANSACTION_TARGETS.transfer_in_cases, days, { minPerDay: 1, category: 'transfer-in cases' });
+const createTransferCases = (
+  days,
+  children,
+  guardianIdsBySequence,
+  patientIdsByControlNumber,
+  staffUsers
+) => {
+  const counts = distributeByDay(TRANSACTION_TARGETS.transfer_in_cases, days, {
+    minPerDay: 1,
+    category: 'transfer-in cases',
+  });
   const rows = [];
   let childCursor = 0;
   for (let dayIndex = 0; dayIndex < days.length; dayIndex += 1) {
@@ -1647,8 +1739,18 @@ const createTransferCases = (days, children, guardianIdsBySequence, patientIdsBy
   return rows;
 };
 
-const createDocumentGenerations = (days, children, patientIdsByControlNumber, guardianIdsBySequence, paperTemplates, staffUsers) => {
-  const counts = distributeByDay(TRANSACTION_TARGETS.document_generation, days, { minPerDay: 1, category: 'document generation' });
+const createDocumentGenerations = (
+  days,
+  children,
+  patientIdsByControlNumber,
+  guardianIdsBySequence,
+  paperTemplates,
+  staffUsers
+) => {
+  const counts = distributeByDay(TRANSACTION_TARGETS.document_generation, days, {
+    minPerDay: 1,
+    category: 'document generation',
+  });
   const generations = [];
   let childCursor = 0;
   let sequence = 1;
@@ -1683,8 +1785,17 @@ const createDocumentGenerations = (days, children, patientIdsByControlNumber, gu
   return generations;
 };
 
-const createDocumentGenerationLogs = (days, children, patientIdsByControlNumber, paperTemplates, staffUsers) => {
-  const counts = distributeByDay(TRANSACTION_TARGETS.document_generation_logs, days, { minPerDay: 1, category: 'document generation logs' });
+const createDocumentGenerationLogs = (
+  days,
+  children,
+  patientIdsByControlNumber,
+  paperTemplates,
+  staffUsers
+) => {
+  const counts = distributeByDay(TRANSACTION_TARGETS.document_generation_logs, days, {
+    minPerDay: 1,
+    category: 'document generation logs',
+  });
   const rows = [];
   let childCursor = 0;
   for (let dayIndex = 0; dayIndex < days.length; dayIndex += 1) {
@@ -1710,8 +1821,17 @@ const createDocumentGenerationLogs = (days, children, patientIdsByControlNumber,
   return rows;
 };
 
-const createDocumentDownloads = (days, children, patientIdsByControlNumber, paperTemplates, staffUsers) => {
-  const counts = distributeByDay(TRANSACTION_TARGETS.document_downloads, days, { minPerDay: 1, category: 'document downloads' });
+const createDocumentDownloads = (
+  days,
+  children,
+  patientIdsByControlNumber,
+  paperTemplates,
+  staffUsers
+) => {
+  const counts = distributeByDay(TRANSACTION_TARGETS.document_downloads, days, {
+    minPerDay: 1,
+    category: 'document downloads',
+  });
   const rows = [];
   let childCursor = 0;
   for (let dayIndex = 0; dayIndex < days.length; dayIndex += 1) {
@@ -1739,7 +1859,10 @@ const createDocumentDownloads = (days, children, patientIdsByControlNumber, pape
 };
 
 const createGuardianSessions = (days, guardianUsers, scopeIds) => {
-  const counts = distributeByDay(SESSION_TARGET, days, { minPerDay: 1, category: 'guardian sessions' });
+  const counts = distributeByDay(SESSION_TARGET, days, {
+    minPerDay: 1,
+    category: 'guardian sessions',
+  });
   const sessions = [];
   let userCursor = 0;
   for (let dayIndex = 0; dayIndex < days.length; dayIndex += 1) {
@@ -1747,13 +1870,17 @@ const createGuardianSessions = (days, guardianUsers, scopeIds) => {
     for (let count = 0; count < counts[dayIndex]; count += 1) {
       const user = guardianUsers[userCursor % guardianUsers.length];
       userCursor += 1;
-      const loginTime = new Date(`${toIsoDate(day)}T0${randomInt(6, 9)}:${String(randomInt(0, 59)).padStart(2, '0')}:00.000Z`);
+      const loginTime = new Date(
+        `${toIsoDate(day)}T0${randomInt(6, 9)}:${String(randomInt(0, 59)).padStart(2, '0')}:00.000Z`
+      );
       const logoutTime = addDays(loginTime, 0);
       sessions.push({
         user_id: user.id,
         session_token: crypto.randomUUID(),
         ip_address: `203.177.${randomInt(1, 254)}.${randomInt(1, 254)}`,
-        user_agent: chance(0.64) ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' : 'Mozilla/5.0 (Linux; Android 13)',
+        user_agent: chance(0.64)
+          ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+          : 'Mozilla/5.0 (Linux; Android 13)',
         device_info: safeJson({ device: chance(0.6) ? 'desktop' : 'mobile' }),
         location_info: safeJson({ city: DEMO_CITY, region: DEMO_REGION }),
         login_time: loginTime,
@@ -1777,20 +1904,28 @@ const createGuardianSessions = (days, guardianUsers, scopeIds) => {
 const ensureNoMarkerCollision = async (client, columnsMap) => {
   const checks = [
     columnsMap.get('patients')?.has('control_number')
-      ? client.query(`SELECT COUNT(*)::int AS count FROM patients WHERE control_number LIKE $1`, [`${MARKER}-%`])
+      ? client.query(`SELECT COUNT(*)::int AS count FROM patients WHERE control_number LIKE $1`, [
+          `${MARKER}-%`,
+        ])
       : Promise.resolve({ rows: [{ count: 0 }] }),
     columnsMap.get('users')?.has('username')
-      ? client.query(`SELECT COUNT(*)::int AS count FROM users WHERE username LIKE $1`, [`${MARKER.toLowerCase()}%`])
+      ? client.query(`SELECT COUNT(*)::int AS count FROM users WHERE username LIKE $1`, [
+          `${MARKER.toLowerCase()}%`,
+        ])
       : Promise.resolve({ rows: [{ count: 0 }] }),
     columnsMap.get('guardians')?.has('email')
-      ? client.query(`SELECT COUNT(*)::int AS count FROM guardians WHERE email LIKE $1`, [`${MARKER.toLowerCase()}%`])
+      ? client.query(`SELECT COUNT(*)::int AS count FROM guardians WHERE email LIKE $1`, [
+          `${MARKER.toLowerCase()}%`,
+        ])
       : Promise.resolve({ rows: [{ count: 0 }] }),
   ];
 
   const results = await Promise.all(checks);
   const existingCount = results.reduce((sum, result) => sum + Number(result.rows[0].count || 0), 0);
   if (existingCount > 0) {
-    throw new Error(`Marker ${MARKER} already exists in the database. Aborting additive expansion to avoid duplicates.`);
+    throw new Error(
+      `Marker ${MARKER} already exists in the database. Aborting additive expansion to avoid duplicates.`
+    );
   }
 };
 
@@ -1825,43 +1960,134 @@ async function expandImmunicarePlatformData() {
     await client.query('SET LOCAL statement_timeout = 0');
     await client.query('SET LOCAL lock_timeout = 0');
 
-    const insertedGuardians = await insertObjectRows(client, 'guardians', columnsMap, buildGuardianObjects(families), { returningColumns: ['id', 'email'], chunkSize: 1000 });
-    const guardianIdsBySequence = new Map(families.map((family, index) => [family.sequence, insertedGuardians[index].id]));
-    const insertedGuardianUsers = await insertObjectRows(client, 'users', columnsMap, buildGuardianUserObjects(families, guardianIdsBySequence, guardianRoleId, scopeIds, guardianPasswordHash), { returningColumns: ['id', 'guardian_id', 'email', 'username'], chunkSize: 1000 });
-    const guardianUsersByGuardianId = new Map(insertedGuardianUsers.map((row) => [row.guardian_id, row]));
-    const insertedPatients = await insertObjectRows(client, 'patients', columnsMap, buildPatientObjects(children, guardianIdsBySequence), { returningColumns: ['id', 'control_number'], chunkSize: 1000 });
-    const patientIdsByControlNumber = new Map(insertedPatients.map((row) => [row.control_number, row.id]));
-    children.forEach((child) => { child.patientId = patientIdsByControlNumber.get(child.controlNumber); });
+    const insertedGuardians = await insertObjectRows(
+      client,
+      'guardians',
+      columnsMap,
+      buildGuardianObjects(families),
+      { returningColumns: ['id', 'email'], chunkSize: 1000 }
+    );
+    const guardianIdsBySequence = new Map(
+      families.map((family, index) => [family.sequence, insertedGuardians[index].id])
+    );
+    const insertedGuardianUsers = await insertObjectRows(
+      client,
+      'users',
+      columnsMap,
+      buildGuardianUserObjects(
+        families,
+        guardianIdsBySequence,
+        guardianRoleId,
+        scopeIds,
+        guardianPasswordHash
+      ),
+      { returningColumns: ['id', 'guardian_id', 'email', 'username'], chunkSize: 1000 }
+    );
+    const guardianUsersByGuardianId = new Map(
+      insertedGuardianUsers.map((row) => [row.guardian_id, row])
+    );
+    const insertedPatients = await insertObjectRows(
+      client,
+      'patients',
+      columnsMap,
+      buildPatientObjects(children, guardianIdsBySequence),
+      { returningColumns: ['id', 'control_number'], chunkSize: 1000 }
+    );
+    const patientIdsByControlNumber = new Map(
+      insertedPatients.map((row) => [row.control_number, row.id])
+    );
+    children.forEach((child) => {
+      child.patientId = patientIdsByControlNumber.get(child.controlNumber);
+    });
 
     let infantIdsByControlNumber = new Map();
     if (tables.has('infants')) {
-      const insertedInfants = await insertObjectRows(client, 'infants', columnsMap, buildInfantObjects(children), { returningColumns: ['id', 'patient_control_number'], chunkSize: 1000 });
-      infantIdsByControlNumber = new Map(insertedInfants.map((row) => [row.patient_control_number, row.id]));
-      children.forEach((child) => { child.infantId = infantIdsByControlNumber.get(child.controlNumber); });
+      const insertedInfants = await insertObjectRows(
+        client,
+        'infants',
+        columnsMap,
+        buildInfantObjects(children),
+        { returningColumns: ['id', 'patient_control_number'], chunkSize: 1000 }
+      );
+      infantIdsByControlNumber = new Map(
+        insertedInfants.map((row) => [row.patient_control_number, row.id])
+      );
+      children.forEach((child) => {
+        child.infantId = infantIdsByControlNumber.get(child.controlNumber);
+      });
     }
     if (tables.has('parent_guardian') && infantIdsByControlNumber.size) {
-      await insertObjectRows(client, 'parent_guardian', columnsMap, buildParentGuardianObjects(children, guardianUsersByGuardianId, guardianIdsBySequence, infantIdsByControlNumber, guardianPasswordHash), { chunkSize: 1000 });
+      await insertObjectRows(
+        client,
+        'parent_guardian',
+        columnsMap,
+        buildParentGuardianObjects(
+          children,
+          guardianUsersByGuardianId,
+          guardianIdsBySequence,
+          infantIdsByControlNumber,
+          guardianPasswordHash
+        ),
+        { chunkSize: 1000 }
+      );
     }
 
     const { batchRows, batchIdByCodeAndMonth } = createBatchRows(referenceData, scopeIds);
     if (tables.has('vaccine_batches')) {
-      const insertedBatchRows = await insertObjectRows(client, 'vaccine_batches', columnsMap, batchRows, { returningColumns: ['id', 'vaccine_id', 'lot_no', 'lot_number', 'expiry_date', 'created_at', 'period_start'], chunkSize: 1000 });
+      const insertedBatchRows = await insertObjectRows(
+        client,
+        'vaccine_batches',
+        columnsMap,
+        batchRows,
+        {
+          returningColumns: [
+            'id',
+            'vaccine_id',
+            'lot_no',
+            'lot_number',
+            'expiry_date',
+            'created_at',
+            'period_start',
+          ],
+          chunkSize: 1000,
+        }
+      );
       const batchMap = new Map();
       insertedBatchRows.forEach((row) => {
         const vaccine = referenceData.vaccines.find((entry) => entry.id === row.vaccine_id);
         if (vaccine) {
           const periodSource = row.period_start || row.created_at;
-          batchMap.set(`${vaccine.code}:${monthKey(startOfMonth(new Date(periodSource)))}`, { id: row.id, lotNo: row.lot_no || row.lot_number, expiry_date: row.expiry_date });
+          batchMap.set(`${vaccine.code}:${monthKey(startOfMonth(new Date(periodSource)))}`, {
+            id: row.id,
+            lotNo: row.lot_no || row.lot_number,
+            expiry_date: row.expiry_date,
+          });
         }
       });
       batchIdByCodeAndMonth.clear();
       batchMap.forEach((value, key) => batchIdByCodeAndMonth.set(key, value));
     }
 
-    const { immunizationRows, legacyVaccinationRows, visitAppointmentSeeds, completionIndexByChild } = generateImmunizationData({ children, patientIdsByControlNumber, infantIdsByControlNumber, referenceData, staffUsers, batchIdByCodeAndMonth });
-    await insertObjectRows(client, 'immunization_records', columnsMap, immunizationRows, { chunkSize: 1000 });
+    const {
+      immunizationRows,
+      legacyVaccinationRows,
+      visitAppointmentSeeds,
+      completionIndexByChild,
+    } = generateImmunizationData({
+      children,
+      patientIdsByControlNumber,
+      infantIdsByControlNumber,
+      referenceData,
+      staffUsers,
+      batchIdByCodeAndMonth,
+    });
+    await insertObjectRows(client, 'immunization_records', columnsMap, immunizationRows, {
+      chunkSize: 1000,
+    });
     if (tables.has('vaccination_records')) {
-      await insertObjectRows(client, 'vaccination_records', columnsMap, legacyVaccinationRows, { chunkSize: 1000 });
+      await insertObjectRows(client, 'vaccination_records', columnsMap, legacyVaccinationRows, {
+        chunkSize: 1000,
+      });
     }
 
     const days = dailySeries(WINDOW_START, WINDOW_END);
@@ -1871,29 +2097,100 @@ async function expandImmunicarePlatformData() {
         ? patientIdsByControlNumber
         : infantIdsByControlNumber;
 
-    const appointments = createAppointments({ children, appointmentInfantIdsByControlNumber, guardianIdsBySequence, visitAppointmentSeeds, completionIndexByChild, staffUsers, scopeIds });
-    await insertObjectRows(client, 'appointments', columnsMap, appointments, { returningColumns: ['id', 'guardian_id', 'control_number'], chunkSize: 1000 });
+    const appointments = createAppointments({
+      children,
+      appointmentInfantIdsByControlNumber,
+      guardianIdsBySequence,
+      visitAppointmentSeeds,
+      completionIndexByChild,
+      staffUsers,
+      scopeIds,
+    });
+    await insertObjectRows(client, 'appointments', columnsMap, appointments, {
+      returningColumns: ['id', 'guardian_id', 'control_number'],
+      chunkSize: 1000,
+    });
     if (tables.has('transfer_in_cases')) {
-      await insertObjectRows(client, 'transfer_in_cases', columnsMap, createTransferCases(days, children, guardianIdsBySequence, patientIdsByControlNumber, staffUsers), { chunkSize: 1000 });
+      await insertObjectRows(
+        client,
+        'transfer_in_cases',
+        columnsMap,
+        createTransferCases(
+          days,
+          children,
+          guardianIdsBySequence,
+          patientIdsByControlNumber,
+          staffUsers
+        ),
+        { chunkSize: 1000 }
+      );
     }
 
     const usageByMonth = aggregateImmunizationUsageByMonth(immunizationRows, referenceData);
-    const { inventoryRows, inventoryMeta } = createInventoryData({ referenceData, scopeIds, staffUsers, usageByMonth, batchLookup: batchIdByCodeAndMonth });
+    const { inventoryRows, inventoryMeta } = createInventoryData({
+      referenceData,
+      scopeIds,
+      staffUsers,
+      usageByMonth,
+      batchLookup: batchIdByCodeAndMonth,
+    });
     let insertedInventoryRows = [];
     if (tables.has('vaccine_inventory')) {
-      insertedInventoryRows = await insertObjectRows(client, 'vaccine_inventory', columnsMap, inventoryRows, { returningColumns: ['id', 'vaccine_id', 'period_start'], chunkSize: 1000 });
+      insertedInventoryRows = await insertObjectRows(
+        client,
+        'vaccine_inventory',
+        columnsMap,
+        inventoryRows,
+        { returningColumns: ['id', 'vaccine_id', 'period_start'], chunkSize: 1000 }
+      );
     }
     if (tables.has('vaccine_inventory_transactions') && insertedInventoryRows.length) {
-      await insertObjectRows(client, 'vaccine_inventory_transactions', columnsMap, createInventoryTransactions({ inventoryMeta, insertedInventoryRows, staffUsers, scopeIds }), { chunkSize: 1000 });
+      await insertObjectRows(
+        client,
+        'vaccine_inventory_transactions',
+        columnsMap,
+        createInventoryTransactions({ inventoryMeta, insertedInventoryRows, staffUsers, scopeIds }),
+        { chunkSize: 1000 }
+      );
     }
 
-    await insertObjectRows(client, 'notifications', columnsMap, createNotifications({ days, children, guardianUsersByGuardianId, guardianIdsBySequence, staffUsers }), { chunkSize: 1000 });
-    await insertObjectRows(client, 'reports', columnsMap, createReports(days, staffUsers), { chunkSize: 1000 });
+    await insertObjectRows(
+      client,
+      'notifications',
+      columnsMap,
+      createNotifications({
+        days,
+        children,
+        guardianUsersByGuardianId,
+        guardianIdsBySequence,
+        staffUsers,
+      }),
+      { chunkSize: 1000 }
+    );
+    await insertObjectRows(client, 'reports', columnsMap, createReports(days, staffUsers), {
+      chunkSize: 1000,
+    });
 
     const paperTemplates = await createPaperTemplatesIfNeeded(client, columnsMap, staffUsers);
     if (tables.has('document_generation') && paperTemplates.length) {
-      const generations = createDocumentGenerations(days, children, patientIdsByControlNumber, guardianIdsBySequence, paperTemplates, staffUsers);
-      const insertedDocumentGenerations = await insertObjectRows(client, 'document_generation', columnsMap, generations, { returningColumns: ['id', 'template_id', 'patient_id', 'guardian_id', 'created_at'], chunkSize: 1000 });
+      const generations = createDocumentGenerations(
+        days,
+        children,
+        patientIdsByControlNumber,
+        guardianIdsBySequence,
+        paperTemplates,
+        staffUsers
+      );
+      const insertedDocumentGenerations = await insertObjectRows(
+        client,
+        'document_generation',
+        columnsMap,
+        generations,
+        {
+          returningColumns: ['id', 'template_id', 'patient_id', 'guardian_id', 'created_at'],
+          chunkSize: 1000,
+        }
+      );
       if (tables.has('digital_papers')) {
         const digitalPaperRows = insertedDocumentGenerations.map((row, index) => ({
           document_generation_id: row.id,
@@ -1904,17 +2201,49 @@ async function expandImmunicarePlatformData() {
           created_at: row.created_at,
           updated_at: row.created_at,
         }));
-        await insertObjectRows(client, 'digital_papers', columnsMap, digitalPaperRows, { chunkSize: 1000 });
+        await insertObjectRows(client, 'digital_papers', columnsMap, digitalPaperRows, {
+          chunkSize: 1000,
+        });
       }
     }
     if (tables.has('document_generation_logs') && paperTemplates.length) {
-      await insertObjectRows(client, 'document_generation_logs', columnsMap, createDocumentGenerationLogs(days, children, patientIdsByControlNumber, paperTemplates, staffUsers), { chunkSize: 1000 });
+      await insertObjectRows(
+        client,
+        'document_generation_logs',
+        columnsMap,
+        createDocumentGenerationLogs(
+          days,
+          children,
+          patientIdsByControlNumber,
+          paperTemplates,
+          staffUsers
+        ),
+        { chunkSize: 1000 }
+      );
     }
     if (tables.has('document_downloads') && paperTemplates.length) {
-      await insertObjectRows(client, 'document_downloads', columnsMap, createDocumentDownloads(days, children, patientIdsByControlNumber, paperTemplates, staffUsers), { chunkSize: 1000 });
+      await insertObjectRows(
+        client,
+        'document_downloads',
+        columnsMap,
+        createDocumentDownloads(
+          days,
+          children,
+          patientIdsByControlNumber,
+          paperTemplates,
+          staffUsers
+        ),
+        { chunkSize: 1000 }
+      );
     }
     if (tables.has('user_sessions')) {
-      await insertObjectRows(client, 'user_sessions', columnsMap, createGuardianSessions(days, insertedGuardianUsers, scopeIds), { chunkSize: 1000 });
+      await insertObjectRows(
+        client,
+        'user_sessions',
+        columnsMap,
+        createGuardianSessions(days, insertedGuardianUsers, scopeIds),
+        { chunkSize: 1000 }
+      );
     }
 
     await client.query('COMMIT');

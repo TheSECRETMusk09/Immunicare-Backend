@@ -14,13 +14,12 @@ const {
 
 const notificationService = new NotificationService();
 
-// Deduplication window in milliseconds (24 hours by default)
-const parsedDedupeWindowMs = parseInt(process.env.NOTIFICATION_DEDUPE_WINDOW_MS || '86400000', 10);
+const dedupeEnvMs = parseInt(process.env.NOTIFICATION_DEDUPE_WINDOW_MS || '86400000', 10);
 const DEDUPE_WINDOW_MS =
-  Number.isFinite(parsedDedupeWindowMs) && parsedDedupeWindowMs > 0
-    ? parsedDedupeWindowMs
+  Number.isFinite(dedupeEnvMs) && dedupeEnvMs > 0
+    ? dedupeEnvMs
     : 86400000;
-const DEDUPE_WINDOW_MINUTES = Math.max(1, Math.floor(DEDUPE_WINDOW_MS / 60000));
+const DEDUPE_WINDOW_MINS = Math.max(1, Math.floor(DEDUPE_WINDOW_MS / 60000));
 
 const toKeyPart = (value) => {
   if (value === undefined || value === null) {
@@ -36,10 +35,10 @@ const toEpochMs = (value) => {
   return Number.isFinite(epochMs) ? epochMs : Date.now();
 };
 
-const getDedupeWindowBucket = (occurredAt) => Math.floor(toEpochMs(occurredAt) / DEDUPE_WINDOW_MS);
+const getDedupeBucket = (occurredAt) =>
+  Math.floor(toEpochMs(occurredAt) / DEDUPE_WINDOW_MS);
 
-// Generate deterministic idempotency key from event properties
-const generateIdempotencyKey = (eventType, recipient, payload, occurredAt) => {
+const genIdempotencyKey = (eventType, recipient, payload, occurredAt) => {
   const recipientIdentifier = toKeyPart(
     recipient.targetId ||
       recipient.guardianId ||
@@ -90,7 +89,7 @@ const generateIdempotencyKey = (eventType, recipient, payload, occurredAt) => {
     toKeyPart(eventType),
     toKeyPart(recipient.targetType),
     recipientIdentifier,
-    `window:${getDedupeWindowBucket(occurredAt)}`,
+    `window:${getDedupeBucket(occurredAt)}`,
     ...eventSpecificComponents.map(toKeyPart),
   ].filter(Boolean);
 
@@ -98,22 +97,24 @@ const generateIdempotencyKey = (eventType, recipient, payload, occurredAt) => {
   return crypto.createHash('sha256').update(keyString).digest('hex');
 };
 
-// Check if notification has already been processed with same idempotency key
-const checkIdempotentAlreadyProcessed = async (idempotencyKey) => {
-  const result = await pool.query(`
-    SELECT
-      id,
-      status,
-      created_at,
-      CASE
-        WHEN created_at >= NOW() - ($2::int * INTERVAL '1 minute') THEN TRUE
-        ELSE FALSE
-      END AS within_dedupe_window
-    FROM notifications
-    WHERE idempotency_key = $1
-    ORDER BY created_at DESC
-    LIMIT 1
-  `, [idempotencyKey, DEDUPE_WINDOW_MINUTES]);
+const checkIdempotent = async (idempotencyKey) => {
+  const result = await pool.query(
+    `
+      SELECT
+        id,
+        status,
+        created_at,
+        CASE
+          WHEN created_at >= NOW() - ($2::int * INTERVAL '1 minute') THEN TRUE
+          ELSE FALSE
+        END AS within_dedupe_window
+      FROM notifications
+      WHERE idempotency_key = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [idempotencyKey, DEDUPE_WINDOW_MINS],
+  );
 
   if (result.rows.length > 0) {
     const withinDedupeWindow = Boolean(result.rows[0].within_dedupe_window);
@@ -144,22 +145,24 @@ const checkIdempotentAlreadyProcessed = async (idempotencyKey) => {
   return { processed: false };
 };
 
-// Check if notification log exists with same dedupe key (for per-channel dedupe)
-const checkLogDeduplication = async (dedupeKey) => {
-  const result = await pool.query(`
-    SELECT
-      id,
-      status,
-      created_at,
-      CASE
-        WHEN created_at >= NOW() - ($2::int * INTERVAL '1 minute') THEN TRUE
-        ELSE FALSE
-      END AS within_dedupe_window
-    FROM notification_logs
-    WHERE dedupe_key = $1
-    ORDER BY created_at DESC
-    LIMIT 1
-  `, [dedupeKey, DEDUPE_WINDOW_MINUTES]);
+const checkLogDedupe = async (dedupeKey) => {
+  const result = await pool.query(
+    `
+      SELECT
+        id,
+        status,
+        created_at,
+        CASE
+          WHEN created_at >= NOW() - ($2::int * INTERVAL '1 minute') THEN TRUE
+          ELSE FALSE
+        END AS within_dedupe_window
+      FROM notification_logs
+      WHERE dedupe_key = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [dedupeKey, DEDUPE_WINDOW_MINS],
+  );
 
   if (result.rows.length === 0) {
     return false;
@@ -174,9 +177,11 @@ const checkLogDeduplication = async (dedupeKey) => {
   return Boolean(result.rows[0].within_dedupe_window);
 };
 
-// Acquire advisory lock using idempotency key (SHA-256 hash to fit PostgreSQL hash size limit)
-const acquireAdvisoryLock = async (idempotencyKey) => {
-  const result = await pool.query('SELECT pg_try_advisory_lock(hashtext($1)) AS locked', [idempotencyKey]);
+const acquireLock = async (idempotencyKey) => {
+  const result = await pool.query(
+    'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
+    [idempotencyKey],
+  );
   const lockAcquired = Boolean(result.rows[0].locked);
 
   if (!lockAcquired) {
@@ -191,8 +196,7 @@ const acquireAdvisoryLock = async (idempotencyKey) => {
   };
 };
 
-// Release advisory lock
-const releaseAdvisoryLock = async (lockKey) => {
+const releaseLock = async (lockKey) => {
   try {
     await pool.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]);
   } catch (unlockError) {
@@ -203,7 +207,7 @@ const releaseAdvisoryLock = async (lockKey) => {
   }
 };
 
-const NOTIFICATION_LOG_STATUS = Object.freeze({
+const LOG_STATUS = Object.freeze({
   PENDING: 'pending',
   SENT: 'sent',
   FAILED: 'failed',
@@ -229,14 +233,14 @@ const toJsonString = (value) => {
   }
 };
 
-const sanitizeRecordValue = (value) => {
+const sanitizeVal = (value) => {
   if (value === undefined || value === null || value === '') {
     return null;
   }
   return value;
 };
 
-const resolveSubjectAndMessage = (eventType, payload = {}) => {
+const resolveSubjectMsg = (eventType, payload = {}) => {
   switch (eventType) {
   case EVENT_TYPES.FORGOT_PASSWORD_OTP:
     return {
@@ -321,7 +325,7 @@ const resolveSubjectAndMessage = (eventType, payload = {}) => {
   }
 };
 
-const toNotificationStatusFromChannel = (channelResult) => {
+const statusFromChannel = (channelResult) => {
   if (!channelResult) {
     return 'failed';
   }
@@ -331,7 +335,7 @@ const toNotificationStatusFromChannel = (channelResult) => {
   return 'failed';
 };
 
-const writeNotificationLog = async ({
+const writeLog = async ({
   recipientType,
   recipientId,
   notificationType,
@@ -374,14 +378,14 @@ const writeNotificationLog = async ({
         recipientId,
         notificationType,
         channel,
-        sanitizeRecordValue(subject),
+        sanitizeVal(subject),
         content,
         status,
-        sanitizeRecordValue(externalMessageId),
+        sanitizeVal(externalMessageId),
         toJsonString(metadata || {}),
-        sanitizeRecordValue(errorDetails),
-        sanitizeRecordValue(idempotencyKey),
-        sanitizeRecordValue(dedupeKey),
+        sanitizeVal(errorDetails),
+        sanitizeVal(idempotencyKey),
+        sanitizeVal(dedupeKey),
       ],
     );
   } catch (error) {
@@ -393,7 +397,7 @@ const writeNotificationLog = async ({
   }
 };
 
-const sendSmsForEvent = async ({ normalizedEvent, subjectMessage }) => {
+const sendSmsEvent = async ({ normalizedEvent, subjectMessage }) => {
   const { recipient, eventType, payload } = normalizedEvent;
 
   if (!recipient.phone) {
@@ -424,7 +428,7 @@ const sendSmsForEvent = async ({ normalizedEvent, subjectMessage }) => {
   };
 };
 
-const sendEmailForEvent = async ({ normalizedEvent, subjectMessage }) => {
+const sendEmailEvent = async ({ normalizedEvent, subjectMessage }) => {
   const { recipient, eventType, payload } = normalizedEvent;
 
   if (!recipient.email) {
@@ -454,7 +458,7 @@ const sendEmailForEvent = async ({ normalizedEvent, subjectMessage }) => {
   };
 };
 
-const persistInAppNotification = async ({ normalizedEvent, subjectMessage, channelStatus }) => {
+const persistInApp = async ({ normalizedEvent, subjectMessage, channelStatus }) => {
   const { recipient, eventType, payload, metadata } = normalizedEvent;
 
   const statusPayload = {
@@ -510,7 +514,7 @@ const persistInAppNotification = async ({ normalizedEvent, subjectMessage, chann
   return response?.notification || null;
 };
 
-const pickRecipientTypeForLog = (recipient) => {
+const pickRecipientType = (recipient) => {
   if ((recipient.targetType || '').toLowerCase() === 'guardian') {
     return 'guardian';
   }
@@ -520,9 +524,8 @@ const pickRecipientTypeForLog = (recipient) => {
   return 'user';
 };
 
-const pickRecipientIdForLog = (recipient) => (
-  recipient.targetId || recipient.guardianId || recipient.userId || recipient.adminId
-);
+const pickRecipientId = (recipient) =>
+  recipient.targetId || recipient.guardianId || recipient.userId || recipient.adminId;
 
 const orchestrateNotificationEvent = async (rawEvent) => {
   const validationResult = normalizeEventPayload(rawEvent || {});
@@ -532,9 +535,8 @@ const orchestrateNotificationEvent = async (rawEvent) => {
 
   const normalizedEvent = validationResult.normalized;
 
-  // Generate idempotency key if not provided (deterministic from event properties)
   if (!normalizedEvent.idempotencyKey) {
-    normalizedEvent.idempotencyKey = generateIdempotencyKey(
+    normalizedEvent.idempotencyKey = genIdempotencyKey(
       normalizedEvent.eventType,
       normalizedEvent.recipient,
       normalizedEvent.payload,
@@ -542,13 +544,13 @@ const orchestrateNotificationEvent = async (rawEvent) => {
     );
   }
 
-  // Generate traceId if not provided
   if (!normalizedEvent.traceId) {
-    normalizedEvent.traceId = `${normalizedEvent.eventType}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+    normalizedEvent.traceId = `${normalizedEvent.eventType}-${Date.now()}-${Math.random()
+      .toString(36)
+      .substring(2, 8)}`;
   }
 
-  // Acquire advisory lock to prevent race conditions
-  const { lockAcquired, lockKey } = await acquireAdvisoryLock(normalizedEvent.idempotencyKey);
+  const { lockAcquired, lockKey } = await acquireLock(normalizedEvent.idempotencyKey);
   if (!lockAcquired) {
     return {
       success: false,
@@ -562,8 +564,7 @@ const orchestrateNotificationEvent = async (rawEvent) => {
 
   let lockReleased = false;
   try {
-    // Check for idempotent duplicate within dedupe window
-    const idempotentCheck = await checkIdempotentAlreadyProcessed(normalizedEvent.idempotencyKey);
+    const idempotentCheck = await checkIdempotent(normalizedEvent.idempotencyKey);
     if (idempotentCheck.processed) {
       return {
         success: true,
@@ -579,14 +580,20 @@ const orchestrateNotificationEvent = async (rawEvent) => {
       };
     }
 
-    const subjectMessage = resolveSubjectAndMessage(normalizedEvent.eventType, normalizedEvent.payload);
-    const allowedChannels = validationResult.allowedChannels || EVENT_CHANNEL_POLICY[normalizedEvent.eventType] || [];
+    const subjectMessage = resolveSubjectMsg(
+      normalizedEvent.eventType,
+      normalizedEvent.payload,
+    );
+    const allowedChannels =
+      validationResult.allowedChannels || EVENT_CHANNEL_POLICY[normalizedEvent.eventType] || [];
 
-    const recipientTypeForLog = pickRecipientTypeForLog(normalizedEvent.recipient);
-    const recipientIdForLog = pickRecipientIdForLog(normalizedEvent.recipient);
+    const recipientTypeForLog = pickRecipientType(normalizedEvent.recipient);
+    const recipientIdForLog = pickRecipientId(normalizedEvent.recipient);
 
     if (!recipientIdForLog) {
-      const recipientError = new Error('Notification recipient resolution failed: missing recipient identifier');
+      const recipientError = new Error(
+        'Notification recipient resolution failed: missing recipient identifier',
+      );
       recipientError.code = 'NOTIFICATION_RECIPIENT_RESOLUTION_FAILED';
       throw recipientError;
     }
@@ -594,21 +601,20 @@ const orchestrateNotificationEvent = async (rawEvent) => {
     const channelStatus = {};
 
     if (allowedChannels.includes(CHANNELS.SMS)) {
-    // Check per-channel dedupe for SMS
       const smsDedupeKey = `sms:${normalizedEvent.idempotencyKey}`;
-      const smsAlreadySent = await checkLogDeduplication(smsDedupeKey);
+      const smsAlreadySent = await checkLogDedupe(smsDedupeKey);
 
       if (!smsAlreadySent) {
         try {
-          const smsResult = await sendSmsForEvent({ normalizedEvent, subjectMessage });
+          const smsResult = await sendSmsEvent({ normalizedEvent, subjectMessage });
           channelStatus.sms = {
-            status: toNotificationStatusFromChannel(smsResult),
+            status: statusFromChannel(smsResult),
             provider: smsResult.provider || null,
             external_message_id: smsResult.externalMessageId || null,
             error: smsResult.error || null,
           };
 
-          await writeNotificationLog({
+          await writeLog({
             recipientType: recipientTypeForLog,
             recipientId: recipientIdForLog,
             notificationType: normalizedEvent.eventType,
@@ -616,8 +622,8 @@ const orchestrateNotificationEvent = async (rawEvent) => {
             subject: subjectMessage.subject,
             content: subjectMessage.message,
             status: smsResult.success
-              ? NOTIFICATION_LOG_STATUS.SENT
-              : NOTIFICATION_LOG_STATUS.FAILED,
+              ? LOG_STATUS.SENT
+              : LOG_STATUS.FAILED,
             externalMessageId: smsResult.externalMessageId,
             metadata: {
               trace_id: normalizedEvent.traceId,
@@ -636,14 +642,14 @@ const orchestrateNotificationEvent = async (rawEvent) => {
             error: smsError.message,
           };
 
-          await writeNotificationLog({
+          await writeLog({
             recipientType: recipientTypeForLog,
             recipientId: recipientIdForLog,
             notificationType: normalizedEvent.eventType,
             channel: CHANNELS.SMS,
             subject: subjectMessage.subject,
             content: subjectMessage.message,
-            status: NOTIFICATION_LOG_STATUS.FAILED,
+            status: LOG_STATUS.FAILED,
             externalMessageId: null,
             metadata: {
               trace_id: normalizedEvent.traceId,
@@ -665,21 +671,20 @@ const orchestrateNotificationEvent = async (rawEvent) => {
     }
 
     if (allowedChannels.includes(CHANNELS.EMAIL)) {
-    // Check per-channel dedupe for Email
       const emailDedupeKey = `email:${normalizedEvent.idempotencyKey}`;
-      const emailAlreadySent = await checkLogDeduplication(emailDedupeKey);
+      const emailAlreadySent = await checkLogDedupe(emailDedupeKey);
 
       if (!emailAlreadySent) {
         try {
-          const emailResult = await sendEmailForEvent({ normalizedEvent, subjectMessage });
+          const emailResult = await sendEmailEvent({ normalizedEvent, subjectMessage });
           channelStatus.email = {
-            status: toNotificationStatusFromChannel(emailResult),
+            status: statusFromChannel(emailResult),
             provider: emailResult.provider || 'email',
             external_message_id: emailResult.externalMessageId || null,
             error: emailResult.error || null,
           };
 
-          await writeNotificationLog({
+          await writeLog({
             recipientType: recipientTypeForLog,
             recipientId: recipientIdForLog,
             notificationType: normalizedEvent.eventType,
@@ -687,8 +692,8 @@ const orchestrateNotificationEvent = async (rawEvent) => {
             subject: subjectMessage.subject,
             content: subjectMessage.message,
             status: emailResult.success
-              ? NOTIFICATION_LOG_STATUS.SENT
-              : NOTIFICATION_LOG_STATUS.FAILED,
+              ? LOG_STATUS.SENT
+              : LOG_STATUS.FAILED,
             externalMessageId: emailResult.externalMessageId,
             metadata: {
               trace_id: normalizedEvent.traceId,
@@ -707,14 +712,14 @@ const orchestrateNotificationEvent = async (rawEvent) => {
             error: emailError.message,
           };
 
-          await writeNotificationLog({
+          await writeLog({
             recipientType: recipientTypeForLog,
             recipientId: recipientIdForLog,
             notificationType: normalizedEvent.eventType,
             channel: CHANNELS.EMAIL,
             subject: subjectMessage.subject,
             content: subjectMessage.message,
-            status: NOTIFICATION_LOG_STATUS.FAILED,
+            status: LOG_STATUS.FAILED,
             externalMessageId: null,
             metadata: {
               trace_id: normalizedEvent.traceId,
@@ -737,18 +742,17 @@ const orchestrateNotificationEvent = async (rawEvent) => {
 
     let inAppNotification = null;
     if (allowedChannels.includes(CHANNELS.IN_APP)) {
-    // Check per-channel dedupe for In-App notification
       const inAppDedupeKey = `inapp:${normalizedEvent.idempotencyKey}`;
-      const inAppAlreadySent = await checkLogDeduplication(inAppDedupeKey);
+      const inAppAlreadySent = await checkLogDedupe(inAppDedupeKey);
 
       if (!inAppAlreadySent) {
-        inAppNotification = await persistInAppNotification({
+        inAppNotification = await persistInApp({
           normalizedEvent,
           subjectMessage,
           channelStatus,
         });
 
-        await writeNotificationLog({
+        await writeLog({
           recipientType: recipientTypeForLog,
           recipientId: recipientIdForLog,
           notificationType: normalizedEvent.eventType,
@@ -756,8 +760,8 @@ const orchestrateNotificationEvent = async (rawEvent) => {
           subject: subjectMessage.subject,
           content: subjectMessage.message,
           status: inAppNotification
-            ? NOTIFICATION_LOG_STATUS.SENT
-            : NOTIFICATION_LOG_STATUS.FAILED,
+            ? LOG_STATUS.SENT
+            : LOG_STATUS.FAILED,
           externalMessageId: inAppNotification?.id || null,
           metadata: {
             trace_id: normalizedEvent.traceId,
@@ -790,9 +794,8 @@ const orchestrateNotificationEvent = async (rawEvent) => {
       inAppNotificationId: inAppNotification?.id || null,
     };
   } finally {
-    // Always release the advisory lock
     if (!lockReleased) {
-      await releaseAdvisoryLock(lockKey);
+      await releaseLock(lockKey);
       lockReleased = true;
     }
   }

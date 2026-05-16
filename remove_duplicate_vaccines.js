@@ -22,7 +22,9 @@ async function removeDuplicates() {
   console.log('=== REMOVING DUPLICATE VACCINES ===\n');
 
   // Get all active vaccines
-  const result = await db.query('SELECT id, name, code, is_active FROM vaccines WHERE is_active = true');
+  const result = await db.query(
+    'SELECT id, name, code, is_active FROM vaccines WHERE is_active = true'
+  );
   const activeVaccines = result.rows;
 
   console.log(`Currently active vaccines: ${activeVaccines.length}\n`);
@@ -40,17 +42,20 @@ async function removeDuplicates() {
     if (isSynph26 && isApproved) {
       // This is a SYNPH26 version of an approved vaccine - we'll deactivate it
       // but only if there is also a non-SYNPH26 version active
-      const nonSynphVersion = activeVaccines.find(v =>
-        !v.code.startsWith('SYNPH26') &&
-        v.name === vaccine.name,
+      const nonSynphVersion = activeVaccines.find(
+        (v) => !v.code.startsWith('SYNPH26') && v.name === vaccine.name
       );
 
       if (nonSynphVersion) {
         toDeactivate.push(vaccine);
-        console.log(`Marking for deactivation: ${vaccine.name} [${vaccine.code}] (SYNPH26 version)`);
+        console.log(
+          `Marking for deactivation: ${vaccine.name} [${vaccine.code}] (SYNPH26 version)`
+        );
       } else {
         // If there's no non-SYNPH26 version, we have to keep this one
-        console.log(`Keeping SYNPH26 version (no non-SYNPH26 alternative): ${vaccine.name} [${vaccine.code}]`);
+        console.log(
+          `Keeping SYNPH26 version (no non-SYNPH26 alternative): ${vaccine.name} [${vaccine.code}]`
+        );
       }
     }
   }
@@ -65,9 +70,11 @@ async function removeDuplicates() {
 
   // Final verification
   console.log('\n=== FINAL VERIFICATION ===\n');
-  const finalResult = await db.query('SELECT id, name, code, is_active FROM vaccines ORDER BY is_active DESC, name');
+  const finalResult = await db.query(
+    'SELECT id, name, code, is_active FROM vaccines ORDER BY is_active DESC, name'
+  );
   const finalVaccines = finalResult.rows;
-  const activeFinal = finalVaccines.filter(v => v.is_active);
+  const activeFinal = finalVaccines.filter((v) => v.is_active);
 
   console.log(`Total vaccines: ${finalVaccines.length}`);
   console.log(`Active vaccines: ${activeFinal.length}`);
@@ -85,36 +92,39 @@ async function removeDuplicates() {
   }
 
   // Check if we have exactly the approved vaccines
-  const activeNames = activeFinal.map(v => v.name).sort();
-  const approvedNamesSorted = [...APPROVED_VACCINES].sort();
+  activeFinal.map((v) => v.name).sort();
+  [...APPROVED_VACCINES].sort();
 
   console.log('\nVerification:');
   console.log(`  All active vaccines are approved: ${allApproved ? '✓ YES' : '✗ NO'}`);
-  console.log(`  Active vaccine count: ${activeFinal.length} (expected: ${APPROVED_VACCINES.length})`);
+  console.log(
+    `  Active vaccine count: ${activeFinal.length} (expected: ${APPROVED_VACCINES.length})`
+  );
 
   if (!allApproved) {
     console.log('  Non-approved active vaccines:');
-    activeFinal.filter(v => !APPROVED_VACCINES.includes(v.name))
-      .forEach(v => console.log(`    - ${v.name}`));
+    activeFinal
+      .filter((v) => !APPROVED_VACCINES.includes(v.name))
+      .forEach((v) => console.log(`    - ${v.name}`));
   }
 
   if (activeFinal.length !== APPROVED_VACCINES.length) {
     console.log('  Count mismatch!');
 
     // Find missing approved vaccines
-    const activeNormalized = new Set(activeFinal.map(v => v.name));
+    const activeNormalized = new Set(activeFinal.map((v) => v.name));
     const expectedNormalized = new Set(APPROVED_VACCINES);
 
-    const missing = APPROVED_VACCINES.filter(v => !activeNormalized.has(v));
-    const extra = activeFinal.filter(v => !expectedNormalized.has(v.name));
+    const missing = APPROVED_VACCINES.filter((v) => !activeNormalized.has(v));
+    const extra = activeFinal.filter((v) => !expectedNormalized.has(v.name));
 
     if (missing.length > 0) {
       console.log('  Missing approved vaccines:');
-      missing.forEach(v => console.log(`    - ${v}`));
+      missing.forEach((v) => console.log(`    - ${v}`));
     }
     if (extra.length > 0) {
       console.log('  Extra active vaccines:');
-      extra.forEach(v => console.log(`    - ${v.name}`));
+      extra.forEach((v) => console.log(`    - ${v.name}`));
     }
   }
 
@@ -128,10 +138,10 @@ async function removeDuplicates() {
 // Run cleanup if called directly
 if (require.main === module) {
   removeDuplicates()
-    .then(success => {
+    .then((success) => {
       process.exit(success ? 0 : 1);
     })
-    .catch(e => {
+    .catch((e) => {
       console.error('Cleanup failed:', e);
       process.exit(1);
     });

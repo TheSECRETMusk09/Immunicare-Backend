@@ -134,13 +134,13 @@ const database =
   process.env.DB_NAME || parsedConnectionDatabase || (isProductionLikeEnv ? '' : 'immunicare_dev');
 const user = getPrimaryDbUser() || parsedConnectionUser || (isProductionLikeEnv ? '' : 'postgres');
 
-const maxPoolSize = parseInteger(process.env.DB_POOL_MAX, isServerlessRuntime ? 3 : isProductionLikeEnv ? 30 : 20);
-const minPoolSize = parseInteger(process.env.DB_POOL_MIN, isServerlessRuntime ? 0 : isProductionLikeEnv ? 2 : 0);
-const idleTimeoutMillis = parseInteger(process.env.DB_IDLE_TIMEOUT, isServerlessRuntime ? 10000 : 60000);
-const connectionTimeoutMillis = parseInteger(process.env.DB_CONNECTION_TIMEOUT, isServerlessRuntime ? 20000 : 15000);
+const maxPoolSize = parseInteger(process.env.DB_POOL_MAX, isServerlessRuntime ? 3 : 10);
+const minPoolSize = parseInteger(process.env.DB_POOL_MIN, isServerlessRuntime ? 0 : isProductionLikeEnv ? 1 : 0);
+const idleTimeoutMillis = parseInteger(process.env.DB_IDLE_TIMEOUT, isServerlessRuntime ? 10000 : 30000);
+const connectionTimeoutMillis = parseInteger(process.env.DB_CONNECTION_TIMEOUT, isServerlessRuntime ? 5000 : 5000);
 const queryTimeoutMillis = parseInteger(process.env.DB_QUERY_TIMEOUT, 60000);
 const statementTimeoutMillis = parseInteger(process.env.DB_STATEMENT_TIMEOUT, 60000);
-const acquireTimeoutMillis = parseInteger(process.env.DB_ACQUIRE_TIMEOUT, 30000);
+const acquireTimeoutMillis = parseInteger(process.env.DB_ACQUIRE_TIMEOUT, 5000);
 
 if (isServerlessRuntime && ['127.0.0.1', 'localhost', '::1'].includes(String(host || '').trim().toLowerCase())) {
   logger.warn(

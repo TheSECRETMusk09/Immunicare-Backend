@@ -224,7 +224,7 @@ class WebSocketMetrics extends EventEmitter {
    * Track dropped message
    * @param {string} reason - Drop reason
    */
-  trackDroppedMessage(reason) {
+  trackDroppedMessage() {
     this.metrics.events.dropped++;
     this.checkDropRate();
   }
@@ -295,13 +295,13 @@ class WebSocketMetrics extends EventEmitter {
     // Deduct for reconnection rate
     const reconRate = this.getReconnectionRate();
     if (reconRate > this.alertThresholds.reconnectionRate) {
-      score -= (reconRate * 100);
+      score -= reconRate * 100;
     }
 
     // Deduct for average latency
     const avgLatency = this.getAverageLatency('message');
     if (avgLatency > this.alertThresholds.averageLatency) {
-      score -= ((avgLatency / this.alertThresholds.averageLatency) - 1) * 10;
+      score -= (avgLatency / this.alertThresholds.averageLatency - 1) * 10;
     }
 
     // Deduct for errors
@@ -391,7 +391,7 @@ class WebSocketMetrics extends EventEmitter {
    */
   cleanupOldLatencyData() {
     const maxAge = 3600000; // 1 hour
-    const cutoff = Date.now() - maxAge;
+    Date.now() - maxAge;
 
     // Clean up is automatic as we maintain fixed-size arrays
     // But we can trim if arrays get too large
@@ -431,9 +431,8 @@ class WebSocketMetrics extends EventEmitter {
         },
         reconnectionRate: this.getReconnectionRate(),
         healthScore: this.getHealthScore(),
-        dropRate: this.metrics.events.sent > 0
-          ? this.metrics.events.dropped / this.metrics.events.sent
-          : 0,
+        dropRate:
+          this.metrics.events.sent > 0 ? this.metrics.events.dropped / this.metrics.events.sent : 0,
       },
     };
   }

@@ -1,6 +1,5 @@
 /**
- * Password Reset Service
- * Handles secure password reset flow with token generation and validation
+ * Password reset flow helpers.
  */
 
 const crypto = require('crypto');
@@ -53,8 +52,8 @@ const createPasswordResetToken = async (userId, email, ipAddress, userAgent) => 
 
     // Invalidate any existing tokens for this user
     await client.query(
-      `UPDATE password_reset_tokens 
-       SET used_at = NOW() 
+      `UPDATE password_reset_tokens
+       SET used_at = NOW()
        WHERE user_id = $1 AND used_at IS NULL`,
       [userId]
     );
@@ -160,7 +159,7 @@ const resetPassword = async (token, newPassword, ipAddress, userAgent) => {
       `SELECT prt.*, u.id as user_id, u.username, u.email, u.password_hash
        FROM password_reset_tokens prt
        JOIN users u ON prt.user_id = u.id
-       WHERE prt.token = $1 
+       WHERE prt.token = $1
        AND prt.expires_at > NOW()
        AND prt.used_at IS NULL`,
       [hashedToken]
@@ -323,8 +322,8 @@ const verifyEmail = async (token) => {
 
     // Find valid token
     const tokenResult = await client.query(
-      `SELECT * FROM email_verification_tokens 
-       WHERE token = $1 
+      `SELECT * FROM email_verification_tokens
+       WHERE token = $1
        AND expires_at > NOW()
        AND used_at IS NULL`,
       [hashedToken]

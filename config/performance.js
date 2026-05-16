@@ -1,6 +1,6 @@
 // Performance Optimization Configuration for 10,000+ Concurrent Users
 
-const cluster = require('cluster');
+require('cluster');
 const os = require('os');
 
 // Performance configuration
@@ -11,14 +11,14 @@ const performanceConfig = {
     host: process.env.HOST || '0.0.0.0',
     maxConnections: 10000,
     keepAliveTimeout: 5000,
-    headersTimeout: 6000
+    headersTimeout: 6000,
   },
 
   // Cluster Configuration
   cluster: {
     enabled: process.env.NODE_ENV === 'production',
     workers: process.env.CLUSTER_WORKERS || Math.min(os.cpus().length, 4),
-    gracefulShutdownTimeout: 10000
+    gracefulShutdownTimeout: 10000,
   },
 
   // Database Configuration
@@ -33,8 +33,8 @@ const performanceConfig = {
       max: 100,
       idle: 10000,
       acquire: 60000,
-      evict: 1000
-    }
+      evict: 1000,
+    },
   },
 
   // Caching Configuration
@@ -45,12 +45,12 @@ const performanceConfig = {
       password: process.env.REDIS_PASSWORD,
       db: process.env.REDIS_DB || 0,
       keyPrefix: 'immunicare:',
-      ttl: 3600 // 1 hour default TTL
+      ttl: 3600, // 1 hour default TTL
     },
     memory: {
       max: 100, // Maximum number of items in memory cache
-      ttl: 300 // 5 minutes default TTL
-    }
+      ttl: 300, // 5 minutes default TTL
+    },
   },
 
   // Rate Limiting Configuration
@@ -61,8 +61,8 @@ const performanceConfig = {
     legacyHeaders: false,
     message: {
       error: 'Too many requests from this IP, please try again later.',
-      success: false
-    }
+      success: false,
+    },
   },
 
   // Compression Configuration
@@ -71,15 +71,12 @@ const performanceConfig = {
     threshold: 1024, // Only compress responses larger than 1KB
     filter: (req, res) => {
       // Don't compress responses if the request includes a cache-control header with no-transform
-      if (
-        req.headers['cache-control'] &&
-        req.headers['cache-control'].includes('no-transform')
-      ) {
+      if (req.headers['cache-control'] && req.headers['cache-control'].includes('no-transform')) {
         return false;
       }
       // Use compression filter function
       return require('compression').filter(req, res);
-    }
+    },
   },
 
   // Static File Configuration
@@ -91,7 +88,7 @@ const performanceConfig = {
       if (path.endsWith('.html')) {
         res.setHeader('Cache-Control', 'no-cache');
       }
-    }
+    },
   },
 
   // Security Configuration
@@ -99,23 +96,23 @@ const performanceConfig = {
     helmet: {
       contentSecurityPolicy: {
         directives: {
-          defaultSrc: ['\'self\''],
-          styleSrc: ['\'self\'', '\'unsafe-inline\''],
-          scriptSrc: ['\'self\''],
-          imgSrc: ['\'self\'', 'data:', 'https:'],
-          connectSrc: ['\'self\''],
-          fontSrc: ['\'self\''],
-          objectSrc: ['\'none\''],
-          mediaSrc: ['\'self\''],
-          frameSrc: ['\'none\'']
-        }
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'"],
+          imgSrc: ["'self'", 'data:', 'https:'],
+          connectSrc: ["'self'"],
+          fontSrc: ["'self'"],
+          objectSrc: ["'none'"],
+          mediaSrc: ["'self'"],
+          frameSrc: ["'none'"],
+        },
       },
       hsts: {
         maxAge: 31536000,
         includeSubDomains: true,
-        preload: true
-      }
-    }
+        preload: true,
+      },
+    },
   },
 
   // Logging Configuration
@@ -129,7 +126,7 @@ const performanceConfig = {
           require('winston').format.timestamp(),
           require('winston').format.errors({ stack: true }),
           require('winston').format.json()
-        )
+        ),
       },
       file: {
         level: 'error',
@@ -138,9 +135,9 @@ const performanceConfig = {
           require('winston').format.timestamp(),
           require('winston').format.errors({ stack: true }),
           require('winston').format.json()
-        )
-      }
-    }
+        ),
+      },
+    },
   },
 
   // Monitoring Configuration
@@ -151,14 +148,14 @@ const performanceConfig = {
       endpoints: {
         '/metrics': true,
         '/health': true,
-        '/ready': true
-      }
+        '/ready': true,
+      },
     },
     apm: {
       enabled: process.env.APM_ENABLED === 'true',
       serviceName: 'immunicare-vaccination-management',
-      serverUrl: process.env.APM_SERVER_URL
-    }
+      serverUrl: process.env.APM_SERVER_URL,
+    },
   },
 
   // Error Handling Configuration
@@ -167,9 +164,9 @@ const performanceConfig = {
     returnErrors: process.env.NODE_ENV !== 'production',
     errorResponse: {
       message: 'Something went wrong. Please try again later.',
-      success: false
-    }
-  }
+      success: false,
+    },
+  },
 };
 
 // Performance middleware functions
@@ -184,11 +181,7 @@ const performanceMiddleware = {
 
       // Log slow requests
       if (responseTime > 1000) {
-        console.warn(
-          `Slow request: ${req.method} ${req.url} - ${responseTime.toFixed(
-            2
-          )}ms`
-        );
+        console.warn(`Slow request: ${req.method} ${req.url} - ${responseTime.toFixed(2)}ms`);
       }
     });
 
@@ -202,9 +195,7 @@ const performanceMiddleware = {
     // Log high memory usage
     if (memUsage.heapUsed > 500 * 1024 * 1024) {
       // 500MB
-      console.warn(
-        `High memory usage: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`
-      );
+      console.warn(`High memory usage: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`);
     }
 
     next();
@@ -218,7 +209,7 @@ const performanceMiddleware = {
     optimizeQuery: (query) => {
       // Add query optimization logic here
       return query;
-    }
+    },
   },
 
   // Connection pooling optimization
@@ -227,8 +218,8 @@ const performanceMiddleware = {
     idle: 10000,
     evict: 1000,
     max: 100,
-    min: 0
-  }
+    min: 0,
+  },
 };
 
 // Database optimization queries
@@ -244,7 +235,7 @@ const databaseOptimizations = {
     'CREATE INDEX IF NOT EXISTS idx_appointments_patient_status ON appointments(patient_id, status);',
     'CREATE INDEX IF NOT EXISTS idx_appointments_date ON appointments(appointment_date);',
     'CREATE INDEX IF NOT EXISTS idx_certificates_patient_id ON certificates(patient_id);',
-    'CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory_id ON stock_transactions(inventory_id);'
+    'CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory_id ON stock_transactions(inventory_id);',
   ],
 
   // Query optimization views
@@ -266,8 +257,8 @@ const databaseOptimizations = {
        p.health_center_id
      FROM patients p
      LEFT JOIN vaccinations v ON p.id = v.patient_id
-     GROUP BY p.id, p.name, p.date_of_birth, p.sex, p.contact_number, p.health_center_id;`
-  ]
+     GROUP BY p.id, p.name, p.date_of_birth, p.sex, p.contact_number, p.health_center_id;`,
+  ],
 };
 
 // Cache configuration for different data types
@@ -276,29 +267,29 @@ const cacheConfig = {
     ttl: 300, // 5 minutes
     keyPrefix: 'patient:',
     serialize: (data) => JSON.stringify(data),
-    deserialize: (data) => JSON.parse(data)
+    deserialize: (data) => JSON.parse(data),
   },
 
   vaccinations: {
     ttl: 600, // 10 minutes
     keyPrefix: 'vaccination:',
     serialize: (data) => JSON.stringify(data),
-    deserialize: (data) => JSON.parse(data)
+    deserialize: (data) => JSON.parse(data),
   },
 
   inventory: {
     ttl: 180, // 3 minutes
     keyPrefix: 'inventory:',
     serialize: (data) => JSON.stringify(data),
-    deserialize: (data) => JSON.parse(data)
+    deserialize: (data) => JSON.parse(data),
   },
 
   dashboard: {
     ttl: 120, // 2 minutes
     keyPrefix: 'dashboard:',
     serialize: (data) => JSON.stringify(data),
-    deserialize: (data) => JSON.parse(data)
-  }
+    deserialize: (data) => JSON.parse(data),
+  },
 };
 
 // Export configuration
@@ -306,5 +297,5 @@ module.exports = {
   performanceConfig,
   performanceMiddleware,
   databaseOptimizations,
-  cacheConfig
+  cacheConfig,
 };

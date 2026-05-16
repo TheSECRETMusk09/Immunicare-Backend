@@ -10,6 +10,35 @@ const {
 
 router.use(authenticateToken);
 
+let vitalsColsReady = null;
+const ensureGrowthVitalsCols = () => {
+  if (!vitalsColsReady) {
+    vitalsColsReady = pool
+      .query(
+        `
+          ALTER TABLE patient_growth
+            ADD COLUMN IF NOT EXISTS heart_rate INTEGER,
+            ADD COLUMN IF NOT EXISTS respiratory_rate INTEGER
+        `,
+      )
+      .catch((err) => {
+        vitalsColsReady = null;
+        throw err;
+      });
+  }
+  return vitalsColsReady;
+};
+
+const describeDbError = (err) => {
+  const out = { message: err?.message || 'Unknown error' };
+  if (err?.code) out.code = err.code;
+  if (err?.detail) out.detail = err.detail;
+  if (err?.column) out.column = err.column;
+  if (err?.constraint) out.constraint = err.constraint;
+  if (err?.table) out.table = err.table;
+  return out;
+};
+
 const isGuardian = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 let growthColumnMapPromise = null;
@@ -673,6 +702,8 @@ router.get('/records', requirePermission('dashboard:analytics'), async (_req, re
 // POST /records - Create new growth record
 router.post('/records', requirePermission('patient:update'), async (req, res) => {
   try {
+    await ensureGrowthVitalsCols();
+
     const {
       patient_id,
       infant_id, // Support both patient_id and infant_id from frontend
@@ -825,8 +856,24 @@ router.post('/records', requirePermission('patient:update'), async (req, res) =>
 
     res.status(201).json(insertResult.rows[0]);
   } catch (error) {
-    console.error('Error creating growth record:', error);
-    res.status(500).json({ error: 'Failed to create growth record' });
+    const info = describeDbError(error);
+    console.error('[POST /growth/records] insert failed:', info, '\nstack:', error?.stack);
+
+    // 23502 = not_null_violation, 23503 = fk violation, 23505 = unique violation,
+    // 42703 = undefined_column, 42P01 = undefined_table
+    const clientFacingCodes = new Set(['23502', '23503', '23505', '42703', '42P01']);
+    const status = clientFacingCodes.has(info.code) ? 400 : 500;
+    const stage = 'growth_record_insert';
+
+    res.status(status).json({
+      error: 'Failed to create growth record',
+      stage,
+      message: info.message,
+      code: info.code || null,
+      detail: info.detail || null,
+      column: info.column || null,
+      constraint: info.constraint || null,
+    });
   }
 });
 

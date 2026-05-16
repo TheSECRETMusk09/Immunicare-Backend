@@ -3,20 +3,16 @@ const router = express.Router();
 const fs = require('fs').promises;
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
-const {
-  CANONICAL_ROLES,
-  getCanonicalRole,
-  requirePermission,
-} = require('../middleware/rbac');
+const { CANONICAL_ROLES, getCanonicalRole, requirePermission } = require('../middleware/rbac');
 const DocumentService = require('../services/documentService');
-const { ensureDigitalPapersCompatibility } = require('../services/digitalPapersCompatibilityService');
+const {
+  ensureDigitalPapersCompatibility,
+} = require('../services/digitalPapersCompatibilityService');
 const {
   getGuardianNameExpression,
   getUserNameExpressions,
 } = require('../utils/queryCompatibility');
-const {
-  normalizePaperTemplateFields,
-} = require('../utils/paperTemplateFields');
+const { normalizePaperTemplateFields } = require('../utils/paperTemplateFields');
 
 const documentService = new DocumentService();
 
@@ -36,7 +32,6 @@ const schemaCache = {
 };
 
 const CLINIC_SCOPED_LEGACY_ROLES = new Set([
-  'clinic_manager',
   'healthcare_worker',
   'health_worker',
   'doctor',
@@ -52,12 +47,14 @@ const FULL_DOCUMENT_ADMIN_LEGACY_ROLES = new Set([
   'superadmin',
   'administrator',
   'admin',
+  'clinic_manager',
+  'station_admin',
 ]);
 
 const resolveFirstExistingColumn = async (
   tableName,
   candidateColumns,
-  fallback = candidateColumns[0],
+  fallback = candidateColumns[0]
 ) => {
   const cacheKey = `${tableName}:${candidateColumns.join(',')}`;
   if (schemaCache.columns.has(cacheKey)) {
@@ -73,13 +70,12 @@ const resolveFirstExistingColumn = async (
           AND table_name = $1
           AND column_name = ANY($2::text[])
       `,
-      [tableName, candidateColumns],
+      [tableName, candidateColumns]
     );
 
     const availableColumns = new Set(result.rows.map((row) => row.column_name));
     const resolvedColumn =
-      candidateColumns.find((columnName) => availableColumns.has(columnName)) ||
-      fallback;
+      candidateColumns.find((columnName) => availableColumns.has(columnName)) || fallback;
 
     schemaCache.columns.set(cacheKey, resolvedColumn);
     return resolvedColumn;
@@ -95,8 +91,8 @@ const getPatientFacilityColumn = () =>
 const getLegacyInfantSupport = async () => {
   return {
     joinClause: '',
-    firstNameExpression: '\'\'',
-    lastNameExpression: '\'\'',
+    firstNameExpression: "''",
+    lastNameExpression: "''",
     guardianIdExpression: 'NULL',
     clinicExpression: 'NULL',
   };
@@ -110,10 +106,7 @@ const parsePositiveInt = (value) => {
 const sanitizePagination = (query = {}, defaults = {}) => {
   const defaultLimit = defaults.defaultLimit || 50;
   const maxLimit = defaults.maxLimit || 100;
-  const limit = Math.min(
-    parsePositiveInt(query.limit) || defaultLimit,
-    maxLimit,
-  );
+  const limit = Math.min(parsePositiveInt(query.limit) || defaultLimit, maxLimit);
   const offset = Math.max(parseInt(query.offset, 10) || 0, 0);
 
   return { limit, offset };
@@ -122,12 +115,9 @@ const sanitizePagination = (query = {}, defaults = {}) => {
 const isGuardianRequest = (req) => getCanonicalRole(req) === CANONICAL_ROLES.GUARDIAN;
 
 const isClinicScopedRequest = (req) => {
-  const canonicalRole = getCanonicalRole(req);
-  if (canonicalRole === CANONICAL_ROLES.CLINIC_MANAGER) {
-    return true;
-  }
-
-  const legacyRole = String(req.user?.legacy_role || '').trim().toLowerCase();
+  const legacyRole = String(req.user?.legacy_role || '')
+    .trim()
+    .toLowerCase();
   return CLINIC_SCOPED_LEGACY_ROLES.has(legacyRole);
 };
 
@@ -135,9 +125,16 @@ const getGuardianScopeId = (req) =>
   parsePositiveInt(req.user?.guardian_id) || parsePositiveInt(req.user?.id);
 
 const normalizeDownloadStatus = (value) => {
-  const normalized = String(value || '').trim().toLowerCase();
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase();
 
-  if (!normalized || normalized === 'generated' || normalized === 'downloaded' || normalized === 'completed') {
+  if (
+    !normalized ||
+    normalized === 'generated' ||
+    normalized === 'downloaded' ||
+    normalized === 'completed'
+  ) {
     return 'COMPLETED';
   }
 
@@ -205,7 +202,7 @@ const buildDocumentSelectQuery = async () => {
     fallbackName: 'Guardian',
   });
   const legacyInfantSupport = await getLegacyInfantSupport();
-  const patientService = require('../services/patientService');
+  require('../services/patientService');
 
   return `
     SELECT
@@ -270,7 +267,7 @@ const getPatientRecord = async (infantId) => {
     first_name: patient.firstName,
     last_name: patient.lastName,
     guardian_id: patient.guardianId,
-    clinic_id: patient.clinicId || patient.facilityId
+    clinic_id: patient.clinicId || patient.facilityId,
   };
 };
 
@@ -303,7 +300,9 @@ const canManageDocumentRecord = (req, documentRecord) => {
     return false;
   }
 
-  const legacyRole = String(req.user?.legacy_role || '').trim().toLowerCase();
+  const legacyRole = String(req.user?.legacy_role || '')
+    .trim()
+    .toLowerCase();
   return FULL_DOCUMENT_ADMIN_LEGACY_ROLES.has(legacyRole) || !isClinicScopedRequest(req);
 };
 
@@ -313,7 +312,11 @@ const hasDocumentAccess = async (req, documentRecord) => {
   }
 
   if (!isGuardianRequest(req)) {
-    if (isClinicScopedRequest(req) && parsePositiveInt(req.user?.clinic_id) && documentRecord.infant_id) {
+    if (
+      isClinicScopedRequest(req) &&
+      parsePositiveInt(req.user?.clinic_id) &&
+      documentRecord.infant_id
+    ) {
       const patientRecord = await getPatientRecord(documentRecord.infant_id);
       return ensurePatientAccess(req, patientRecord);
     }
@@ -405,13 +408,13 @@ const fetchPaginatedDocuments = async (req, filters = {}) => {
   const { query, params } = await buildScopedListQuery(req, filters);
   const countResult = await pool.query(
     `SELECT COUNT(*) AS count FROM (${query}) AS scoped_documents`,
-    params,
+    params
   );
   const total = parseInt(countResult.rows[0]?.count || 0, 10);
 
   const result = await pool.query(
     `${query} ORDER BY dg.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-    [...params, limit, offset],
+    [...params, limit, offset]
   );
 
   return {
@@ -433,7 +436,7 @@ const fetchDetailedDocument = async (id) => {
     fallbackName: 'Guardian',
   });
   const legacyInfantSupport = await getLegacyInfantSupport();
-  
+
   // TODO: Update this function to use canonical patient service instead of direct SQL queries
   // The function should use patientService.getPatientById() for patient lookup
   const result = await pool.query(
@@ -469,7 +472,7 @@ const fetchDetailedDocument = async (id) => {
       WHERE dg.id = $1
       LIMIT 1
     `,
-    [id],
+    [id]
   );
 
   return result.rows[0] ? normalizeDocumentRecord(result.rows[0]) : null;
@@ -549,7 +552,7 @@ router.get('/status/:infantId', requirePermission('document:view'), async (req, 
         WHERE patient_id = $1
           AND is_active = true
       `,
-      [infantId],
+      [infantId]
     );
 
     const generatedResult = await pool.query(
@@ -561,7 +564,7 @@ router.get('/status/:infantId', requirePermission('document:view'), async (req, 
           AND LOWER(COALESCE(dg.status, 'generated')) IN ('generated', 'downloaded', 'completed')
         GROUP BY t.template_type
       `,
-      [infantId],
+      [infantId]
     );
 
     const generatedMap = generatedResult.rows.reduce((accumulator, row) => {
@@ -603,9 +606,7 @@ router.post('/generate/:templateId', requireDocumentGenerationAccess, async (req
   try {
     const templateId = parsePositiveInt(req.params.templateId);
     const infantId = parsePositiveInt(req.body?.infantId ?? req.body?.infant_id);
-    const requestedGuardianId = parsePositiveInt(
-      req.body?.guardianId ?? req.body?.guardian_id,
-    );
+    const requestedGuardianId = parsePositiveInt(req.body?.guardianId ?? req.body?.guardian_id);
     const customData = req.body?.customData || req.body?.custom_data || {};
 
     if (!templateId) {
@@ -617,7 +618,7 @@ router.post('/generate/:templateId', requireDocumentGenerationAccess, async (req
 
     const templateResult = await pool.query(
       'SELECT * FROM paper_templates WHERE id = $1 AND is_active = true',
-      [templateId],
+      [templateId]
     );
 
     if (templateResult.rows.length === 0) {
@@ -657,7 +658,7 @@ router.post('/generate/:templateId', requireDocumentGenerationAccess, async (req
       infantId,
       resolvedGuardianId,
       parsePositiveInt(req.user?.id),
-      customData,
+      customData
     );
 
     if (!result || result.success !== true) {
@@ -728,9 +729,10 @@ router.get('/download/:id', requirePermission('document:export'), async (req, re
       console.error('[Document Download] Failed to increment download count:', error);
     });
 
-    const safeFilename = String(downloadResult.filename || `document_${id}.pdf`)
-      .replace(/["\r\n]/g, '_')
-      .trim() || `document_${id}.pdf`;
+    const safeFilename =
+      String(downloadResult.filename || `document_${id}.pdf`)
+        .replace(/["\r\n]/g, '_')
+        .trim() || `document_${id}.pdf`;
 
     res.setHeader('Content-Type', downloadResult.mimeType || 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
@@ -799,42 +801,46 @@ router.get('/stats', requirePermission('dashboard:analytics'), async (req, res) 
 });
 
 // GET /api/documents/templates/:templateId/fields - Get template fields (for frontend)
-router.get('/templates/:templateId/fields', requirePermission('document:view'), async (req, res) => {
-  try {
-    const templateId = parsePositiveInt(req.params.templateId);
+router.get(
+  '/templates/:templateId/fields',
+  requirePermission('document:view'),
+  async (req, res) => {
+    try {
+      const templateId = parsePositiveInt(req.params.templateId);
 
-    if (!templateId) {
-      return res.status(400).json({
+      if (!templateId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid template ID',
+        });
+      }
+
+      const result = await pool.query(
+        'SELECT fields FROM paper_templates WHERE id = $1 AND is_active = true',
+        [templateId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Template not found',
+        });
+      }
+
+      res.json({
+        success: true,
+        data: normalizePaperTemplateFields(result.rows[0].fields),
+      });
+    } catch (error) {
+      console.error('Error fetching template fields:', error);
+      res.status(500).json({
         success: false,
-        message: 'Invalid template ID',
+        message: 'Failed to fetch template fields',
+        error: error.message,
       });
     }
-
-    const result = await pool.query(
-      'SELECT fields FROM paper_templates WHERE id = $1 AND is_active = true',
-      [templateId],
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Template not found',
-      });
-    }
-
-    res.json({
-      success: true,
-      data: normalizePaperTemplateFields(result.rows[0].fields),
-    });
-  } catch (error) {
-    console.error('Error fetching template fields:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch template fields',
-      error: error.message,
-    });
   }
-});
+);
 
 // GET /api/documents/shared/with-me - Get documents shared with user
 router.get('/shared/with-me', requirePermission('document:view'), async (req, res) => {
@@ -888,13 +894,13 @@ router.get('/shared/with-me', requirePermission('document:view'), async (req, re
 
     const countResult = await pool.query(
       `SELECT COUNT(*) AS count FROM (${baseQuery}) AS shared_documents`,
-      params,
+      params
     );
     const total = parseInt(countResult.rows[0]?.count || 0, 10);
 
     const result = await pool.query(
       `${baseQuery} ORDER BY ds.shared_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-      [...params, limit, offset],
+      [...params, limit, offset]
     );
 
     res.json({
@@ -1003,7 +1009,7 @@ router.put('/:id(\\d+)', requirePermission('document:view'), async (req, res) =>
         WHERE id = $4
         RETURNING *
       `,
-      [title || null, notes || null, tags ? JSON.stringify(tags) : null, id],
+      [title || null, notes || null, tags ? JSON.stringify(tags) : null, id]
     );
 
     res.json({
@@ -1146,7 +1152,7 @@ router.post('/:id(\\d+)/share', requirePermission('document:view'), async (req, 
         shareWithGuardianId || null,
         accessType,
         expiresAt,
-      ],
+      ]
     );
 
     res.status(201).json({

@@ -9,12 +9,16 @@ const getDashboardStats = async () => {
     const [infantsRes, guardiansRes, appointmentsRes, stockRes] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM patients WHERE COALESCE(is_active, true) = true'),
       pool.query('SELECT COUNT(*) FROM guardians'),
-      pool.query('SELECT COUNT(*) FROM appointments WHERE status = \'scheduled\' AND scheduled_date >= CURRENT_DATE'),
+      pool.query(
+        "SELECT COUNT(*) FROM appointments WHERE status = 'scheduled' AND scheduled_date >= CURRENT_DATE"
+      ),
       appointmentService.getVaccineStockSummary(),
     ]);
 
     // Calculate low stock items (threshold < 20)
-    const lowStockCount = (stockRes.vaccines || []).filter(v => parseInt(v.available_stock, 10) < 20).length;
+    const lowStockCount = (stockRes.vaccines || []).filter(
+      (v) => parseInt(v.available_stock, 10) < 20
+    ).length;
 
     return {
       infants: parseInt(infantsRes.rows[0].count, 10),
@@ -45,7 +49,7 @@ const getRecentActivity = async (limit = 5) => {
     `;
     const result = await pool.query(query, [limit]);
 
-    return result.rows.map(row => ({
+    return result.rows.map((row) => ({
       description: row.description,
       time: new Date(row.time).toLocaleString(),
     }));
@@ -75,7 +79,7 @@ const getUpcomingAppointments = async (limit = 5) => {
 
     const result = await pool.query(query, [limit]);
 
-    return result.rows.map(row => {
+    return result.rows.map((row) => {
       const date = new Date(row.scheduled_date);
       return {
         month: date.toLocaleString('default', { month: 'short' }),
@@ -97,14 +101,12 @@ const getUpcomingAppointments = async (limit = 5) => {
 const getAnalytics = async (type, range = 'month') => {
   try {
     let interval = 'day';
-    let limit = 30;
 
     if (range === 'week') {
-      limit = 7;
+      interval = 'day';
     }
     if (range === 'year') {
       interval = 'month';
-      limit = 12;
     }
 
     let query = '';
@@ -112,7 +114,7 @@ const getAnalytics = async (type, range = 'month') => {
       // Count completed appointments as vaccinations
       query = `
         SELECT
-          TO_CHAR(scheduled_date, ${interval === 'month' ? '\'Mon\'' : '\'Mon DD\''}) as label,
+          TO_CHAR(scheduled_date, ${interval === 'month' ? "'Mon'" : "'Mon DD'"}) as label,
           COUNT(*) as value
         FROM appointments
         WHERE status = 'completed'
@@ -123,7 +125,7 @@ const getAnalytics = async (type, range = 'month') => {
     } else if (type === 'appointments') {
       query = `
         SELECT
-          TO_CHAR(scheduled_date, ${interval === 'month' ? '\'Mon\'' : '\'Mon DD\''}) as label,
+          TO_CHAR(scheduled_date, ${interval === 'month' ? "'Mon'" : "'Mon DD'"}) as label,
           COUNT(*) as value
         FROM appointments
         WHERE scheduled_date >= CURRENT_DATE - INTERVAL '1 ${range}'
@@ -136,8 +138,8 @@ const getAnalytics = async (type, range = 'month') => {
 
     // Fill in gaps or return as is (simplified for now)
     return {
-      labels: result.rows.map(r => r.label),
-      values: result.rows.map(r => parseInt(r.value, 10)),
+      labels: result.rows.map((r) => r.label),
+      values: result.rows.map((r) => parseInt(r.value, 10)),
     };
   } catch (error) {
     console.error(`Error fetching ${type} analytics:`, error);
@@ -152,9 +154,18 @@ const getAnalytics = async (type, range = 'month') => {
 const getGuardianStats = async (guardianId) => {
   try {
     const [childrenRes, appointmentsRes, vaccinationsRes] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM patients WHERE guardian_id = $1 AND COALESCE(is_active, true) = true', [guardianId]),
-      pool.query('SELECT COUNT(*) FROM appointments a JOIN patients p ON a.infant_id = p.id WHERE p.guardian_id = $1 AND a.status IN (\'scheduled\', \'pending\') AND a.scheduled_date >= CURRENT_DATE', [guardianId]),
-      pool.query('SELECT COUNT(*) FROM immunization_records ir JOIN patients p ON ir.patient_id = p.id WHERE p.guardian_id = $1', [guardianId]),
+      pool.query(
+        'SELECT COUNT(*) FROM patients WHERE guardian_id = $1 AND COALESCE(is_active, true) = true',
+        [guardianId]
+      ),
+      pool.query(
+        "SELECT COUNT(*) FROM appointments a JOIN patients p ON a.infant_id = p.id WHERE p.guardian_id = $1 AND a.status IN ('scheduled', 'pending') AND a.scheduled_date >= CURRENT_DATE",
+        [guardianId]
+      ),
+      pool.query(
+        'SELECT COUNT(*) FROM immunization_records ir JOIN patients p ON ir.patient_id = p.id WHERE p.guardian_id = $1',
+        [guardianId]
+      ),
     ]);
 
     return {

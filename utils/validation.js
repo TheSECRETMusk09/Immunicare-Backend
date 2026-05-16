@@ -1,13 +1,5 @@
-/**
- * Validation Utilities for Immunicare Authentication System
- * Provides comprehensive input validation and sanitization
- */
-
 const bcrypt = require('bcryptjs');
 
-/**
- * Common passwords that are not allowed
- */
 const COMMON_PASSWORDS = [
   'password',
   '123456',
@@ -46,11 +38,6 @@ const COMMON_PASSWORDS = [
   'password1!',
 ];
 
-/**
- * Validate password strength
- * @param {string} password - Password to validate
- * @returns {Object} Validation result with isValid and errors array
- */
 const validatePasswordStrength = (password) => {
   const errors = [];
 
@@ -61,50 +48,41 @@ const validatePasswordStrength = (password) => {
     };
   }
 
-  // Minimum length check
   const minLength = parseInt(process.env.PASSWORD_MIN_LENGTH) || 8;
   if (password.length < minLength) {
     errors.push(`Password must be at least ${minLength} characters long`);
   }
 
-  // Maximum length check
   if (password.length > 128) {
     errors.push('Password must be less than 128 characters');
   }
 
-  // Uppercase check
   if (!/[A-Z]/.test(password)) {
     errors.push('Password must contain at least one uppercase letter');
   }
 
-  // Lowercase check
   if (!/[a-z]/.test(password)) {
     errors.push('Password must contain at least one lowercase letter');
   }
 
-  // Number check
   if (!/[0-9]/.test(password)) {
     errors.push('Password must contain at least one number');
   }
 
-  // Special character check
   if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
     errors.push(
       'Password must contain at least one special character (!@#$%^&*()_+-=[]{};\':"\\|,.<>/?)',
     );
   }
 
-  // Common password check
   if (COMMON_PASSWORDS.includes(password.toLowerCase())) {
     errors.push('Password is too common. Please choose a more secure password');
   }
 
-  // Sequential characters check
   if (/(.)\1{2,}/.test(password)) {
     errors.push('Password cannot contain more than 2 consecutive identical characters');
   }
 
-  // Check for keyboard patterns
   const keyboardPatterns = ['qwerty', 'asdfgh', 'zxcvbn', '12345', '54321'];
   const lowerPassword = password.toLowerCase();
   for (const pattern of keyboardPatterns) {
@@ -121,11 +99,6 @@ const validatePasswordStrength = (password) => {
   };
 };
 
-/**
- * Calculate password strength score (0-100)
- * @param {string} password - Password to evaluate
- * @returns {number} Strength score
- */
 const calculatePasswordStrength = (password) => {
   if (!password) {
     return 0;
@@ -134,10 +107,8 @@ const calculatePasswordStrength = (password) => {
   let score = 0;
   const length = password.length;
 
-  // Length contribution (max 25 points)
   score += Math.min(length * 2.5, 25);
 
-  // Character variety (max 40 points)
   if (/[a-z]/.test(password)) {
     score += 10;
   }
@@ -151,7 +122,6 @@ const calculatePasswordStrength = (password) => {
     score += 10;
   }
 
-  // Bonus points (max 35 points)
   if (length >= 12) {
     score += 15;
   }
@@ -166,11 +136,6 @@ const calculatePasswordStrength = (password) => {
   return Math.min(score, 100);
 };
 
-/**
- * Validate email format
- * @param {string} email - Email to validate
- * @returns {Object} Validation result
- */
 const validateEmail = (email) => {
   const errors = [];
 
@@ -183,7 +148,6 @@ const validateEmail = (email) => {
     errors.push('Invalid email format');
   }
 
-  // Check for disposable email domains (basic list)
   const disposableDomains = ['tempmail.com', 'throwaway.com', 'fakeinbox.com'];
   const domain = email.split('@')[1]?.toLowerCase();
   if (disposableDomains.includes(domain)) {
@@ -197,11 +161,6 @@ const validateEmail = (email) => {
   };
 };
 
-/**
- * Validate phone number format (Philippines)
- * @param {string} phone - Phone number to validate
- * @returns {Object} Validation result
- */
 const validatePhoneNumber = (phone) => {
   const errors = [];
 
@@ -209,7 +168,6 @@ const validatePhoneNumber = (phone) => {
     return { isValid: false, errors: ['Phone number is required'] };
   }
 
-  // Philippine phone number formats
   const phoneRegex = /^(\+63|0)[0-9]{10}$/;
   const cleanedPhone = phone.replace(/[\s\-\(\)]/g, '');
 
@@ -224,12 +182,6 @@ const validatePhoneNumber = (phone) => {
   };
 };
 
-/**
- * Validate name fields
- * @param {string} name - Name to validate
- * @param {string} fieldName - Field name for error messages
- * @returns {Object} Validation result
- */
 const validateName = (name, fieldName = 'Name') => {
   const errors = [];
 
@@ -247,13 +199,11 @@ const validateName = (name, fieldName = 'Name') => {
     errors.push(`${fieldName} must be less than 100 characters`);
   }
 
-  // Check for invalid characters (allow letters, spaces, hyphens, apostrophes)
   const nameRegex = /^[a-zA-Z\s\-']+$/;
   if (!nameRegex.test(trimmed)) {
     errors.push(`${fieldName} contains invalid characters`);
   }
 
-  // Check for multiple consecutive spaces
   if (/\s{2,}/.test(trimmed)) {
     errors.push(`${fieldName} cannot contain multiple consecutive spaces`);
   }
@@ -261,15 +211,10 @@ const validateName = (name, fieldName = 'Name') => {
   return {
     isValid: errors.length === 0,
     errors,
-    sanitized: trimmed.replace(/\s+/g, ' '), // Normalize spaces
+    sanitized: trimmed.replace(/\s+/g, ' '),
   };
 };
 
-/**
- * Validate username
- * @param {string} username - Username to validate
- * @returns {Object} Validation result
- */
 const validateUsername = (username) => {
   const errors = [];
 
@@ -287,13 +232,11 @@ const validateUsername = (username) => {
     errors.push('Username must be less than 50 characters');
   }
 
-  // Username can only contain letters, numbers, and underscores
   const usernameRegex = /^[a-zA-Z0-9_]+$/;
   if (!usernameRegex.test(trimmed)) {
     errors.push('Username can only contain letters, numbers, and underscores');
   }
 
-  // Cannot start or end with underscore
   if (trimmed.startsWith('_') || trimmed.endsWith('_')) {
     errors.push('Username cannot start or end with an underscore');
   }
@@ -305,12 +248,6 @@ const validateUsername = (username) => {
   };
 };
 
-/**
- * Check if password matches any of the historical passwords
- * @param {string} newPassword - New password
- * @param {string[]} historicalHashes - Array of password hashes
- * @returns {boolean} True if password matches any historical password
- */
 const isPasswordInHistory = async (newPassword, historicalHashes) => {
   if (!historicalHashes || historicalHashes.length === 0) {
     return false;
@@ -326,11 +263,6 @@ const isPasswordInHistory = async (newPassword, historicalHashes) => {
   return false;
 };
 
-/**
- * Sanitize and validate address
- * @param {string} address - Address to validate
- * @returns {Object} Validation result
- */
 const validateAddress = (address) => {
   const errors = [];
 
@@ -348,7 +280,6 @@ const validateAddress = (address) => {
     errors.push('Address must be less than 500 characters');
   }
 
-  // Remove potentially dangerous characters but allow basic punctuation
   const sanitized = trimmed.replace(/[<>{}|\\^`]/g, '');
 
   return {
@@ -358,11 +289,6 @@ const validateAddress = (address) => {
   };
 };
 
-/**
- * Validate relationship field
- * @param {string} relationship - Relationship value
- * @returns {Object} Validation result
- */
 const validateRelationship = (relationship) => {
   const validRelationships = ['mother', 'father', 'guardian', 'other', 'parent'];
 
@@ -383,11 +309,6 @@ const validateRelationship = (relationship) => {
   };
 };
 
-/**
- * Validate date of birth
- * @param {string} dob - Date of birth string
- * @returns {Object} Validation result
- */
 const validateDateOfBirth = (dob) => {
   const errors = [];
 
@@ -419,17 +340,12 @@ const validateDateOfBirth = (dob) => {
   };
 };
 
-/**
- * Validate guardian registration input
- * @param {Object} data - Registration data
- * @returns {Object} Validation result
- */
 const validateGuardianRegistration = (data) => {
   const errors = [];
   const fieldErrors = {};
   const validatedData = {};
 
-  const pushFieldErrors = (field, nextErrors = []) => {
+  const appendErr = (field, nextErrors = []) => {
     if (!Array.isArray(nextErrors) || nextErrors.length === 0) {
       return;
     }
@@ -442,76 +358,67 @@ const validateGuardianRegistration = (data) => {
     errors.push(...nextErrors);
   };
 
-  // Validate email
   const emailResult = validateEmail(data.email);
   if (!emailResult.isValid) {
-    pushFieldErrors('email', emailResult.errors);
+    appendErr('email', emailResult.errors);
   } else {
     validatedData.email = emailResult.sanitized;
   }
 
-  // Validate password
   const passwordResult = validatePasswordStrength(data.password);
   if (!passwordResult.isValid) {
-    pushFieldErrors('password', passwordResult.errors);
+    appendErr('password', passwordResult.errors);
   } else {
     validatedData.password = data.password;
   }
 
-  // Validate confirm password
   if (data.password !== data.confirmPassword) {
-    pushFieldErrors('confirmPassword', ['Passwords do not match']);
+    appendErr('confirmPassword', ['Passwords do not match']);
   } else if (data.confirmPassword) {
     validatedData.confirmPassword = data.confirmPassword;
   }
 
-  // Validate first name
   const firstNameResult = validateName(data.firstName, 'First name');
   if (!firstNameResult.isValid) {
-    pushFieldErrors('firstName', firstNameResult.errors);
+    appendErr('firstName', firstNameResult.errors);
   } else {
     validatedData.firstName = firstNameResult.sanitized;
   }
 
-  // Validate last name
   const lastNameResult = validateName(data.lastName, 'Last name');
   if (!lastNameResult.isValid) {
-    pushFieldErrors('lastName', lastNameResult.errors);
+    appendErr('lastName', lastNameResult.errors);
   } else {
     validatedData.lastName = lastNameResult.sanitized;
   }
 
-  // Validate phone
   const phoneResult = validatePhoneNumber(data.phone);
   if (!phoneResult.isValid) {
-    pushFieldErrors('phone', phoneResult.errors);
+    appendErr('phone', phoneResult.errors);
   } else {
     validatedData.phone = phoneResult.sanitized;
   }
 
-  // Validate address (optional)
   if (data.address) {
     const addressResult = validateAddress(data.address);
     if (!addressResult.isValid) {
-      pushFieldErrors('address', addressResult.errors);
+      appendErr('address', addressResult.errors);
     } else {
       validatedData.address = addressResult.sanitized;
     }
   }
 
-  // Validate relationship
   const relationshipResult = validateRelationship(data.relationship);
   if (!relationshipResult.isValid) {
-    pushFieldErrors('relationship', relationshipResult.errors);
+    appendErr('relationship', relationshipResult.errors);
   } else {
     validatedData.relationship = relationshipResult.sanitized;
   }
 
-  // Validate infant data (optional)
   if (data.infantName) {
     const infantNameResult = validateName(data.infantName, 'Infant name');
     if (!infantNameResult.isValid) {
-      pushFieldErrors('infantName', infantNameResult.errors);
+      appendErr('infantName', infantNameResult.errors);
     } else {
       validatedData.infantName = infantNameResult.sanitized;
     }
@@ -520,21 +427,20 @@ const validateGuardianRegistration = (data) => {
   if (data.infantDob) {
     const dobResult = validateDateOfBirth(data.infantDob);
     if (!dobResult.isValid) {
-      pushFieldErrors('infantDob', dobResult.errors);
+      appendErr('infantDob', dobResult.errors);
     } else {
       validatedData.infantDob = dobResult.sanitized;
     }
   }
 
-  // Optional child section: if one child field is provided, require the paired field.
   if (data.infantName && !data.infantDob) {
-    pushFieldErrors('infantDob', [
+    appendErr('infantDob', [
       'Child date of birth is required when child name is provided',
     ]);
   }
 
   if (data.infantDob && !data.infantName) {
-    pushFieldErrors('infantName', [
+    appendErr('infantName', [
       'Child name is required when child date of birth is provided',
     ]);
   }
@@ -547,11 +453,6 @@ const validateGuardianRegistration = (data) => {
   };
 };
 
-/**
- * Validate login input
- * @param {Object} data - Login data
- * @returns {Object} Validation result
- */
 const validateLoginInput = (data) => {
   const errors = [];
 

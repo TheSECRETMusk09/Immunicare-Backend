@@ -29,7 +29,6 @@ const TEST_CONFIG = {
 };
 
 // Utility functions
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const cleanupTestData = async () => {
   try {
@@ -79,7 +78,9 @@ async function testOtpSendAndVerify() {
     for (const { input, expected } of testCases) {
       const result = smsService.formatPhoneNumber(input);
       const passed = result === expected;
-      console.log(`  ${passed ? '✓' : '✗'} formatPhoneNumber("${input}") = "${result}" (expected: "${expected}")`);
+      console.log(
+        `  ${passed ? '✓' : '✗'} formatPhoneNumber("${input}") = "${result}" (expected: "${expected}")`
+      );
       if (!passed) {
         throw new Error(`Phone formatting failed for ${input}`);
       }
@@ -104,7 +105,9 @@ async function testOtpSendAndVerify() {
     console.log('  OTP send result:', JSON.stringify(sendResult, null, 2));
 
     if (!sendResult.success) {
-      console.log(`  Note: OTP send may fail in test environment without SMS provider: ${sendResult.error}`);
+      console.log(
+        `  Note: OTP send may fail in test environment without SMS provider: ${sendResult.error}`
+      );
     } else {
       console.log('  ✓ OTP sent successfully');
     }
@@ -121,7 +124,7 @@ async function testOtpSendAndVerify() {
       `INSERT INTO sms_verification_codes (phone_number, code, purpose, expires_at, attempts, max_attempts)
        VALUES ($1, $2, $3, $4, 0, 3)
        ON CONFLICT (phone_number, purpose) DO UPDATE SET code = EXCLUDED.code`,
-      [TEST_CONFIG.testPhone, testOtp, 'phone_verification', expiresAt],
+      [TEST_CONFIG.testPhone, testOtp, 'phone_verification', expiresAt]
     );
     console.log(`  ✓ Test OTP inserted: ${testOtp}`);
 
@@ -129,7 +132,7 @@ async function testOtpSendAndVerify() {
     const verifyResult = await smsService.verifyOTP(
       TEST_CONFIG.testPhone,
       testOtp,
-      'phone_verification',
+      'phone_verification'
     );
     console.log('  Verify result:', JSON.stringify(verifyResult, null, 2));
 
@@ -143,7 +146,7 @@ async function testOtpSendAndVerify() {
     const wrongVerifyResult = await smsService.verifyOTP(
       TEST_CONFIG.testPhone,
       '000000',
-      'phone_verification',
+      'phone_verification'
     );
     if (wrongVerifyResult.success) {
       throw new Error('Wrong OTP should not verify');
@@ -159,13 +162,13 @@ async function testOtpSendAndVerify() {
       `INSERT INTO sms_verification_codes (phone_number, code, purpose, expires_at, attempts, max_attempts)
        VALUES ($1, $2, $3, $4, 0, 3)
        ON CONFLICT (phone_number, purpose) DO UPDATE SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at`,
-      [TEST_CONFIG.testPhone, expiredOtp, 'phone_verification', pastExpiry],
+      [TEST_CONFIG.testPhone, expiredOtp, 'phone_verification', pastExpiry]
     );
 
     const expiredVerifyResult = await smsService.verifyOTP(
       TEST_CONFIG.testPhone,
       expiredOtp,
-      'phone_verification',
+      'phone_verification'
     );
     if (expiredVerifyResult.success) {
       throw new Error('Expired OTP should not verify');
@@ -198,20 +201,20 @@ async function testAppointmentBooking() {
       `INSERT INTO guardians (name, phone, email, relationship, is_active, is_password_set)
        VALUES ($1, $2, $3, 'parent', true, true)
        RETURNING id`,
-      ['Test Guardian', TEST_CONFIG.testPhone, TEST_CONFIG.testEmail],
+      ['Test Guardian', TEST_CONFIG.testPhone, TEST_CONFIG.testEmail]
     );
     TEST_CONFIG.testGuardianId = guardianResult.rows[0].id;
     console.log(`  ✓ Created test guardian with ID: ${TEST_CONFIG.testGuardianId}`);
 
     // Get or create role
-    const roleResult = await pool.query('SELECT id FROM roles WHERE name = \'guardian\'');
+    const roleResult = await pool.query("SELECT id FROM roles WHERE name = 'guardian'");
     const roleId = roleResult.rows[0].id;
 
     // Get or create clinic
     let clinicResult = await pool.query('SELECT id FROM clinics LIMIT 1');
     if (clinicResult.rows.length === 0) {
       clinicResult = await pool.query(
-        'INSERT INTO clinics (name, region, address) VALUES (\'Test Clinic\', \'Metro Manila\', \'Test Address\') RETURNING id',
+        "INSERT INTO clinics (name, region, address) VALUES ('Test Clinic', 'Metro Manila', 'Test Address') RETURNING id"
       );
     }
     TEST_CONFIG.testClinicId = clinicResult.rows[0].id;
@@ -221,7 +224,14 @@ async function testAppointmentBooking() {
       `INSERT INTO users (username, email, password_hash, role_id, guardian_id, clinic_id, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, true)
        RETURNING id`,
-      ['testuser' + Date.now(), TEST_CONFIG.testEmail, 'hash', roleId, TEST_CONFIG.testGuardianId, TEST_CONFIG.testClinicId],
+      [
+        'testuser' + Date.now(),
+        TEST_CONFIG.testEmail,
+        'hash',
+        roleId,
+        TEST_CONFIG.testGuardianId,
+        TEST_CONFIG.testClinicId,
+      ]
     );
     TEST_CONFIG.testUserId = userResult.rows[0].id;
     console.log(`  ✓ Created test user with ID: ${TEST_CONFIG.testUserId}`);
@@ -231,7 +241,7 @@ async function testAppointmentBooking() {
       `INSERT INTO patients (first_name, last_name, guardian_id, clinic_id, is_active, dob)
        VALUES ($1, $2, $3, $4, true, NOW() - INTERVAL '6 months')
        RETURNING id`,
-      ['Test', 'Baby', TEST_CONFIG.testGuardianId, TEST_CONFIG.testClinicId],
+      ['Test', 'Baby', TEST_CONFIG.testGuardianId, TEST_CONFIG.testClinicId]
     );
     TEST_CONFIG.testInfantId = infantResult.rows[0].id;
     console.log(`  ✓ Created test infant with ID: ${TEST_CONFIG.testInfantId}`);
@@ -255,7 +265,7 @@ async function testAppointmentBooking() {
         TEST_CONFIG.testClinicId,
         TEST_CONFIG.testUserId,
         'Test Health Center',
-      ],
+      ]
     );
 
     TEST_CONFIG.testAppointmentId = appointmentResult.rows[0].id;
@@ -270,7 +280,7 @@ async function testAppointmentBooking() {
     console.log('\nTest 2.2: Verify guardian_id stored');
     const verifyAppointment = await pool.query(
       'SELECT guardian_id, infant_id, status FROM appointments WHERE id = $1',
-      [TEST_CONFIG.testAppointmentId],
+      [TEST_CONFIG.testAppointmentId]
     );
 
     if (verifyAppointment.rows[0].guardian_id != TEST_CONFIG.testGuardianId) {
@@ -286,13 +296,15 @@ async function testAppointmentBooking() {
        JOIN patients p ON a.infant_id = p.id
        JOIN guardians g ON p.guardian_id = g.id
        WHERE a.id = $1`,
-      [TEST_CONFIG.testAppointmentId],
+      [TEST_CONFIG.testAppointmentId]
     );
 
     if (adminQuery.rows.length === 0) {
       throw new Error('Admin could not see appointment');
     }
-    console.log(`  ✓ Admin can see appointment: ${adminQuery.rows[0].guardian_name} for ${adminQuery.rows[0].first_name} ${adminQuery.rows[0].last_name}`);
+    console.log(
+      `  ✓ Admin can see appointment: ${adminQuery.rows[0].guardian_name} for ${adminQuery.rows[0].first_name} ${adminQuery.rows[0].last_name}`
+    );
 
     // Test 2.4: Guardian can see their appointments
     console.log('\nTest 2.4: Guardian can see own appointments');
@@ -300,7 +312,7 @@ async function testAppointmentBooking() {
       `SELECT a.id FROM appointments a
        JOIN patients p ON a.infant_id = p.id
        WHERE p.guardian_id = $1 AND a.id = $2`,
-      [TEST_CONFIG.testGuardianId, TEST_CONFIG.testAppointmentId],
+      [TEST_CONFIG.testGuardianId, TEST_CONFIG.testAppointmentId]
     );
 
     if (guardianQuery.rows.length === 0) {
@@ -331,14 +343,16 @@ async function testSmsConfirmation() {
 
     // Test 3.1: Send appointment confirmation SMS
     console.log('Test 3.1: Send Appointment Confirmation SMS');
-    const confirmationResult = await appointmentConfirmationService.sendConfirmationSMS(TEST_CONFIG.testAppointmentId);
+    const confirmationResult = await appointmentConfirmationService.sendConfirmationSMS(
+      TEST_CONFIG.testAppointmentId
+    );
     console.log('  Confirmation result:', JSON.stringify(confirmationResult, null, 2));
 
     // Check if SMS was logged in database
     const smsLogCheck = await pool.query(
       `SELECT * FROM sms_logs
        WHERE message_type LIKE '%appointment_confirmation%'
-       ORDER BY created_at DESC LIMIT 1`,
+       ORDER BY created_at DESC LIMIT 1`
     );
 
     if (smsLogCheck.rows.length > 0) {
@@ -352,11 +366,13 @@ async function testSmsConfirmation() {
     console.log('\nTest 3.2: Check Confirmation Status');
     const appointmentCheck = await pool.query(
       'SELECT sms_confirmation_sent, confirmation_status FROM appointments WHERE id = $1',
-      [TEST_CONFIG.testAppointmentId],
+      [TEST_CONFIG.testAppointmentId]
     );
 
     if (appointmentCheck.rows[0].sms_confirmation_sent) {
-      console.log(`  ✓ Confirmation status updated: ${appointmentCheck.rows[0].confirmation_status}`);
+      console.log(
+        `  ✓ Confirmation status updated: ${appointmentCheck.rows[0].confirmation_status}`
+      );
     } else {
       console.log('  Note: Confirmation may not have been sent in test mode');
     }
@@ -377,7 +393,9 @@ async function testSmsConfirmation() {
     if (directResult.success) {
       console.log('  ✓ SMS confirmation sent successfully');
     } else {
-      console.log(`  Note: Direct SMS may fail in test environment: ${directResult.error || 'unknown'}`);
+      console.log(
+        `  Note: Direct SMS may fail in test environment: ${directResult.error || 'unknown'}`
+      );
     }
 
     console.log('\n=== TEST SUITE 3 PASSED ===\n');
@@ -409,15 +427,19 @@ async function testReminderGeneration() {
          AND a.is_active = true
          AND a.scheduled_date > NOW()
          AND a.scheduled_date < NOW() + INTERVAL '48 hours'
-       LIMIT 5`,
+       LIMIT 5`
     );
 
     console.log(`  Found ${upcomingQuery.rows.length} appointments in next 48 hours`);
 
     if (upcomingQuery.rows.length > 0) {
       for (const appt of upcomingQuery.rows) {
-        console.log(`  - Appointment ${appt.id}: ${appt.first_name} ${appt.last_name} on ${appt.scheduled_date}`);
-        console.log(`    24h reminder sent: ${appt.reminder_sent_24h}, 48h reminder sent: ${appt.reminder_sent_48h}`);
+        console.log(
+          `  - Appointment ${appt.id}: ${appt.first_name} ${appt.last_name} on ${appt.scheduled_date}`
+        );
+        console.log(
+          `    24h reminder sent: ${appt.reminder_sent_24h}, 48h reminder sent: ${appt.reminder_sent_48h}`
+        );
       }
     }
 
@@ -432,7 +454,7 @@ async function testReminderGeneration() {
         childName: 'Test Baby',
         guardianName: 'Test Guardian',
         location: 'Test Health Center',
-      },
+      }
     );
     console.log(`  48h reminder message: ${reminderMsg48h.substring(0, 100)}...`);
 
@@ -444,7 +466,7 @@ async function testReminderGeneration() {
         childName: 'Test Baby',
         guardianName: 'Test Guardian',
         location: 'Test Health Center',
-      },
+      }
     );
     console.log(`  24h reminder message: ${reminderMsg24h.substring(0, 100)}...`);
 
@@ -462,7 +484,9 @@ async function testReminderGeneration() {
     if (reminderResult.success) {
       console.log('  ✓ Reminder sent successfully');
     } else {
-      console.log(`  Note: Reminder may fail in test environment: ${reminderResult.error || 'unknown'}`);
+      console.log(
+        `  Note: Reminder may fail in test environment: ${reminderResult.error || 'unknown'}`
+      );
     }
 
     // Test 4.4: Test scheduler reminder function (if appointments exist)
@@ -471,7 +495,9 @@ async function testReminderGeneration() {
       await processAppointmentReminders();
       console.log('  ✓ Reminder job executed without error');
     } catch (schedulerError) {
-      console.log(`  Note: Scheduler may not find appointments to remind: ${schedulerError.message}`);
+      console.log(
+        `  Note: Scheduler may not find appointments to remind: ${schedulerError.message}`
+      );
     }
 
     console.log('\n=== TEST SUITE 4 PASSED ===\n');
@@ -502,7 +528,7 @@ async function runAllTests() {
       testReminderGeneration(),
     ]);
 
-    allPassed = results.every(r => r);
+    allPassed = results.every((r) => r);
   } catch (error) {
     console.error('Fatal error during tests:', error);
     allPassed = false;
@@ -518,7 +544,6 @@ async function runAllTests() {
       console.log('║  ✗ SOME TESTS FAILED                                       ║');
     }
     console.log('╚════════════════════════════════════════════════════════════╝');
-
   }
 
   return allPassed;
@@ -531,7 +556,7 @@ describe('OTP SMS & appointment flow (integration)', () => {
       const passed = await runAllTests();
       expect(passed).toBe(true);
     },
-    5 * 60 * 1000,
+    5 * 60 * 1000
   );
 });
 

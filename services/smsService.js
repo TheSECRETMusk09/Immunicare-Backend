@@ -4,23 +4,23 @@ const pool = require('../db');
 const logger = require('../config/logger');
 
 const SMS_PROVIDER = String(
-  process.env.SMS_GATEWAY || process.env.SMS_PROVIDER || 'textbee',
+  process.env.SMS_GATEWAY || process.env.SMS_PROVIDER || 'textbee'
 ).toLowerCase();
 
 const TEXTBEE_API_KEY = process.env.TEXTBEE_API_KEY || '';
 const TEXTBEE_DEVICE_ID = process.env.TEXTBEE_DEVICE_ID || '';
 const TEXTBEE_BASE_URL = 'https://api.textbee.dev/api/v1/gateway/devices';
 
-let smsLogSchemaCache = null;
-let smsLogSchemaPromise = null;
-let smsVerificationSchemaPromise = null;
+let logSchemaCache = null;
+let logSchemaPromise = null;
+let verifySchemaPromise = null;
 
-async function ensureSmsVerificationSchema() {
-  if (smsVerificationSchemaPromise) {
-    return smsVerificationSchemaPromise;
+async function ensureVerifySchema() {
+  if (verifySchemaPromise) {
+    return verifySchemaPromise;
   }
 
-  smsVerificationSchemaPromise = (async () => {
+  verifySchemaPromise = (async () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sms_verification_codes (
         id SERIAL PRIMARY KEY,
@@ -40,25 +40,46 @@ async function ensureSmsVerificationSchema() {
       )
     `);
 
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS purpose VARCHAR(64) NOT NULL DEFAULT 'verification'`);
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS user_id INTEGER NULL`);
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS guardian_id INTEGER NULL`);
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL`);
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`);
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 3`);
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS ip_address TEXT NULL`);
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS user_agent TEXT NULL`);
-    await pool.query(`ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP NULL`);
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS purpose VARCHAR(64) NOT NULL DEFAULT 'verification'`
+    );
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS user_id INTEGER NULL`
+    );
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS guardian_id INTEGER NULL`
+    );
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL`
+    );
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0`
+    );
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 3`
+    );
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS ip_address TEXT NULL`
+    );
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS user_agent TEXT NULL`
+    );
+    await pool.query(
+      `ALTER TABLE sms_verification_codes ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP NULL`
+    );
 
-    // Helpful indexes (idempotent)
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sms_verification_codes_phone ON sms_verification_codes (phone_number)`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sms_verification_codes_expires ON sms_verification_codes (expires_at)`);
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_sms_verification_codes_phone ON sms_verification_codes (phone_number)`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_sms_verification_codes_expires ON sms_verification_codes (expires_at)`
+    );
   })().catch((error) => {
-    smsVerificationSchemaPromise = null;
+    verifySchemaPromise = null;
     throw error;
   });
 
-  return smsVerificationSchemaPromise;
+  return verifySchemaPromise;
 }
 
 const SMS_CONFIG = {
@@ -76,7 +97,7 @@ const SMS_CONFIG = {
   },
 };
 
-const OTP_PURPOSE_MAP = {
+const PURPOSE_MAP = {
   verification: 'phone_verification',
   phone_verification: 'phone_verification',
   account_verification: 'phone_verification',
@@ -84,22 +105,33 @@ const OTP_PURPOSE_MAP = {
   login: 'login',
 };
 
-const OTP_MESSAGE_BY_PURPOSE = {
-  phone_verification: 'Immunicare: Your phone verification code is {code}. It expires in {minutes} minutes. Do not share this code.',
-  password_reset: 'Immunicare: Your password reset code is {code}. It expires in {minutes} minutes. Do not share this code.',
-  login: 'Immunicare: Your login verification code is {code}. It expires in {minutes} minutes. Do not share this code.',
+const OTP_MESSAGES = {
+  phone_verification:
+    'Immunicare: Your phone verification code is {code}. It expires in {minutes} minutes. Do not share this code.',
+  password_reset:
+    'Immunicare: Your password reset code is {code}. It expires in {minutes} minutes. Do not share this code.',
+  login:
+    'Immunicare: Your login verification code is {code}. It expires in {minutes} minutes. Do not share this code.',
 };
 
-const APPOINTMENT_MESSAGE_BY_TYPE = {
-  nextAppointment: 'Immunicare Reminder: {baby_name}\'s vaccination appointment is scheduled on {scheduledDate} at {location}. Please arrive 15 minutes early.',
-  nextAppointment24h: 'Immunicare: Hi {guardian_name}, this is a reminder that {baby_name}\'s vaccination appointment is TOMORROW ({scheduledDate}) at {time}. Location: {location}. Please arrive 15 minutes early.',
-  nextAppointment48h: 'Immunicare: Hi {guardian_name}, this is a reminder that {baby_name}\'s vaccination appointment is in 2 days ({scheduledDate}) at {time}. Location: {location}. Please arrive 15 minutes early.',
-  missedAppointment: 'Immunicare Alert: {baby_name}\'s vaccination appointment on {scheduledDate} was missed. Please contact the health center at your earliest convenience to reschedule. Location: {location}.',
-  scheduleDateChanged: 'Immunicare Alert: {baby_name}\'s vaccination appointment has been rescheduled to {newDate} at {time}. Location: {location}. Please take note of the new schedule.',
+const APPT_MESSAGES = {
+  nextAppointment:
+    "Immunicare Reminder: {baby_name}'s vaccination appointment is scheduled on {scheduledDate} at {location}. Please arrive 15 minutes early.",
+  nextAppointment24h:
+    "Immunicare: Hi {guardian_name}, this is a reminder that {baby_name}'s vaccination appointment is TOMORROW ({scheduledDate}) at {time}. Location: {location}. Please arrive 15 minutes early.",
+  nextAppointment48h:
+    "Immunicare: Hi {guardian_name}, this is a reminder that {baby_name}'s vaccination appointment is in 2 days ({scheduledDate}) at {time}. Location: {location}. Please arrive 15 minutes early.",
+  missedAppointment:
+    "Immunicare Alert: {baby_name}'s vaccination appointment on {scheduledDate} was missed. Please contact the health center at your earliest convenience to reschedule. Location: {location}.",
+  scheduleDateChanged:
+    "Immunicare Alert: {baby_name}'s vaccination appointment has been rescheduled to {newDate} at {time}. Location: {location}. Please take note of the new schedule.",
 };
 
 function normalizePurpose(purpose) {
-  return OTP_PURPOSE_MAP[String(purpose || '').toLowerCase()] || String(purpose || 'verification').toLowerCase();
+  return (
+    PURPOSE_MAP[String(purpose || '').toLowerCase()] ||
+    String(purpose || 'verification').toLowerCase()
+  );
 }
 
 function digitsOnly(value) {
@@ -112,17 +144,14 @@ function formatPhoneNumber(phoneNumber) {
     return null;
   }
 
-  // PH local: 09XXXXXXXXX
   if (digits.length === 11 && digits.startsWith('09')) {
     return `+63${digits.slice(1)}`;
   }
 
-  // PH intl without plus: 639XXXXXXXXX
   if (digits.length === 12 && digits.startsWith('639')) {
     return `+${digits}`;
   }
 
-  // Generic E.164-ish fallback if starts with country code and within length bounds
   if (digits.length >= 10 && digits.length <= 15) {
     return `+${digits}`;
   }
@@ -156,7 +185,7 @@ function generateResetToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-function getNormalizedLogMessage(message, messageType, status, error) {
+function getLogMessage(message, messageType, status, error) {
   const normalizedMessage = String(message ?? '').trim();
   if (normalizedMessage) {
     return normalizedMessage;
@@ -170,18 +199,18 @@ function getNormalizedLogMessage(message, messageType, status, error) {
   return `SMS ${normalizedType} ${status || 'logged'}`;
 }
 
-async function getSmsLogsSchema() {
-  if (smsLogSchemaCache) {
-    return smsLogSchemaCache;
+async function getLogsSchema() {
+  if (logSchemaCache) {
+    return logSchemaCache;
   }
 
-  if (!smsLogSchemaPromise) {
-    smsLogSchemaPromise = pool
+  if (!logSchemaPromise) {
+    logSchemaPromise = pool
       .query(
         `SELECT column_name
          FROM information_schema.columns
          WHERE table_schema = 'public'
-           AND table_name = 'sms_logs'`,
+           AND table_name = 'sms_logs'`
       )
       .then((result) => {
         if (result.rows.length === 0) {
@@ -192,19 +221,19 @@ async function getSmsLogsSchema() {
           columns: new Set(result.rows.map((row) => row.column_name)),
         };
 
-        smsLogSchemaCache = schema;
+        logSchemaCache = schema;
         return schema;
       })
       .catch((error) => {
-        smsLogSchemaCache = null;
+        logSchemaCache = null;
         throw error;
       })
       .finally(() => {
-        smsLogSchemaPromise = null;
+        logSchemaPromise = null;
       });
   }
 
-  return smsLogSchemaPromise;
+  return logSchemaPromise;
 }
 
 function maskPhone(phoneNumber) {
@@ -218,14 +247,14 @@ function maskPhone(phoneNumber) {
 function buildOtpMessage(purpose, code) {
   const normalizedPurpose = normalizePurpose(purpose);
   const template =
-    OTP_MESSAGE_BY_PURPOSE[normalizedPurpose] ||
+    OTP_MESSAGES[normalizedPurpose] ||
     'Your Immunicare verification code is {code}. It expires in {minutes} minutes.';
   return template
     .replace('{code}', String(code))
     .replace('{minutes}', String(SMS_CONFIG.otp.expiryMinutes));
 }
 
-async function sendViaTextBee(phoneNumber, message) {
+async function sendTextBee(phoneNumber, message) {
   if (!TEXTBEE_API_KEY) {
     throw new Error('TEXTBEE_API_KEY is not configured');
   }
@@ -311,12 +340,12 @@ async function logSms({
   error,
 }) {
   try {
-    const schema = await getSmsLogsSchema();
+    const schema = await getLogsSchema();
     if (!schema) {
       return;
     }
 
-    const normalizedMessage = getNormalizedLogMessage(message, messageType, status, error);
+    const normalizedMessage = getLogMessage(message, messageType, status, error);
     const columns = ['phone_number'];
     const values = [phoneNumber];
     const appendColumn = (columnName, value) => {
@@ -340,10 +369,13 @@ async function logSms({
     appendColumn('failed_at', status === 'failed' ? new Date() : null);
 
     const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
-    await pool.query(`INSERT INTO sms_logs (${columns.join(', ')}) VALUES (${placeholders})`, values);
+    await pool.query(
+      `INSERT INTO sms_logs (${columns.join(', ')}) VALUES (${placeholders})`,
+      values
+    );
   } catch (logError) {
     if (logError?.code === '42703' || logError?.code === '42P01') {
-      smsLogSchemaCache = null;
+      logSchemaCache = null;
     }
 
     logger.warn('Failed to write sms_logs entry', {
@@ -352,16 +384,16 @@ async function logSms({
   }
 }
 
-async function checkOtpCooldown(phoneNumber, purpose) {
+async function checkCooldown(phoneNumber, purpose) {
   try {
-    await ensureSmsVerificationSchema();
+    await ensureVerifySchema();
     const result = await pool.query(
       `SELECT created_at
        FROM sms_verification_codes
        WHERE phone_number = $1 AND purpose = $2
        ORDER BY created_at DESC
        LIMIT 1`,
-      [phoneNumber, purpose],
+      [phoneNumber, purpose]
     );
 
     if (result.rows.length === 0) {
@@ -379,19 +411,18 @@ async function checkOtpCooldown(phoneNumber, purpose) {
 
     return { allowed: true, remainingSeconds: 0 };
   } catch {
-    // Fail-open for OTP send UX if metadata table issues exist
     return { allowed: true, remainingSeconds: 0 };
   }
 }
 
-async function getRateLimitCounts(phoneNumber) {
+async function getRateCounts(phoneNumber) {
   try {
     const hourlyResult = await pool.query(
       `SELECT COUNT(*)::int AS count
        FROM sms_logs
        WHERE phone_number = $1
          AND created_at >= NOW() - INTERVAL '1 hour'`,
-      [phoneNumber],
+      [phoneNumber]
     );
 
     const dailyResult = await pool.query(
@@ -399,7 +430,7 @@ async function getRateLimitCounts(phoneNumber) {
        FROM sms_logs
        WHERE phone_number = $1
          AND created_at >= NOW() - INTERVAL '24 hours'`,
-      [phoneNumber],
+      [phoneNumber]
     );
 
     return {
@@ -411,7 +442,7 @@ async function getRateLimitCounts(phoneNumber) {
   }
 }
 
-async function upsertOtpCode({
+async function upsertOtp({
   phoneNumber,
   code,
   purpose,
@@ -422,7 +453,7 @@ async function upsertOtpCode({
 }) {
   const expiresAt = new Date(Date.now() + SMS_CONFIG.otp.expiryMinutes * 60 * 1000);
 
-  await ensureSmsVerificationSchema();
+  await ensureVerifySchema();
   await pool.query(
     `INSERT INTO sms_verification_codes
       (phone_number, code, purpose, user_id, guardian_id, expires_at, attempts, max_attempts, ip_address, user_agent)
@@ -451,7 +482,7 @@ async function upsertOtpCode({
       SMS_CONFIG.otp.maxAttempts,
       ipAddress || null,
       userAgent || null,
-    ],
+    ]
   );
 
   return {
@@ -485,7 +516,7 @@ async function sendSMS(phoneNumber, message, messageType = 'general', metadata =
     throw new Error(error);
   }
 
-  const { perHour, perDay } = await getRateLimitCounts(formattedPhone);
+  const { perHour, perDay } = await getRateCounts(formattedPhone);
   if (perHour >= SMS_CONFIG.rateLimit.maxPerHour) {
     const error = 'SMS hourly limit reached';
     await logSms({
@@ -518,9 +549,8 @@ async function sendSMS(phoneNumber, message, messageType = 'general', metadata =
     let providerResult;
 
     if (SMS_PROVIDER === 'textbee' && TEXTBEE_API_KEY) {
-      providerResult = await sendViaTextBee(formattedPhone, message);
+      providerResult = await sendTextBee(formattedPhone, message);
     } else {
-      // Development/log mode fallback
       providerResult = {
         provider: 'log',
         messageId: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -548,9 +578,7 @@ async function sendSMS(phoneNumber, message, messageType = 'general', metadata =
       raw: providerResult.raw,
     };
   } catch (error) {
-    const providerStatus = Number.isFinite(error?.response?.status)
-      ? error.response.status
-      : null;
+    const providerStatus = Number.isFinite(error?.response?.status) ? error.response.status : null;
     const providerStatusText = error?.response?.statusText || null;
     const providerErrorPayload = error?.response?.data;
     let providerErrorDetail = null;
@@ -572,9 +600,7 @@ async function sendSMS(phoneNumber, message, messageType = 'general', metadata =
       status: 'failed',
       provider: SMS_PROVIDER,
       metadata,
-      error: providerStatus
-        ? `${error.message} (status ${providerStatus})`
-        : error.message,
+      error: providerStatus ? `${error.message} (status ${providerStatus})` : error.message,
     });
 
     logger.error('SMS send failed', {
@@ -601,7 +627,7 @@ async function sendOTP(phoneNumber, purpose = 'verification', metadata = {}) {
   }
 
   const formattedPhone = validation.formattedNumber;
-  const cooldown = await checkOtpCooldown(formattedPhone, normalizedPurpose);
+  const cooldown = await checkCooldown(formattedPhone, normalizedPurpose);
   if (!cooldown.allowed) {
     return {
       success: false,
@@ -611,7 +637,7 @@ async function sendOTP(phoneNumber, purpose = 'verification', metadata = {}) {
   }
 
   const code = generateVerificationCode(SMS_CONFIG.otp.length);
-  const otpMeta = await upsertOtpCode({
+  const otpMeta = await upsertOtp({
     phoneNumber: formattedPhone,
     code,
     purpose: normalizedPurpose,
@@ -658,7 +684,7 @@ async function verifyOTP(phoneNumber, code, purpose = 'verification') {
 
   const formattedPhone = validation.formattedNumber;
 
-  await ensureSmsVerificationSchema();
+  await ensureVerifySchema();
   const result = await pool.query(
     `SELECT id, code, attempts, max_attempts, user_id, guardian_id, expires_at
      FROM sms_verification_codes
@@ -666,7 +692,7 @@ async function verifyOTP(phoneNumber, code, purpose = 'verification') {
        AND purpose = $2
      ORDER BY created_at DESC
      LIMIT 1`,
-    [formattedPhone, normalizedPurpose],
+    [formattedPhone, normalizedPurpose]
   );
 
   if (result.rows.length === 0) {
@@ -696,10 +722,9 @@ async function verifyOTP(phoneNumber, code, purpose = 'verification') {
   }
 
   if (String(otp.code) !== String(code)) {
-    await pool.query(
-      'UPDATE sms_verification_codes SET attempts = attempts + 1 WHERE id = $1',
-      [otp.id],
-    );
+    await pool.query('UPDATE sms_verification_codes SET attempts = attempts + 1 WHERE id = $1', [
+      otp.id,
+    ]);
 
     const attemptsRemaining = Math.max(0, otp.max_attempts - (otp.attempts + 1));
     return {
@@ -711,7 +736,7 @@ async function verifyOTP(phoneNumber, code, purpose = 'verification') {
 
   await pool.query(
     'UPDATE sms_verification_codes SET verified_at = CURRENT_TIMESTAMP WHERE id = $1',
-    [otp.id],
+    [otp.id]
   );
 
   return {
@@ -735,15 +760,23 @@ function formatReminderDateLabel(dateInput) {
 }
 
 function createAppointmentReminderMessage(vaccineType, scheduledDate, options = {}) {
-  const { hoursUntil = 48, childName = 'Your child', guardianName = '', location = 'Barangay San Nicolas Health Center' } = options;
-  const normalizedVaccineType = String(vaccineType || 'vaccination').trim();
+  const {
+    hoursUntil = 48,
+    childName = 'Your child',
+    guardianName = '',
+    location = 'Barangay San Nicolas Health Center',
+  } = options;
+  String(vaccineType || 'vaccination').trim();
   const dateObj = scheduledDate ? new Date(scheduledDate) : null;
-  const dateLabel = dateObj ? dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'your scheduled date';
-  const timeLabel = dateObj ? dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
+  const dateLabel = dateObj
+    ? dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+    : 'your scheduled date';
+  const timeLabel = dateObj
+    ? dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    : '';
 
-  // Use different message template based on hours until appointment
   if (hoursUntil <= 24) {
-    return APPOINTMENT_MESSAGE_BY_TYPE.nextAppointment24h
+    return APPT_MESSAGES.nextAppointment24h
       .replace('{guardian_name}', guardianName || 'Guardian')
       .replace('{baby_name}', childName)
       .replace('{scheduledDate}', dateLabel)
@@ -751,7 +784,7 @@ function createAppointmentReminderMessage(vaccineType, scheduledDate, options = 
       .replace('{location}', location);
   }
 
-  return APPOINTMENT_MESSAGE_BY_TYPE.nextAppointment48h
+  return APPT_MESSAGES.nextAppointment48h
     .replace('{guardian_name}', guardianName || 'Guardian')
     .replace('{baby_name}', childName)
     .replace('{scheduledDate}', dateLabel)
@@ -764,7 +797,7 @@ function createMissedAppointmentMessage(vaccineType, scheduledDate, options = {}
   const normalizedVaccineType = String(vaccineType || 'vaccination').trim();
   const dateLabel = formatReminderDateLabel(scheduledDate);
 
-  return APPOINTMENT_MESSAGE_BY_TYPE.missedAppointment
+  return APPT_MESSAGES.missedAppointment
     .replace('{baby_name}', childName)
     .replace('{vaccineType}', normalizedVaccineType)
     .replace('{scheduledDate}', dateLabel)
@@ -772,12 +805,20 @@ function createMissedAppointmentMessage(vaccineType, scheduledDate, options = {}
 }
 
 function createScheduleDateChangedMessage(scheduledDate, options = {}) {
-  const { childName = 'Your child', location = 'Barangay San Nicolas Health Center', time = '' } = options;
+  const {
+    childName = 'Your child',
+    location = 'Barangay San Nicolas Health Center',
+    time = '',
+  } = options;
   const dateObj = scheduledDate ? new Date(scheduledDate) : null;
-  const dateLabel = dateObj ? dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'your scheduled date';
-  const timeLabel = time || (dateObj ? dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '');
+  const dateLabel = dateObj
+    ? dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+    : 'your scheduled date';
+  const timeLabel =
+    time ||
+    (dateObj ? dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '');
 
-  return APPOINTMENT_MESSAGE_BY_TYPE.scheduleDateChanged
+  return APPT_MESSAGES.scheduleDateChanged
     .replace('{baby_name}', childName)
     .replace('{newDate}', dateLabel)
     .replace('{time}', timeLabel)
@@ -805,7 +846,8 @@ async function sendAppointmentReminder(appointment) {
       'vaccination';
 
     const hoursUntil = appointment?.hoursUntil || appointment?.hours_until || 48;
-    const location = appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
+    const location =
+      appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
 
     const scheduledDateSource =
       appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
@@ -842,7 +884,6 @@ async function sendAppointmentReminder(appointment) {
 async function sendMissedAppointmentNotification(appointment) {
   const phoneNumber = appointment?.phoneNumber || appointment?.guardian_phone;
 
-  // Defensive check for null/undefined phone number
   if (!phoneNumber) {
     logger.error('sendMissedAppointmentNotification called with no phone number', {
       appointmentId: appointment?.appointmentId || appointment?.appointment_id,
@@ -883,7 +924,8 @@ async function sendMissedAppointmentNotification(appointment) {
   const scheduledDateSource =
     appointment?.scheduledDate || appointment?.scheduled_date || appointment?.date;
 
-  const location = appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
+  const location =
+    appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
 
   const message = createMissedAppointmentMessage(vaccineType, scheduledDateSource, {
     childName,
@@ -960,10 +1002,10 @@ async function sendVaccinationReminder(payload) {
   const dueDateSource = payload?.dueDate || payload?.date;
   const dueLabel = dueDateSource
     ? new Date(dueDateSource).toLocaleDateString('en-US', {
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
-    })
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      })
     : 'soon';
 
   const message = `Immunicare Reminder: ${childName} is due for ${vaccineName} on ${dueLabel}. Please coordinate with your health center at Barangay San Nicolas Health Center to schedule an appointment.`;
@@ -981,31 +1023,20 @@ async function sendVaccinationReminder(payload) {
 }
 
 async function sendVerificationSMS(phoneNumber, code) {
-  return sendSMS(
-    phoneNumber,
-    buildOtpMessage('phone_verification', code),
-    'verification',
-    { purpose: 'phone_verification' },
-  );
+  return sendSMS(phoneNumber, buildOtpMessage('phone_verification', code), 'verification', {
+    purpose: 'phone_verification',
+  });
 }
 
 async function sendPasswordResetSMS(phoneNumber, code) {
-  return sendSMS(
-    phoneNumber,
-    buildOtpMessage('password_reset', code),
-    'password_reset',
-    { purpose: 'password_reset' },
-  );
+  return sendSMS(phoneNumber, buildOtpMessage('password_reset', code), 'password_reset', {
+    purpose: 'password_reset',
+  });
 }
 
 async function sendWelcomeSMS(phoneNumber, name) {
   const message = `Welcome to Immunicare, ${name}! Your account has been successfully verified. You can now log in to manage your child's vaccination schedule at the Barangay San Nicolas Health Center.`;
-  return sendSMS(
-    phoneNumber,
-    message,
-    'welcome_notification',
-    { purpose: 'welcome' },
-  );
+  return sendSMS(phoneNumber, message, 'welcome_notification', { purpose: 'welcome' });
 }
 
 async function sendScheduleDateChangedNotification(appointment) {
@@ -1043,7 +1074,8 @@ async function sendScheduleDateChangedNotification(appointment) {
   const scheduledDateSource =
     appointment?.scheduledDate || appointment?.scheduled_date || appointment?.newScheduledDate;
 
-  const location = appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
+  const location =
+    appointment?.location || appointment?.clinicName || 'Barangay San Nicolas Health Center';
 
   const time = appointment?.time || appointment?.appointmentTime || '';
 
@@ -1081,17 +1113,17 @@ async function sendScheduleDateChangedNotification(appointment) {
   }
 }
 
-// Check if a notification was already sent for this appointment + scheduled_date combination
 async function hasNotificationBeenSent(appointmentId, scheduledDate, notificationType) {
   try {
-    const schema = await getSmsLogsSchema();
+    const schema = await getLogsSchema();
     if (!schema) {
       return false;
     }
 
-    const dateStr = scheduledDate instanceof Date
-      ? scheduledDate.toISOString().split('T')[0]
-      : String(scheduledDate).split('T')[0];
+    const dateStr =
+      scheduledDate instanceof Date
+        ? scheduledDate.toISOString().split('T')[0]
+        : String(scheduledDate).split('T')[0];
 
     const result = await pool.query(
       `SELECT id FROM sms_logs
@@ -1099,7 +1131,7 @@ async function hasNotificationBeenSent(appointmentId, scheduledDate, notificatio
          AND metadata->>'appointmentId' = $2
          AND DATE(sent_at) = $3
        LIMIT 1`,
-      [notificationType, String(appointmentId), dateStr],
+      [notificationType, String(appointmentId), dateStr]
     );
 
     return result.rows.length > 0;
@@ -1117,8 +1149,7 @@ async function hasNotificationBeenSent(appointmentId, scheduledDate, notificatio
 function getSMSConfigStatus() {
   return {
     provider: SMS_PROVIDER,
-    configured:
-      SMS_PROVIDER === 'log' || (SMS_PROVIDER === 'textbee' && Boolean(TEXTBEE_API_KEY)),
+    configured: SMS_PROVIDER === 'log' || (SMS_PROVIDER === 'textbee' && Boolean(TEXTBEE_API_KEY)),
     textbee: {
       apiKeyConfigured: Boolean(TEXTBEE_API_KEY),
       deviceIdConfigured: Boolean(TEXTBEE_DEVICE_ID),
@@ -1132,14 +1163,14 @@ function getSMSConfigStatus() {
 const smsService = {
   SMS_CONFIG,
 
-  // Canonical API
   sendSMS,
   sendOTP,
   verifyOTP,
 
-  // Backward-compatible aliases
   sendSms: sendSMS,
-  sendOtp: (phoneNumber, _otpFromCaller) => sendOTP(phoneNumber, 'verification'),
+  sendOtp: (phoneNumber) => {
+    return sendOTP(phoneNumber, 'verification');
+  },
 
   validateAndFormatPhoneNumber,
   formatPhoneNumber,

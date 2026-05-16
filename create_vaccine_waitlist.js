@@ -1,8 +1,8 @@
 /**
  * Script to create vaccine_waitlist and related tables
  */
-const fs = require('fs');
-const path = require('path');
+require('fs');
+require('path');
 const pool = require('./db');
 
 async function createVaccineWaitlistTable() {

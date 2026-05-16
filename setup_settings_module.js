@@ -3,7 +3,7 @@
  * Initializes the settings management system by running the schema and verifying setup
  */
 
-const { execSync } = require('child_process');
+require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -13,7 +13,8 @@ console.log('=== Settings Module Setup ===\n');
 console.log('Step 1: Checking PostgreSQL connection...');
 try {
   const pool = require('./db');
-  pool.query('SELECT NOW()')
+  pool
+    .query('SELECT NOW()')
     .then(() => {
       console.log('✓ PostgreSQL connection successful\n');
       runSchema();
@@ -45,7 +46,8 @@ function runSchema() {
     const pool = require('./db');
     const schema = fs.readFileSync(schemaPath, 'utf8');
 
-    pool.query(schema)
+    pool
+      .query(schema)
       .then(() => {
         console.log('✓ Settings schema applied successfully\n');
         verifySetup();
@@ -67,14 +69,17 @@ function verifySetup() {
   const pool = require('./db');
 
   // Check if tables exist
-  pool.query(`
+  pool
+    .query(
+      `
     SELECT table_name 
     FROM information_schema.tables 
     WHERE table_schema = 'public' 
     AND table_name IN ('user_settings', 'settings_audit_log')
-  `)
+  `
+    )
     .then((result) => {
-      const tables = result.rows.map(row => row.table_name);
+      const tables = result.rows.map((row) => row.table_name);
 
       if (tables.includes('user_settings') && tables.includes('settings_audit_log')) {
         console.log('✓ All required tables exist');
@@ -91,7 +96,7 @@ function verifySetup() {
       }
     })
     .then((result) => {
-      const indexes = result.rows.map(row => row.indexname);
+      const indexes = result.rows.map((row) => row.indexname);
       console.log(`✓ Found ${indexes.length} indexes`);
 
       // Check if triggers exist
@@ -102,7 +107,7 @@ function verifySetup() {
       `);
     })
     .then((result) => {
-      const triggers = result.rows.map(row => row.trigger_name);
+      const triggers = result.rows.map((row) => row.trigger_name);
       console.log(`✓ Found ${triggers.length} triggers`);
 
       // Check if view exists

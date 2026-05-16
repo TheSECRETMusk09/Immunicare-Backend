@@ -11,7 +11,7 @@ async function test() {
   // First, login to get a token
   const loginData = JSON.stringify({
     email: 'guardian@test.com',
-    password: 'password123'
+    password: 'password123',
   });
 
   const loginOptions = {
@@ -21,11 +21,11 @@ async function test() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(loginData)
-    }
+      'Content-Length': Buffer.byteLength(loginData),
+    },
   };
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const loginReq = http.request(loginOptions, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
@@ -74,11 +74,11 @@ async function testInfantsEndpoint(token, guardianId) {
     path: `/api/infants/guardian/${guardianId}`,
     method: 'GET',
     headers: {
-      Authorization: `Bearer ${token}`
-    }
+      Authorization: `Bearer ${token}`,
+    },
   };
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const req = http.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
@@ -120,10 +120,10 @@ async function testInfantsWithExistingGuardian() {
         port: 5000,
         path: `/api/infants/guardian/${guardianId}`,
         method: 'GET',
-        headers: {}
+        headers: {},
       };
 
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve) => {
         const req = http.request(options, (res) => {
           let data = '';
           res.on('data', (chunk) => (data += chunk));

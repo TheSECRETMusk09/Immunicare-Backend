@@ -1,7 +1,5 @@
 /**
- * Critical Stock Monitor Service
- * Canonical schema aligned (admin/healthcare_facilities/facility_id)
- * Handles low/critical stock synchronization + alert surfacing.
+ * Critical stock monitor and alert sync.
  */
 
 const pool = require('../db');

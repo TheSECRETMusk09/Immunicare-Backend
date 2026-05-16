@@ -1,6 +1,5 @@
 /**
- * Email Service
- * Handles sending transactional emails for authentication
+ * Transactional email helpers.
  */
 
 const logger = require('../config/logger');

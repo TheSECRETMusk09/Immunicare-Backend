@@ -4,7 +4,6 @@ const jwt = require('jsonwebtoken');
 const pool = require('../db');
 const refreshTokenService = require('../services/refreshTokenService');
 
-// New services
 const validation = require('../utils/validation');
 const passwordHistoryService = require('../services/passwordHistoryService');
 const passwordResetService = require('../services/passwordResetService');
@@ -122,12 +121,10 @@ const findUserForLogin = async (identifier) => {
   return null;
 };
 
-// Handle OPTIONS requests for all auth routes
 router.options('*', (req, res) => {
   res.status(204).send();
 });
 
-// Rate limiters
 const loginRateLimiter = rateLimiter.createLoginRateLimiter();
 const forgotPasswordRateLimiter = rateLimiter.createForgotPasswordRateLimiter();
 const registrationRateLimiter = rateLimiter.createRegistrationRateLimiter();
@@ -311,9 +308,6 @@ const findLatestPendingRegistration = async (db, criteria = {}) => {
  *   description: Authentication endpoints
  */
 
-// ==================== VALIDATION MIDDLEWARE ====================
-
-// Enhanced input validation middleware
 const validateLoginInput = (req, res, next) => {
   const { username, email, password } = req.body;
 
@@ -352,7 +346,6 @@ const validateLoginInput = (req, res, next) => {
     });
   }
 
-  // Sanitize input
   if (username) {
     req.body.username = username.replace(/[<>"'%\\]/g, '');
     if (req.body.username.length > 255) {
@@ -380,7 +373,6 @@ const validateLoginInput = (req, res, next) => {
     });
   }
 
-  // Check for suspicious patterns
   const suspiciousPatterns = [
     /\b(?:SELECT|INSERT|UPDATE|DELETE|DROP|UNION|--|;)\b/i,
     /\b(?:OR\s+1=1|'OR'1'='1)\b/i,
@@ -398,8 +390,6 @@ const validateLoginInput = (req, res, next) => {
 
   next();
 };
-
-// ==================== GUARDIAN REGISTRATION ====================
 
 /**
  * @swagger
@@ -476,7 +466,6 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       infantName: synthesizedInfantName,
     };
 
-    // Validate input
     const validationResult = validation.validateGuardianRegistration(registrationPayload);
     if (!validationResult.isValid) {
       const normalizedFieldErrors = Object.entries(validationResult.fields || {}).reduce(
@@ -522,7 +511,6 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       infantDob: infantDob || null,
     };
 
-    // Check if email already exists
     const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [
       email,
     ]);
@@ -545,14 +533,11 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       });
     }
 
-    // Generate OTP using centralized service to avoid mismatches between
-    // persisted pending registration OTP and delivered SMS OTP.
     const otp = smsService.generateVerificationCode();
     const expiresAt = new Date(
       Date.now() + smsService.SMS_CONFIG.otp.expiryMinutes * 60 * 1000,
     );
 
-    // Format phone number to E.164 for consistent storage and SMS sending
     const formattedPhone = smsService.formatPhoneNumber(phone);
     if (!formattedPhone) {
       return res.status(400).json({
@@ -606,14 +591,12 @@ router.post('/register/guardian', registrationRateLimiter, async (req, res) => {
       );
     }
 
-    // Store pending registration with formatted phone number
     await pool.query(
       `INSERT INTO pending_registrations (registration_data, otp, phone_number, expires_at)
        VALUES ($1, $2, $3, $4)`,
       [JSON.stringify(normalizedRegistrationData), otp, formattedPhone, expiresAt],
     );
 
-    // Send OTP via SMS using the formatted phone number
     try {
       await smsService.sendVerificationSMS(formattedPhone, otp);
     } catch (smsError) {
@@ -827,7 +810,6 @@ router.post(
 
       const { phone, otp } = req.body;
 
-      // Format phone number to E.164 for consistent verification
       const formattedPhone = smsService.formatPhoneNumber(phone);
       if (!formattedPhone) {
         return res.status(400).json({
@@ -836,7 +818,6 @@ router.post(
         });
       }
 
-      // 1. Verify OTP from pending registrations
       const pendingResult = await client.query(
         `SELECT * FROM pending_registrations
        WHERE phone_number = $1 AND otp = $2 AND expires_at > NOW()
@@ -870,13 +851,10 @@ router.post(
         lastName,
       });
 
-      // 3. Create User
       const hashedPassword = await bcrypt.hash(password, 10);
-      // Get guardian role ID
       const roleResult = await client.query('SELECT id FROM roles WHERE name = \'guardian\'');
       const roleId = roleResult.rows[0]?.id;
 
-      // Get or create default clinic for guardians
       let clinicId = null;
       const clinicRes = await client.query('SELECT id FROM clinics WHERE name = \'Guardian Portal\' LIMIT 1');
       if (clinicRes.rows.length > 0) {
@@ -979,8 +957,6 @@ router.post('/verify-email', async (req, res) => {
   }
 });
 
-// ==================== LOGIN ====================
-
 /**
  * @swagger
  * /api/auth/login:
@@ -1019,7 +995,6 @@ router.post(
       const user = await findUserForLogin(loginIdentifier);
 
       if (!user) {
-        // Log failed attempt (optional - may fail if table doesn't exist)
         try {
           await securityEventService.logLoginFailed(
             loginIdentifier,
@@ -1029,7 +1004,6 @@ router.post(
           );
           await checkBruteForce(req, false);
         } catch (logError) {
-          // Continue even if logging fails
           console.warn('Could not log failed login:', logError.message);
         }
 
@@ -1062,7 +1036,6 @@ router.post(
         });
       }
 
-      // For guardian users, sync force_password_change with must_change_password from guardians table
       if (canonicalRole === CANONICAL_ROLES.GUARDIAN && user.guardian_id) {
         const guardianResult = await pool.query(
           'SELECT must_change_password, is_password_set FROM guardians WHERE id = $1',
@@ -1072,15 +1045,12 @@ router.post(
         if (guardianResult.rows.length > 0) {
           const { must_change_password, is_password_set } = guardianResult.rows[0];
 
-          // If is_password_set is true and force_password_change is true in users,
-          // but must_change_password is false in guardians, sync the users table
           if (is_password_set && user.force_password_change && !must_change_password) {
             await pool.query('UPDATE users SET force_password_change = false WHERE id = $1', [
               user.id,
             ]);
             user.force_password_change = false;
           } else if (!is_password_set && !user.force_password_change) {
-            // This is a new guardian who hasn't set password yet
             await pool.query('UPDATE guardians SET must_change_password = true WHERE id = $1', [
               user.guardian_id,
             ]);
@@ -1088,9 +1058,7 @@ router.post(
         }
       }
 
-      // Check if user is active
       if (!user.is_active) {
-        // Log failed attempt
         try {
           await securityEventService.logLoginFailed(
             loginIdentifier,
@@ -1109,11 +1077,9 @@ router.post(
         });
       }
 
-      // Verify password
       const isValidPassword = await bcrypt.compare(password, user.password_hash);
 
       if (!isValidPassword) {
-        // Log failed attempt
         try {
           await securityEventService.logLoginFailed(
             loginIdentifier,
@@ -1132,13 +1098,9 @@ router.post(
         });
       }
 
-      // Canonical two-role runtime model
       const roleType = canonicalRole;
-
-      // Update last login
       await pool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
 
-      // Generate tokens
       const tokenPayload = {
         id: user.id,
         username: user.username,
@@ -1172,7 +1134,6 @@ router.post(
         ...BARANGAY_SCOPE,
       });
 
-      // Store refresh token
       await refreshTokenService.storeRefreshToken(
         user.id,
         refreshToken,
@@ -1180,15 +1141,12 @@ router.post(
         req.ip?.substring(0, 255) || 'Unknown',
       );
 
-      // Create session
       await sessionService.createSession(user.id, accessToken, req.ip, req.get('User-Agent'), {
         browser: req.get('User-Agent'),
       });
 
-      // Clear failed attempts on success
       await checkBruteForce(req, true);
 
-      // Log successful login
       try {
         await securityEventService.logLoginSuccess(user.id, req.ip, req.get('User-Agent'), {
           role: canonicalRole,
@@ -1196,11 +1154,9 @@ router.post(
           clinic: user.clinic_name,
         });
       } catch (logError) {
-        // Silently ignore logging errors - login still successful
         console.warn('Could not log login success event:', logError.message);
       }
 
-      // Log admin login if applicable
       if (canonicalRole === CANONICAL_ROLES.SYSTEM_ADMIN) {
         try {
           await adminActivityService.logLogin(
@@ -1215,12 +1171,10 @@ router.post(
             req.get('User-Agent'),
           );
         } catch (error) {
-          // Suppress admin activity logging errors in development mode
           console.warn('Could not log admin activity:', error.message);
         }
       }
 
-      // Build response
       const userResponse = {
         id: user.id,
         username: user.username,
@@ -1244,7 +1198,6 @@ router.post(
         userResponse.guardian_id = user.guardian_id;
       }
 
-      // Set cookies
       const accessCookieOptions = getAccessTokenCookieOptions();
       const refreshCookieOptions = getRefreshTokenCookieOptions();
 
@@ -1276,8 +1229,6 @@ router.post(
     }
   },
 );
-
-// ==================== FORGOT PASSWORD ====================
 
 /**
  * @swagger
@@ -1330,8 +1281,6 @@ router.post('/forgot-password', forgotPasswordRateLimiter, async (req, res) => {
   }
 });
 
-// ==================== DUAL-OPTION FORGOT PASSWORD (SMS or Email) ====================
-
 /**
  * POST /api/auth/forgot-password/otp
  * Request password reset with OTP via SMS or Email
@@ -1369,15 +1318,12 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
         [email],
       );
     } else {
-      // For SMS, find user by phone number (check both users.contact and guardians.phone)
       const formattedPhone = normalizePhoneDigits(phone);
-      // Try to find user by contact phone
       userResult = await pool.query(
         `SELECT id, username, email, contact, guardian_id FROM users WHERE ${USER_CONTACT_DIGITS_SQL} = $1 AND is_active = true`,
         [formattedPhone],
       );
 
-      // If not found by contact phone, try to find by guardian phone
       if (userResult.rows.length === 0) {
         const guardianResult = await pool.query(
           `SELECT id FROM guardians WHERE ${GUARDIAN_PHONE_DIGITS_SQL} = $1`,
@@ -1394,7 +1340,6 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
     }
 
     if (userResult.rows.length === 0) {
-      // Don't reveal that email doesn't exist
       return res.json({
         message: 'If the email exists, an OTP will be sent',
         code: 'OTP_SENT',
@@ -1403,13 +1348,11 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
 
     const user = userResult.rows[0];
 
-    // Generate OTP using centralized service
     const otp = smsService.generateVerificationCode();
     const expiresAt = new Date(
       Date.now() + smsService.SMS_CONFIG.otp.expiryMinutes * 60 * 1000,
     );
 
-    // Store OTP
     await pool.query(
       `INSERT INTO password_reset_otps (user_id, otp, method, expires_at, ip_address, user_agent)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -1417,12 +1360,10 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
     );
 
     if (method === 'email') {
-      // Send OTP via email using Resend
       try {
         await resendEmailService.sendOTPEmail(user.email, otp, 'password_reset');
       } catch (emailError) {
         console.error('Failed to send OTP email:', emailError.message);
-        // Try fallback to nodemailer
         try {
           await emailService.sendEmailVerificationEmail(user.email, otp, user.username);
         } catch (fallbackError) {
@@ -1430,10 +1371,8 @@ router.post('/forgot-password/otp', forgotPasswordRateLimiter, async (req, res) 
         }
       }
     } else if (method === 'sms') {
-      // Send OTP via SMS
       let userPhone = user.contact;
-
-      // Try to get phone from guardian record
+      // Try guardian record if user.contact is empty
       if (!userPhone && user.guardian_id) {
         const guardianResult = await pool.query('SELECT phone FROM guardians WHERE id = $1', [
           user.guardian_id,
@@ -1508,13 +1447,11 @@ router.post('/forgot-password/verify-otp', async (req, res) => {
       }
 
       const formattedPhone = normalizePhoneDigits(phone);
-      // Try to find user by contact phone
       userResult = await pool.query(
         `SELECT id FROM users WHERE ${USER_CONTACT_DIGITS_SQL} = $1 AND is_active = true`,
         [formattedPhone],
       );
 
-      // If not found by contact phone, try to find by guardian phone
       if (userResult.rows.length === 0) {
         const guardianResult = await pool.query(
           `SELECT id FROM guardians WHERE ${GUARDIAN_PHONE_DIGITS_SQL} = $1`,
@@ -1719,7 +1656,7 @@ router.post('/forgot-password/reset-with-token', async (req, res) => {
   }
 });
 
-// ==================== RESET PASSWORD ====================
+// Reset password
 
 /**
  * @swagger
@@ -1786,7 +1723,7 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
-// ==================== CHANGE PASSWORD ====================
+// Change password
 
 /**
  * @swagger
@@ -1974,7 +1911,7 @@ router.post('/change-password', async (req, res) => {
   }
 });
 
-// ==================== LOGOUT ====================
+// Logout
 
 router.post('/logout', async (req, res) => {
   try {
@@ -2017,7 +1954,7 @@ router.post('/logout', async (req, res) => {
   }
 });
 
-// ==================== TOKEN REFRESH ====================
+// Token refresh
 
 router.post('/refresh', async (req, res) => {
   try {
@@ -2118,7 +2055,7 @@ router.post('/refresh', async (req, res) => {
   }
 });
 
-// ==================== SESSION VERIFICATION ====================
+// Session verification
 
 router.get('/verify', async (req, res) => {
   // Prevent caching for session verification endpoint
@@ -2158,7 +2095,7 @@ router.get('/verify', async (req, res) => {
       throw jwtError;
     }
 
-    const result = await pool.query(
+    const result = await pool.queryWithTimeout(
       `SELECT u.id, u.username, u.role_id, u.clinic_id, u.guardian_id, u.last_login, u.email,
               u.force_password_change, r.name as role_name, r.display_name, c.name as clinic_name
        FROM users u
@@ -2166,6 +2103,7 @@ router.get('/verify', async (req, res) => {
        LEFT JOIN clinics c ON u.clinic_id = c.id
        WHERE u.id = $1 AND u.is_active = true`,
       [decoded.id],
+      5000,
     );
 
     if (result.rows.length === 0) {
@@ -2205,11 +2143,9 @@ router.get('/verify', async (req, res) => {
     }
 
     // Session bookkeeping should never invalidate an otherwise valid session.
-    try {
-      await sessionService.updateSessionActivity(token);
-    } catch (sessionError) {
+    sessionService.updateSessionActivity(token).catch((sessionError) => {
       console.warn('Session activity update failed during verify:', sessionError.message);
-    }
+    });
 
     res.json({
       authenticated: true,
@@ -2227,7 +2163,7 @@ router.get('/verify', async (req, res) => {
   }
 });
 
-// ==================== SESSION MANAGEMENT ====================
+// Session management
 
 router.get('/sessions', async (req, res) => {
   try {
@@ -2346,7 +2282,7 @@ router.delete('/sessions', async (req, res) => {
   }
 });
 
-// ==================== TEST ENDPOINT ====================
+// Test endpoint
 
 router.get('/test', (req, res) => {
   res.json({

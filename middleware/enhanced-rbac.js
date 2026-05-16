@@ -1,63 +1,79 @@
-const jwt = require('jsonwebtoken');
+require('jsonwebtoken');
 const db = require('../db');
 
-/**
- * Enhanced Role-Based Access Control (RBAC) Middleware
- * Provides comprehensive access control with resource-level permissions
- */
-
-// Permission definitions
 const PERMISSIONS = {
-  // Dashboard permissions
   DASHBOARD_VIEW: 'dashboard:view',
   DASHBOARD_ANALYTICS: 'dashboard:analytics',
 
-  // Patient permissions
   PATIENT_VIEW: 'patient:view',
   PATIENT_CREATE: 'patient:create',
   PATIENT_UPDATE: 'patient:update',
   PATIENT_DELETE: 'patient:delete',
   PATIENT_VIEW_OWN: 'patient:view:own',
 
-  // Appointment permissions
   APPOINTMENT_VIEW: 'appointment:view',
   APPOINTMENT_CREATE: 'appointment:create',
   APPOINTMENT_UPDATE: 'appointment:update',
   APPOINTMENT_DELETE: 'appointment:delete',
   APPOINTMENT_VIEW_OWN: 'appointment:view:own',
 
-  // Vaccination permissions
   VACCINATION_VIEW: 'vaccination:view',
   VACCINATION_CREATE: 'vaccination:create',
   VACCINATION_UPDATE: 'vaccination:update',
   VACCINATION_DELETE: 'vaccination:delete',
   VACCINATION_VIEW_OWN: 'vaccination:view:own',
 
-  // Inventory permissions
   INVENTORY_VIEW: 'inventory:view',
   INVENTORY_CREATE: 'inventory:create',
   INVENTORY_UPDATE: 'inventory:update',
   INVENTORY_DELETE: 'inventory:delete',
 
-  // Report permissions
   REPORT_VIEW: 'report:view',
   REPORT_CREATE: 'report:create',
   REPORT_EXPORT: 'report:export',
 
-  // User management permissions
   USER_VIEW: 'user:view',
   USER_CREATE: 'user:create',
   USER_UPDATE: 'user:update',
   USER_DELETE: 'user:delete',
   USER_MANAGE_ROLES: 'user:manage:roles',
 
-  // System permissions
   SYSTEM_SETTINGS: 'system:settings',
   SYSTEM_AUDIT: 'system:audit',
   SYSTEM_BACKUP: 'system:backup',
 };
 
-// Role definitions with permissions
+const STAFF_PERMISSIONS = [
+  PERMISSIONS.DASHBOARD_VIEW,
+  PERMISSIONS.DASHBOARD_ANALYTICS,
+  PERMISSIONS.PATIENT_VIEW,
+  PERMISSIONS.PATIENT_CREATE,
+  PERMISSIONS.PATIENT_UPDATE,
+  PERMISSIONS.APPOINTMENT_VIEW,
+  PERMISSIONS.APPOINTMENT_CREATE,
+  PERMISSIONS.APPOINTMENT_UPDATE,
+  PERMISSIONS.VACCINATION_VIEW,
+  PERMISSIONS.VACCINATION_CREATE,
+  PERMISSIONS.VACCINATION_UPDATE,
+  PERMISSIONS.INVENTORY_VIEW,
+  PERMISSIONS.INVENTORY_CREATE,
+  PERMISSIONS.INVENTORY_UPDATE,
+  PERMISSIONS.REPORT_VIEW,
+  PERMISSIONS.REPORT_CREATE,
+  PERMISSIONS.REPORT_EXPORT,
+  PERMISSIONS.USER_VIEW,
+  PERMISSIONS.USER_CREATE,
+  PERMISSIONS.USER_UPDATE,
+  PERMISSIONS.SYSTEM_AUDIT,
+];
+
+const SELF_SERVICE_PERMISSIONS = [
+  PERMISSIONS.DASHBOARD_VIEW,
+  PERMISSIONS.PATIENT_VIEW_OWN,
+  PERMISSIONS.APPOINTMENT_VIEW_OWN,
+  PERMISSIONS.VACCINATION_VIEW_OWN,
+];
+
 const ROLES = {
   SYSTEM_ADMINISTRATOR: {
     permissions: Object.values(PERMISSIONS),
@@ -75,111 +91,37 @@ const ROLES = {
     level: 100,
   },
   admin: {
-    permissions: [
-      PERMISSIONS.DASHBOARD_VIEW,
-      PERMISSIONS.DASHBOARD_ANALYTICS,
-      PERMISSIONS.PATIENT_VIEW,
-      PERMISSIONS.PATIENT_CREATE,
-      PERMISSIONS.PATIENT_UPDATE,
-      PERMISSIONS.APPOINTMENT_VIEW,
-      PERMISSIONS.APPOINTMENT_CREATE,
-      PERMISSIONS.APPOINTMENT_UPDATE,
-      PERMISSIONS.VACCINATION_VIEW,
-      PERMISSIONS.VACCINATION_CREATE,
-      PERMISSIONS.VACCINATION_UPDATE,
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.INVENTORY_CREATE,
-      PERMISSIONS.INVENTORY_UPDATE,
-      PERMISSIONS.REPORT_VIEW,
-      PERMISSIONS.REPORT_CREATE,
-      PERMISSIONS.REPORT_EXPORT,
-      PERMISSIONS.USER_VIEW,
-      PERMISSIONS.USER_CREATE,
-      PERMISSIONS.USER_UPDATE,
-      PERMISSIONS.SYSTEM_AUDIT,
-    ],
+    permissions: [...STAFF_PERMISSIONS],
     description: 'Healthcare Worker Administrator',
     level: 80,
   },
-  health_worker: {
-    permissions: [
-      PERMISSIONS.DASHBOARD_VIEW,
-      PERMISSIONS.DASHBOARD_ANALYTICS,
-      PERMISSIONS.PATIENT_VIEW,
-      PERMISSIONS.PATIENT_CREATE,
-      PERMISSIONS.PATIENT_UPDATE,
-      PERMISSIONS.APPOINTMENT_VIEW,
-      PERMISSIONS.APPOINTMENT_CREATE,
-      PERMISSIONS.APPOINTMENT_UPDATE,
-      PERMISSIONS.VACCINATION_VIEW,
-      PERMISSIONS.VACCINATION_CREATE,
-      PERMISSIONS.VACCINATION_UPDATE,
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.INVENTORY_CREATE,
-      PERMISSIONS.INVENTORY_UPDATE,
-      PERMISSIONS.REPORT_VIEW,
-      PERMISSIONS.REPORT_CREATE,
-      PERMISSIONS.REPORT_EXPORT,
-      PERMISSIONS.USER_VIEW,
-      PERMISSIONS.USER_CREATE,
-      PERMISSIONS.USER_UPDATE,
-      PERMISSIONS.SYSTEM_AUDIT,
-    ],
-    description: 'Healthcare Worker',
+  healthcare_worker: {
+    permissions: [...STAFF_PERMISSIONS],
+    description: 'Health Care Worker',
     level: 60,
   },
   nurse: {
-    permissions: [
-      PERMISSIONS.DASHBOARD_VIEW,
-      PERMISSIONS.DASHBOARD_ANALYTICS,
-      PERMISSIONS.PATIENT_VIEW,
-      PERMISSIONS.PATIENT_CREATE,
-      PERMISSIONS.PATIENT_UPDATE,
-      PERMISSIONS.APPOINTMENT_VIEW,
-      PERMISSIONS.APPOINTMENT_CREATE,
-      PERMISSIONS.APPOINTMENT_UPDATE,
-      PERMISSIONS.VACCINATION_VIEW,
-      PERMISSIONS.VACCINATION_CREATE,
-      PERMISSIONS.VACCINATION_UPDATE,
-      PERMISSIONS.INVENTORY_VIEW,
-      PERMISSIONS.INVENTORY_CREATE,
-      PERMISSIONS.INVENTORY_UPDATE,
-      PERMISSIONS.REPORT_VIEW,
-      PERMISSIONS.REPORT_CREATE,
-      PERMISSIONS.REPORT_EXPORT,
-      PERMISSIONS.USER_VIEW,
-      PERMISSIONS.USER_CREATE,
-      PERMISSIONS.USER_UPDATE,
-      PERMISSIONS.SYSTEM_AUDIT,
-    ],
+    permissions: [...STAFF_PERMISSIONS, PERMISSIONS.INVENTORY_DELETE],
     description: 'Nurse',
     level: 40,
   },
   guardian: {
-    permissions: [
-      PERMISSIONS.DASHBOARD_VIEW,
-      PERMISSIONS.PATIENT_VIEW_OWN,
-      PERMISSIONS.APPOINTMENT_VIEW_OWN,
-      PERMISSIONS.VACCINATION_VIEW_OWN,
-    ],
+    permissions: [...SELF_SERVICE_PERMISSIONS],
     description: 'Patient guardian',
     level: 20,
   },
   user: {
-    permissions: [
-      PERMISSIONS.DASHBOARD_VIEW,
-      PERMISSIONS.PATIENT_VIEW_OWN,
-      PERMISSIONS.APPOINTMENT_VIEW_OWN,
-      PERMISSIONS.VACCINATION_VIEW_OWN,
-    ],
+    permissions: [...SELF_SERVICE_PERMISSIONS],
     description: 'Regular user',
     level: 10,
   },
 };
 
-/**
- * Helper to resolve the user's role considering the new canonical role_type
- */
+const isGlobalAdminRole = (role) => role === 'SYSTEM_ADMIN' || role === 'super_admin';
+
+const canSkipOwnershipCheck = (role) =>
+  role === 'SYSTEM_ADMIN' || role === 'super_admin' || role === 'admin';
+
 const resolveUserRole = (user) => {
   if (!user) {
     return null;
@@ -193,14 +135,10 @@ const resolveUserRole = (user) => {
   return user.role;
 };
 
-/**
- * Check if user has required permission
- */
 const hasPermission = (userRole, requiredPermission) => {
   const role = ROLES[userRole];
   if (!role) {
-    // Super admin bypass or SYSTEM_ADMIN bypass
-    if (userRole === 'super_admin' || userRole === 'SYSTEM_ADMIN') {
+    if (isGlobalAdminRole(userRole)) {
       return true;
     }
     return false;
@@ -209,37 +147,22 @@ const hasPermission = (userRole, requiredPermission) => {
   return role.permissions.includes(requiredPermission);
 };
 
-/**
- * Check if user has any of the required permissions
- */
 const hasAnyPermission = (userRole, requiredPermissions) => {
   return requiredPermissions.some((perm) => hasPermission(userRole, perm));
 };
 
-/**
- * Check if user has all of the required permissions
- */
 const hasAllPermissions = (userRole, requiredPermissions) => {
   return requiredPermissions.every((perm) => hasPermission(userRole, perm));
 };
 
-/**
- * Get role level for hierarchy checks
- */
 const getRoleLevel = (role) => {
   return ROLES[role]?.level || 0;
 };
 
-/**
- * Check if user role is higher or equal to required role
- */
 const hasRoleLevel = (userRole, minRole) => {
   return getRoleLevel(userRole) >= getRoleLevel(minRole);
 };
 
-/**
- * Middleware to check permission
- */
 const requirePermission = (permission) => {
   return async (req, res, next) => {
     try {
@@ -261,7 +184,6 @@ const requirePermission = (permission) => {
         });
       }
 
-      // Log access for audit
       await logAccess(req, permission);
 
       next();
@@ -275,9 +197,6 @@ const requirePermission = (permission) => {
   };
 };
 
-/**
- * Middleware to check any permission
- */
 const requireAnyPermission = (...permissions) => {
   return async (req, res, next) => {
     try {
@@ -310,9 +229,6 @@ const requireAnyPermission = (...permissions) => {
   };
 };
 
-/**
- * Middleware to check resource ownership
- */
 const requireOwnership = (resourceType, resourceIdParam = 'id') => {
   return async (req, res, next) => {
     try {
@@ -324,8 +240,7 @@ const requireOwnership = (resourceType, resourceIdParam = 'id') => {
       }
 
       const userRole = resolveUserRole(req.user);
-      // Super admin, system admin, and admin bypass ownership check
-      if (userRole === 'SYSTEM_ADMIN' || userRole === 'super_admin' || userRole === 'admin') {
+      if (canSkipOwnershipCheck(userRole)) {
         return next();
       }
 
@@ -337,32 +252,32 @@ const requireOwnership = (resourceType, resourceIdParam = 'id') => {
       let params;
 
       switch (resourceType) {
-      case 'patient':
-        query = `
+        case 'patient':
+          query = `
             SELECT id FROM patients
             WHERE id = $1 AND (created_by = $2 OR health_center_id = $3)
           `;
-        params = [resourceId, userId, healthCenterId];
-        break;
-      case 'appointment':
-        query = `
+          params = [resourceId, userId, healthCenterId];
+          break;
+        case 'appointment':
+          query = `
             SELECT id FROM appointments
             WHERE id = $1 AND (created_by = $2 OR health_center_id = $3)
           `;
-        params = [resourceId, userId, healthCenterId];
-        break;
-      case 'vaccination':
-        query = `
+          params = [resourceId, userId, healthCenterId];
+          break;
+        case 'vaccination':
+          query = `
             SELECT id FROM vaccinations
             WHERE id = $1 AND (administered_by = $2 OR health_center_id = $3)
           `;
-        params = [resourceId, userId, healthCenterId];
-        break;
-      default:
-        return res.status(400).json({
-          error: 'Invalid resource type',
-          code: 'INVALID_RESOURCE_TYPE',
-        });
+          params = [resourceId, userId, healthCenterId];
+          break;
+        default:
+          return res.status(400).json({
+            error: 'Invalid resource type',
+            code: 'INVALID_RESOURCE_TYPE',
+          });
       }
 
       const result = await db.query(query, params);
@@ -385,9 +300,6 @@ const requireOwnership = (resourceType, resourceIdParam = 'id') => {
   };
 };
 
-/**
- * Middleware to check health center access
- */
 const requireHealthCenterAccess = () => {
   return async (req, res, next) => {
     try {
@@ -399,8 +311,7 @@ const requireHealthCenterAccess = () => {
       }
 
       const userRole = resolveUserRole(req.user);
-      // Super admin and system admin bypass
-      if (userRole === 'SYSTEM_ADMIN' || userRole === 'super_admin') {
+      if (isGlobalAdminRole(userRole)) {
         return next();
       }
 
@@ -411,7 +322,6 @@ const requireHealthCenterAccess = () => {
         });
       }
 
-      // Add health center filter to request
       req.healthCenterFilter = {
         health_center_id: req.user.health_center_id,
       };
@@ -427,9 +337,6 @@ const requireHealthCenterAccess = () => {
   };
 };
 
-/**
- * Middleware to enforce role hierarchy
- */
 const requireRoleHierarchy = (minRole) => {
   return async (req, res, next) => {
     try {
@@ -461,9 +368,6 @@ const requireRoleHierarchy = (minRole) => {
   };
 };
 
-/**
- * Log access for audit trail
- */
 const logAccess = async (req, permission) => {
   try {
     const query = `
@@ -485,20 +389,13 @@ const logAccess = async (req, permission) => {
     ]);
   } catch (error) {
     console.error('Access logging error:', error);
-    // Don't fail the request if logging fails
   }
 };
 
-/**
- * Get user permissions
- */
 const getUserPermissions = (role) => {
   return ROLES[role]?.permissions || [];
 };
 
-/**
- * Get all roles
- */
 const getAllRoles = () => {
   return Object.entries(ROLES).map(([key, value]) => ({
     name: key,
@@ -506,9 +403,6 @@ const getAllRoles = () => {
   }));
 };
 
-/**
- * Check if role exists
- */
 const roleExists = (role) => {
   return !!ROLES[role];
 };

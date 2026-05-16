@@ -1,6 +1,5 @@
 /**
- * Security Event Service
- * Logs and manages security events for audit trail
+ * Security event logging and audit helpers.
  */
 
 const mainPool = require('../db');

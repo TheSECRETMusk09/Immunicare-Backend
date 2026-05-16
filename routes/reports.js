@@ -3,11 +3,7 @@ const fs = require('fs');
 const router = express.Router();
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
-const {
-  CANONICAL_ROLES,
-  getCanonicalRole,
-  requirePermission,
-} = require('../middleware/rbac');
+const { CANONICAL_ROLES, getCanonicalRole, requirePermission } = require('../middleware/rbac');
 const ReportService = require('../services/reportService');
 const {
   isScopeRequestAllowed,
@@ -59,23 +55,18 @@ const resolveReportsSummaryScope = (req) => {
   const effectiveScope =
     typeof resolveEffectiveScope === 'function'
       ? resolveEffectiveScope({
-        query: req.query,
-        user: req.user,
-        canonicalRole,
-      })
+          query: req.query,
+          user: req.user,
+          canonicalRole,
+        })
       : {
-        scopeIds:
-          typeof resolveUserScopeIds === 'function'
-            ? resolveUserScopeIds(req.user)
-            : [],
-        useScope: false,
-        userScopeIds:
-          typeof resolveUserScopeIds === 'function'
-            ? resolveUserScopeIds(req.user)
-            : [],
-        requestedScopeIds: [],
-        allowSystemScope: false,
-      };
+          scopeIds: typeof resolveUserScopeIds === 'function' ? resolveUserScopeIds(req.user) : [],
+          useScope: false,
+          userScopeIds:
+            typeof resolveUserScopeIds === 'function' ? resolveUserScopeIds(req.user) : [],
+          requestedScopeIds: [],
+          allowSystemScope: false,
+        };
 
   if (
     canonicalRole !== systemAdminRole &&
@@ -197,7 +188,9 @@ router.get('/', requirePermission('reports:view'), async (req, res) => {
       scopeIds: scopeContext.scopeIds,
     });
     const reports = Array.isArray(reportHistory) ? reportHistory : reportHistory.rows || [];
-    const total = Array.isArray(reportHistory) ? reports.length : reportHistory.total || reports.length;
+    const total = Array.isArray(reportHistory)
+      ? reports.length
+      : reportHistory.total || reports.length;
 
     res.json({
       success: true,
@@ -277,9 +270,10 @@ router.post('/generate', requirePermission('reports:create'), async (req, res) =
     req.setTimeout?.(300000);
     res.setTimeout?.(300000);
 
-    const { type, format, startDate, endDate, filters } = req.body || {};
-    const { fields, normalizedType, normalizedFormat } =
-      validateReportGenerationBody(req.body || {});
+    const { startDate, endDate, filters } = req.body || {};
+    const { fields, normalizedType, normalizedFormat } = validateReportGenerationBody(
+      req.body || {}
+    );
 
     if (Object.keys(fields).length > 0) {
       return sendValidationError(res, fields);
@@ -296,13 +290,16 @@ router.post('/generate', requirePermission('reports:create'), async (req, res) =
 
     const report = await reportService.generateReport(
       normalizedType,
-      appendScopeFilters({
-        startDate,
-        endDate,
-        ...(filters && typeof filters === 'object' ? filters : {}),
-      }, scopeContext),
+      appendScopeFilters(
+        {
+          startDate,
+          endDate,
+          ...(filters && typeof filters === 'object' ? filters : {}),
+        },
+        scopeContext
+      ),
       normalizedFormat,
-      req.user?.id || null,
+      req.user?.id || null
     );
 
     if (res.headersSent || res.writableEnded) {
@@ -326,9 +323,10 @@ router.post('/generate', requirePermission('reports:create'), async (req, res) =
 // Start async report generation job — returns 202 immediately with a jobId
 router.post('/generate-job', requirePermission('reports:create'), async (req, res) => {
   try {
-    const { type, format, startDate, endDate, filters } = req.body || {};
-    const { fields, normalizedType, normalizedFormat } =
-      validateReportGenerationBody(req.body || {});
+    const { startDate, endDate, filters } = req.body || {};
+    const { fields, normalizedType, normalizedFormat } = validateReportGenerationBody(
+      req.body || {}
+    );
 
     if (Object.keys(fields).length > 0) {
       return sendValidationError(res, fields);
@@ -343,16 +341,19 @@ router.post('/generate-job', requirePermission('reports:create'), async (req, re
       });
     }
 
-    const scopedFilters = appendScopeFilters({
-      startDate,
-      endDate,
-      ...(filters && typeof filters === 'object' ? filters : {}),
-    }, scopeContext);
+    const scopedFilters = appendScopeFilters(
+      {
+        startDate,
+        endDate,
+        ...(filters && typeof filters === 'object' ? filters : {}),
+      },
+      scopeContext
+    );
     const reportRow = await reportService.createReportHistoryPlaceholder(
       normalizedType,
       scopedFilters,
       normalizedFormat,
-      req.user?.id || null,
+      req.user?.id || null
     );
 
     // Fire generation without blocking the HTTP response
@@ -363,7 +364,7 @@ router.post('/generate-job', requirePermission('reports:create'), async (req, re
           scopedFilters,
           normalizedFormat,
           req.user?.id || null,
-          { existingReportId: reportRow.id },
+          { existingReportId: reportRow.id }
         );
       } catch (err) {
         await reportService.markReportGenerationFailed(reportRow.id, err);
@@ -488,15 +489,17 @@ router.get('/:id/download', requirePermission('reports:download'), async (req, r
     });
 
     res.setHeader('Content-Type', reportFile.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${reportFile.filename || `report-${reportId}`}"`);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${reportFile.filename || `report-${reportId}`}"`
+    );
     if (reportFile.fileSize) {
       res.setHeader('Content-Length', reportFile.fileSize);
     }
 
-    await pool.query(
-      'UPDATE reports SET download_count = download_count + 1 WHERE id = $1',
-      [reportId],
-    );
+    await pool.query('UPDATE reports SET download_count = download_count + 1 WHERE id = $1', [
+      reportId,
+    ]);
 
     fs.createReadStream(reportFile.path)
       .on('error', (streamError) => {
@@ -538,7 +541,7 @@ router.delete('/:id', requirePermission('reports:delete'), async (req, res) => {
 
     const result = await pool.query(
       'UPDATE reports SET is_active = false WHERE id = $1 AND COALESCE(is_active, true) = true RETURNING id',
-      [reportId],
+      [reportId]
     );
 
     if (result.rows.length === 0) {

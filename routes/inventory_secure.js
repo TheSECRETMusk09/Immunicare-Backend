@@ -9,7 +9,7 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // Middleware to require admin role for vaccine inventory management
-const requireAdmin = requireRole(['admin', 'super_admin', 'clinic_manager', 'healthcare_worker']);
+const requireAdmin = requireRole(['admin', 'system_admin', 'healthcare_worker']);
 
 // Apply admin protection to vaccine inventory routes
 router.use('/vaccine-inventory', requireAdmin);

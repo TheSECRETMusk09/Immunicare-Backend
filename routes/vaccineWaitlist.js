@@ -1,6 +1,5 @@
 /**
- * Vaccine Waitlist API Routes
- * Handles waitlist management for vaccines
+ * Vaccine waitlist routes.
  */
 
 const express = require('express');
@@ -44,7 +43,7 @@ const getWaitlistEntryById = async (id) => {
       WHERE id = $1
       LIMIT 1
     `,
-    [id],
+    [id]
   );
 
   return result.rows[0] || null;
@@ -104,7 +103,7 @@ router.get(
         message: 'Failed to check availability',
       });
     }
-  },
+  }
 );
 
 /**
@@ -331,7 +330,10 @@ router.delete('/:id', async (req, res) => {
     if (isGuardianRequest(req)) {
       const currentGuardianId = getResolvedGuardianId(req);
 
-      if (!currentGuardianId || currentGuardianId !== Number.parseInt(waitlistEntry.guardian_id, 10)) {
+      if (
+        !currentGuardianId ||
+        currentGuardianId !== Number.parseInt(waitlistEntry.guardian_id, 10)
+      ) {
         return res.status(403).json({
           success: false,
           message: 'You can only remove your own waitlist entries',
@@ -346,7 +348,7 @@ router.delete('/:id', async (req, res) => {
             RETURNING *
         `;
 
-    const result = await pool.query(query, [id]);
+    await pool.query(query, [id]);
 
     res.json({
       success: true,
@@ -400,11 +402,7 @@ router.post('/:id/notify', requireRole(['admin', 'healthcare_worker']), async (r
     // Send SMS notification to guardian if phone is available
     if (entry.guardian_phone) {
       try {
-        await smsService.sendSMS(
-          entry.guardian_phone,
-          message,
-          'vaccine_availability',
-        );
+        await smsService.sendSMS(entry.guardian_phone, message, 'vaccine_availability');
       } catch (smsErr) {
         // Log SMS failure but do not block the notification record update
         console.error('SMS send failed for waitlist notification:', smsErr.message);

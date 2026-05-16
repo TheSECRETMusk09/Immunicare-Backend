@@ -24,7 +24,7 @@ const colors = {
   green: '\x1b[32m',
   yellow: '\x1b[33m',
   blue: '\x1b[34m',
-  cyan: '\x1b[36m'
+  cyan: '\x1b[36m',
 };
 
 function log(message, color = 'reset') {
@@ -59,7 +59,7 @@ const results = {
   database: { status: 'pending', checks: [] },
   routing: { status: 'pending', checks: [] },
   api: { status: 'pending', checks: [] },
-  users: { status: 'pending', checks: [] }
+  users: { status: 'pending', checks: [] },
 };
 
 // Verify database connection and tables
@@ -72,7 +72,7 @@ async function verifyDatabase() {
     port: parseInt(env.DB_PORT) || 5432,
     database: env.DB_NAME || 'immunicare_dev',
     user: env.DB_USER || 'immunicare_dev',
-    password: env.DB_PASSWORD || ''
+    password: env.DB_PASSWORD || '',
   });
 
   try {
@@ -92,13 +92,13 @@ async function verifyDatabase() {
       'vaccine_batches',
       'vaccines',
       'appointments',
-      'notifications'
+      'notifications',
     ];
     log('\nChecking critical tables...', 'cyan');
 
     for (const table of tables) {
       const result = await pool.query(
-        'SELECT EXISTS(SELECT FROM pg_tables WHERE schemaname = \'public\' AND tablename = $1) as exists',
+        "SELECT EXISTS(SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = $1) as exists",
         [table]
       );
       const exists = result.rows[0].exists;
@@ -153,9 +153,9 @@ function verifyRouting() {
   const infantsPath = path.join(__dirname, 'routes', 'infants.js');
   const infantsContent = fs.readFileSync(infantsPath, 'utf8');
 
-  const guardianRouteIndex = infantsContent.indexOf('router.get(\'/guardian/:guardianId\'');
-  const searchRouteIndex = infantsContent.indexOf('router.get(\'/search/:query\'');
-  const ageRangeRouteIndex = infantsContent.indexOf('router.get(\'/age-range/:minAge/:maxAge\'');
+  const guardianRouteIndex = infantsContent.indexOf("router.get('/guardian/:guardianId'");
+  const searchRouteIndex = infantsContent.indexOf("router.get('/search/:query'");
+  const ageRangeRouteIndex = infantsContent.indexOf("router.get('/age-range/:minAge/:maxAge'");
 
   if (
     guardianRouteIndex !== -1 &&
@@ -174,8 +174,8 @@ function verifyRouting() {
   const dashboardPath = path.join(__dirname, 'routes', 'dashboard.js');
   const dashboardContent = fs.readFileSync(dashboardPath, 'utf8');
 
-  const guardianStatsIndex = dashboardContent.indexOf('router.get(\'/guardian/:guardianId/stats\'');
-  const guardiansIndex = dashboardContent.indexOf('router.get(\'/guardians\'');
+  const guardianStatsIndex = dashboardContent.indexOf("router.get('/guardian/:guardianId/stats'");
+  const guardiansIndex = dashboardContent.indexOf("router.get('/guardians'");
 
   if (guardianStatsIndex !== -1 && guardianStatsIndex < guardiansIndex) {
     log('  ✓ dashboard.js route order is correct', 'green');
@@ -205,7 +205,7 @@ async function verifyAPI() {
         hostname: url.hostname,
         port: url.port || 5000,
         path: url.pathname,
-        method: method
+        method: method,
       };
 
       const req = http.request(options, (res) => {
@@ -225,7 +225,7 @@ async function verifyAPI() {
   const endpoints = [
     { name: 'Root', path: '/', expected: 200 },
     { name: 'Health', path: '/api/health', expected: 200 },
-    { name: 'Dashboard Health', path: '/api/dashboard/health', expected: 200 }
+    { name: 'Dashboard Health', path: '/api/dashboard/health', expected: 200 },
   ];
 
   for (const endpoint of endpoints) {
@@ -256,7 +256,7 @@ async function verifyUsers() {
     port: parseInt(env.DB_PORT) || 5432,
     database: env.DB_NAME || 'immunicare_dev',
     user: env.DB_USER || 'immunicare_dev',
-    password: env.DB_PASSWORD || ''
+    password: env.DB_PASSWORD || '',
   });
 
   try {
@@ -306,7 +306,7 @@ function generateReport() {
     ...results.database.checks,
     ...results.routing.checks,
     ...results.api.checks,
-    ...results.users.checks
+    ...results.users.checks,
   ];
 
   const passed = allChecks.filter((c) => c.status === 'PASS').length;
@@ -391,7 +391,7 @@ async function main() {
   await verifyAPI();
   await verifyUsers();
 
-  const finalResults = generateReport();
+  generateReport();
 
   log('\n' + '='.repeat(70));
   log('VERIFICATION COMPLETED', 'bright');

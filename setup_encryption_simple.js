@@ -3,8 +3,8 @@
  * Executes encryption setup in smaller, controlled steps
  */
 
-const fs = require('fs');
-const path = require('path');
+require('fs');
+require('path');
 const pool = require('./db');
 
 async function executeSQL(sql, description) {
@@ -214,7 +214,7 @@ async function setupEncryption() {
       'guardians_phone',
       'guardians_email',
       'guardians_address',
-      'infants_national_id'
+      'infants_national_id',
     ];
 
     for (const key of keys) {

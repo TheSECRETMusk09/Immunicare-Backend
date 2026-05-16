@@ -1,38 +1,24 @@
-/**
- * Request Validation Middleware
- * Uses express-validator for request validation
- */
-
 const { body, param, query, validationResult } = require('express-validator');
 const { ValidationError } = require('./errorHandler');
 
-/**
- * Validation result handler
- */
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    const errorDetails = errors.array().map((error) => ({
+    const errList = errors.array().map((error) => ({
       field: error.path,
       message: error.msg,
       value: error.value
     }));
-    return next(new ValidationError('Validation failed', errorDetails));
+    return next(new ValidationError('Validation failed', errList));
   }
   next();
 };
 
-/**
- * Common validation rules
- */
 const commonValidations = {
-  // ID validation
   id: param('id').isInt({ min: 1 }).withMessage('ID must be a positive integer'),
 
-  // UUID validation
   uuid: param('id').isUUID().withMessage('ID must be a valid UUID'),
 
-  // Pagination
   pagination: [
     query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
     query('limit')
@@ -42,19 +28,15 @@ const commonValidations = {
     handleValidationErrors
   ],
 
-  // Date validation
   date: (field = 'date') =>
     body(field).isISO8601().withMessage(`${field} must be a valid ISO 8601 date`),
 
-  // Email validation
   email: body('email').isEmail().normalizeEmail().withMessage('Must be a valid email address'),
 
-  // Phone validation (Philippine format)
   phone: body('phone')
     .matches(/^(\+63|0)?[0-9]{10}$/)
     .withMessage('Must be a valid Philippine phone number'),
 
-  // Password validation
   password: body('password')
     .isLength({ min: 8 })
     .withMessage('Password must be at least 8 characters')
@@ -65,12 +47,10 @@ const commonValidations = {
     .matches(/[0-9]/)
     .withMessage('Password must contain at least one number'),
 
-  // Simple password (for less strict requirements)
   simplePassword: body('password')
     .isLength({ min: 6 })
     .withMessage('Password must be at least 6 characters'),
 
-  // Name validation
   name: (field = 'name') =>
     body(field)
       .trim()
@@ -79,7 +59,6 @@ const commonValidations = {
       .matches(/^[a-zA-Z\s'-]+$/)
       .withMessage(`${field} contains invalid characters`),
 
-  // Username validation
   username: body('username')
     .trim()
     .isLength({ min: 3, max: 50 })
@@ -87,43 +66,38 @@ const commonValidations = {
     .matches(/^[a-zA-Z0-9_]+$/)
     .withMessage('Username can only contain letters, numbers, and underscores'),
 
-  // Role validation
   role: body('role')
     .isIn([
       'super_admin',
+      'system_admin',
       'admin',
       'doctor',
       'nurse',
       'midwife',
-      'health_worker',
+      'healthcare_worker',
       'guardian',
-      'user'
+      'user',
     ])
     .withMessage('Invalid role specified'),
 
-  // Status validation
   appointmentStatus: body('status')
     .optional()
     .isIn(['scheduled', 'confirmed', 'in_progress', 'completed', 'cancelled', 'no_show'])
     .withMessage('Invalid appointment status'),
 
-  // Gender validation
   gender: body('gender')
     .optional()
     .isIn(['male', 'female', 'other'])
     .withMessage('Gender must be male, female, or other'),
 
-  // Blood type validation
   bloodType: body('blood_type')
     .optional()
     .isIn(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'])
     .withMessage('Invalid blood type'),
 
-  // Required field
   required: (field, message = `${field} is required`) =>
     body(field).exists({ checkNull: true }).withMessage(message).notEmpty().withMessage(message),
 
-  // Optional string
   optionalString: (field, maxLength = 255) =>
     body(field)
       .optional()
@@ -131,21 +105,16 @@ const commonValidations = {
       .isLength({ max: maxLength })
       .withMessage(`${field} must be at most ${maxLength} characters`),
 
-  // Integer validation
   integer: (field, min = 0) =>
     body(field).isInt({ min }).withMessage(`${field} must be a positive integer`),
 
-  // Decimal validation
   decimal: (field, min = 0) =>
     body(field).isFloat({ min }).withMessage(`${field} must be a valid decimal number`),
 
-  // Boolean validation
   boolean: (field) => body(field).optional().isBoolean().withMessage(`${field} must be a boolean`),
 
-  // Array validation
   array: (field) => body(field).isArray().withMessage(`${field} must be an array`),
 
-  // JSON validation
   json: (field) =>
     body(field).custom((value) => {
       if (typeof value === 'object') {
@@ -160,11 +129,7 @@ const commonValidations = {
     })
 };
 
-/**
- * Validation schemas for common entities
- */
 const validationSchemas = {
-  // User registration
   register: [
     commonValidations.required('username'),
     commonValidations.username,
@@ -177,7 +142,6 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // User login
   login: [
     commonValidations.required('username', 'Username or email is required'),
     body('username').trim().notEmpty(),
@@ -185,7 +149,6 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // Guardian registration
   guardianRegister: [
     commonValidations.required('name'),
     body('name').trim().isLength({ min: 2, max: 255 }),
@@ -197,7 +160,6 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // Infant/Patient registration
   infantRegister: [
     commonValidations.required('first_name'),
     body('first_name').trim().isLength({ min: 1, max: 100 }),
@@ -215,7 +177,6 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // Appointment creation
   appointmentCreate: [
     commonValidations.required('infant_id'),
     commonValidations.integer('infant_id', 1),
@@ -229,7 +190,6 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // Appointment update
   appointmentUpdate: [
     commonValidations.id,
     commonValidations.date('scheduled_date'),
@@ -241,7 +201,6 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // Vaccination record
   vaccinationRecord: [
     commonValidations.required('patient_id'),
     commonValidations.integer('patient_id', 1),
@@ -257,7 +216,6 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // Inventory item
   inventoryItem: [
     commonValidations.required('name'),
     body('name').trim().isLength({ min: 1, max: 255 }),
@@ -272,7 +230,6 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // SMS verification
   smsVerification: [
     commonValidations.required('phoneNumber'),
     body('phoneNumber').trim().notEmpty(),
@@ -280,14 +237,12 @@ const validationSchemas = {
     handleValidationErrors
   ],
 
-  // Password reset
   passwordReset: [
     commonValidations.required('newPassword'),
     body('newPassword').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
     handleValidationErrors
   ],
 
-  // Admin user update
   adminUpdate: [
     commonValidations.email,
     commonValidations.optionalString('contact', 50),
@@ -296,41 +251,31 @@ const validationSchemas = {
   ]
 };
 
-/**
- * Sanitization middleware
- */
 const sanitizeInput = (req, res, next) => {
-  // Sanitize body
   if (req.body && typeof req.body === 'object') {
-    req.body = sanitizeObject(req.body);
+    req.body = scrubObj(req.body);
   }
 
-  // Sanitize query
   if (req.query && typeof req.query === 'object') {
-    req.query = sanitizeObject(req.query);
+    req.query = scrubObj(req.query);
   }
 
-  // Sanitize params
   if (req.params && typeof req.params === 'object') {
-    req.params = sanitizeObject(req.params);
+    req.params = scrubObj(req.params);
   }
 
   next();
 };
 
-/**
- * Recursively sanitize an object
- */
-const sanitizeObject = (obj) => {
+const scrubObj = (obj) => {
   const sanitized = {};
   for (const key in obj) {
     if (Object.prototype.hasOwnProperty.call(obj, key)) {
       const value = obj[key];
       if (typeof value === 'string') {
-        // Trim whitespace
         sanitized[key] = value.trim();
       } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        sanitized[key] = sanitizeObject(value);
+        sanitized[key] = scrubObj(value);
       } else if (Array.isArray(value)) {
         sanitized[key] = value.map((item) => (typeof item === 'string' ? item.trim() : item));
       } else {

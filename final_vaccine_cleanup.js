@@ -37,15 +37,10 @@ function normalizeName(name) {
 
 const APPROVED_NORMALIZED = new Set(APPROVED_VACCINES.map(normalizeName));
 
-async function getVaccineByName(name) {
-  const result = await db.query('SELECT id FROM vaccines WHERE name = $1', [name]);
-  return result.rows[0] ? result.rows[0].id : null;
-}
-
 async function getVaccinesByNormalizedName(normalized) {
   const result = await db.query(
-    'SELECT id, name FROM vaccines WHERE UPPER(TRIM(REGEXP_REPLACE(name, \'\s+\', \' \', \'g\'))) = $1',
-    [normalized],
+    "SELECT id, name FROM vaccines WHERE UPPER(TRIM(REGEXP_REPLACE(name, '\s+', ' ', 'g'))) = $1",
+    [normalized]
   );
   return result.rows;
 }
@@ -59,8 +54,8 @@ async function cleanupVaccines() {
   const allVaccines = allResult.rows;
 
   console.log(`Current state: ${allVaccines.length} total vaccines`);
-  console.log(`Active: ${allVaccines.filter(v => v.is_active).length}`);
-  console.log(`Inactive: ${allVaccines.filter(v => !v.is_active).length}\n`);
+  console.log(`Active: ${allVaccines.filter((v) => v.is_active).length}`);
+  console.log(`Inactive: ${allVaccines.filter((v) => !v.is_active).length}\n`);
 
   const stats = {
     kept: [],
@@ -92,7 +87,7 @@ async function cleanupVaccines() {
           continue;
         } // Skip already processed/inactive
 
-        const vaccineNormalized = normalizeName(vaccine.name);
+        normalizeName(vaccine.name);
         // Check if this is a known variant of the approved vaccine
         if (isKnownVariant(vaccine.name, approvedName)) {
           // Rename this vaccine to the approved name
@@ -133,7 +128,9 @@ async function cleanupVaccines() {
       }
     } else {
       // Multiple matches - need to keep one and archive the rest
-      console.log(`  ⚠ Found ${matches.length} matches, keeping one and archiving ${matches.length - 1}`);
+      console.log(
+        `  ⚠ Found ${matches.length} matches, keeping one and archiving ${matches.length - 1}`
+      );
 
       // Prefer non-SYNPH26 version, or lowest ID
       const sorted = [...matches].sort((a, b) => {
@@ -141,7 +138,7 @@ async function cleanupVaccines() {
         const bIsSynph = b.code.startsWith('SYNPH26');
         if (aIsSynph && !bIsSynph) {
           return 1;
-        }  // b comes first
+        } // b comes first
         if (!aIsSynph && bIsSynph) {
           return -1;
         } // a comes first
@@ -175,8 +172,9 @@ async function cleanupVaccines() {
 
   for (const vaccine of allVaccines) {
     // Skip if we've already processed this as part of approved vaccines
-    const alreadyProcessed = stats.kept.some(k => k.id === vaccine.id) ||
-                             stats.updatedName.some(u => u.id === vaccine.id);
+    const alreadyProcessed =
+      stats.kept.some((k) => k.id === vaccine.id) ||
+      stats.updatedName.some((u) => u.id === vaccine.id);
     if (alreadyProcessed) {
       continue;
     }
@@ -216,9 +214,11 @@ async function cleanupVaccines() {
   // Step 4: Final verification
   console.log('=== STEP 4: FINAL VERIFICATION ===\n');
 
-  const finalResult = await db.query('SELECT id, name, code, is_active FROM vaccines ORDER BY is_active DESC, name');
+  const finalResult = await db.query(
+    'SELECT id, name, code, is_active FROM vaccines ORDER BY is_active DESC, name'
+  );
   const finalVaccines = finalResult.rows;
-  const activeFinal = finalVaccines.filter(v => v.is_active);
+  const activeFinal = finalVaccines.filter((v) => v.is_active);
 
   console.log('Final state:');
   console.log(`  Total vaccines: ${finalVaccines.length}`);
@@ -236,27 +236,34 @@ async function cleanupVaccines() {
     console.log(`  ${vaccine.id}: ${vaccine.name} [${vaccine.code}] - ${status}`);
   }
 
-  console.log(`\nApproval verification: ${allCorrect && activeFinal.length === APPROVED_VACCINES.length ? '✓ PASS' : '✗ FAIL'}`);
+  console.log(
+    `\nApproval verification: ${allCorrect && activeFinal.length === APPROVED_VACCINES.length ? '✓ PASS' : '✗ FAIL'}`
+  );
 
   if (!allCorrect) {
     console.log('Non-approved vaccines still active:');
-    activeFinal.filter(v => !APPROVED_VACCINES.includes(v.name))
-      .forEach(v => console.log(`  - ${v.name}`));
+    activeFinal
+      .filter((v) => !APPROVED_VACCINES.includes(v.name))
+      .forEach((v) => console.log(`  - ${v.name}`));
   }
 
   if (activeFinal.length !== APPROVED_VACCINES.length) {
-    console.log(`Count mismatch: ${activeFinal.length} active vs ${APPROVED_VACCINES.length} approved`);
-    const activeNames = activeFinal.map(v => v.name).sort();
+    console.log(
+      `Count mismatch: ${activeFinal.length} active vs ${APPROVED_VACCINES.length} approved`
+    );
+    const activeNames = activeFinal.map((v) => v.name).sort();
     const approvedNamesSorted = [...APPROVED_VACCINES].sort();
 
     if (activeNames.length > approvedNamesSorted.length) {
       console.log('Extra active vaccines:');
-      activeNames.filter(name => !approvedNamesSorted.includes(name))
-        .forEach(name => console.log(`  - ${name}`));
+      activeNames
+        .filter((name) => !approvedNamesSorted.includes(name))
+        .forEach((name) => console.log(`  - ${name}`));
     } else {
       console.log('Missing approved vaccines:');
-      approvedNamesSorted.filter(name => !activeNames.includes(name))
-        .forEach(name => console.log(`  - ${name}`));
+      approvedNamesSorted
+        .filter((name) => !activeNames.includes(name))
+        .forEach((name) => console.log(`  - ${name}`));
     }
   }
 
@@ -270,7 +277,7 @@ async function cleanupVaccines() {
 
   if (stats.updatedName.length > 0) {
     console.log('\nName updates:');
-    stats.updatedName.forEach(u => console.log(`  - "${u.old}" -> "${u.new}"`));
+    stats.updatedName.forEach((u) => console.log(`  - "${u.old}" -> "${u.new}"`));
   }
 
   await db.end();
@@ -319,7 +326,7 @@ async function checkDependencies(vaccineId) {
     try {
       const result = await db.query(
         `SELECT COUNT(*) as count FROM "${table}" WHERE vaccine_id = $1`,
-        [vaccineId],
+        [vaccineId]
       );
       dependencies[table] = parseInt(result.rows[0].count);
     } catch (e) {
@@ -332,7 +339,7 @@ async function checkDependencies(vaccineId) {
 
 // Run cleanup if called directly
 if (require.main === module) {
-  cleanupVaccines().catch(e => {
+  cleanupVaccines().catch((e) => {
     console.error('Cleanup failed:', e);
     process.exit(1);
   });

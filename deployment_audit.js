@@ -1,4 +1,4 @@
-const path = require('path');
+require('path');
 // Set NODE_ENV to 'hostinger' to ensure the correct .env files are loaded
 process.env.NODE_ENV = 'hostinger';
 
@@ -44,13 +44,18 @@ async function runDeploymentAudit() {
 
   console.log('--- Starting Backend Pre-Deployment Audit for Hostinger ---');
   console.log(`Auditing with NODE_ENV='${report.details.nodeEnv}'...`);
-  console.log(`Database target: ${report.details.user}@${report.details.host}:${report.details.port}/${report.details.database}`);
+  console.log(
+    `Database target: ${report.details.user}@${report.details.host}:${report.details.port}/${report.details.database}`
+  );
 
   // 1. Environment Variable Validation
   console.log('\n[1/4] Validating environment variables...');
   try {
     validateEnv(true); // 'true' for isProduction check
-    report.checks.envValidation = { status: 'SUCCESS', message: 'All required environment variables are present.' };
+    report.checks.envValidation = {
+      status: 'SUCCESS',
+      message: 'All required environment variables are present.',
+    };
     console.log('  > SUCCESS: All required environment variables are present.');
   } catch (error) {
     report.checks.envValidation = { status: 'FAIL', message: error.message };
@@ -69,10 +74,16 @@ async function runDeploymentAudit() {
   let client;
   try {
     client = await db.connect();
-    report.checks.dbConnection = { status: 'SUCCESS', message: 'Successfully connected to the database.' };
+    report.checks.dbConnection = {
+      status: 'SUCCESS',
+      message: 'Successfully connected to the database.',
+    };
     console.log('  > SUCCESS: Database connection established.');
   } catch (error) {
-    report.checks.dbConnection = { status: 'FAIL', message: `Failed to connect to the database. Reason: ${error.message}` };
+    report.checks.dbConnection = {
+      status: 'FAIL',
+      message: `Failed to connect to the database. Reason: ${error.message}`,
+    };
     report.summary.errors.push('Database connection failed.');
     console.error('  > FAIL: Could not connect to the database.');
     console.error(`     Reason: ${error.message}`);
@@ -88,10 +99,16 @@ async function runDeploymentAudit() {
   try {
     const result = await client.query('SELECT NOW() as currentTime;');
     const dbTime = result.rows[0].currenttime;
-    report.checks.readQuery = { status: 'SUCCESS', message: `Successfully executed a read query. DB time: ${dbTime}` };
+    report.checks.readQuery = {
+      status: 'SUCCESS',
+      message: `Successfully executed a read query. DB time: ${dbTime}`,
+    };
     console.log(`  > SUCCESS: Sample read query completed. (Database time: ${dbTime})`);
   } catch (error) {
-    report.checks.readQuery = { status: 'FAIL', message: `Read query failed. Reason: ${error.message}` };
+    report.checks.readQuery = {
+      status: 'FAIL',
+      message: `Read query failed. Reason: ${error.message}`,
+    };
     report.summary.errors.push('Read query failed.');
     console.error('  > FAIL: Sample read query failed.');
     console.error(`     Reason: ${error.message}`);
@@ -107,10 +124,16 @@ async function runDeploymentAudit() {
     console.log(`  > Step 2/3: INSERT successful.`);
     await client.query(`DROP TABLE ${testTableName};`);
     console.log(`  > Step 3/3: DROP TABLE successful.`);
-    report.checks.writePermissions = { status: 'SUCCESS', message: 'User has CREATE, INSERT, and DROP permissions.' };
+    report.checks.writePermissions = {
+      status: 'SUCCESS',
+      message: 'User has CREATE, INSERT, and DROP permissions.',
+    };
     console.log('  > SUCCESS: Write permissions are correctly configured.');
   } catch (error) {
-    report.checks.writePermissions = { status: 'FAIL', message: `Write permission check failed. Reason: ${error.message}` };
+    report.checks.writePermissions = {
+      status: 'FAIL',
+      message: `Write permission check failed. Reason: ${error.message}`,
+    };
     report.summary.errors.push('Write permissions check failed.');
     console.error('  > FAIL: Write permission check failed.');
     console.error(`     Reason: ${error.message}`);
@@ -119,7 +142,9 @@ async function runDeploymentAudit() {
       await client.query(`DROP TABLE IF EXISTS ${testTableName};`);
       console.log('  > Cleanup: Successfully dropped test table.');
     } catch (cleanupError) {
-      console.error('  > Cleanup WARNING: Failed to drop test table after error. Manual cleanup may be required.');
+      console.error(
+        '  > Cleanup WARNING: Failed to drop test table after error. Manual cleanup may be required.'
+      );
     }
   }
 
@@ -128,14 +153,14 @@ async function runDeploymentAudit() {
 }
 
 function finalizeReport(report) {
-  const hasFailures = Object.values(report.checks).some(c => c.status === 'FAIL');
+  const hasFailures = Object.values(report.checks).some((c) => c.status === 'FAIL');
   report.summary.status = hasFailures ? 'FAIL' : 'SUCCESS';
 
   console.log('\n--- AUDIT COMPLETE ---');
   console.log(`
 Overall Status: ${report.summary.status}`);
 
-  if(hasFailures) {
+  if (hasFailures) {
     console.log('\nDeployment Readiness: NOT READY');
     console.log('Please fix the issues marked with [FAIL] below.');
   } else {
@@ -149,7 +174,7 @@ Overall Status: ${report.summary.status}`);
   }
   console.log('\n-----------------------\n');
 
-  if(hasFailures) {
+  if (hasFailures) {
     process.exit(1);
   } else {
     process.exit(0);

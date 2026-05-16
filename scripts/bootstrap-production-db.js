@@ -1,10 +1,7 @@
-const path = require('path');
+require('path');
 
 const requestedEnv =
-  process.env.IMMUNICARE_RUNTIME_ENV ||
-  process.argv[2] ||
-  process.env.NODE_ENV ||
-  'production';
+  process.env.IMMUNICARE_RUNTIME_ENV || process.argv[2] || process.env.NODE_ENV || 'production';
 
 process.env.NODE_ENV = requestedEnv;
 
@@ -50,7 +47,7 @@ const getMissingCoreTables = async () => {
       WHERE table_schema = current_schema()
         AND table_name = ANY($1::text[])
     `,
-    [requiredCoreTables],
+    [requiredCoreTables]
   );
 
   const existingTables = new Set(result.rows.map((row) => row.table_name));

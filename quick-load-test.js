@@ -24,27 +24,27 @@ const configs = {
     name: 'Quick Load Test',
     duration: 30000, // 30 seconds
     concurrency: 100,
-    rampUp: 5000
+    rampUp: 5000,
   },
   medium: {
     name: 'Medium Load Test',
     duration: 120000, // 2 minutes
     concurrency: 10000,
-    rampUp: 30000
+    rampUp: 30000,
   },
   full: {
     name: 'Full Scale Load Test (100K)',
     duration: 300000, // 5 minutes
     concurrency: 100000,
-    rampUp: 60000
+    rampUp: 60000,
   },
   '10m': {
     name: '10M Transaction Test',
     duration: 600000, // 10 minutes
     concurrency: 50000,
     rampUp: 30000,
-    targetTransactions: 10000000
-  }
+    targetTransactions: 10000000,
+  },
 };
 
 const config = configs[testType] || configs.quick;
@@ -58,7 +58,7 @@ const results = {
   errors: {},
   startTime: null,
   endTime: null,
-  rps: []
+  rps: [],
 };
 
 // Parse URL
@@ -79,14 +79,12 @@ function makeRequest(path, method = 'GET', body = null) {
       method: method,
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'application/json'
+        Accept: 'application/json',
       },
-      timeout: 30000
+      timeout: 30000,
     };
 
     const req = client.request(options, (res) => {
-      let data = '';
-
       res.on('data', (chunk) => {
         data += chunk;
       });
@@ -145,7 +143,7 @@ async function userSession(userId) {
     '/api/vaccinations',
     '/api/inventory',
     '/api/appointments',
-    '/api/announcements'
+    '/api/announcements',
   ];
 
   // Random endpoint selection with weights
@@ -170,7 +168,7 @@ async function userSession(userId) {
   if (config.targetTransactions && Math.random() < 0.1) {
     await makeRequest('/api/auth/login', 'POST', {
       username: `test_user_${userId}`,
-      password: 'test123'
+      password: 'test123',
     });
   } else {
     await makeRequest(endpoint, 'GET');
@@ -229,7 +227,7 @@ async function runLoadTest() {
   // Run the test
   const startTime = Date.now();
   const endTime = startTime + config.duration;
-  const activeRequests = 0;
+
   const maxConcurrent = config.concurrency;
 
   // Ramp up phase
@@ -409,9 +407,9 @@ async function runLoadTest() {
           p99,
           throughput,
           errors: results.errors,
-          duration: totalDuration
+          duration: totalDuration,
         },
-        verdict: passed ? 'PASSED' : 'FAILED'
+        verdict: passed ? 'PASSED' : 'FAILED',
       },
       null,
       2

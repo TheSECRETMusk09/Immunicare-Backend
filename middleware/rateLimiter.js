@@ -1,20 +1,12 @@
-/**
- * Rate Limiting Middleware
- * Provides Redis-based rate limiting for authentication endpoints
- * Uses lazy loading to avoid IPv6 validation issues with express-rate-limit on Windows
- */
-
 console.log('rateLimiter: Starting imports...');
 const rateLimit = require('express-rate-limit');
 console.log('rateLimiter: express-rate-limit loaded');
 
 const crypto = require('crypto');
 
-// Custom IPv6-safe key generator - handles both IPv4 and IPv6
 const createIpKeyGenerator = () => {
   return (req) => {
     try {
-      // Get IP address - handle both IPv4 and IPv6
       const ip =
         req.ip ||
         req.connection?.remoteAddress ||
@@ -22,57 +14,49 @@ const createIpKeyGenerator = () => {
         req.get('X-Forwarded-For') ||
         '0.0.0.0';
 
-      // Normalize IPv6 addresses
       let normalizedIp = ip;
 
-      // Handle IPv6 localhost variants
       if (normalizedIp === '::1' || normalizedIp === '::ffff:127.0.0.1') {
         normalizedIp = '127.0.0.1';
       }
 
-      // Remove IPv6 prefix if present
       normalizedIp = normalizedIp.replace(/^::ffff:/, '');
 
-      // Remove port if present (IPv6 format with port: [::1]:5000)
       normalizedIp = normalizedIp.replace(/^\[|\]:\d+$/g, '');
 
-      // If still contains colons and not a valid IPv4, it's likely an IPv6 address
-      // Hash it to avoid any issues
       if (normalizedIp.includes(':') && !/^\d+\.\d+\.\d+\.\d+$/.test(normalizedIp)) {
         normalizedIp = crypto.createHash('md5').update(normalizedIp).digest('hex');
       }
 
       return normalizedIp;
     } catch {
-      // Fallback to a fixed key if anything goes wrong
       return 'fallback-key';
     }
   };
 };
 
-// Create the key generator
 const customIpKeyGenerator = createIpKeyGenerator();
 
 const getNormalizedRequestPhone = (req) =>
-  String(
-    req.body?.phone || req.body?.phoneNumber || req.body?.phone_number || '',
-  ).replace(/\D+/g, '');
+  String(req.body?.phone || req.body?.phoneNumber || req.body?.phone_number || '').replace(
+    /\D+/g,
+    ''
+  );
 
 const getNormalizedRequestEmail = (req) =>
-  String(req.body?.email || '').trim().toLowerCase();
+  String(req.body?.email || '')
+    .trim()
+    .toLowerCase();
 
-// Redis client configuration - lazy loaded
 let redisClient = null;
 let RedisStore = null;
 let Redis = null;
 
-// Lazy load Redis modules only when needed
 const loadRedisModules = () => {
   if (RedisStore && Redis) {
     return true;
   }
 
-  // Check if cache is disabled
   if (process.env.CACHE_DISABLED === 'true') {
     console.log('rateLimiter: CACHE_DISABLED=true, using memory store');
     return false;
@@ -91,7 +75,6 @@ const loadRedisModules = () => {
 };
 
 const initRedisClient = () => {
-  // If cache is disabled, skip Redis initialization entirely
   if (process.env.CACHE_DISABLED === 'true') {
     console.log('Rate limiter: CACHE_DISABLED=true, using memory store');
     return null;
@@ -101,7 +84,6 @@ const initRedisClient = () => {
     return redisClient;
   }
 
-  // Lazy load Redis modules
   if (!loadRedisModules()) {
     return null;
   }
@@ -131,7 +113,6 @@ const initRedisClient = () => {
   }
 };
 
-// Simple in-memory store for express-rate-limit
 class SimpleMemoryStore {
   constructor(options) {
     this.windowMs = options.windowMs || 60000;
@@ -157,9 +138,7 @@ class SimpleMemoryStore {
     };
   }
 
-  async decrement(_key) {
-    // Optional
-  }
+  async decrement() {}
 
   async resetKey(key) {
     this.hits.delete(key);
@@ -186,21 +165,19 @@ class SimpleMemoryStore {
   }
 }
 
-// Cache for rate limiters to avoid recreating them
-const rateLimiterCache = new Map();
+const limCache = new Map();
 
-// Login rate limiter - 200 attempts per 15 minutes (increased for testing)
 const createLoginRateLimiter = () => {
-  if (rateLimiterCache.has('login')) {
-    return rateLimiterCache.get('login');
+  if (limCache.has('login')) {
+    return limCache.get('login');
   }
 
   const memoryStore = new SimpleMemoryStore({ windowMs: 15 * 60 * 1000 });
 
   const limiter = rateLimit({
     store: memoryStore,
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 200, // 200 attempts for testing (increased from 100)
+    windowMs: 15 * 60 * 1000,
+    max: 200,
     message: {
       error: 'Too many login attempts. Please try again in 15 minutes.',
       code: 'RATE_LIMITED',
@@ -229,13 +206,11 @@ const createLoginRateLimiter = () => {
           },
         });
       } catch {
-        // Ignore if service not available
       }
 
       res.status(429).json(options.message);
     },
     skip: (req) => {
-      // Bypass rate limiting entirely during local development
       if (process.env.NODE_ENV !== 'production') {
         return true;
       }
@@ -246,22 +221,21 @@ const createLoginRateLimiter = () => {
     },
   });
 
-  rateLimiterCache.set('login', limiter);
+  limCache.set('login', limiter);
   return limiter;
 };
 
-// Forgot password rate limiter - 3 attempts per hour
 const createForgotPasswordRateLimiter = () => {
-  if (rateLimiterCache.has('forgot-password')) {
-    return rateLimiterCache.get('forgot-password');
+  if (limCache.has('forgot-password')) {
+    return limCache.get('forgot-password');
   }
 
   const memoryStore = new SimpleMemoryStore({ windowMs: 60 * 60 * 1000 });
 
   const limiter = rateLimit({
     store: memoryStore,
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 3, // 3 attempts
+    windowMs: 60 * 60 * 1000,
+    max: 3,
     message: {
       error: 'Too many password reset requests. Please try again in 1 hour.',
       code: 'RATE_LIMITED',
@@ -282,22 +256,21 @@ const createForgotPasswordRateLimiter = () => {
     },
   });
 
-  rateLimiterCache.set('forgot-password', limiter);
+  limCache.set('forgot-password', limiter);
   return limiter;
 };
 
-// Registration rate limiter - 10 attempts per hour
 const createRegistrationRateLimiter = () => {
-  if (rateLimiterCache.has('register')) {
-    return rateLimiterCache.get('register');
+  if (limCache.has('register')) {
+    return limCache.get('register');
   }
 
   const memoryStore = new SimpleMemoryStore({ windowMs: 60 * 60 * 1000 });
 
   const limiter = rateLimit({
     store: memoryStore,
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 10, // 10 attempts
+    windowMs: 60 * 60 * 1000,
+    max: 10,
     message: {
       error: 'Too many registration attempts. Please try again in 1 hour.',
       code: 'RATE_LIMITED',
@@ -320,22 +293,21 @@ const createRegistrationRateLimiter = () => {
     },
   });
 
-  rateLimiterCache.set('register', limiter);
+  limCache.set('register', limiter);
   return limiter;
 };
 
-// General API rate limiter - 100 requests per minute
 const createGeneralRateLimiter = () => {
-  if (rateLimiterCache.has('general')) {
-    return rateLimiterCache.get('general');
+  if (limCache.has('general')) {
+    return limCache.get('general');
   }
 
   const memoryStore = new SimpleMemoryStore({ windowMs: 60 * 1000 });
 
   const limiter = rateLimit({
     store: memoryStore,
-    windowMs: 60 * 1000, // 1 minute
-    max: 100, // 100 requests
+    windowMs: 60 * 1000,
+    max: 100,
     message: {
       error: 'Too many requests. Please try again later.',
       code: 'RATE_LIMITED',
@@ -355,22 +327,21 @@ const createGeneralRateLimiter = () => {
     },
   });
 
-  rateLimiterCache.set('general', limiter);
+  limCache.set('general', limiter);
   return limiter;
 };
 
-// Strict rate limiter for admin endpoints - 200 requests per minute
 const createAdminRateLimiter = () => {
-  if (rateLimiterCache.has('admin')) {
-    return rateLimiterCache.get('admin');
+  if (limCache.has('admin')) {
+    return limCache.get('admin');
   }
 
   const memoryStore = new SimpleMemoryStore({ windowMs: 60 * 1000 });
 
   const limiter = rateLimit({
     store: memoryStore,
-    windowMs: 60 * 1000, // 1 minute
-    max: 200, // 200 requests
+    windowMs: 60 * 1000,
+    max: 200,
     message: {
       error: 'Too many admin requests. Please try again later.',
       code: 'RATE_LIMITED',
@@ -391,22 +362,21 @@ const createAdminRateLimiter = () => {
     },
   });
 
-  rateLimiterCache.set('admin', limiter);
+  limCache.set('admin', limiter);
   return limiter;
 };
 
-// SMS rate limiter - 10 SMS per hour per phone number
 const createSMSRateLimiter = () => {
-  if (rateLimiterCache.has('sms')) {
-    return rateLimiterCache.get('sms');
+  if (limCache.has('sms')) {
+    return limCache.get('sms');
   }
 
   const memoryStore = new SimpleMemoryStore({ windowMs: 60 * 60 * 1000 });
 
   const limiter = rateLimit({
     store: memoryStore,
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 10, // 10 SMS per hour
+    windowMs: 60 * 60 * 1000,
+    max: 10,
     message: {
       error: 'Too many SMS requests. Please try again in 1 hour.',
       code: 'SMS_RATE_LIMITED',
@@ -423,7 +393,6 @@ const createSMSRateLimiter = () => {
       if (req.path === '/api/health' || req.path === '/metrics') {
         return true;
       }
-      // Skip for admin users
       if (req.user && (req.user.role === 'super_admin' || req.user.role === 'admin')) {
         return true;
       }
@@ -431,22 +400,21 @@ const createSMSRateLimiter = () => {
     },
   });
 
-  rateLimiterCache.set('sms', limiter);
+  limCache.set('sms', limiter);
   return limiter;
 };
 
-// SMS verification rate limiter - 5 verification attempts per hour per phone number
 const createSMSVerificationRateLimiter = () => {
-  if (rateLimiterCache.has('sms-verification')) {
-    return rateLimiterCache.get('sms-verification');
+  if (limCache.has('sms-verification')) {
+    return limCache.get('sms-verification');
   }
 
   const memoryStore = new SimpleMemoryStore({ windowMs: 60 * 60 * 1000 });
 
   const limiter = rateLimit({
     store: memoryStore,
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: 5, // 5 verification attempts per hour
+    windowMs: 60 * 60 * 1000,
+    max: 5,
     message: {
       error: 'Too many verification attempts. Please try again in 1 hour.',
       code: 'VERIFICATION_RATE_LIMITED',
@@ -464,11 +432,11 @@ const createSMSVerificationRateLimiter = () => {
         return true;
       }
 
-      // Bypass rate limiting entirely for guardian users
       const isGuardianLogin =
         req.body?.role === 'guardian' ||
         req.body?.userType === 'guardian' ||
-        (typeof req.body?.username === 'string' && /^\+?\d{10,15}$/.test(req.body.username.replace(/[-_()\s]/g, '')));
+        (typeof req.body?.username === 'string' &&
+          /^\+?\d{10,15}$/.test(req.body.username.replace(/[-_()\s]/g, '')));
 
       if (isGuardianLogin) {
         return true;
@@ -478,27 +446,26 @@ const createSMSVerificationRateLimiter = () => {
     },
   });
 
-  rateLimiterCache.set('sms-verification', limiter);
+  limCache.set('sms-verification', limiter);
   return limiter;
 };
 
-// Create rate limiter based on configuration
 const createRateLimiter = (type = 'general') => {
   switch (type) {
-  case 'login':
-    return createLoginRateLimiter();
-  case 'forgot-password':
-    return createForgotPasswordRateLimiter();
-  case 'register':
-    return createRegistrationRateLimiter();
-  case 'admin':
-    return createAdminRateLimiter();
-  case 'sms':
-    return createSMSRateLimiter();
-  case 'sms-verification':
-    return createSMSVerificationRateLimiter();
-  default:
-    return createGeneralRateLimiter();
+    case 'login':
+      return createLoginRateLimiter();
+    case 'forgot-password':
+      return createForgotPasswordRateLimiter();
+    case 'register':
+      return createRegistrationRateLimiter();
+    case 'admin':
+      return createAdminRateLimiter();
+    case 'sms':
+      return createSMSRateLimiter();
+    case 'sms-verification':
+      return createSMSVerificationRateLimiter();
+    default:
+      return createGeneralRateLimiter();
   }
 };
 
@@ -512,7 +479,6 @@ module.exports = {
   initRedisClient,
   SimpleMemoryStore,
   customIpKeyGenerator,
-  // SMS Rate Limiters
   createSMSRateLimiter,
   createSMSVerificationRateLimiter,
 };

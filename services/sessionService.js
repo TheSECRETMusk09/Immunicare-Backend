@@ -1,6 +1,5 @@
 /**
- * Session Management Service
- * Handles session timeout, invalidation, and management
+ * Session management helpers.
  */
 
 const pool = require('../db');

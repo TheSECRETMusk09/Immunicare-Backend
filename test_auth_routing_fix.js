@@ -13,7 +13,7 @@ const HEALTHCARE_WORKER_ROLES = [
   'nutritionist',
   'dentist',
   'barangay_nutrition_scholar',
-  'doctor'
+  'doctor',
 ];
 
 // Simulated user objects from login response
@@ -25,7 +25,7 @@ const testUsers = [
   { role: 'nurse', username: 'nurse.jane' },
   { role: 'guardian', username: 'guardian1' },
   { role: 'user', username: 'regularuser' },
-  { role: 'midwife', username: 'midwife.rose' }
+  { role: 'midwife', username: 'midwife.rose' },
 ];
 
 console.log('=== Authentication Routing Fix Verification ===\n');
@@ -71,16 +71,6 @@ testUsers.forEach((user) => {
   const isAdmin = ADMIN_ROLES.includes(user.role);
   const isHealthcareWorker = HEALTHCARE_WORKER_ROLES.includes(user.role);
   const isGuardian = user.role === 'guardian';
-  const isUser = user.role === 'user';
-
-  let expectedRedirect = '/dashboard';
-  if (isAdmin || isHealthcareWorker) {
-    expectedRedirect = 'admin';
-  } else if (isGuardian) {
-    expectedRedirect = 'guardian';
-  } else if (isUser) {
-    expectedRedirect = 'user';
-  }
 
   // For this test, we just verify the role checks work correctly
   if (user.role === 'admin' && !isAdmin) {

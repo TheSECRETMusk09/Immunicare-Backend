@@ -2,11 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
-const {
-  CANONICAL_ROLES,
-  getCanonicalRole,
-  requirePermission,
-} = require('../middleware/rbac');
+const { CANONICAL_ROLES, getCanonicalRole, requirePermission } = require('../middleware/rbac');
 const socketService = require('../services/socketService');
 const {
   getApprovedVaccines,
@@ -34,13 +30,6 @@ const VALIDATION_RESULT = {
 };
 
 // Map vaccine names to vaccine IDs (using getVaccineIdByName for consistency)
-const getVaccineIdByName = async (vaccineName) => {
-  const vaccineValidation = await validateApprovedVaccine(vaccineName, {
-    fieldName: 'vaccineName',
-  });
-
-  return vaccineValidation.valid ? vaccineValidation.vaccine.id : null;
-};
 
 const parsePositiveDoseNumber = (value) => {
   const parsed = Number.parseInt(value, 10);
@@ -93,7 +82,7 @@ router.post('/validate', requirePermission(TRANSFER_PERMISSIONS.VALIDATE), async
     // Get infant details
     const infantResult = await pool.query(
       'SELECT id, first_name, last_name, dob FROM patients WHERE id = $1 AND is_active = true',
-      [infantId],
+      [infantId]
     );
 
     if (infantResult.rows.length === 0) {
@@ -188,7 +177,7 @@ router.post('/validate', requirePermission(TRANSFER_PERMISSIONS.VALIDATE), async
         `SELECT id FROM immunization_records
          WHERE patient_id = $1 AND vaccine_id = $2 AND dose_no = $3
          AND DATE(admin_date) = DATE($4) AND is_active = true LIMIT 1`,
-        [infantId, vaccineLookup.vaccine.id, parsedDoseNumber, vaccine.dateAdministered],
+        [infantId, vaccineLookup.vaccine.id, parsedDoseNumber, vaccine.dateAdministered]
       );
 
       if (duplicateCheck.rows.length > 0) {
@@ -202,7 +191,7 @@ router.post('/validate', requirePermission(TRANSFER_PERMISSIONS.VALIDATE), async
     }
 
     // Summary
-    const validCount = validationResults.filter(r => r.status === VALIDATION_RESULT.VALID).length;
+    const validCount = validationResults.filter((r) => r.status === VALIDATION_RESULT.VALID).length;
     const invalidCount = validationResults.length - validCount;
 
     res.json({
@@ -249,7 +238,7 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
       const guardianId = parseInt(req.user.guardian_id, 10);
       const infantCheck = await pool.query(
         'SELECT id FROM patients WHERE id = $1 AND guardian_id = $2 AND is_active = true',
-        [infantId, guardianId],
+        [infantId, guardianId]
       );
 
       if (infantCheck.rows.length === 0) {
@@ -263,7 +252,7 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
     // Get infant details
     const infantResult = await pool.query(
       'SELECT id, first_name, last_name, dob FROM patients WHERE id = $1 AND is_active = true',
-      [infantId],
+      [infantId]
     );
 
     if (infantResult.rows.length === 0) {
@@ -349,7 +338,7 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
 
         if (adminDate < dob) {
           result.status = 'failed';
-          result.message = 'Date is before infant\'s birth date';
+          result.message = "Date is before infant's birth date";
           importResults.push(result);
           continue;
         }
@@ -377,13 +366,13 @@ router.post('/import', requirePermission(TRANSFER_PERMISSIONS.IMPORT), async (re
       socketService.broadcast('vaccinations_imported', {
         infantId,
         infantName: `${infant.first_name} ${infant.last_name}`,
-        count: importResults.filter(r => r.status === 'success').length,
+        count: importResults.filter((r) => r.status === 'success').length,
       });
 
       // Summary
-      const successCount = importResults.filter(r => r.status === 'success').length;
-      const skippedCount = importResults.filter(r => r.status === 'skipped').length;
-      const failedCount = importResults.filter(r => r.status === 'failed').length;
+      const successCount = importResults.filter((r) => r.status === 'success').length;
+      const skippedCount = importResults.filter((r) => r.status === 'skipped').length;
+      const failedCount = importResults.filter((r) => r.status === 'failed').length;
 
       res.json({
         success: true,
@@ -429,7 +418,7 @@ router.get('/infant/:infantId', requirePermission(TRANSFER_PERMISSIONS.VIEW), as
       const guardianId = parseInt(req.user.guardian_id, 10);
       const infantCheck = await pool.query(
         'SELECT id FROM patients WHERE id = $1 AND guardian_id = $2 AND is_active = true',
-        [infantId, guardianId],
+        [infantId, guardianId]
       );
 
       if (infantCheck.rows.length === 0) {
@@ -462,7 +451,7 @@ router.get('/infant/:infantId', requirePermission(TRANSFER_PERMISSIONS.VIEW), as
         AND ir.is_imported = true
         AND ir.is_active = true
       ORDER BY ir.admin_date DESC`,
-      [infantId],
+      [infantId]
     );
 
     // Get transfer case info if exists
@@ -471,7 +460,7 @@ router.get('/infant/:infantId', requirePermission(TRANSFER_PERMISSIONS.VIEW), as
        FROM transfer_in_cases
        WHERE infant_id = $1
        ORDER BY created_at DESC`,
-      [infantId],
+      [infantId]
     );
 
     res.json({

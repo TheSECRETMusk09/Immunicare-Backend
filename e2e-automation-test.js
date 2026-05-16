@@ -128,15 +128,16 @@ async function testVaccineRulesEngine() {
 
     const mockHistory = [
       { vaccine_code: 'bcg', vaccine_name: 'BCG', dose_number: 1, date_administered: '2025-03-15' },
-      { vaccine_code: 'hep_b', vaccine_name: 'Hepatitis B', dose_number: 1, date_administered: '2025-03-15' },
+      {
+        vaccine_code: 'hep_b',
+        vaccine_name: 'Hepatitis B',
+        dose_number: 1,
+        date_administered: '2025-03-15',
+      },
     ];
 
     // Note: validateVaccinationHistory is async
-    const _validationResult = await vaccineRulesEngine.validateVaccinationHistory(
-      mockChild,
-      mockHistory,
-      'san_nicolas',
-    );
+    await vaccineRulesEngine.validateVaccinationHistory(mockChild, mockHistory, 'san_nicolas');
 
     if (!validationResult || !validationResult.success) {
       throw new Error('Validation did not return success');
@@ -147,7 +148,6 @@ async function testVaccineRulesEngine() {
       throw new Error('Validation result missing status');
     }
     logTest('validateVaccinationHistory returns proper status', 'PASS');
-
   } catch (error) {
     logError('Vaccine Rules Engine Tests', error);
   }
@@ -173,7 +173,6 @@ async function testAppointmentSuggestionService() {
         logTest(`appointmentSuggestionService.${func} missing`, 'FAIL', 'Function not found');
       }
     }
-
   } catch (error) {
     logError('Appointment Suggestion Service Tests', error);
   }
@@ -190,7 +189,6 @@ async function testAppointmentSchedulingService() {
     }
     logTest('appointmentSchedulingService.js loads correctly', 'PASS');
     logTest('checkAutoApprovalEligibility function exists', 'PASS');
-
   } catch (error) {
     logError('Appointment Scheduling Service Tests', error);
   }
@@ -215,7 +213,11 @@ async function testRoutes() {
       if (routeModule && typeof routeModule === 'function') {
         logTest(`Route ${route} loads correctly`, 'PASS');
       } else {
-        logTest(`Route ${route} loaded but may need mounting`, 'WARN', 'Not a direct function export');
+        logTest(
+          `Route ${route} loaded but may need mounting`,
+          'WARN',
+          'Not a direct function export'
+        );
       }
     } catch (error) {
       logError(`Route ${route}`, error);
@@ -266,7 +268,7 @@ async function testDatabaseQueries() {
       try {
         const result = await pool.query(
           `SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = $1)`,
-          [table],
+          [table]
         );
         if (result.rows[0].exists) {
           logTest(`Table ${table} exists`, 'PASS');
@@ -282,9 +284,9 @@ async function testDatabaseQueries() {
     const patientColumns = ['id', 'first_name', 'last_name', 'dob', 'guardian_id'];
     try {
       const result = await pool.query(
-        `SELECT column_name FROM information_schema.columns WHERE table_name = 'patients'`,
+        `SELECT column_name FROM information_schema.columns WHERE table_name = 'patients'`
       );
-      const existingColumns = result.rows.map(r => r.column_name);
+      const existingColumns = result.rows.map((r) => r.column_name);
 
       for (const col of patientColumns) {
         if (existingColumns.includes(col)) {
@@ -300,11 +302,14 @@ async function testDatabaseQueries() {
     // Test 3: Check vaccination_schedules table
     try {
       const result = await pool.query('SELECT COUNT(*) FROM vaccination_schedules');
-      logTest('vaccination_schedules table accessible', 'PASS', `Found ${result.rows[0].count} schedules`);
+      logTest(
+        'vaccination_schedules table accessible',
+        'PASS',
+        `Found ${result.rows[0].count} schedules`
+      );
     } catch (_err) {
       logTest('vaccination_schedules table', 'FAIL', err.message);
     }
-
   } catch (error) {
     logError('Database Query Tests', error);
   }
@@ -341,7 +346,10 @@ async function testFrontendIntegration() {
         const content = fs.readFileSync(filePath, 'utf8');
 
         if (file.includes('GuardianAppointmentBooking')) {
-          if (content.includes('getVaccinationReadiness') || content.includes('fetchChildReadiness')) {
+          if (
+            content.includes('getVaccinationReadiness') ||
+            content.includes('fetchChildReadiness')
+          ) {
             logTest('GuardianAppointmentBooking uses readiness API', 'PASS');
           }
         }
@@ -370,7 +378,6 @@ async function testFrontendIntegration() {
         logTest(`Frontend file ${file}`, 'FAIL', 'Not found');
       }
     }
-
   } catch (error) {
     logError('Frontend Integration Tests', error);
   }
@@ -416,7 +423,6 @@ async function testVaccinationWorkflow() {
     }
 
     logTest('Vaccination Workflow Chain Complete', 'PASS', 'All 5 steps have backend support');
-
   } catch (error) {
     logError('Vaccination Workflow Tests', error);
   }
@@ -435,15 +441,15 @@ async function testErrorHandling() {
 
     // Test with invalid child profile
     try {
-      const _result = await vaccineRulesEngine.validateVaccinationHistory(
-        null,
-        [],
-        'san_nicolas',
-      );
+      await vaccineRulesEngine.validateVaccinationHistory(null, [], 'san_nicolas');
       // Should handle gracefully or throw
       logTest('validateVaccinationHistory handles null child', 'PASS');
     } catch (_err) {
-      logTest('validateVaccinationHistory throws on null child', 'PASS', 'Error thrown as expected');
+      logTest(
+        'validateVaccinationHistory throws on null child',
+        'PASS',
+        'Error thrown as expected'
+      );
     }
 
     // Test calculateVaccineReadiness with invalid infant ID
@@ -455,7 +461,6 @@ async function testErrorHandling() {
     } catch (_err) {
       logTest('calculateVaccineReadiness error handling', 'PASS', 'Error thrown as expected');
     }
-
   } catch (error) {
     logError('Error Handling Tests', error);
   }
@@ -555,7 +560,8 @@ function generateReport() {
 
   log('\n' + '='.repeat(60), 'blue');
 
-  const successRate = testResults.passed.length / (testResults.passed.length + testResults.failed.length) * 100;
+  const successRate =
+    (testResults.passed.length / (testResults.passed.length + testResults.failed.length)) * 100;
   if (successRate >= 80) {
     log(`OVERALL STATUS: PASSING (${successRate.toFixed(1)}% success rate)`, 'green');
   } else if (successRate >= 60) {
@@ -603,7 +609,7 @@ async function runAllTests() {
 }
 
 // Run tests
-runAllTests().catch(error => {
+runAllTests().catch((error) => {
   log(`Fatal error: ${error.message}`, 'red');
   console.error(error);
   process.exit(1);

@@ -1,4 +1,4 @@
-const path = require('path');
+require('path');
 
 // Override console methods to capture all output
 const originalLog = console.log;
@@ -61,7 +61,7 @@ const routesToTest = [
   { name: 'monitoring', path: './routes/monitoring' },
   { name: 'uploads', path: './routes/uploads' },
   { name: 'reports-enhanced', path: './routes/reports-enhanced' },
-  { name: 'inventory', path: './routes/inventory' }
+  { name: 'inventory', path: './routes/inventory' },
 ];
 
 const failedRoutes = [];
@@ -83,7 +83,7 @@ const middlewareToTest = [
   { name: 'rateLimiter', path: './middleware/rateLimiter' },
   { name: 'bruteForceProtection', path: './middleware/bruteForceProtection' },
   { name: 'cache', path: './middleware/cache' },
-  { name: 'sanitization', path: './middleware/sanitization' }
+  { name: 'sanitization', path: './middleware/sanitization' },
 ];
 
 for (const mw of middlewareToTest) {
@@ -101,7 +101,7 @@ console.log('\n⚙️ Testing services...');
 const servicesToTest = [
   { name: 'socketService', path: './services/socketService' },
   { name: 'notificationService', path: './services/notificationService' },
-  { name: 'emailService', path: './services/emailService' }
+  { name: 'emailService', path: './services/emailService' },
 ];
 
 for (const svc of servicesToTest) {

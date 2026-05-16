@@ -1,4 +1,4 @@
-const eslint = require('eslint');
+require('eslint');
 
 module.exports = [
   {
@@ -25,11 +25,14 @@ module.exports = [
     },
     rules: {
       // More permissive unused vars - ignore args starting with _
-      'no-unused-vars': ['warn', {
-        argsIgnorePattern: '^_',
-        caughtErrorsIgnorePattern: '^_',
-        varsIgnorePattern: '^_'
-      }],
+      'no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+        },
+      ],
       'no-console': 'off',
       'prefer-const': 'warn',
       'no-var': 'error',

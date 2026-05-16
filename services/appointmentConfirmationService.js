@@ -1,6 +1,5 @@
 /**
- * Appointment Confirmation Service
- * Sends appointment confirmation SMS and handles responses
+ * Appointment confirmation workflow (SMS + replies).
  */
 
 const pool = require('../db');
@@ -10,7 +9,9 @@ const socketService = require('./socketService');
 
 const isPoolUnavailableError = (error) =>
   (typeof pool.isPoolEndedError === 'function' && pool.isPoolEndedError(error)) ||
-  String(error?.message || '').toLowerCase().includes('cannot use a pool after calling end on the pool');
+  String(error?.message || '')
+    .toLowerCase()
+    .includes('cannot use a pool after calling end on the pool');
 
 const isDatabaseAvailable = (context) => {
   if (typeof pool.warnIfPoolUnavailable === 'function') {
@@ -96,7 +97,7 @@ class AppointmentConfirmationService {
 
       // Format the date and time
       const { dateStr, timeStr, shortDateStr } = this.formatScheduledDateParts(
-        appointment.scheduled_date,
+        appointment.scheduled_date
       );
 
       // Format phone number
@@ -109,7 +110,8 @@ class AppointmentConfirmationService {
 
       // Format appointment type for display
       const appointmentType = appointment.type || 'Vaccination Visit';
-      const appointmentTypeDisplay = appointmentType.charAt(0).toUpperCase() + appointmentType.slice(1).toLowerCase();
+      const appointmentTypeDisplay =
+        appointmentType.charAt(0).toUpperCase() + appointmentType.slice(1).toLowerCase();
 
       // Create confirmation message with requirements
       const message =
@@ -130,7 +132,7 @@ class AppointmentConfirmationService {
         formattedPhone,
         message,
         'appointment_confirmation',
-        { appointmentId: appointmentId },
+        { appointmentId: appointmentId }
       );
 
       // Log the confirmation
@@ -140,7 +142,7 @@ class AppointmentConfirmationService {
                     appointment_id, guardian_id, message, status, created_at
                 ) VALUES ($1, $2, $3, 'sent', CURRENT_TIMESTAMP)
             `,
-        [appointmentId, appointment.guardian_id, message],
+        [appointmentId, appointment.guardian_id, message]
       );
 
       // Update appointment with confirmation sent status
@@ -152,7 +154,7 @@ class AppointmentConfirmationService {
                     confirmation_status = 'pending'
                 WHERE id = $1
             `,
-        [appointmentId],
+        [appointmentId]
       );
 
       logger.info(`Confirmation SMS sent to ${formattedPhone} for appointment ${appointmentId}`);
@@ -320,7 +322,7 @@ class AppointmentConfirmationService {
 
         await pool.query(
           'UPDATE incoming_sms SET processed = true, processed_at = CURRENT_TIMESTAMP WHERE id = $1',
-          [incomingId],
+          [incomingId]
         );
         return { success: false, message: 'Unknown keyword' };
       }
@@ -332,7 +334,7 @@ class AppointmentConfirmationService {
 
         await pool.query(
           'UPDATE incoming_sms SET processed = true, processed_at = CURRENT_TIMESTAMP WHERE id = $1',
-          [incomingId],
+          [incomingId]
         );
         return { success: false, message: 'No pending appointment found' };
       }
@@ -355,7 +357,7 @@ class AppointmentConfirmationService {
                     related_appointment_id = $2
                 WHERE id = $1
             `,
-        [incomingId, appointment.id],
+        [incomingId, appointment.id]
       );
 
       return {
@@ -382,7 +384,7 @@ class AppointmentConfirmationService {
                 status = 'attended'
             WHERE id = $1
         `,
-      [appointmentId],
+      [appointmentId]
     );
 
     logger.info(`Appointment ${appointmentId} confirmed via SMS`);
@@ -422,7 +424,7 @@ class AppointmentConfirmationService {
                 status = 'cancelled'
             WHERE id = $1
         `,
-      [appointmentId],
+      [appointmentId]
     );
 
     logger.info(`Appointment ${appointmentId} cancelled via SMS`);
@@ -454,7 +456,8 @@ class AppointmentConfirmationService {
    * Send help message for unknown keywords
    */
   async sendHelpMessage(phoneNumber) {
-    const message = 'Immunicare: Unknown command. Reply CONFIRM to confirm appointment or CANCEL to cancel appointment. For assistance, call the health center.';
+    const message =
+      'Immunicare: Unknown command. Reply CONFIRM to confirm appointment or CANCEL to cancel appointment. For assistance, call the health center.';
 
     const formattedPhone = smsService.formatPhoneNumber(phoneNumber);
     if (formattedPhone) {
@@ -466,7 +469,8 @@ class AppointmentConfirmationService {
    * Send message when no pending appointment found
    */
   async sendNoAppointmentMessage(phoneNumber) {
-    const message = 'Immunicare: We couldn\'t find any pending appointments associated with your number. If you need assistance, please contact the health center.';
+    const message =
+      "Immunicare: We couldn't find any pending appointments associated with your number. If you need assistance, please contact the health center.";
 
     const formattedPhone = smsService.formatPhoneNumber(phoneNumber);
     if (formattedPhone) {
@@ -479,7 +483,6 @@ class AppointmentConfirmationService {
    */
   async createGuardianNotification({
     guardianId,
-    guardianName,
     infantName,
     appointmentId,
     scheduledDate,
@@ -526,7 +529,7 @@ class AppointmentConfirmationService {
           appointmentId,
           guardianId,
           'guardian',
-        ],
+        ]
       );
 
       // Send real-time notification via socket
@@ -547,15 +550,20 @@ class AppointmentConfirmationService {
         sound,
       });
 
-      logger.info(`In-app notification created for guardian ${guardianId} for appointment ${appointmentId}`);
+      logger.info(
+        `In-app notification created for guardian ${guardianId} for appointment ${appointmentId}`
+      );
       return { success: true, notificationId: notificationResult.rows[0]?.id };
     } catch (error) {
       if (isPoolUnavailableError(error)) {
-        logger.warn('Guardian appointment notification skipped because database pool is unavailable', {
-          guardianId,
-          appointmentId,
-          message: error.message,
-        });
+        logger.warn(
+          'Guardian appointment notification skipped because database pool is unavailable',
+          {
+            guardianId,
+            appointmentId,
+            message: error.message,
+          }
+        );
         return { success: false, error: 'Database pool unavailable', skipped: true };
       }
 
@@ -626,7 +634,7 @@ class AppointmentConfirmationService {
       }
 
       logger.info(
-        `Processed ${reminder24hResult.rows.length} 24h reminders and ${reminder2hResult.rows.length} 2h reminders`,
+        `Processed ${reminder24hResult.rows.length} 24h reminders and ${reminder2hResult.rows.length} 2h reminders`
       );
     } catch (error) {
       logger.error('Error processing scheduled reminders:', error);
